@@ -1,0 +1,22 @@
+# LSIE-MLF .dockerignore — §3.2 Build Context Rules
+# Prevent unnecessary assets from entering images
+
+.git
+.github
+.env
+.env.*
+*.md
+docs/
+data/raw/*
+data/interim/*
+data/processed/*
+__pycache__
+*.pyc
+*.pyo
+.pytest_cache
+.mypy_cache
+.ruff_cache
+*.egg-info
+node_modules
+.vscode
+.idea

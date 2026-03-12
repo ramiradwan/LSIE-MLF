@@ -1,0 +1,50 @@
+{
+  "model": "claude-opus-4-6",
+  "thinking": true,
+  "permissions": {
+    "allow": [
+      "Bash(mypy *)",
+      "Bash(pytest *)",
+      "Bash(docker compose config*)",
+      "Bash(grep *)",
+      "Bash(find *)",
+      "Bash(cat *)",
+      "Bash(wc *)",
+      "Bash(head *)",
+      "Bash(tail *)",
+      "Bash(diff *)",
+      "Bash(python -m py_compile *)"
+    ],
+    "deny": [
+      "Bash(rm -rf /)*",
+      "Bash(shred *)",
+      "Bash(docker compose down*)",
+      "Bash(docker compose up*)",
+      "Bash(pip install*)"
+    ]
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/post-edit.sh"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Write|Edit|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash .claude/hooks/pre-edit.sh"
+          }
+        ]
+      }
+    ]
+  }
+}
