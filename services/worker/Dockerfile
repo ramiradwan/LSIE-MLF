@@ -3,7 +3,7 @@
 # Role: Celery consumer executing GPU-bound ML inference tasks
 # GPU: All (§9.3)
 
-FROM nvidia/cuda:12.2.2-cudnn9-runtime-ubuntu22.04
+FROM nvidia/cuda:12.3.2-cudnn9-runtime-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONDONTWRITEBYTECODE=1
