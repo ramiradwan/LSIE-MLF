@@ -8,7 +8,7 @@ spacy==3.7.*
 psycopg2-binary==2.9.*
 pandas==2.2.*
 scipy==1.13.*
-celery==5.4.*
+celery==5.6.*
 redis==5.*
 pycryptodome>=3.20.0
 patchright==1.58.2
