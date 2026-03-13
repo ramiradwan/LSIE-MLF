@@ -14,8 +14,6 @@ import sys
 from typing import Any
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 
 def _get_inference_module() -> Any:
     """Import inference module with mocked celery decorator."""
@@ -103,8 +101,10 @@ class TestProcessSegment:
         mock_engine = MagicMock()
         mock_engine.transcribe.side_effect = RuntimeError("GPU OOM")
 
-        with patch.object(mod, "persist_metrics", MagicMock()), \
-             patch("packages.ml_core.transcription.TranscriptionEngine", return_value=mock_engine):
+        with (
+            patch.object(mod, "persist_metrics", MagicMock()),
+            patch("packages.ml_core.transcription.TranscriptionEngine", return_value=mock_engine),
+        ):
             result = mod.process_segment(MagicMock(), payload)
 
         # Transcription should fall back to empty on failure

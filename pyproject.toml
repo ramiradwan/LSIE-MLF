@@ -4,6 +4,7 @@ python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
 addopts = "-x -q --tb=short --strict-markers"
+pythonpath = ["."]
 markers = [
     "unit: Unit tests with no external dependencies",
     "integration: Tests requiring PostgreSQL or Redis",
@@ -29,7 +30,7 @@ line-length = 100
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP", "ANN", "B", "SIM"]
-ignore = ["ANN101", "ANN102"]
+ignore = ["ANN401"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["packages", "services"]

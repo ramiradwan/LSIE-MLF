@@ -26,9 +26,7 @@ def mock_faster_whisper(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
 class TestTranscriptionEngine:
     """§4.D.1 — faster-whisper speech transcription."""
 
-    def test_load_model_uses_int8_cuda(
-        self, mock_faster_whisper: MagicMock
-    ) -> None:
+    def test_load_model_uses_int8_cuda(self, mock_faster_whisper: MagicMock) -> None:
         """§4.D.1 — Loads large-v3 with INT8 on CUDA."""
         engine = TranscriptionEngine()
         engine.load_model()
@@ -39,9 +37,7 @@ class TestTranscriptionEngine:
             compute_type="int8",
         )
 
-    def test_transcribe_concatenates_segments(
-        self, mock_faster_whisper: MagicMock
-    ) -> None:
+    def test_transcribe_concatenates_segments(self, mock_faster_whisper: MagicMock) -> None:
         """§4.D.1 — Transcription joins all segment texts."""
         seg1 = MagicMock()
         seg1.text = " Hello world "
@@ -63,9 +59,7 @@ class TestTranscriptionEngine:
             vad_filter=True,
         )
 
-    def test_transcribe_with_language_hint(
-        self, mock_faster_whisper: MagicMock
-    ) -> None:
+    def test_transcribe_with_language_hint(self, mock_faster_whisper: MagicMock) -> None:
         """§4.D.1 — Language hint passed through."""
         seg = MagicMock()
         seg.text = " Moi "
@@ -80,9 +74,7 @@ class TestTranscriptionEngine:
         call_kwargs = mock_model.transcribe.call_args[1]
         assert call_kwargs["language"] == "fi"
 
-    def test_transcribe_empty_segments(
-        self, mock_faster_whisper: MagicMock
-    ) -> None:
+    def test_transcribe_empty_segments(self, mock_faster_whisper: MagicMock) -> None:
         """§4.D.1 — Empty segments produce empty string."""
         mock_model = MagicMock()
         mock_model.transcribe.return_value = ([], MagicMock())

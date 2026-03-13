@@ -31,7 +31,7 @@ class VaultSession:
 
 class EphemeralVault:
     """
-    §5.1 — AES-256-GCM encrypted transient storage.
+    §5.1 — AES-256-GCM encrypted Ephemeral Vault.
 
     Encryption: PyCryptodome (pycryptodome >= 3.20.0)
     Secure deletion: shred -vfz -n 3 on /data/raw/ and /data/interim/

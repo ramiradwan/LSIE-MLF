@@ -7,6 +7,7 @@ and handles exceptions per §5.1.
 
 from __future__ import annotations
 
+import contextlib
 from unittest.mock import MagicMock, call, patch
 
 from services.worker.vault_cron import INTERVAL_HOURS, SHRED_TARGETS
@@ -32,19 +33,15 @@ class TestVaultCron:
         """§5.1 — secure_delete() called for each target directory."""
         from services.worker.vault_cron import run_vault_cron
 
-        try:
+        with contextlib.suppress(StopIteration):
             run_vault_cron()
-        except StopIteration:
-            pass
 
         expected_calls = [call.secure_delete(t) for t in SHRED_TARGETS]
         mock_vault.assert_has_calls(expected_calls, any_order=False)
 
     @patch("services.worker.vault_cron.time.sleep", side_effect=StopIteration)
     @patch("services.worker.vault_cron.EphemeralVault")
-    def test_handles_delete_exception(
-        self, mock_vault: MagicMock, mock_sleep: MagicMock
-    ) -> None:
+    def test_handles_delete_exception(self, mock_vault: MagicMock, mock_sleep: MagicMock) -> None:
         """§5.1 — Exception in secure_delete logged, loop continues."""
         mock_vault.secure_delete.side_effect = [
             OSError("permission denied"),
@@ -53,25 +50,19 @@ class TestVaultCron:
 
         from services.worker.vault_cron import run_vault_cron
 
-        try:
+        with contextlib.suppress(StopIteration):
             run_vault_cron()
-        except StopIteration:
-            pass
 
         # Both targets should have been attempted
         assert mock_vault.secure_delete.call_count == 2
 
     @patch("services.worker.vault_cron.time.sleep", side_effect=StopIteration)
     @patch("services.worker.vault_cron.EphemeralVault")
-    def test_sleeps_24_hours(
-        self, mock_vault: MagicMock, mock_sleep: MagicMock
-    ) -> None:
+    def test_sleeps_24_hours(self, mock_vault: MagicMock, mock_sleep: MagicMock) -> None:
         """§5.1 — Sleeps for 24 hours between cycles."""
         from services.worker.vault_cron import run_vault_cron
 
-        try:
+        with contextlib.suppress(StopIteration):
             run_vault_cron()
-        except StopIteration:
-            pass
 
         mock_sleep.assert_called_with(INTERVAL_HOURS * 3600)

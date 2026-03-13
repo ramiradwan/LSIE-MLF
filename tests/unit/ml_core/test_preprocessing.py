@@ -47,9 +47,7 @@ class TestTextPreprocessor:
         proc.load_model()
         mock_spacy.load.assert_called_once_with("en_core_web_sm")
 
-    def test_preprocess_removes_stopwords_and_punctuation(
-        self, mock_spacy: MagicMock
-    ) -> None:
+    def test_preprocess_removes_stopwords_and_punctuation(self, mock_spacy: MagicMock) -> None:
         """§4.D.4 — Strips punctuation, stopwords, whitespace tokens."""
         mock_nlp = MagicMock()
         mock_nlp.return_value = [

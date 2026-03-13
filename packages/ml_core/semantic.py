@@ -102,8 +102,7 @@ class SemanticEvaluator:
 
         # §8.3 — User prompt with expected and actual utterance
         user_content: str = (
-            f"Expected Greeting Rule: {expected_greeting}\n"
-            f"Actual Utterance: {actual_utterance}"
+            f"Expected Greeting Rule: {expected_greeting}\nActual Utterance: {actual_utterance}"
         )
 
         # §4.D contract — LLM timeout retries once before recording null
@@ -134,9 +133,7 @@ class SemanticEvaluator:
                 return validated.model_dump()
 
             except Exception:
-                logger.warning(
-                    "Semantic evaluation attempt %d failed", attempt + 1, exc_info=True
-                )
+                logger.warning("Semantic evaluation attempt %d failed", attempt + 1, exc_info=True)
                 if attempt == 1:
                     # §4.D contract — record null after retry exhaustion
                     return None

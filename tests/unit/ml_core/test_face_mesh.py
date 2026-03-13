@@ -30,9 +30,7 @@ def mock_mediapipe(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
     mock_mp = MagicMock()
     monkeypatch.setitem(sys.modules, "mediapipe", mock_mp)
     monkeypatch.setitem(sys.modules, "mediapipe.solutions", mock_mp.solutions)
-    monkeypatch.setitem(
-        sys.modules, "mediapipe.solutions.face_mesh", mock_mp.solutions.face_mesh
-    )
+    monkeypatch.setitem(sys.modules, "mediapipe.solutions.face_mesh", mock_mp.solutions.face_mesh)
     return mock_mp
 
 
@@ -88,9 +86,7 @@ class TestFaceMeshProcessor:
 
         assert result is None
 
-    def test_load_model_initializes_face_mesh(
-        self, mock_mediapipe: MagicMock
-    ) -> None:
+    def test_load_model_initializes_face_mesh(self, mock_mediapipe: MagicMock) -> None:
         """§4.D.2 — load_model creates MediaPipe FaceMesh with refine_landmarks."""
         processor = FaceMeshProcessor()
         processor.load_model()

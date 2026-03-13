@@ -67,6 +67,7 @@ _UPDATE_ARM_SQL: str = """
 def _import_psycopg2() -> Any:
     """Lazy import psycopg2 — only available inside worker/api containers."""
     import psycopg2 as _psycopg2
+
     return _psycopg2
 
 
@@ -115,9 +116,7 @@ class MetricsStore:
     def _get_conn(self) -> Any:
         """Obtain a connection from the pool, raising if not connected."""
         if self._pool is None:
-            raise RuntimeError(
-                "MetricsStore not connected. Call connect() first."
-            )
+            raise RuntimeError("MetricsStore not connected. Call connect() first.")
         return self._pool.getconn()
 
     def _put_conn(self, conn: Any) -> None:
@@ -174,41 +173,48 @@ class MetricsStore:
         conn = self._get_conn()
         try:
             # §2 step 7 — READ COMMITTED for metric inserts
-            conn.set_isolation_level(
-                psycopg2.extensions.ISOLATION_LEVEL_READ_COMMITTED
-            )
+            conn.set_isolation_level(psycopg2.extensions.ISOLATION_LEVEL_READ_COMMITTED)
             with conn.cursor() as cur:
                 # Insert numeric metrics
-                cur.execute(_INSERT_METRICS_SQL, {
-                    "session_id": metrics["session_id"],
-                    "segment_id": metrics["segment_id"],
-                    "timestamp_utc": metrics["timestamp_utc"],
-                    "au12_intensity": metrics.get("au12_intensity"),
-                    "pitch_f0": metrics.get("pitch_f0"),
-                    "jitter": metrics.get("jitter"),
-                    "shimmer": metrics.get("shimmer"),
-                })
-
-                # Insert transcript if present
-                if metrics.get("transcription"):
-                    cur.execute(_INSERT_TRANSCRIPT_SQL, {
+                cur.execute(
+                    _INSERT_METRICS_SQL,
+                    {
                         "session_id": metrics["session_id"],
                         "segment_id": metrics["segment_id"],
                         "timestamp_utc": metrics["timestamp_utc"],
-                        "text": metrics["transcription"],
-                    })
+                        "au12_intensity": metrics.get("au12_intensity"),
+                        "pitch_f0": metrics.get("pitch_f0"),
+                        "jitter": metrics.get("jitter"),
+                        "shimmer": metrics.get("shimmer"),
+                    },
+                )
+
+                # Insert transcript if present
+                if metrics.get("transcription"):
+                    cur.execute(
+                        _INSERT_TRANSCRIPT_SQL,
+                        {
+                            "session_id": metrics["session_id"],
+                            "segment_id": metrics["segment_id"],
+                            "timestamp_utc": metrics["timestamp_utc"],
+                            "text": metrics["transcription"],
+                        },
+                    )
 
                 # Insert evaluation if present
                 if metrics.get("semantic") is not None:
                     semantic = metrics["semantic"]
-                    cur.execute(_INSERT_EVALUATION_SQL, {
-                        "session_id": metrics["session_id"],
-                        "segment_id": metrics["segment_id"],
-                        "timestamp_utc": metrics["timestamp_utc"],
-                        "reasoning": semantic.get("reasoning"),
-                        "is_match": semantic.get("is_match"),
-                        "confidence": semantic.get("confidence"),
-                    })
+                    cur.execute(
+                        _INSERT_EVALUATION_SQL,
+                        {
+                            "session_id": metrics["session_id"],
+                            "segment_id": metrics["segment_id"],
+                            "timestamp_utc": metrics["timestamp_utc"],
+                            "reasoning": semantic.get("reasoning"),
+                            "is_match": semantic.get("is_match"),
+                            "confidence": semantic.get("confidence"),
+                        },
+                    )
 
             conn.commit()
         except Exception:
@@ -269,8 +275,13 @@ class MetricsStore:
 
         # §12.4 — Write all metric fields to CSV
         fieldnames = [
-            "session_id", "segment_id", "timestamp_utc",
-            "au12_intensity", "pitch_f0", "jitter", "shimmer",
+            "session_id",
+            "segment_id",
+            "timestamp_utc",
+            "au12_intensity",
+            "pitch_f0",
+            "jitter",
+            "shimmer",
             "transcription",
         ]
         with open(csv_path, "w", newline="", encoding="utf-8") as f:
@@ -278,13 +289,9 @@ class MetricsStore:
             writer.writeheader()
             writer.writerows(records)
 
-        logger.error(
-            "Overflow: wrote %d records to %s", len(records), csv_path
-        )
+        logger.error("Overflow: wrote %d records to %s", len(records), csv_path)
 
-    def get_experiment_arms(
-        self, experiment_id: str
-    ) -> list[dict[str, Any]]:
+    def get_experiment_arms(self, experiment_id: str) -> list[dict[str, Any]]:
         """
         Fetch all arms for an experiment from the Persistent Store.
 
@@ -295,10 +302,7 @@ class MetricsStore:
             with conn.cursor() as cur:
                 cur.execute(_SELECT_ARMS_SQL, {"experiment_id": experiment_id})
                 rows = cur.fetchall()
-            return [
-                {"arm": row[0], "alpha_param": row[1], "beta_param": row[2]}
-                for row in rows
-            ]
+            return [{"arm": row[0], "alpha_param": row[1], "beta_param": row[2]} for row in rows]
         finally:
             self._put_conn(conn)
 
@@ -318,16 +322,17 @@ class MetricsStore:
         conn = self._get_conn()
         try:
             # §2 step 7 — SERIALIZABLE for experiment updates
-            conn.set_isolation_level(
-                psycopg2.extensions.ISOLATION_LEVEL_SERIALIZABLE
-            )
+            conn.set_isolation_level(psycopg2.extensions.ISOLATION_LEVEL_SERIALIZABLE)
             with conn.cursor() as cur:
-                cur.execute(_UPDATE_ARM_SQL, {
-                    "experiment_id": experiment_id,
-                    "arm": arm,
-                    "alpha": alpha,
-                    "beta": beta,
-                })
+                cur.execute(
+                    _UPDATE_ARM_SQL,
+                    {
+                        "experiment_id": experiment_id,
+                        "arm": arm,
+                        "alpha": alpha,
+                        "beta": beta,
+                    },
+                )
             conn.commit()
         except Exception:
             conn.rollback()
@@ -368,17 +373,13 @@ class ThompsonSamplingEngine:
 
         arms = self.store.get_experiment_arms(experiment_id)
         if not arms:
-            raise ValueError(
-                f"No arms found for experiment '{experiment_id}'"
-            )
+            raise ValueError(f"No arms found for experiment '{experiment_id}'")
 
         best_arm = ""
         best_sample = -1.0
         for arm_data in arms:
             # §4.E.1 — Sample from Beta distribution
-            sample: float = float(
-                beta_dist.rvs(arm_data["alpha_param"], arm_data["beta_param"])
-            )
+            sample: float = float(beta_dist.rvs(arm_data["alpha_param"], arm_data["beta_param"]))
             if sample > best_sample:
                 best_sample = sample
                 best_arm = arm_data["arm"]
@@ -398,9 +399,7 @@ class ThompsonSamplingEngine:
             None,
         )
         if arm_data is None:
-            raise ValueError(
-                f"Arm '{arm}' not found in experiment '{experiment_id}'"
-            )
+            raise ValueError(f"Arm '{arm}' not found in experiment '{experiment_id}'")
 
         alpha = arm_data["alpha_param"]
         beta_val = arm_data["beta_param"]

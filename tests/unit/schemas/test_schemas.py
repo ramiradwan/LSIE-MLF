@@ -118,7 +118,9 @@ class TestComboEvent:
         """§4.B.1 — ComboEvent must have min_length=2 events."""
         now = datetime.now(UTC)
         single_event = LiveEvent(
-            uniqueId="user1", event_type="gift", timestamp_utc=now,
+            uniqueId="user1",
+            event_type="gift",
+            timestamp_utc=now,
         )
         with pytest.raises(ValidationError):
             ComboEvent(
@@ -140,9 +142,7 @@ class TestComboEvent:
 class TestInferenceHandoffRoundTrip:
     """§6.1 — JSON Schema Draft 07 export and round-trip serialization."""
 
-    def test_json_roundtrip(
-        self, sample_session_id: str, sample_timestamp: datetime
-    ) -> None:
+    def test_json_roundtrip(self, sample_session_id: str, sample_timestamp: datetime) -> None:
         payload = InferenceHandoffPayload(
             session_id=uuid.UUID(sample_session_id),
             timestamp_utc=sample_timestamp,

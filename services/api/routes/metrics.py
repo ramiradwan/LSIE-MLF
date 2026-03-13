@@ -49,10 +49,7 @@ def _rows_to_dicts(cursor: Any) -> list[dict[str, Any]]:
         return []
     columns = [desc[0] for desc in cursor.description]
     rows: list[Any] = cursor.fetchall()
-    return [
-        {col: _serialize(val) for col, val in zip(columns, row)}
-        for row in rows
-    ]
+    return [{col: _serialize(val) for col, val in zip(columns, row, strict=True)} for row in rows]
 
 
 def _serialize(val: Any) -> Any:

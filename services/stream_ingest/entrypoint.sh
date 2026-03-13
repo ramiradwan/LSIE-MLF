@@ -3,7 +3,7 @@
 # Capture Container Entrypoint — §4.A Module A Hardware & Transport
 #
 # IPC Pipe Lifecycle (§4.A.1):
-#   1. Create named pipe with mkfifo
+#   1. Create IPC Pipe with mkfifo
 #   2. Non-blocking open with exec 3<>
 #   3. Launch scrcpy with raw PCM output → write to fd 3
 #   4. On shutdown: close fd 3, delete pipe file
@@ -22,7 +22,7 @@ SCRCPY_AUDIO_BUFFER=30
 # Track scrcpy PID for cleanup
 SCRCPY_PID=""
 
-# --- Step 1: Create IPC named pipe (§4.A.1 step 1) ---
+# --- Step 1: Create IPC Pipe (§4.A.1 step 1) ---
 setup_pipe() {
     if [ -p "$IPC_PIPE" ]; then
         rm -f "$IPC_PIPE"

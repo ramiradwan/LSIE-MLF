@@ -83,18 +83,14 @@ class TestGroundTruthIngester:
 
     def test_handle_event_stages_individual(self) -> None:
         """§4.B — Individual event staged to buffer."""
-        ingester = GroundTruthIngester(
-            unique_id="testuser", signer=MockSigner()
-        )
+        ingester = GroundTruthIngester(unique_id="testuser", signer=MockSigner())
         event: dict[str, Any] = {
             "uniqueId": "testuser",
             "event_type": "gift",
             "payload": {"gift_id": 123},
         }
 
-        asyncio.get_event_loop().run_until_complete(
-            ingester._handle_event(event)
-        )
+        asyncio.get_event_loop().run_until_complete(ingester._handle_event(event))
 
         assert len(ingester.event_buffer) == 1
         staged = ingester.event_buffer[0]
@@ -120,44 +116,32 @@ class TestGroundTruthIngester:
         # Combo callback should have been called
         combo_callback.assert_called_once()
         # Buffer should contain the combo event
-        combo_events = [
-            e for e in ingester.event_buffer if e.get("event_type") == "Action_Combo"
-        ]
+        combo_events = [e for e in ingester.event_buffer if e.get("event_type") == "Action_Combo"]
         assert len(combo_events) == 1
 
     def test_handle_event_malformed_discarded(self) -> None:
         """§4.B contract — Malformed protobuf: log and discard."""
-        ingester = GroundTruthIngester(
-            unique_id="testuser", signer=MockSigner()
-        )
+        ingester = GroundTruthIngester(unique_id="testuser", signer=MockSigner())
         # Pass None which will cause issues in .get()
         # But our implementation is robust — it handles missing keys gracefully
         event: dict[str, Any] = {"event_type": "test"}
 
         # Should not raise
-        asyncio.get_event_loop().run_until_complete(
-            ingester._handle_event(event)
-        )
+        asyncio.get_event_loop().run_until_complete(ingester._handle_event(event))
 
     def test_handle_event_uses_default_unique_id(self) -> None:
         """When event lacks uniqueId, use ingester's unique_id."""
-        ingester = GroundTruthIngester(
-            unique_id="fallback_user", signer=MockSigner()
-        )
+        ingester = GroundTruthIngester(unique_id="fallback_user", signer=MockSigner())
         event: dict[str, Any] = {"event_type": "chat", "payload": {"msg": "hi"}}
 
-        asyncio.get_event_loop().run_until_complete(
-            ingester._handle_event(event)
-        )
+        asyncio.get_event_loop().run_until_complete(ingester._handle_event(event))
 
         staged = ingester.event_buffer[0]
         assert staged["uniqueId"] == "fallback_user"
 
     def test_stop_sets_flag(self) -> None:
         """stop() signals loop to terminate."""
-        ingester = GroundTruthIngester(
-            unique_id="testuser", signer=MockSigner()
-        )
+        ingester = GroundTruthIngester(unique_id="testuser", signer=MockSigner())
         ingester._running = True
         ingester.stop()
         assert not ingester._running
@@ -170,9 +154,7 @@ class TestGroundTruthIngester:
 
     def test_run_exhausts_retries_on_persistent_failure(self) -> None:
         """§12.1 Module B — Stops after max retries exhausted."""
-        ingester = GroundTruthIngester(
-            unique_id="testuser", signer=MockSigner()
-        )
+        ingester = GroundTruthIngester(unique_id="testuser", signer=MockSigner())
 
         # Mock connect to always fail
         ingester.connect = AsyncMock(side_effect=ConnectionError("refused"))  # type: ignore[assignment]
@@ -184,9 +166,7 @@ class TestGroundTruthIngester:
 
     def test_run_exponential_backoff_delays(self) -> None:
         """§12.1 Module B — Backoff doubles up to 30s max."""
-        ingester = GroundTruthIngester(
-            unique_id="testuser", signer=MockSigner()
-        )
+        ingester = GroundTruthIngester(unique_id="testuser", signer=MockSigner())
 
         ingester.connect = AsyncMock(side_effect=ConnectionError("refused"))  # type: ignore[assignment]
         sleep_calls: list[float] = []

@@ -14,7 +14,6 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 import tests.unit.api.routes.conftest  # noqa: F401 — trigger sys.modules mocks
-
 from services.api.routes.metrics import (
     _rows_to_dicts,
     _serialize,
@@ -89,8 +88,10 @@ class TestGetMetrics:
         )
         mock_conn.cursor.return_value = mock_cursor
 
-        with patch("services.api.routes.metrics.get_connection", return_value=mock_conn), \
-             patch("services.api.routes.metrics.put_connection"):
+        with (
+            patch("services.api.routes.metrics.get_connection", return_value=mock_conn),
+            patch("services.api.routes.metrics.put_connection"),
+        ):
             result = asyncio.get_event_loop().run_until_complete(
                 get_metrics(session_id=None, limit=100)
             )
@@ -104,8 +105,10 @@ class TestGetMetrics:
         mock_cursor = _make_mock_cursor(["id"], [])
         mock_conn.cursor.return_value = mock_cursor
 
-        with patch("services.api.routes.metrics.get_connection", return_value=mock_conn), \
-             patch("services.api.routes.metrics.put_connection"):
+        with (
+            patch("services.api.routes.metrics.get_connection", return_value=mock_conn),
+            patch("services.api.routes.metrics.put_connection"),
+        ):
             asyncio.get_event_loop().run_until_complete(
                 get_metrics(session_id="test-uuid", limit=50)
             )
@@ -121,11 +124,11 @@ class TestGetMetrics:
         mock_cursor = _make_mock_cursor(["id"], [])
         mock_conn.cursor.return_value = mock_cursor
 
-        with patch("services.api.routes.metrics.get_connection", return_value=mock_conn) as _, \
-             patch("services.api.routes.metrics.put_connection") as mock_put:
-            asyncio.get_event_loop().run_until_complete(
-                get_metrics(session_id=None, limit=10)
-            )
+        with (
+            patch("services.api.routes.metrics.get_connection", return_value=mock_conn) as _,
+            patch("services.api.routes.metrics.put_connection") as mock_put,
+        ):
+            asyncio.get_event_loop().run_until_complete(get_metrics(session_id=None, limit=10))
 
         mock_put.assert_called_once_with(mock_conn)
 
@@ -142,11 +145,11 @@ class TestGetAU12Timeseries:
         )
         mock_conn.cursor.return_value = mock_cursor
 
-        with patch("services.api.routes.metrics.get_connection", return_value=mock_conn), \
-             patch("services.api.routes.metrics.put_connection"):
-            result = asyncio.get_event_loop().run_until_complete(
-                get_au12_timeseries("test-uuid")
-            )
+        with (
+            patch("services.api.routes.metrics.get_connection", return_value=mock_conn),
+            patch("services.api.routes.metrics.put_connection"),
+        ):
+            result = asyncio.get_event_loop().run_until_complete(get_au12_timeseries("test-uuid"))
 
         assert len(result) == 1
         assert result[0]["au12_intensity"] == 1.5
@@ -157,11 +160,11 @@ class TestGetAU12Timeseries:
         mock_cursor = _make_mock_cursor(["segment_id"], [])
         mock_conn.cursor.return_value = mock_cursor
 
-        with patch("services.api.routes.metrics.get_connection", return_value=mock_conn), \
-             patch("services.api.routes.metrics.put_connection"):
-            asyncio.get_event_loop().run_until_complete(
-                get_au12_timeseries("my-session")
-            )
+        with (
+            patch("services.api.routes.metrics.get_connection", return_value=mock_conn),
+            patch("services.api.routes.metrics.put_connection"),
+        ):
+            asyncio.get_event_loop().run_until_complete(get_au12_timeseries("my-session"))
 
         call_args = mock_cursor.execute.call_args
         assert call_args[0][1]["session_id"] == "my-session"
@@ -179,8 +182,10 @@ class TestGetAcousticTimeseries:
         )
         mock_conn.cursor.return_value = mock_cursor
 
-        with patch("services.api.routes.metrics.get_connection", return_value=mock_conn), \
-             patch("services.api.routes.metrics.put_connection"):
+        with (
+            patch("services.api.routes.metrics.get_connection", return_value=mock_conn),
+            patch("services.api.routes.metrics.put_connection"),
+        ):
             result = asyncio.get_event_loop().run_until_complete(
                 get_acoustic_timeseries("test-uuid")
             )

@@ -15,8 +15,6 @@ import time
 from typing import Any
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from services.worker.pipeline.orchestrator import (
     DRIFT_FREEZE_AFTER_FAILURES,
     DRIFT_RESET_TIMEOUT,
@@ -42,8 +40,10 @@ class TestDriftCorrector:
         mock_result.returncode = 0
         mock_result.stdout = "1710000000.123456\n"
 
-        with patch("services.worker.pipeline.orchestrator.subprocess.run", return_value=mock_result), \
-             patch("services.worker.pipeline.orchestrator.time.time", return_value=1710000000.5):
+        with (
+            patch("services.worker.pipeline.orchestrator.subprocess.run", return_value=mock_result),
+            patch("services.worker.pipeline.orchestrator.time.time", return_value=1710000000.5),
+        ):
             offset = dc.poll()
 
         expected = 1710000000.5 - 1710000000.123456
@@ -118,8 +118,10 @@ class TestDriftCorrector:
         mock_result.returncode = 0
         mock_result.stdout = "1710000000.0\n"
 
-        with patch("services.worker.pipeline.orchestrator.subprocess.run", return_value=mock_result), \
-             patch("services.worker.pipeline.orchestrator.time.time", return_value=1710000000.0):
+        with (
+            patch("services.worker.pipeline.orchestrator.subprocess.run", return_value=mock_result),
+            patch("services.worker.pipeline.orchestrator.time.time", return_value=1710000000.0),
+        ):
             dc.poll()
 
         assert dc._consecutive_failures == 0
@@ -131,7 +133,9 @@ class TestDriftCorrector:
         mock_result.returncode = 1
         mock_result.stdout = ""
 
-        with patch("services.worker.pipeline.orchestrator.subprocess.run", return_value=mock_result):
+        with patch(
+            "services.worker.pipeline.orchestrator.subprocess.run", return_value=mock_result
+        ):
             dc.poll()
 
         assert dc._consecutive_failures == 1
@@ -146,7 +150,9 @@ class TestAudioResampler:
         mock_proc = MagicMock()
         mock_proc.poll.return_value = None  # running
 
-        with patch("services.worker.pipeline.orchestrator.subprocess.Popen", return_value=mock_proc) as mock_popen:
+        with patch(
+            "services.worker.pipeline.orchestrator.subprocess.Popen", return_value=mock_proc
+        ) as mock_popen:
             ar.start()
             mock_popen.assert_called_once_with(
                 FFMPEG_RESAMPLE_CMD,
@@ -160,7 +166,9 @@ class TestAudioResampler:
         mock_proc = MagicMock()
         mock_proc.poll.return_value = None
 
-        with patch("services.worker.pipeline.orchestrator.subprocess.Popen", return_value=mock_proc) as mock_popen:
+        with patch(
+            "services.worker.pipeline.orchestrator.subprocess.Popen", return_value=mock_proc
+        ) as mock_popen:
             ar.start()
             ar.start()
             assert mock_popen.call_count == 1
@@ -185,8 +193,10 @@ class TestAudioResampler:
         mock_proc.poll.return_value = None
         mock_proc.stdout.read.return_value = b"\x00" * 100
 
-        with patch("services.worker.pipeline.orchestrator.subprocess.Popen", return_value=mock_proc), \
-             patch("services.worker.pipeline.orchestrator.time.sleep") as mock_sleep:
+        with (
+            patch("services.worker.pipeline.orchestrator.subprocess.Popen", return_value=mock_proc),
+            patch("services.worker.pipeline.orchestrator.time.sleep") as mock_sleep,
+        ):
             data = ar.read_chunk(100)
             # §2 step 3 — 1s restart delay
             mock_sleep.assert_called_once_with(1.0)

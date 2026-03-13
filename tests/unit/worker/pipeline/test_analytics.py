@@ -87,11 +87,14 @@ class TestMetricsStore:
     def test_connect_creates_pool(self) -> None:
         """§2 step 7 — connect() creates ThreadedConnectionPool."""
         s = MetricsStore()
-        with patch.dict("os.environ", {
-            "POSTGRES_USER": "test",
-            "POSTGRES_PASSWORD": "test",
-            "POSTGRES_DB": "testdb",
-        }):
+        with patch.dict(
+            "os.environ",
+            {
+                "POSTGRES_USER": "test",
+                "POSTGRES_PASSWORD": "test",
+                "POSTGRES_DB": "testdb",
+            },
+        ):
             s.connect()
             assert s._pool is not None
 
@@ -247,6 +250,7 @@ class TestThompsonSamplingEngine:
     def _mock_scipy(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Install mock scipy.stats.beta into sys.modules."""
         import random
+
         mock_scipy = MagicMock()
         mock_scipy_stats = MagicMock()
 
@@ -300,9 +304,7 @@ class TestThompsonSamplingEngine:
         ]
         engine = ThompsonSamplingEngine(mock_store)
         engine.update("exp-1", "arm_a", reward=0.8)
-        mock_store.update_experiment_arm.assert_called_once_with(
-            "exp-1", "arm_a", 6.0, 3.0
-        )
+        mock_store.update_experiment_arm.assert_called_once_with("exp-1", "arm_a", 6.0, 3.0)
 
     def test_update_failure_increments_beta(self) -> None:
         """§4.E.1 — reward < 0.5 increments beta."""
@@ -312,9 +314,7 @@ class TestThompsonSamplingEngine:
         ]
         engine = ThompsonSamplingEngine(mock_store)
         engine.update("exp-1", "arm_a", reward=0.2)
-        mock_store.update_experiment_arm.assert_called_once_with(
-            "exp-1", "arm_a", 5.0, 4.0
-        )
+        mock_store.update_experiment_arm.assert_called_once_with("exp-1", "arm_a", 5.0, 4.0)
 
     def test_update_unknown_arm_raises(self) -> None:
         """update raises ValueError for unknown arm."""
@@ -334,6 +334,4 @@ class TestThompsonSamplingEngine:
         ]
         engine = ThompsonSamplingEngine(mock_store)
         engine.update("exp-1", "arm_a", reward=0.5)
-        mock_store.update_experiment_arm.assert_called_once_with(
-            "exp-1", "arm_a", 2.0, 1.0
-        )
+        mock_store.update_experiment_arm.assert_called_once_with("exp-1", "arm_a", 2.0, 1.0)

@@ -65,12 +65,8 @@ class AU12Normalizer:
         right_lip_corner: npt.NDArray[np.floating[Any]] = landmarks[291]
 
         # §7.3 — IOD derivation: 3D Euclidean distance between eye centers
-        left_eye_center: npt.NDArray[np.floating[Any]] = (
-            left_eye_outer + left_eye_inner
-        ) / 2.0
-        right_eye_center: npt.NDArray[np.floating[Any]] = (
-            right_eye_inner + right_eye_outer
-        ) / 2.0
+        left_eye_center: npt.NDArray[np.floating[Any]] = (left_eye_outer + left_eye_inner) / 2.0
+        right_eye_center: npt.NDArray[np.floating[Any]] = (right_eye_inner + right_eye_outer) / 2.0
         iod: float = float(np.linalg.norm(right_eye_center - left_eye_center))
 
         # §7.5 — Epsilon guard: degenerate face where IOD → 0

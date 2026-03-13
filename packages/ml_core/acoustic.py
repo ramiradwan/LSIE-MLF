@@ -51,7 +51,8 @@ class AcousticAnalyzer:
 
         # Convert PCM s16le bytes to float64 samples
         samples: npt.NDArray[np.float64] = np.frombuffer(
-            audio_samples, dtype=np.int16,
+            audio_samples,
+            dtype=np.int16,
         ).astype(np.float64)
         # Normalize to [-1.0, 1.0] range
         samples = samples / 32768.0

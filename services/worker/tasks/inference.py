@@ -36,7 +36,7 @@ def process_segment(self: Task, payload: dict[str, Any]) -> dict[str, Any]:
       5. Text preprocessing (spaCy) — §4.D.4
       6. Semantic evaluation (Azure OpenAI) — §8
 
-    Dispatches results to Module E via Celery task queue.
+    Dispatches results to Module E via Message Broker.
 
     Args:
         payload: Validated InferenceHandoffPayload as dict.

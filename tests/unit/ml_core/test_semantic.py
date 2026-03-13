@@ -85,9 +85,7 @@ class TestSemanticEvaluator:
             }
         )
         mock_client = MagicMock()
-        mock_client.chat.completions.create.return_value = _make_response(
-            response_content
-        )
+        mock_client.chat.completions.create.return_value = _make_response(response_content)
         mock_openai.AzureOpenAI.return_value = mock_client
 
         evaluator = SemanticEvaluator()
@@ -106,9 +104,7 @@ class TestSemanticEvaluator:
             {"reasoning": "Match.", "is_match": True, "confidence_score": 0.9}
         )
         mock_client = MagicMock()
-        mock_client.chat.completions.create.return_value = _make_response(
-            response_content
-        )
+        mock_client.chat.completions.create.return_value = _make_response(response_content)
         mock_openai.AzureOpenAI.return_value = mock_client
 
         evaluator = SemanticEvaluator()
@@ -133,9 +129,7 @@ class TestSemanticEvaluator:
         assert result is None
         assert mock_client.chat.completions.create.call_count == 2
 
-    def test_evaluate_invalid_json_retries(
-        self, env_vars: None, mock_openai: MagicMock
-    ) -> None:
+    def test_evaluate_invalid_json_retries(self, env_vars: None, mock_openai: MagicMock) -> None:
         """§8.2 — Invalid JSON triggers retry then returns None."""
         mock_client = MagicMock()
         mock_client.chat.completions.create.return_value = _make_response("not json")
@@ -146,17 +140,13 @@ class TestSemanticEvaluator:
 
         assert result is None
 
-    def test_init_client_called_once(
-        self, env_vars: None, mock_openai: MagicMock
-    ) -> None:
+    def test_init_client_called_once(self, env_vars: None, mock_openai: MagicMock) -> None:
         """§8.1 — Client initialized lazily on first call."""
         response_content = json.dumps(
             {"reasoning": "Match.", "is_match": True, "confidence_score": 0.9}
         )
         mock_client = MagicMock()
-        mock_client.chat.completions.create.return_value = _make_response(
-            response_content
-        )
+        mock_client.chat.completions.create.return_value = _make_response(response_content)
         mock_openai.AzureOpenAI.return_value = mock_client
 
         evaluator = SemanticEvaluator()

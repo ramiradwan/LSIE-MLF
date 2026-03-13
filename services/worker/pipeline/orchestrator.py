@@ -87,9 +87,7 @@ class DriftCorrector:
             elapsed = time.monotonic() - self._frozen_at
             if elapsed >= DRIFT_RESET_TIMEOUT:
                 # §12 — reset to zero after 5 minutes
-                logger.warning(
-                    "Drift frozen for %ds, resetting to zero", int(elapsed)
-                )
+                logger.warning("Drift frozen for %ds, resetting to zero", int(elapsed))
                 self.drift_offset = 0.0
                 self._frozen = False
                 self._consecutive_failures = 0
@@ -132,11 +130,10 @@ class DriftCorrector:
             )
 
             # §12 Hardware loss C — freeze after 3 failures
-            if self._consecutive_failures >= DRIFT_FREEZE_AFTER_FAILURES:
-                if not self._frozen:
-                    logger.warning("Freezing drift at %.6f", self.drift_offset)
-                    self._frozen = True
-                    self._frozen_at = time.monotonic()
+            if self._consecutive_failures >= DRIFT_FREEZE_AFTER_FAILURES and not self._frozen:
+                logger.warning("Freezing drift at %.6f", self.drift_offset)
+                self._frozen = True
+                self._frozen_at = time.monotonic()
 
         return self.drift_offset
 
@@ -365,6 +362,7 @@ class Orchestrator:
                 # §2 step 5 → §2 step 6 — Dispatch to Module D
                 try:
                     from services.worker.tasks.inference import process_segment
+
                     process_segment.delay(payload)
                 except Exception as exc:
                     logger.error("Failed to dispatch segment: %s", exc)

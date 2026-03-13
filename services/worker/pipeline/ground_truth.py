@@ -63,18 +63,20 @@ class EulerStreamSigner:
         """
         import aiohttp
 
-        async with aiohttp.ClientSession() as session:
-            async with session.get(
+        async with (
+            aiohttp.ClientSession() as session,
+            session.get(
                 self.sign_url,
                 params={"url": stream_url},
                 timeout=aiohttp.ClientTimeout(total=10),
-            ) as resp:
-                resp.raise_for_status()
-                data: dict[str, Any] = await resp.json()
-                return {
-                    "X-Bogus": str(data.get("X-Bogus", "")),
-                    "msToken": str(data.get("msToken", "")),
-                }
+            ) as resp,
+        ):
+            resp.raise_for_status()
+            data: dict[str, Any] = await resp.json()
+            return {
+                "X-Bogus": str(data.get("X-Bogus", "")),
+                "msToken": str(data.get("msToken", "")),
+            }
 
 
 class GroundTruthIngester:

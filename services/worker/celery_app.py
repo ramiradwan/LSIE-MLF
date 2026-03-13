@@ -1,7 +1,7 @@
 """
 Celery Application — ML Worker Entry Point
 
-Configures the Celery distributed task queue connected to the
+Configures the Celery application connected to the
 Message Broker (Redis) per §9.1 and §9.6.
 """
 

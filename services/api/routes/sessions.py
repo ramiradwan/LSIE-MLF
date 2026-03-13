@@ -63,7 +63,7 @@ def _row_to_dict(cursor: Any) -> dict[str, Any] | None:
     row: Any = cursor.fetchone()
     if row is None:
         return None
-    return {col: _serialize(val) for col, val in zip(columns, row)}
+    return {col: _serialize(val) for col, val in zip(columns, row, strict=True)}
 
 
 def _rows_to_dicts(cursor: Any) -> list[dict[str, Any]]:
@@ -72,10 +72,7 @@ def _rows_to_dicts(cursor: Any) -> list[dict[str, Any]]:
         return []
     columns = [desc[0] for desc in cursor.description]
     rows: list[Any] = cursor.fetchall()
-    return [
-        {col: _serialize(val) for col, val in zip(columns, row)}
-        for row in rows
-    ]
+    return [{col: _serialize(val) for col, val in zip(columns, row, strict=True)} for row in rows]
 
 
 @router.get("/sessions")  # type: ignore[untyped-decorator]

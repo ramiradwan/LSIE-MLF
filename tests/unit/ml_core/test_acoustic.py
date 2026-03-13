@@ -49,9 +49,7 @@ def mock_parselmouth(monkeypatch: pytest.MonkeyPatch) -> tuple[MagicMock, MagicM
 class TestAcousticAnalyzer:
     """§4.D.3 — Praat acoustic feature extraction."""
 
-    def test_analyze_returns_metrics(
-        self, mock_parselmouth: tuple[MagicMock, MagicMock]
-    ) -> None:
+    def test_analyze_returns_metrics(self, mock_parselmouth: tuple[MagicMock, MagicMock]) -> None:
         """§4.D.3 — Returns AcousticMetrics with pitch, jitter, shimmer."""
         mock_pm, mock_praat = mock_parselmouth
 

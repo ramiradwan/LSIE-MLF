@@ -9,13 +9,13 @@ Verifies session endpoints against:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 import tests.unit.api.routes.conftest as _conftest  # noqa: F401 — trigger sys.modules mocks
-
 from services.api.routes.sessions import (
     _row_to_dict,
     _rows_to_dicts,
@@ -113,11 +113,11 @@ class TestListSessions:
         )
         mock_conn.cursor.return_value = mock_cursor
 
-        with patch("services.api.routes.sessions.get_connection", return_value=mock_conn), \
-             patch("services.api.routes.sessions.put_connection"):
-            result = asyncio.get_event_loop().run_until_complete(
-                list_sessions()
-            )
+        with (
+            patch("services.api.routes.sessions.get_connection", return_value=mock_conn),
+            patch("services.api.routes.sessions.put_connection"),
+        ):
+            result = asyncio.get_event_loop().run_until_complete(list_sessions())
 
         assert len(result) == 1
         assert result[0]["session_id"] == "sess-1"
@@ -129,8 +129,10 @@ class TestListSessions:
         mock_cursor = _make_mock_cursor(["session_id"], [])
         mock_conn.cursor.return_value = mock_cursor
 
-        with patch("services.api.routes.sessions.get_connection", return_value=mock_conn), \
-             patch("services.api.routes.sessions.put_connection") as mock_put:
+        with (
+            patch("services.api.routes.sessions.get_connection", return_value=mock_conn),
+            patch("services.api.routes.sessions.put_connection") as mock_put,
+        ):
             asyncio.get_event_loop().run_until_complete(list_sessions())
 
         mock_put.assert_called_once_with(mock_conn)
@@ -152,21 +154,36 @@ class TestGetSession:
             if call_count == 1:
                 # Session query
                 session_cursor.description = [
-                    ("session_id",), ("stream_url",), ("started_at",), ("ended_at",),
+                    ("session_id",),
+                    ("stream_url",),
+                    ("started_at",),
+                    ("ended_at",),
                 ]
                 session_cursor.fetchone.return_value = (
-                    "sess-1", "rtmp://test", "2026-03-13T12:00:00Z", None,
+                    "sess-1",
+                    "rtmp://test",
+                    "2026-03-13T12:00:00Z",
+                    None,
                 )
             else:
                 # Summary query
                 session_cursor.description = [
-                    ("total_segments",), ("avg_au12",), ("avg_pitch_f0",),
-                    ("avg_jitter",), ("avg_shimmer",),
-                    ("first_segment_at",), ("last_segment_at",),
+                    ("total_segments",),
+                    ("avg_au12",),
+                    ("avg_pitch_f0",),
+                    ("avg_jitter",),
+                    ("avg_shimmer",),
+                    ("first_segment_at",),
+                    ("last_segment_at",),
                 ]
                 session_cursor.fetchone.return_value = (
-                    10, 2.5, 180.0, 0.02, 0.05,
-                    "2026-03-13T12:00:00Z", "2026-03-13T12:05:00Z",
+                    10,
+                    2.5,
+                    180.0,
+                    0.02,
+                    0.05,
+                    "2026-03-13T12:00:00Z",
+                    "2026-03-13T12:05:00Z",
                 )
 
         session_cursor.execute = mock_execute
@@ -174,11 +191,11 @@ class TestGetSession:
         session_cursor.__exit__ = MagicMock(return_value=False)
         mock_conn.cursor.return_value = session_cursor
 
-        with patch("services.api.routes.sessions.get_connection", return_value=mock_conn), \
-             patch("services.api.routes.sessions.put_connection"):
-            result = asyncio.get_event_loop().run_until_complete(
-                get_session("sess-1")
-            )
+        with (
+            patch("services.api.routes.sessions.get_connection", return_value=mock_conn),
+            patch("services.api.routes.sessions.put_connection"),
+        ):
+            result = asyncio.get_event_loop().run_until_complete(get_session("sess-1"))
 
         assert result["session_id"] == "sess-1"
         assert "summary" in result
@@ -195,12 +212,12 @@ class TestGetSession:
         cursor.__exit__ = MagicMock(return_value=False)
         mock_conn.cursor.return_value = cursor
 
-        with patch("services.api.routes.sessions.get_connection", return_value=mock_conn), \
-             patch("services.api.routes.sessions.put_connection"):
-            with pytest.raises(Exception) as exc_info:
-                asyncio.get_event_loop().run_until_complete(
-                    get_session("nonexistent")
-                )
+        with (
+            patch("services.api.routes.sessions.get_connection", return_value=mock_conn),
+            patch("services.api.routes.sessions.put_connection"),
+            pytest.raises(Exception) as exc_info,
+        ):
+            asyncio.get_event_loop().run_until_complete(get_session("nonexistent"))
 
         assert exc_info.value.status_code == 404  # type: ignore[union-attr]
 
@@ -214,14 +231,12 @@ class TestGetSession:
         cursor.__exit__ = MagicMock(return_value=False)
         mock_conn.cursor.return_value = cursor
 
-        with patch("services.api.routes.sessions.get_connection", return_value=mock_conn), \
-             patch("services.api.routes.sessions.put_connection"):
-            try:
-                asyncio.get_event_loop().run_until_complete(
-                    get_session("my-session")
-                )
-            except Exception:
-                pass
+        with (
+            patch("services.api.routes.sessions.get_connection", return_value=mock_conn),
+            patch("services.api.routes.sessions.put_connection"),
+            contextlib.suppress(Exception),
+        ):
+            asyncio.get_event_loop().run_until_complete(get_session("my-session"))
 
         call_args = cursor.execute.call_args_list[0]
         assert "%(session_id)s" in call_args[0][0]
@@ -237,13 +252,11 @@ class TestGetSession:
         cursor.__exit__ = MagicMock(return_value=False)
         mock_conn.cursor.return_value = cursor
 
-        with patch("services.api.routes.sessions.get_connection", return_value=mock_conn), \
-             patch("services.api.routes.sessions.put_connection") as mock_put:
-            try:
-                asyncio.get_event_loop().run_until_complete(
-                    get_session("nonexistent")
-                )
-            except Exception:
-                pass
+        with (
+            patch("services.api.routes.sessions.get_connection", return_value=mock_conn),
+            patch("services.api.routes.sessions.put_connection") as mock_put,
+            contextlib.suppress(Exception),
+        ):
+            asyncio.get_event_loop().run_until_complete(get_session("nonexistent"))
 
         mock_put.assert_called_once_with(mock_conn)

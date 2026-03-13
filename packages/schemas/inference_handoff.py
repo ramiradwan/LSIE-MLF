@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field, field_validator
 
 
 class MediaSource(BaseModel):
-    """Media source metadata attached to each inference payload."""
+    """Media source metadata attached to each InferenceHandoffPayload."""
 
     stream_url: str = Field(..., description="URI of the source stream.")
     codec: str = Field(..., pattern="^(h264|h265|raw)$")

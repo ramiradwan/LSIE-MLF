@@ -13,17 +13,25 @@ from unittest.mock import MagicMock
 # --- Mock FastAPI before any route import ---
 _mock_fastapi = MagicMock()
 # Provide real-ish APIRouter and HTTPException so route decorators work
-_mock_fastapi.APIRouter = type("APIRouter", (), {
-    "__init__": lambda self: None,
-    "get": lambda self, *a, **kw: lambda fn: fn,
-    "post": lambda self, *a, **kw: lambda fn: fn,
-})
-_mock_fastapi.HTTPException = type("HTTPException", (Exception,), {
-    "__init__": lambda self, status_code=500, detail="": (
-        setattr(self, "status_code", status_code) or  # type: ignore[func-returns-value]
-        setattr(self, "detail", detail)
-    ),
-})
+_mock_fastapi.APIRouter = type(
+    "APIRouter",
+    (),
+    {
+        "__init__": lambda self: None,
+        "get": lambda self, *a, **kw: lambda fn: fn,
+        "post": lambda self, *a, **kw: lambda fn: fn,
+    },
+)
+_mock_fastapi.HTTPException = type(
+    "HTTPException",
+    (Exception,),
+    {
+        "__init__": lambda self, status_code=500, detail="": (
+            setattr(self, "status_code", status_code)  # type: ignore[func-returns-value]
+            or setattr(self, "detail", detail)
+        ),
+    },
+)
 _mock_fastapi.Query = lambda default=None, **kw: default
 
 sys.modules.setdefault("fastapi", _mock_fastapi)

@@ -14,8 +14,6 @@ import sys
 from typing import Any
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 
 def _make_mock_pw(
     status: int = 200,
@@ -35,9 +33,7 @@ def _make_mock_pw(
 
     mock_page.title.return_value = title
     mock_page.inner_text.return_value = body_text
-    mock_page.evaluate.return_value = [
-        {"name": "description", "property": None, "content": "test"}
-    ]
+    mock_page.evaluate.return_value = [{"name": "description", "property": None, "content": "test"}]
 
     mock_context = MagicMock()
     mock_context.new_page.return_value = mock_page
@@ -73,10 +69,13 @@ def _patch_pw(mock_sync_pw: MagicMock) -> Any:
     """Patch patchright.sync_api.sync_playwright in sys.modules."""
     mock_patchright_sync = MagicMock()
     mock_patchright_sync.sync_playwright = mock_sync_pw
-    return patch.dict(sys.modules, {
-        "patchright": MagicMock(),
-        "patchright.sync_api": mock_patchright_sync,
-    })
+    return patch.dict(
+        sys.modules,
+        {
+            "patchright": MagicMock(),
+            "patchright.sync_api": mock_patchright_sync,
+        },
+    )
 
 
 class TestScrapeContext:
@@ -143,9 +142,7 @@ class TestScrapeContext:
         mock_task.MaxRetriesExceededError = Exception
 
         mock_sync_pw = MagicMock()
-        mock_sync_pw.return_value.__enter__ = MagicMock(
-            side_effect=RuntimeError("browser crash")
-        )
+        mock_sync_pw.return_value.__enter__ = MagicMock(side_effect=RuntimeError("browser crash"))
         mock_sync_pw.return_value.__exit__ = MagicMock(return_value=False)
 
         with _patch_pw(mock_sync_pw):

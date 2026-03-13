@@ -1,7 +1,7 @@
 """
 Context Enrichment Task — §4.F Module F
 
-Asynchronous web scraping via Celery workers using patchright
+Asynchronous web scraping via ML Worker using patchright
 (patched Chromium) for external metadata enrichment.
 """
 
@@ -80,15 +80,11 @@ def scrape_context(
 
                 # §4.F contract — CAPTCHA or HTTP blocking: empty result
                 if status_code == 403 or status_code == 429:
-                    logger.warning(
-                        "HTTP %d (blocked/CAPTCHA) for %s", status_code, target_url
-                    )
+                    logger.warning("HTTP %d (blocked/CAPTCHA) for %s", status_code, target_url)
                     return result
 
                 if status_code >= 400:
-                    logger.warning(
-                        "HTTP %d for %s", status_code, target_url
-                    )
+                    logger.warning("HTTP %d for %s", status_code, target_url)
                     return result
 
                 # §4.F.1 — Extract page content
@@ -115,9 +111,7 @@ def scrape_context(
 
             except Exception as page_exc:
                 # §4.F contract — Timeout or navigation error
-                logger.warning(
-                    "Page error for %s: %s", target_url, page_exc
-                )
+                logger.warning("Page error for %s: %s", target_url, page_exc)
 
             finally:
                 context.close()
@@ -130,8 +124,6 @@ def scrape_context(
             self.retry(exc=exc)
         except self.MaxRetriesExceededError:
             # §12 Worker crash F — max retries exhausted
-            logger.error(
-                "Max retries exhausted for scrape_context: %s", target_url
-            )
+            logger.error("Max retries exhausted for scrape_context: %s", target_url)
 
     return result
