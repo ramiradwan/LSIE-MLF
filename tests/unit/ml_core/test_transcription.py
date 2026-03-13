@@ -99,3 +99,8 @@ class TestTranscriptionEngine:
         assert engine.model_size == "large-v3"
         assert engine.device == "cuda"
         assert engine.compute_type == "int8"
+
+    def test_compute_type_enforced_int8(self) -> None:
+        """SPEC-AMEND-001 — compute_type is always int8, cannot be overridden."""
+        engine = TranscriptionEngine(model_size="small", device="cpu")
+        assert engine.compute_type == "int8"

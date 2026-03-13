@@ -1,9 +1,10 @@
 # ML Worker Dockerfile — §9.1
-# Image: nvidia/cuda:12.2.2-cudnn9-runtime-ubuntu22.04
+# Image: nvidia/cuda:12.2.2-cudnn8-runtime-ubuntu22.04
 # Role: Celery consumer executing GPU-bound ML inference tasks
 # GPU: All (§9.3)
+# SPEC-AMEND-001: Downgraded from cuDNN 9 → cuDNN 8 for Pascal (SM 6.1) compatibility
 
-FROM nvidia/cuda:12.2.2-cudnn9-runtime-ubuntu22.04
+FROM nvidia/cuda:12.2.2-cudnn8-runtime-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONDONTWRITEBYTECODE=1

@@ -27,4 +27,8 @@ faster-whisper==1.2.1, mediapipe==0.10.x, parselmouth==0.4.4, spacy==3.7.x, psyc
 
 ## Container topology (§9)
 
-redis:7-alpine → postgres:16-alpine → stream_scrcpy(ubuntu:22.04+scrcpy) → worker(nvidia/cuda:12.2.2-cudnn9) → api(python:3.11-slim). Network: appnetwork bridge. Shared volume: ipc-share at /tmp/ipc/.
+redis:7-alpine → postgres:16-alpine → stream_scrcpy(ubuntu:22.04+scrcpy) → worker(nvidia/cuda:12.2.2-cudnn8) → api(python:3.11-slim). Network: appnetwork bridge. Shared volume: ipc-share at /tmp/ipc/.
+
+### SPEC-AMEND-001: Worker GPU Architecture Downgrade
+
+Section 9.1 of tech-spec-v2.0 mandated cuDNN 9, which lacks SM 6.1 binaries and causes a phantom docker tag CI failure. The spec is formally amended to use `nvidia/cuda:12.2.2-cudnn8-runtime-ubuntu22.04`. To meet the 30ms latency target on the GTX 1080 Ti without FP16 capability, `faster-whisper` is explicitly locked to `compute_type="int8"` to utilize dp4a vectorization. OCI runtime overrides (NVIDIA_DISABLE_REQUIRE=1) and JIT compilation are strictly prohibited due to CVE-2024-0132 and thermal constraints.
