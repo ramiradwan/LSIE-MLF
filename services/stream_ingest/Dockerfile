@@ -5,7 +5,7 @@
 # Note: scrcpy v3.1 is the earliest release with prebuilt Linux x86_64 binaries.
 # All §4.A.1 audio flags (--audio-codec=raw, --audio-dup) are supported.
 
-FROM ubuntu:22.04
+FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
