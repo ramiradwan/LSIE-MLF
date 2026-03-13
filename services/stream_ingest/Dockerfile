@@ -1,7 +1,9 @@
 # Capture Container Dockerfile — §9.1
-# Image: ubuntu:22.04 + scrcpy v2.x
+# Image: ubuntu:22.04 + scrcpy v3.1
 # Role: Raw USB audio/video stream extraction
 # Device passthrough: /dev/bus/usb (§9.4)
+# Note: scrcpy v3.1 is the earliest release with prebuilt Linux x86_64 binaries.
+# All §4.A.1 audio flags (--audio-codec=raw, --audio-dup) are supported.
 
 FROM ubuntu:22.04
 
@@ -16,9 +18,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libusb-1.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
-# §9.1 — Install scrcpy v2.7 from official GitHub release
+# §9.1 — Install scrcpy v3.1 from official GitHub release
 # scrcpy provides raw PCM audio capture from Android via USB (§4.A.1)
-ARG SCRCPY_VERSION=2.7
+ARG SCRCPY_VERSION=3.1
 RUN mkdir -p /usr/local/share/scrcpy \
     && wget -q "https://github.com/Genymobile/scrcpy/releases/download/v${SCRCPY_VERSION}/scrcpy-server-v${SCRCPY_VERSION}" \
         -O /usr/local/share/scrcpy/scrcpy-server \

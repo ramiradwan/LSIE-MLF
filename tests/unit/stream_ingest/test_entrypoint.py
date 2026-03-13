@@ -118,7 +118,7 @@ class TestDockerfile:
         assert "adb" in dockerfile_content
 
     def test_scrcpy_installed(self, dockerfile_content: str) -> None:
-        """§9.1 — scrcpy v2.x installed from official release."""
+        """§9.1 — scrcpy installed from official release."""
         assert "scrcpy" in dockerfile_content
         assert "Genymobile/scrcpy" in dockerfile_content
 
