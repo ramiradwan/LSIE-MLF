@@ -219,7 +219,7 @@ class TestGetSession:
         ):
             asyncio.get_event_loop().run_until_complete(get_session("nonexistent"))
 
-        assert exc_info.value.status_code == 404  # type: ignore[union-attr]
+        assert exc_info.value.status_code == 404  # type: ignore[attr-defined]
 
     def test_parameterized_query(self) -> None:
         """§2 step 7 — Uses parameterized session_id."""

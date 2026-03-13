@@ -6,9 +6,13 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
+from typing import Any
 
 import numpy as np
 import pytest
+
+# Type alias for landmark arrays
+LandmarkArray = np.ndarray[Any, np.dtype[np.float64]]
 
 
 @pytest.fixture
@@ -24,7 +28,7 @@ def sample_timestamp() -> datetime:
 
 
 @pytest.fixture
-def sample_landmarks() -> np.ndarray:
+def sample_landmarks() -> LandmarkArray:
     """
     Synthetic 478-vertex 3D landmark array.
     Realistic enough for AU12 computation testing.
@@ -46,13 +50,13 @@ def sample_landmarks() -> np.ndarray:
 
 
 @pytest.fixture
-def neutral_landmarks(sample_landmarks: np.ndarray) -> np.ndarray:
+def neutral_landmarks(sample_landmarks: LandmarkArray) -> LandmarkArray:
     """Landmarks representing a neutral (non-smiling) face."""
     return sample_landmarks.copy()
 
 
 @pytest.fixture
-def smiling_landmarks(sample_landmarks: np.ndarray) -> np.ndarray:
+def smiling_landmarks(sample_landmarks: LandmarkArray) -> LandmarkArray:
     """Landmarks representing a smiling face (wider mouth)."""
     lm = sample_landmarks.copy()
     lm[61] = [0.25, 0.55, 0.0]  # left lip pulled wider and up

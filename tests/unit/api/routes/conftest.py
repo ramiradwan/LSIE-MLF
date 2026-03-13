@@ -22,15 +22,17 @@ _mock_fastapi.APIRouter = type(
         "post": lambda self, *a, **kw: lambda fn: fn,
     },
 )
+
+
+def _http_exc_init(self: object, status_code: int = 500, detail: str = "") -> None:
+    self.status_code = status_code  # type: ignore[attr-defined]
+    self.detail = detail  # type: ignore[attr-defined]
+
+
 _mock_fastapi.HTTPException = type(
     "HTTPException",
     (Exception,),
-    {
-        "__init__": lambda self, status_code=500, detail="": (
-            setattr(self, "status_code", status_code)  # type: ignore[func-returns-value]
-            or setattr(self, "detail", detail)
-        ),
-    },
+    {"__init__": _http_exc_init},
 )
 _mock_fastapi.Query = lambda default=None, **kw: default
 

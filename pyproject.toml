@@ -17,6 +17,7 @@ strict = true
 ignore_missing_imports = true
 warn_return_any = true
 warn_unused_configs = true
+warn_unused_ignores = false
 plugins = ["pydantic.mypy"]
 
 [tool.pydantic-mypy]

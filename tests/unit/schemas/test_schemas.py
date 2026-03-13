@@ -74,7 +74,7 @@ class TestSemanticEvaluationResult:
 
     def test_extra_fields_rejected(self) -> None:
         with pytest.raises(ValidationError):
-            SemanticEvaluationResult(
+            SemanticEvaluationResult(  # type: ignore[call-arg]
                 reasoning="Test",
                 is_match=True,
                 confidence_score=0.5,

@@ -12,18 +12,19 @@ import numpy as np
 import pytest
 
 from packages.ml_core.au12 import AU12Normalizer
+from tests.conftest import LandmarkArray
 
 
 class TestAU12Normalizer:
     """§7 — AU12 intensity computation."""
 
-    def test_calibration_returns_zero(self, neutral_landmarks: np.ndarray) -> None:
+    def test_calibration_returns_zero(self, neutral_landmarks: LandmarkArray) -> None:
         """§7.4 — During calibration, compute_intensity returns 0.0."""
         norm = AU12Normalizer()
         result = norm.compute_intensity(neutral_landmarks, is_calibrating=True)
         assert result == 0.0
 
-    def test_calibration_sets_baseline(self, neutral_landmarks: np.ndarray) -> None:
+    def test_calibration_sets_baseline(self, neutral_landmarks: LandmarkArray) -> None:
         """§7.4 — Calibration accumulates buffer and sets b_neutral."""
         norm = AU12Normalizer()
         for _ in range(10):
@@ -31,14 +32,14 @@ class TestAU12Normalizer:
         assert norm.b_neutral is not None
         assert norm.b_neutral > 0.0
 
-    def test_inference_without_calibration_raises(self, neutral_landmarks: np.ndarray) -> None:
+    def test_inference_without_calibration_raises(self, neutral_landmarks: LandmarkArray) -> None:
         """§7.5 — ValueError if baseline not calibrated."""
         norm = AU12Normalizer()
         with pytest.raises(ValueError, match="Baseline not calibrated"):
             norm.compute_intensity(neutral_landmarks, is_calibrating=False)
 
     def test_smiling_scores_higher(
-        self, neutral_landmarks: np.ndarray, smiling_landmarks: np.ndarray
+        self, neutral_landmarks: LandmarkArray, smiling_landmarks: LandmarkArray
     ) -> None:
         """§7.4 — Wider mouth yields higher AU12 score."""
         norm = AU12Normalizer()
