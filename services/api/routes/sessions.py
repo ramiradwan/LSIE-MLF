@@ -75,7 +75,7 @@ def _rows_to_dicts(cursor: Any) -> list[dict[str, Any]]:
     return [{col: _serialize(val) for col, val in zip(columns, row, strict=True)} for row in rows]
 
 
-@router.get("/sessions")  # type: ignore[untyped-decorator]
+@router.get("/sessions")
 async def list_sessions() -> list[dict[str, Any]]:
     """
     List all inference sessions with metric counts.
@@ -98,7 +98,7 @@ async def list_sessions() -> list[dict[str, Any]]:
             put_connection(conn)
 
 
-@router.get("/sessions/{session_id}")  # type: ignore[untyped-decorator]
+@router.get("/sessions/{session_id}")
 async def get_session(session_id: str) -> dict[str, Any]:
     """
     Get session details and summary metrics.

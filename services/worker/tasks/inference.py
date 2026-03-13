@@ -18,7 +18,7 @@ from services.worker.celery_app import celery_app
 logger = logging.getLogger(__name__)
 
 
-@celery_app.task(  # type: ignore[untyped-decorator]
+@celery_app.task(
     bind=True,
     max_retries=5,
     default_retry_delay=2,
@@ -159,7 +159,7 @@ def process_segment(self: Task, payload: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
-@celery_app.task(  # type: ignore[untyped-decorator]
+@celery_app.task(
     bind=True,
     max_retries=5,
     default_retry_delay=5,

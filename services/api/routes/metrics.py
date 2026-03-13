@@ -59,7 +59,7 @@ def _serialize(val: Any) -> Any:
     return val
 
 
-@router.get("/metrics")  # type: ignore[untyped-decorator]
+@router.get("/metrics")
 async def get_metrics(
     session_id: str | None = Query(None),
     limit: int = Query(100, ge=1, le=1000),
@@ -101,7 +101,7 @@ async def get_metrics(
             put_connection(conn)
 
 
-@router.get("/metrics/{session_id}/au12")  # type: ignore[untyped-decorator]
+@router.get("/metrics/{session_id}/au12")
 async def get_au12_timeseries(session_id: str) -> list[dict[str, Any]]:
     """
     Retrieve AU12 intensity time-series for a session.
@@ -125,7 +125,7 @@ async def get_au12_timeseries(session_id: str) -> list[dict[str, Any]]:
             put_connection(conn)
 
 
-@router.get("/metrics/{session_id}/acoustic")  # type: ignore[untyped-decorator]
+@router.get("/metrics/{session_id}/acoustic")
 async def get_acoustic_timeseries(session_id: str) -> list[dict[str, Any]]:
     """
     Retrieve pitch, jitter, shimmer time-series for a session.

@@ -26,7 +26,7 @@ WORKDIR /app
 # §10.2 — Install pinned Python dependencies
 COPY requirements/worker.txt /app/requirements/worker.txt
 COPY requirements/base.txt /app/requirements/base.txt
-RUN pip install --no-cache-dir -r /app/requirements/worker.txt
+RUN python3.11 -m pip install --no-cache-dir -r /app/requirements/worker.txt
 
 # §4.D.4 — Download spaCy English model for text preprocessing
 RUN python3.11 -m spacy download en_core_web_sm
