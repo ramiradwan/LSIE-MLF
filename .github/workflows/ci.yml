@@ -30,8 +30,8 @@ jobs:
       - name: Ruff format check
         run: ruff format --check packages/ services/ tests/
 
-      - name: Mypy type check (schemas + ml_core stubs)
-        run: mypy packages/ --python-version 3.11 --ignore-missing-imports
+      - name: Mypy type check (full codebase)
+        run: mypy packages/ services/ tests/ --python-version 3.11 --ignore-missing-imports
 
   test:
     runs-on: ubuntu-latest
