@@ -110,8 +110,8 @@ class TestDockerfile:
     """§9.1 — Capture Container image validation."""
 
     def test_base_image(self, dockerfile_content: str) -> None:
-        """§9.1 — Ubuntu 22.04 base image."""
-        assert "FROM ubuntu:22.04" in dockerfile_content
+        """§9.1 — Ubuntu 24.04 base image (SPEC-AMEND-002: GLIBC 2.38+ for scrcpy v3.1)."""
+        assert "FROM ubuntu:24.04" in dockerfile_content
 
     def test_adb_installed(self, dockerfile_content: str) -> None:
         """adb required for USB device communication."""

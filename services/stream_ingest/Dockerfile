@@ -1,11 +1,12 @@
 # Capture Container Dockerfile — §9.1
-# Image: ubuntu:22.04 + scrcpy v3.1
+# Image: ubuntu:24.04 + scrcpy v3.1
 # Role: Raw USB audio/video stream extraction
 # Device passthrough: /dev/bus/usb (§9.4)
 # Note: scrcpy v3.1 is the earliest release with prebuilt Linux x86_64 binaries.
 # All §4.A.1 audio flags (--audio-codec=raw, --audio-dup) are supported.
+# SPEC-AMEND-002: Upgraded from Ubuntu 22.04 → 24.04 for GLIBC 2.38+ (required by scrcpy v3.1 prebuilt binary)
 
-FROM ubuntu:22.04
+FROM ubuntu:24.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
