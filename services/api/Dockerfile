@@ -3,7 +3,7 @@
 # Role: API Server REST endpoints on port 8000
 # §3.2 — MUST exclude heavy ML dependencies
 
-FROM python:3.11-slim
+FROM python:3.14-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
