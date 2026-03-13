@@ -12,5 +12,5 @@ celery==5.4.*
 redis==5.*
 pycryptodome>=3.20.0
 patchright==1.58.2
-TikTokLive==5.0.*
+TikTokLive==6.6.*
 streamlit==1.*
