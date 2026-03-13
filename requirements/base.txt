@@ -5,3 +5,4 @@ pydantic==2.*
 celery==5.4.*
 redis==5.*
 numpy==1.26.*
+python-dotenv==1.2.*

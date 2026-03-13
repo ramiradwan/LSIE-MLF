@@ -1,7 +1,8 @@
 Implement the file at path $ARGUMENTS.
 
 Steps:
-1. Read the current stub at the given path.
+1. TRUST GATE: Run `python scripts/verify_spec_signature.py docs/tech-spec-v2.0.pdf`. If FAIL, STOP and report.
+2. Read the current stub at the given path.
 2. Read IMPLEMENTATION_PLAN.md to understand which phase this file belongs to and what dependencies it has.
 3. Check that all upstream dependencies (files from earlier phases) are already implemented (no NotImplementedError).
 4. Implement the file fully, tracing every decision to a spec section with inline comments.

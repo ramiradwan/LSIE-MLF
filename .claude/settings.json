@@ -1,10 +1,16 @@
 {
   "model": "claude-opus-4-6",
   "thinking": true,
+  "env": {
+    "GIT_AUTHOR_NAME": "Claude (LSIE-MLF)",
+    "GIT_AUTHOR_EMAIL": "noreply@anthropic.com"
+  },
   "permissions": {
     "allow": [
       "Bash(mypy *)",
       "Bash(pytest *)",
+      "Bash(python scripts/verify_spec_signature.py *)",
+      "Bash(python -m py_compile *)",
       "Bash(docker compose config*)",
       "Bash(grep *)",
       "Bash(find *)",
@@ -13,7 +19,14 @@
       "Bash(head *)",
       "Bash(tail *)",
       "Bash(diff *)",
-      "Bash(python -m py_compile *)"
+      "Bash(ruff *)",
+      "Bash(git add *)",
+      "Bash(git commit *)",
+      "Bash(git status *)",
+      "Bash(git diff *)",
+      "Bash(git log *)",
+      "Bash(git branch *)",
+      "Bash(git push)"
     ],
     "deny": [
       "Bash(rm -rf /)*",
