@@ -56,5 +56,43 @@ class AU12Normalizer:
         Raises:
             ValueError: If baseline has not been calibrated before inference.
         """
-        # TODO: Implement per §7.5 Python reference implementation
-        raise NotImplementedError
+        # §7.2 — Landmark extraction: eye corners and lip corners
+        left_eye_outer: npt.NDArray[np.floating[Any]] = landmarks[33]
+        left_eye_inner: npt.NDArray[np.floating[Any]] = landmarks[133]
+        right_eye_inner: npt.NDArray[np.floating[Any]] = landmarks[362]
+        right_eye_outer: npt.NDArray[np.floating[Any]] = landmarks[263]
+        left_lip_corner: npt.NDArray[np.floating[Any]] = landmarks[61]
+        right_lip_corner: npt.NDArray[np.floating[Any]] = landmarks[291]
+
+        # §7.3 — IOD derivation: 3D Euclidean distance between eye centers
+        left_eye_center: npt.NDArray[np.floating[Any]] = (
+            left_eye_outer + left_eye_inner
+        ) / 2.0
+        right_eye_center: npt.NDArray[np.floating[Any]] = (
+            right_eye_inner + right_eye_outer
+        ) / 2.0
+        iod: float = float(np.linalg.norm(right_eye_center - left_eye_center))
+
+        # §7.5 — Epsilon guard: degenerate face where IOD → 0
+        if iod < EPSILON:
+            return 0.0
+
+        # §7.4 — D_mouth: 3D Euclidean distance between lip corners
+        d_mouth: float = float(np.linalg.norm(right_lip_corner - left_lip_corner))
+        ratio: float = d_mouth / iod
+
+        if is_calibrating:
+            # §7.4 — Accumulate baseline buffer during calibration
+            self.calibration_buffer.append(ratio)
+            self.b_neutral = float(np.mean(self.calibration_buffer))
+            return 0.0
+
+        # §7.5 — Inference requires a calibrated baseline
+        if self.b_neutral is None:
+            raise ValueError("Baseline not calibrated")
+
+        # §7.4 — FACS score: linear projection from baseline deviation
+        score: float = self.alpha * (ratio - self.b_neutral)
+
+        # §7.5 — Hard-clamp to [0.0, 5.0]
+        return float(min(max(score, 0.0), 5.0))

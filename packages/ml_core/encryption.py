@@ -45,27 +45,62 @@ class EphemeralVault:
         """
         Encrypt data with AES-256-GCM.
 
+        §5.1 — PyCryptodome AES-256-GCM authenticated encryption.
+
         Returns:
             Tuple of (nonce, ciphertext, tag).
         """
-        # TODO: Implement with Crypto.Cipher.AES
-        raise NotImplementedError
+        from Crypto.Cipher import AES  # §5.1 — pycryptodome >= 3.20.0
+
+        nonce: bytes = self.session.generate_nonce()
+        cipher = AES.new(self.session.key, AES.MODE_GCM, nonce=nonce)
+        ciphertext: bytes
+        tag: bytes
+        ciphertext, tag = cipher.encrypt_and_digest(plaintext)
+        return nonce, ciphertext, tag
 
     def decrypt(self, nonce: bytes, ciphertext: bytes, tag: bytes) -> bytes:
         """
         Decrypt AES-256-GCM ciphertext.
 
+        §5.1 — Authenticated decryption; raises ValueError on tamper.
+
         Returns:
             Decrypted plaintext bytes.
+
+        Raises:
+            ValueError: If authentication tag verification fails.
         """
-        # TODO: Implement with Crypto.Cipher.AES
-        raise NotImplementedError
+        from Crypto.Cipher import AES  # §5.1 — pycryptodome >= 3.20.0
+
+        cipher = AES.new(self.session.key, AES.MODE_GCM, nonce=nonce)
+        try:
+            plaintext: bytes = cipher.decrypt_and_verify(ciphertext, tag)
+        except (ValueError, KeyError) as exc:
+            raise ValueError("Decryption failed: authentication tag mismatch") from exc
+        return plaintext
 
     @staticmethod
     def secure_delete(target_dir: str) -> None:
         """
         Execute shred -vfz -n 3 on all files in target_dir.
-        Called by internal cron every 24 hours on /data/raw/ and /data/interim/.
+
+        §5.1 — Mandatory 24-hour secure deletion via shred on
+        /data/raw/ and /data/interim/.
         """
-        # TODO: Implement subprocess call to shred
-        raise NotImplementedError
+        import pathlib
+        import subprocess
+
+        target: pathlib.Path = pathlib.Path(target_dir)
+        if not target.is_dir():
+            return
+
+        files: list[pathlib.Path] = [f for f in target.iterdir() if f.is_file()]
+        if not files:
+            return
+
+        # §5.1 — shred -vfz -n 3 for secure deletion
+        subprocess.run(
+            ["shred", "-vfz", "-n", "3", *(str(f) for f in files)],
+            check=True,
+        )

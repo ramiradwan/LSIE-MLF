@@ -14,7 +14,7 @@ import pytest
 from pydantic import ValidationError
 
 from packages.schemas.evaluation import SemanticEvaluationResult
-from packages.schemas.events import GiftEvent, LiveEvent
+from packages.schemas.events import ComboEvent, GiftEvent, LiveEvent
 from packages.schemas.inference_handoff import InferenceHandoffPayload, MediaSource
 
 
@@ -109,3 +109,55 @@ class TestLiveEvent:
             gift_value=100,
         )
         assert event.gift_value == 100
+
+
+class TestComboEvent:
+    """§4.B.1 — Action_Combo constraint validation."""
+
+    def test_combo_requires_at_least_two_events(self) -> None:
+        """§4.B.1 — ComboEvent must have min_length=2 events."""
+        now = datetime.now(UTC)
+        single_event = LiveEvent(
+            uniqueId="user1", event_type="gift", timestamp_utc=now,
+        )
+        with pytest.raises(ValidationError):
+            ComboEvent(
+                events=[single_event],
+                window_start=now,
+                window_end=now,
+            )
+
+    def test_valid_combo_event(self) -> None:
+        """§4.B.1 — Valid combo with two+ events."""
+        now = datetime.now(UTC)
+        e1 = LiveEvent(uniqueId="u1", event_type="gift", timestamp_utc=now)
+        e2 = LiveEvent(uniqueId="u2", event_type="like", timestamp_utc=now)
+        combo = ComboEvent(events=[e1, e2], window_start=now, window_end=now)
+        assert len(combo.events) == 2
+        assert combo.is_valid is False
+
+
+class TestInferenceHandoffRoundTrip:
+    """§6.1 — JSON Schema Draft 07 export and round-trip serialization."""
+
+    def test_json_roundtrip(
+        self, sample_session_id: str, sample_timestamp: datetime
+    ) -> None:
+        payload = InferenceHandoffPayload(
+            session_id=uuid.UUID(sample_session_id),
+            timestamp_utc=sample_timestamp,
+            media_source=MediaSource(
+                stream_url="https://example.com/stream",
+                codec="raw",
+                resolution=[640, 480],
+            ),
+            segments=[{"frame": 1}],
+        )
+        json_str = payload.model_dump_json()
+        restored = InferenceHandoffPayload.model_validate_json(json_str)
+        assert restored.session_id == payload.session_id
+        assert restored.segments == payload.segments
+
+    def test_json_schema_has_draft07(self) -> None:
+        schema = InferenceHandoffPayload.model_json_schema()
+        assert schema.get("$schema") == "http://json-schema.org/draft-07/schema#"
