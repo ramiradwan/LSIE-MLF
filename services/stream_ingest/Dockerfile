@@ -12,6 +12,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 # §9.1 — System dependencies: adb for USB, ffmpeg for fallback, wget for scrcpy download
 RUN apt-get update && apt-get install -y --no-install-recommends \
     adb \
+    ca-certificates \
     ffmpeg \
     wget \
     libsdl2-2.0-0 \
