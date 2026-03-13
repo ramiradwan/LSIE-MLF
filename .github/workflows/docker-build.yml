@@ -13,20 +13,20 @@ jobs:
   build-api:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Build API Server image
         run: docker build -f services/api/Dockerfile -t lsie-mlf-api:${{ github.sha }} .
 
   build-worker:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Build ML Worker image (CPU-only validation)
         run: docker build -f services/worker/Dockerfile -t lsie-mlf-worker:${{ github.sha }} .
 
   build-capture:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Build Capture Container image
         run: docker build -f services/stream_ingest/Dockerfile -t lsie-mlf-capture:${{ github.sha }} .
