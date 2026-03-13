@@ -6,7 +6,7 @@ mediapipe==0.10.*
 praat-parselmouth==0.4.4
 spacy==3.7.*
 psycopg2-binary==2.9.*
-pandas==2.2.*
+pandas==3.0.*
 scipy==1.13.*
 celery==5.4.*
 redis==5.*
