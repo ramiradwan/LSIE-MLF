@@ -66,16 +66,24 @@ class SemanticEvaluator:
         self.api_key: str = os.environ["AZURE_OPENAI_API_KEY"]
         self.deployment: str = os.environ["AZURE_OPENAI_DEPLOYMENT"]
         self.api_version: str = os.environ.get("AZURE_OPENAI_API_VERSION", "2024-02-01")
-        self._client = None  # Lazy-loaded
+        self._client: Any = None  # Lazy-loaded AzureOpenAI
 
     def _init_client(self) -> None:
-        """Initialize Azure OpenAI client."""
-        # TODO: Implement — from openai import AzureOpenAI
-        raise NotImplementedError
+        """Initialize Azure OpenAI client (§8.1)."""
+        from openai import AzureOpenAI
+
+        self._client = AzureOpenAI(
+            azure_endpoint=self.endpoint,
+            api_key=self.api_key,
+            api_version=self.api_version,
+        )
 
     def evaluate(self, expected_greeting: str, actual_utterance: str) -> dict[str, Any] | None:
         """
         Evaluate semantic equivalence between expected and actual utterance.
+
+        §8.1–8.3 — Deterministic Azure OpenAI Chat Completion with
+        structured JSON output.
 
         Args:
             expected_greeting: The greeting rule to match against.
@@ -84,5 +92,53 @@ class SemanticEvaluator:
         Returns:
             Dict with reasoning, is_match, confidence_score — or None on failure.
         """
-        # TODO: Implement per §8.1–8.3
-        raise NotImplementedError
+        import json
+        import logging
+
+        logger: logging.Logger = logging.getLogger(__name__)
+
+        if self._client is None:
+            self._init_client()
+
+        # §8.3 — User prompt with expected and actual utterance
+        user_content: str = (
+            f"Expected Greeting Rule: {expected_greeting}\n"
+            f"Actual Utterance: {actual_utterance}"
+        )
+
+        # §4.D contract — LLM timeout retries once before recording null
+        for attempt in range(2):
+            try:
+                response: Any = self._client.chat.completions.create(
+                    model=self.deployment,
+                    messages=[
+                        {"role": "system", "content": SYSTEM_PROMPT},
+                        {"role": "user", "content": user_content},
+                    ],
+                    # §8.1 — Deterministic inference parameters
+                    temperature=LLM_PARAMS["temperature"],
+                    top_p=LLM_PARAMS["top_p"],
+                    max_tokens=LLM_PARAMS["max_tokens"],
+                    seed=LLM_PARAMS["seed"],
+                    # §8.2 — Structured JSON output
+                    response_format={"type": "json_object"},
+                )
+
+                raw: str = response.choices[0].message.content
+                result: dict[str, Any] = json.loads(raw)
+
+                # §8.2 — Validate against expected output schema
+                from packages.schemas.evaluation import SemanticEvaluationResult
+
+                validated = SemanticEvaluationResult.model_validate(result)
+                return validated.model_dump()
+
+            except Exception:
+                logger.warning(
+                    "Semantic evaluation attempt %d failed", attempt + 1, exc_info=True
+                )
+                if attempt == 1:
+                    # §4.D contract — record null after retry exhaustion
+                    return None
+
+        return None

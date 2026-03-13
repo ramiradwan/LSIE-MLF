@@ -7,6 +7,8 @@ Uses INT8 quantization, requires CUDA 12 and cuDNN 9.
 
 from __future__ import annotations
 
+from typing import Any
+
 
 class TranscriptionEngine:
     """
@@ -25,16 +27,24 @@ class TranscriptionEngine:
         self.model_size = model_size
         self.device = device
         self.compute_type = compute_type
-        self._model = None  # Lazy-loaded
+        self._model: Any = None  # Lazy-loaded WhisperModel
 
     def load_model(self) -> None:
         """Load faster-whisper model into GPU memory. Aborts startup on failure (§4.D contract)."""
-        # TODO: Implement — from faster_whisper import WhisperModel
-        raise NotImplementedError
+        from faster_whisper import WhisperModel
+
+        # §4.D.1 — INT8 quantization on CUDA with cuDNN 9
+        self._model = WhisperModel(
+            self.model_size,
+            device=self.device,
+            compute_type=self.compute_type,
+        )
 
     def transcribe(self, audio_path: str, language: str | None = None) -> str:
         """
         Transcribe a 16 kHz audio segment.
+
+        §4.D.1 — faster-whisper CTranslate2 inference backend.
 
         Args:
             audio_path: Path to PCM s16le 16 kHz audio file or buffer.
@@ -43,5 +53,16 @@ class TranscriptionEngine:
         Returns:
             UTF-8 transcription text.
         """
-        # TODO: Implement per §4.D.1
-        raise NotImplementedError
+        if self._model is None:
+            self.load_model()
+
+        # §4.D.1 — Transcribe with beam_size=5 default
+        segments, _info = self._model.transcribe(
+            audio_path,
+            language=language,
+            beam_size=5,
+            vad_filter=True,
+        )
+
+        # §4.D.1 — Concatenate all segment texts
+        return " ".join(segment.text.strip() for segment in segments)

@@ -7,6 +7,8 @@ prior to LLM semantic evaluation.
 
 from __future__ import annotations
 
+from typing import Any
+
 
 class TextPreprocessor:
     """
@@ -18,16 +20,20 @@ class TextPreprocessor:
 
     def __init__(self, model_name: str = "en_core_web_sm") -> None:
         self.model_name = model_name
-        self._nlp = None  # Lazy-loaded
+        self._nlp: Any = None  # Lazy-loaded spaCy Language
 
     def load_model(self) -> None:
-        """Load spaCy model."""
-        # TODO: Implement — import spacy
-        raise NotImplementedError
+        """Load spaCy model (§4.D.4)."""
+        import spacy
+
+        self._nlp = spacy.load(self.model_name)
 
     def preprocess(self, text: str) -> str:
         """
         Normalize and clean transcribed text.
+
+        §4.D.4 — spaCy tokenization and normalization prior to
+        LLM semantic evaluation.
 
         Args:
             text: Raw ASR transcription output.
@@ -35,5 +41,16 @@ class TextPreprocessor:
         Returns:
             Cleaned, normalized text string.
         """
-        # TODO: Implement per §4.D.4
-        raise NotImplementedError
+        if self._nlp is None:
+            self.load_model()
+
+        # §4.D.4 — Tokenize and normalize: lowercase, strip punctuation,
+        # remove stopwords and whitespace tokens, lemmatize
+        doc: Any = self._nlp(text)
+        tokens: list[str] = [
+            token.lemma_.lower()
+            for token in doc
+            if not token.is_punct and not token.is_space and not token.is_stop
+        ]
+
+        return " ".join(tokens)

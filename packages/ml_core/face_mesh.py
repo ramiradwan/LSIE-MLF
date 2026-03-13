@@ -22,12 +22,20 @@ class FaceMeshProcessor:
     """
 
     def __init__(self) -> None:
-        self._face_mesh = None  # Lazy-loaded
+        self._face_mesh: Any = None  # Lazy-loaded MediaPipe FaceMesh instance
 
     def load_model(self) -> None:
-        """Initialize MediaPipe Face Mesh solution."""
-        # TODO: Implement — import mediapipe as mp
-        raise NotImplementedError
+        """Initialize MediaPipe Face Mesh solution (§4.D.2)."""
+        import mediapipe as mp
+
+        # §4.D.2 — 478-vertex 3D landmark mesh, static image mode off for video
+        self._face_mesh = mp.solutions.face_mesh.FaceMesh(
+            static_image_mode=False,
+            max_num_faces=1,
+            refine_landmarks=True,  # 478 landmarks (includes iris)
+            min_detection_confidence=0.5,
+            min_tracking_confidence=0.5,
+        )
 
     def extract_landmarks(
         self, frame: npt.NDArray[np.uint8]
@@ -40,7 +48,25 @@ class FaceMeshProcessor:
 
         Returns:
             np.ndarray of shape (478, 3) with normalized coordinates,
-            or None if no face detected.
+            or None if no face detected (§4.D contract failure mode).
         """
-        # TODO: Implement per §4.D.2
-        raise NotImplementedError
+        import cv2
+
+        if self._face_mesh is None:
+            self.load_model()
+
+        # §4.D.2 — MediaPipe expects RGB input
+        rgb_frame: npt.NDArray[np.uint8] = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        results: Any = self._face_mesh.process(rgb_frame)
+
+        # §4.D contract — missing face returns None (null facial metrics)
+        if not results.multi_face_landmarks:
+            return None
+
+        face = results.multi_face_landmarks[0]
+        # §4.D.2 — Extract (478, 3) normalized coordinate array
+        landmarks: npt.NDArray[np.floating[Any]] = np.array(
+            [[lm.x, lm.y, lm.z] for lm in face.landmark],
+            dtype=np.float64,
+        )
+        return landmarks
