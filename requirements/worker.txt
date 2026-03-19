@@ -3,7 +3,7 @@
 -r base.txt
 faster-whisper==1.2.1
 mediapipe==0.10.*
-praat-parselmouth==0.4.4
+praat-parselmouth==0.4.7
 spacy==3.7.*
 psycopg2-binary==2.9.*
 pandas==2.2.*
