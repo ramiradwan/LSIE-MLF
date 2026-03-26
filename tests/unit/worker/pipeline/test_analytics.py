@@ -304,7 +304,7 @@ class TestThompsonSamplingEngine:
         ]
         engine = ThompsonSamplingEngine(mock_store)
         engine.update("exp-1", "arm_a", reward=0.8)
-        mock_store.update_experiment_arm.assert_called_once_with("exp-1", "arm_a", 6.0, 3.0)
+        mock_store.update_experiment_arm.assert_called_once_with("exp-1", "arm_a", 5.8, 3.2)
 
     def test_update_failure_increments_beta(self) -> None:
         """§4.E.1 — reward < 0.5 increments beta."""
@@ -314,7 +314,7 @@ class TestThompsonSamplingEngine:
         ]
         engine = ThompsonSamplingEngine(mock_store)
         engine.update("exp-1", "arm_a", reward=0.2)
-        mock_store.update_experiment_arm.assert_called_once_with("exp-1", "arm_a", 5.0, 4.0)
+        mock_store.update_experiment_arm.assert_called_once_with("exp-1", "arm_a", 5.2, 3.8)
 
     def test_update_unknown_arm_raises(self) -> None:
         """update raises ValueError for unknown arm."""
@@ -327,11 +327,11 @@ class TestThompsonSamplingEngine:
             engine.update("exp-1", "arm_x", reward=1.0)
 
     def test_update_boundary_reward(self) -> None:
-        """§4.E.1 — reward == 0.5 counts as success (increments alpha)."""
+        """§4.E.1 — reward == 0.5 results in equal fractional update."""
         mock_store = MagicMock(spec=MetricsStore)
         mock_store.get_experiment_arms.return_value = [
             {"arm": "arm_a", "alpha_param": 1.0, "beta_param": 1.0},
         ]
         engine = ThompsonSamplingEngine(mock_store)
         engine.update("exp-1", "arm_a", reward=0.5)
-        mock_store.update_experiment_arm.assert_called_once_with("exp-1", "arm_a", 2.0, 1.0)
+        mock_store.update_experiment_arm.assert_called_once_with("exp-1", "arm_a", 1.5, 1.5)

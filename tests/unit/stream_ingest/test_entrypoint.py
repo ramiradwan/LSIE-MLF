@@ -59,13 +59,14 @@ class TestEntrypointStructure:
         """§4.A.1 — scrcpy uses --audio-buffer=30 (30ms)."""
         assert "--audio-buffer=" in entrypoint_content
 
-    def test_scrcpy_audio_dup(self, entrypoint_content: str) -> None:
-        """§4.A.1 — scrcpy uses --audio-dup to mirror audio."""
-        assert "--audio-dup" in entrypoint_content
+    def test_scrcpy_no_video_audio_split(self, entrypoint_content: str) -> None:
+        """§4.A.1 — Dual-sink: --no-video for audio instance, --no-audio for video."""
+        assert "--no-video" in entrypoint_content
+        assert "--no-audio" in entrypoint_content
 
-    def test_scrcpy_no_audio_playback(self, entrypoint_content: str) -> None:
-        """§4.A.1 — scrcpy uses --no-audio-playback."""
-        assert "--no-audio-playback" in entrypoint_content
+    def test_scrcpy_no_playback(self, entrypoint_content: str) -> None:
+        """§4.A.1 — scrcpy uses --no-playback for headless mode (v3.3.4)."""
+        assert "--no-playback" in entrypoint_content
 
     def test_dd_pipes_to_fd3(self, entrypoint_content: str) -> None:
         """§4.A.1 steps 3–4 — dd pipes scrcpy stdout to fd 3."""
@@ -101,9 +102,10 @@ class TestEntrypointErrorHandling:
         assert "while true" in entrypoint_content
         assert "wait_for_device" in entrypoint_content
 
-    def test_scrcpy_pid_tracked(self, entrypoint_content: str) -> None:
-        """Scrcpy PID tracked for cleanup."""
-        assert "SCRCPY_PID" in entrypoint_content
+    def test_scrcpy_pids_tracked(self, entrypoint_content: str) -> None:
+        """Scrcpy PIDs tracked for cleanup (dual-sink: audio + video)."""
+        assert "AUDIO_PID" in entrypoint_content
+        assert "VIDEO_PID" in entrypoint_content
 
 
 class TestDockerfile:

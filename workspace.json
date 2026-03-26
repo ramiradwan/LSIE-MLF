@@ -1,0 +1,12 @@
+{
+  "ci_commands": [
+    {
+      "step": "mypy",
+      "cmd": ["mypy", "packages/", "tests/"]
+    },
+    {
+      "step": "tests",
+      "cmd": ["pytest", "tests/", "-x", "-q", "--tb=short"]
+    }
+  ]
+}

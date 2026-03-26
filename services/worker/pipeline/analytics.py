@@ -143,23 +143,19 @@ class MetricsStore:
         §12.1 Module E — On failure, buffer up to 1000 records, retry 5s,
         then overflow to CSV.
         """
-        # §12.1 Module E — attempt direct insert first
         try:
             self._write_single(metrics)
-            # If buffer has accumulated records, try flushing them too
             if self._buffer:
                 self._flush_buffer()
         except Exception as exc:
             if not self._is_db_error(exc):
                 raise
-            # §12.1 Module E — buffer on failure
             logger.warning(
                 "DB write failed, buffering record (%d in buffer)",
                 len(self._buffer) + 1,
             )
             self._buffer.append(metrics)
             if len(self._buffer) >= DB_BUFFER_MAX:
-                # §12.4 Module E — overflow to CSV when buffer full
                 self._overflow_to_csv(self._buffer[:])
                 self._buffer.clear()
 
@@ -172,10 +168,8 @@ class MetricsStore:
         psycopg2 = _import_psycopg2()
         conn = self._get_conn()
         try:
-            # §2 step 7 — READ COMMITTED for metric inserts
             conn.set_isolation_level(psycopg2.extensions.ISOLATION_LEVEL_READ_COMMITTED)
             with conn.cursor() as cur:
-                # Insert numeric metrics
                 cur.execute(
                     _INSERT_METRICS_SQL,
                     {
@@ -189,7 +183,6 @@ class MetricsStore:
                     },
                 )
 
-                # Insert transcript if present
                 if metrics.get("transcription"):
                     cur.execute(
                         _INSERT_TRANSCRIPT_SQL,
@@ -201,7 +194,6 @@ class MetricsStore:
                         },
                     )
 
-                # Insert evaluation if present
                 if metrics.get("semantic") is not None:
                     semantic = metrics["semantic"]
                     cur.execute(
@@ -239,7 +231,6 @@ class MetricsStore:
                 remaining.append(record)
 
         if remaining:
-            # §12.1 Module E — wait and retry once more
             logger.warning(
                 "Flush: %d records failed, retrying in %ds",
                 len(remaining),
@@ -256,7 +247,6 @@ class MetricsStore:
                     still_failing.append(record)
 
             if still_failing:
-                # §12.4 Module E — overflow to CSV
                 self._overflow_to_csv(still_failing)
 
         self._buffer.clear()
@@ -273,7 +263,6 @@ class MetricsStore:
         timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S")
         csv_path = fallback_dir / f"overflow_{timestamp}.csv"
 
-        # §12.4 — Write all metric fields to CSV
         fieldnames = [
             "session_id",
             "segment_id",
@@ -321,7 +310,6 @@ class MetricsStore:
         psycopg2 = _import_psycopg2()
         conn = self._get_conn()
         try:
-            # §2 step 7 — SERIALIZABLE for experiment updates
             conn.set_isolation_level(psycopg2.extensions.ISOLATION_LEVEL_SERIALIZABLE)
             with conn.cursor() as cur:
                 cur.execute(
@@ -356,7 +344,8 @@ class ThompsonSamplingEngine:
 
     Uses SciPy Beta distributions:
       - select_arm(): sample from Beta(alpha, beta) for each arm, pick max
-      - update(): increment alpha (success) or beta (failure)
+      - update(): fractional Beta-Bernoulli update α += r_t, β += (1 − r_t)
+        for continuous rewards in [0,1]
     """
 
     def __init__(self, store: MetricsStore) -> None:
@@ -378,7 +367,6 @@ class ThompsonSamplingEngine:
         best_arm = ""
         best_sample = -1.0
         for arm_data in arms:
-            # §4.E.1 — Sample from Beta distribution
             sample: float = float(beta_dist.rvs(arm_data["alpha_param"], arm_data["beta_param"]))
             if sample > best_sample:
                 best_sample = sample
@@ -390,25 +378,28 @@ class ThompsonSamplingEngine:
         """
         Update posterior with observed reward.
 
-        §4.E.1 — Binary reward: reward >= 0.5 increments alpha (success),
-        otherwise increments beta (failure). Persists via SERIALIZABLE txn.
+        §4.E.1 — Fractional Beta-Bernoulli update α += r_t, β += (1 − r_t)
+        for continuous rewards constrained to the interval [0, 1].
         """
+        # Validate reward bounds before arm lookup
+        if not 0.0 <= reward <= 1.0:
+            raise ValueError(
+                f"Reward must be in [0.0, 1.0], got {reward:.4f}. "
+                "Ensure the reward pipeline produces bounded output."
+            )
+
         arms = self.store.get_experiment_arms(experiment_id)
-        arm_data = next(
-            (a for a in arms if a["arm"] == arm),
-            None,
-        )
-        if arm_data is None:
-            raise ValueError(f"Arm '{arm}' not found in experiment '{experiment_id}'")
 
-        alpha = arm_data["alpha_param"]
-        beta_val = arm_data["beta_param"]
+        for arm_data in arms:
+            if arm_data["arm"] == arm:
+                alpha: float = float(arm_data["alpha_param"])
+                beta_val: float = float(arm_data["beta_param"])
 
-        # §4.E.1 — Binary Bayesian update
-        if reward >= 0.5:
-            alpha += 1.0
-        else:
-            beta_val += 1.0
+                # Fractional Beta–Bernoulli pseudo-count update
+                alpha += reward
+                beta_val += 1.0 - reward
 
-        # §2 step 7 — SERIALIZABLE isolation via MetricsStore
-        self.store.update_experiment_arm(experiment_id, arm, alpha, beta_val)
+                self.store.update_experiment_arm(experiment_id, arm, alpha, beta_val)
+                return
+
+        raise ValueError(f"Arm '{arm}' not found for experiment '{experiment_id}'")

@@ -112,7 +112,7 @@ def main() -> None:
         count = next((s["metric_count"] for s in sessions if s["session_id"] == sid), 0)
         return f"{sid} ({count} metrics)"
 
-    selected_session: str = st.selectbox(  # type: ignore[assignment]
+    selected_session: str = st.selectbox(
         "Select session for detail view",
         options=session_ids,
         format_func=_fmt_session,

@@ -56,7 +56,7 @@ class FaceMeshProcessor:
             self.load_model()
 
         # §4.D.2 — MediaPipe expects RGB input
-        rgb_frame: npt.NDArray[np.uint8] = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        rgb_frame: npt.NDArray[np.uint8] = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB).astype(np.uint8)
         results: Any = self._face_mesh.process(rgb_frame)
 
         # §4.D contract — missing face returns None (null facial metrics)

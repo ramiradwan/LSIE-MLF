@@ -18,7 +18,7 @@ from services.worker.celery_app import celery_app
 logger = logging.getLogger(__name__)
 
 
-@celery_app.task(
+@celery_app.task(  # type: ignore[untyped-decorator]
     bind=True,
     max_retries=5,
     default_retry_delay=2,
@@ -159,7 +159,7 @@ def process_segment(self: Task, payload: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
-@celery_app.task(
+@celery_app.task(  # type: ignore[untyped-decorator]
     bind=True,
     max_retries=5,
     default_retry_delay=5,
@@ -167,21 +167,24 @@ def process_segment(self: Task, payload: dict[str, Any]) -> dict[str, Any]:
 def persist_metrics(self: Task, metrics: dict[str, Any]) -> None:
     """
     §2 step 7 — Module E: Persist inference metrics to Persistent Store.
+    §4.E.1 — [v3.0] Close Thompson Sampling feedback loop with continuous
+    fractional Beta-Bernoulli reward.
 
     Failure mode (§12.1): If database unreachable, buffer up to 1000
     records in memory and retry every 5 seconds before overflow to CSV.
 
     Args:
         metrics: Structured inference results from Module D.
+                 Includes _active_arm, _experiment_id, _expected_greeting,
+                 and (v3.0) _au12_series, _stimulus_time from the Orchestrator.
     """
-    from services.worker.pipeline.analytics import MetricsStore
+    from services.worker.pipeline.analytics import MetricsStore, ThompsonSamplingEngine
 
     store = MetricsStore()
 
     try:
         store.connect()
     except Exception:
-        # §12.1 Module E — log and continue on connection failure
         logger.error(
             "Cannot connect to Persistent Store for %s",
             metrics.get("segment_id", "unknown"),
@@ -190,15 +193,124 @@ def persist_metrics(self: Task, metrics: dict[str, Any]) -> None:
         return
 
     try:
-        # §2 step 7 — Parameterized INSERT via MetricsStore
         store.insert_metrics(metrics)
         logger.info(
             "Metrics persisted for %s/%s",
             metrics.get("session_id"),
             metrics.get("segment_id"),
         )
+
+        # ─── [v3.0] Thompson Sampling Continuous Reward Pipeline ───
+        # Replaces Stage 2 binary reward (reward = 1 if semantic_match else 0).
+        #
+        # Pipeline:
+        #   1. Build timestamped AU12 series from orchestrator telemetry
+        #   2. Apply stimulus response window
+        #        t ∈ [stimulus_time + 0.5, stimulus_time + 5.0]
+        #   3. Aggregate facial response using P90 intensity
+        #   4. Apply semantic validity gate
+        #        G_t = 1 if semantic match else 0
+        #   5. Continuous reward
+        #        r_t = P90 × G_t
+        #   6. Fractional Thompson Sampling update
+        #        α ← α + r_t
+        #        β ← β + (1 − r_t)
+        #
+        # Null observation handling:
+        #   If the reward pipeline determines the observation is invalid
+        #   (e.g., insufficient AU12 frames in the response window), the
+        #   Thompson Sampling posterior is NOT updated. Missing telemetry
+        #   is treated as "no observation", not negative feedback.
+
+        semantic: dict[str, Any] | None = metrics.get("semantic")
+        active_arm: str = metrics.get("_active_arm", "")
+        experiment_id: str = metrics.get("_experiment_id", "")
+        au12_raw_series: list[dict[str, Any]] | None = metrics.get("_au12_series")
+        stimulus_time: float | None = metrics.get("_stimulus_time")
+        x_max: float | None = metrics.get("_x_max")
+
+        if (
+            semantic is not None
+            and active_arm
+            and experiment_id
+            and au12_raw_series is not None
+            and len(au12_raw_series) > 0
+            and stimulus_time is not None
+        ):
+            try:
+                from services.worker.pipeline.reward import (
+                    RewardResult,
+                    TimestampedAU12,
+                    compute_reward,
+                )
+
+                au12_series: list[TimestampedAU12] = [
+                    TimestampedAU12(
+                        timestamp_s=float(obs["timestamp_s"]),
+                        intensity=float(obs["intensity"]),
+                    )
+                    for obs in au12_raw_series
+                ]
+
+                is_match: bool = semantic.get("is_match", False)
+                confidence: float = semantic.get("confidence_score", 0.0)
+
+                result: RewardResult = compute_reward(
+                    au12_series=au12_series,
+                    stimulus_time_s=stimulus_time,
+                    is_match=is_match,
+                    confidence_score=confidence,
+                    x_max=x_max,
+                )
+
+                if result.is_valid:
+                    # [v3.0] reward bounds validation before Thompson update
+                    if not (0.0 <= result.gated_reward <= 1.0):
+                        logger.warning(
+                            "Invalid reward outside [0,1]: experiment=%s arm=%s reward=%f",
+                            experiment_id,
+                            active_arm,
+                            result.gated_reward,
+                        )
+                        return
+
+                    engine = ThompsonSamplingEngine(store)
+                    engine.update(experiment_id, active_arm, result.gated_reward)
+
+                    logger.info(
+                        "Thompson Sampling updated: experiment=%s arm=%s "
+                        "reward=%.4f (p90=%.4f gate=%d frames=%d)",
+                        experiment_id,
+                        active_arm,
+                        result.gated_reward,
+                        result.p90_intensity,
+                        result.semantic_gate,
+                        result.n_frames_in_window,
+                    )
+                else:
+                    logger.info(
+                        "Thompson Sampling update SKIPPED (invalid): "
+                        "experiment=%s arm=%s frames=%d",
+                        experiment_id,
+                        active_arm,
+                        result.n_frames_in_window,
+                    )
+
+            except Exception:
+                logger.warning(
+                    "Thompson Sampling update failed for arm '%s'",
+                    active_arm,
+                    exc_info=True,
+                )
+
+        elif semantic is not None and active_arm and experiment_id:
+            logger.info(
+                "Thompson Sampling update SKIPPED (no AU12 telemetry): experiment=%s arm=%s",
+                experiment_id,
+                active_arm,
+            )
+
     except Exception:
-        # §12.1 Module E — log and continue
         logger.error(
             "Metrics persistence failed for %s",
             metrics.get("segment_id", "unknown"),

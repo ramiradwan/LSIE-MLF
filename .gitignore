@@ -39,5 +39,7 @@ htmlcov/
 # Docker
 *.log
 
-# Claude Code
+# Ignore agent implementation artifacts and scaffolding
 .claude/settings.local.json
+.workspace*
+docs/artifacts/
