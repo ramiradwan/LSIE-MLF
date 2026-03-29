@@ -40,9 +40,7 @@ EXPECTED_SIG_FIELDS: list[str] = ["ArchiveSignature"]
 # Microsoft Identity Verification Root Certificate Authority 2020.
 # This is a publicly known value — pinning it here prevents root cert
 # substitution attacks without leaking any project-specific secrets.
-TRUSTED_ROOT_SHA256: str = (
-    "5367f20c7ade0e2bca790915056d086b720c33c1fa2a2661acf787e3292e1270"
-)
+TRUSTED_ROOT_SHA256: str = "5367f20c7ade0e2bca790915056d086b720c33c1fa2a2661acf787e3292e1270"
 
 
 def load_trusted_signers() -> set[str] | None:
@@ -107,22 +105,20 @@ def preview_signature_natively(pdf_path: Path) -> str:
 
                 if entities:
                     formatted = "\n".join(f"    {k}: {v}" for k, v in entities)
-                    previews.append(
-                        f"  --- Signature {i + 1} Signer Identity ---\n{formatted}"
-                    )
+                    previews.append(f"  --- Signature {i + 1} Signer Identity ---\n{formatted}")
             except Exception:
                 continue
 
-        return "\n\n".join(previews) if previews else (
-            "  Could not locate signer identity OIDs in signature."
+        return (
+            "\n\n".join(previews)
+            if previews
+            else ("  Could not locate signer identity OIDs in signature.")
         )
     except Exception as e:
         return f"  Error reading signature natively: {e}"
 
 
-def verify_with_pyhanko(
-    pdf_path: Path, trusted_signers: set[str]
-) -> tuple[bool, str]:
+def verify_with_pyhanko(pdf_path: Path, trusted_signers: set[str]) -> tuple[bool, str]:
     """
     Full cryptographic verification using pyhanko.
 
@@ -187,11 +183,7 @@ def verify_with_pyhanko(
             root_found = False
             signed_data = main_sig.signed_data
 
-            if (
-                signed_data
-                and "certificates" in signed_data
-                and signed_data["certificates"]
-            ):
+            if signed_data and "certificates" in signed_data and signed_data["certificates"]:
                 for cert_choice in signed_data["certificates"]:
                     if cert_choice.name == "certificate":
                         cert_der = cert_choice.chosen.dump()
@@ -207,19 +199,13 @@ def verify_with_pyhanko(
                 )
 
             # --- Signer trust validation ---
-            ku_settings = KeyUsageConstraints(
-                key_usage={"digital_signature", "non_repudiation"}
-            )
+            ku_settings = KeyUsageConstraints(key_usage={"digital_signature", "non_repudiation"})
             status = validate_pdf_signature(main_sig, key_usage_settings=ku_settings)
 
             if not status.intact:
-                return False, (
-                    f"FAIL: Signature integrity check failed: {main_sig.field_name}"
-                )
+                return False, (f"FAIL: Signature integrity check failed: {main_sig.field_name}")
             if not status.valid:
-                return False, (
-                    f"FAIL: Signature validation failed: {main_sig.field_name}"
-                )
+                return False, (f"FAIL: Signature validation failed: {main_sig.field_name}")
 
             cert = status.signing_cert
             org = cert.subject.native.get("organization_name", "")
@@ -242,9 +228,7 @@ def verify_with_pyhanko(
         return False, f"FAIL: Verification error: {e}"
 
 
-def verify_structural(
-    pdf_path: Path, trusted_signers: set[str]
-) -> tuple[bool, str]:
+def verify_structural(pdf_path: Path, trusted_signers: set[str]) -> tuple[bool, str]:
     """
     Lightweight structural verification when pyhanko is unavailable.
 

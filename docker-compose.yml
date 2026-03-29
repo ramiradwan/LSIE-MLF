@@ -25,6 +25,10 @@ services:
       POSTGRES_DB: ${POSTGRES_DB}
     volumes:
       - pg-data:/var/lib/postgresql/data/
+      # Gap 3 + Gap 4 — Schema DDL and experiment seed data executed on first startup.
+      # PostgreSQL runs .sql files in /docker-entrypoint-initdb.d/ in alphabetical order
+      # only when the data directory is empty (first initialization).
+      - ./data/sql/:/docker-entrypoint-initdb.d/:ro
     networks:
       - appnetwork
     restart: unless-stopped
@@ -83,6 +87,43 @@ services:
         condition: service_healthy
       stream_scrcpy:
         condition: service_started
+
+  # --- Orchestrator (§4.C — segment producer, Gap 6 fix) ---
+  # Runs the Module C orchestration loop that reads from IPC pipes,
+  # processes video frames for AU12, assembles 30-second segments,
+  # and dispatches them as Celery tasks to the worker.
+  # Uses the same image as the worker but with a different CMD.
+  orchestrator:
+    build:
+      context: .
+      dockerfile: services/worker/Dockerfile
+    container_name: orchestrator
+    env_file: .env
+    volumes:
+      - ipc-share:/tmp/ipc/
+      - data-raw:/data/raw/
+      - data-interim:/data/interim/
+      - data-processed:/data/processed/
+    networks:
+      - appnetwork
+    restart: "on-failure:5"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    depends_on:
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      stream_scrcpy:
+        condition: service_started
+    # Gap 6 — Start the orchestrator loop instead of the Celery consumer.
+    # This process produces Celery tasks; the worker service consumes them.
+    command: ["python3.11", "-m", "services.worker.run_orchestrator"]
 
   # --- API Server (§9.1, §9.6 starts after worker and postgres) ---
   api:

@@ -489,6 +489,12 @@ class Orchestrator:
         # (e.g., "please smile broadly") is implemented in the operator UI.
         result["_x_max"] = None
 
+        # Gap 2 — Base64-encode binary fields for Celery JSON transport.
+        # Decoded in process_segment() via decode_bytes_fields().
+        from services.worker.pipeline.serialization import encode_bytes_fields
+
+        result = encode_bytes_fields(result, ["_audio_data", "_frame_data"])
+
         return result
 
     def stop(self) -> None:

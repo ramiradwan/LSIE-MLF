@@ -7,6 +7,7 @@ Uses Procrustes Analysis to construct a normalized metric face space.
 
 from __future__ import annotations
 
+import contextlib
 from typing import Any
 
 import numpy as np
@@ -70,3 +71,16 @@ class FaceMeshProcessor:
             dtype=np.float64,
         )
         return landmarks
+
+    def close(self) -> None:
+        """
+        Release MediaPipe Face Mesh resources.
+
+        Called by Orchestrator.stop() during shutdown (§4.C cleanup).
+        MediaPipe's FaceMesh solution exposes a close() method that
+        releases the underlying graph and GPU memory.
+        """
+        if self._face_mesh is not None:
+            with contextlib.suppress(Exception):
+                self._face_mesh.close()
+            self._face_mesh = None

@@ -4,6 +4,8 @@ API Server — §3.1 / §9.1
 FastAPI application serving REST endpoints on port 8000.
 ASGI entry point via Uvicorn. Dependency injection for
 Persistent Store connection pool.
+
+Gap 5 addition: stimulus router for operator greeting injection trigger.
 """
 
 from __future__ import annotations
@@ -14,7 +16,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from services.api.db.connection import close_pool, init_pool
-from services.api.routes import health, metrics, sessions
+from services.api.routes import health, metrics, sessions, stimulus
 
 
 @asynccontextmanager
@@ -35,3 +37,5 @@ app = FastAPI(
 app.include_router(health.router, tags=["health"])
 app.include_router(metrics.router, prefix="/api/v1", tags=["metrics"])
 app.include_router(sessions.router, prefix="/api/v1", tags=["sessions"])
+# Gap 5 — Stimulus injection trigger for the operator
+app.include_router(stimulus.router, prefix="/api/v1", tags=["stimulus"])

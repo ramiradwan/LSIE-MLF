@@ -10,6 +10,7 @@ Verifies DriftCorrector, AudioResampler, and Orchestrator against:
 
 from __future__ import annotations
 
+import base64
 import subprocess
 import time
 from typing import Any
@@ -257,7 +258,7 @@ class TestOrchestrator:
         assert "media_source" in payload
         assert "segments" in payload
         assert payload["_segment_id"] == "seg-0001"
-        assert payload["_audio_data"] == audio
+        assert base64.b64decode(payload["_audio_data"]) == audio
 
     def test_assemble_segment_increments_counter(self) -> None:
         """Segment IDs increment."""

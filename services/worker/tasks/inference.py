@@ -3,6 +3,13 @@ Inference Task — §4.D Multimodal ML Processing via Celery
 
 Dispatched from Module C → Module D via in-process call, then
 Module D → Module E via Celery async task through Message Broker (§2 step 6).
+
+Gap 1 fix: process_segment() now forwards orchestrator experiment and
+telemetry fields (_active_arm, _experiment_id, _expected_greeting,
+_au12_series, _stimulus_time, _x_max) to persist_metrics.
+
+Gap 2 fix: _audio_data and _frame_data are base64-decoded from the
+JSON-serialized Celery payload back to bytes.
 """
 
 from __future__ import annotations
@@ -16,6 +23,23 @@ from celery import Task
 from services.worker.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
+
+# Orchestrator experiment and telemetry fields that must be forwarded
+# from the input payload to the persist_metrics output. These are
+# underscore-prefixed internal fields not part of the §2 step 6 spec
+# payload, but required by the v3.0 reward pipeline in persist_metrics.
+_FORWARD_FIELDS: tuple[str, ...] = (
+    "_active_arm",
+    "_experiment_id",
+    "_expected_greeting",
+    "_au12_series",
+    "_stimulus_time",
+    "_x_max",
+)
+
+# Binary fields that are base64-encoded for Celery JSON transport.
+# See services/worker/pipeline/serialization.py for the encode/decode helpers.
+_BINARY_FIELDS: list[str] = ["_audio_data", "_frame_data"]
 
 
 @celery_app.task(  # type: ignore[untyped-decorator]
@@ -45,6 +69,11 @@ def process_segment(self: Task, payload: dict[str, Any]) -> dict[str, Any]:
         Dict with session_id, segment_id, AU12 intensity, transcription,
         semantic match, pitch, jitter, shimmer (§2 step 6).
     """
+    # --- Gap 2 fix: decode base64-encoded binary fields from JSON transport ---
+    from services.worker.pipeline.serialization import decode_bytes_fields
+
+    payload = decode_bytes_fields(payload, _BINARY_FIELDS)
+
     session_id: str = payload["session_id"]
     segment_id: str = payload.get("_segment_id", "unknown")
     audio_data: bytes | None = payload.get("_audio_data")
@@ -150,6 +179,15 @@ def process_segment(self: Task, payload: dict[str, Any]) -> dict[str, Any]:
         "shimmer": shimmer,
     }
 
+    # --- Gap 1 fix: Forward orchestrator experiment and telemetry fields ---
+    # These underscore-prefixed fields are not part of the §2 step 6 spec payload
+    # but are required by persist_metrics v3.0 for the Thompson Sampling reward
+    # pipeline (_au12_series, _stimulus_time) and experiment attribution
+    # (_active_arm, _experiment_id, _expected_greeting, _x_max).
+    for key in _FORWARD_FIELDS:
+        if key in payload:
+            result[key] = payload[key]
+
     # §2 step 6 → §2 step 7 — Dispatch to Module E via Celery
     try:
         persist_metrics.delay(result)
@@ -201,7 +239,6 @@ def persist_metrics(self: Task, metrics: dict[str, Any]) -> None:
         )
 
         # ─── [v3.0] Thompson Sampling Continuous Reward Pipeline ───
-        # Replaces Stage 2 binary reward (reward = 1 if semantic_match else 0).
         #
         # Pipeline:
         #   1. Build timestamped AU12 series from orchestrator telemetry
@@ -255,7 +292,7 @@ def persist_metrics(self: Task, metrics: dict[str, Any]) -> None:
                 is_match: bool = semantic.get("is_match", False)
                 confidence: float = semantic.get("confidence_score", 0.0)
 
-                result: RewardResult = compute_reward(
+                result_reward: RewardResult = compute_reward(
                     au12_series=au12_series,
                     stimulus_time_s=stimulus_time,
                     is_match=is_match,
@@ -263,29 +300,28 @@ def persist_metrics(self: Task, metrics: dict[str, Any]) -> None:
                     x_max=x_max,
                 )
 
-                if result.is_valid:
-                    # [v3.0] reward bounds validation before Thompson update
-                    if not (0.0 <= result.gated_reward <= 1.0):
+                if result_reward.is_valid:
+                    if not (0.0 <= result_reward.gated_reward <= 1.0):
                         logger.warning(
                             "Invalid reward outside [0,1]: experiment=%s arm=%s reward=%f",
                             experiment_id,
                             active_arm,
-                            result.gated_reward,
+                            result_reward.gated_reward,
                         )
                         return
 
                     engine = ThompsonSamplingEngine(store)
-                    engine.update(experiment_id, active_arm, result.gated_reward)
+                    engine.update(experiment_id, active_arm, result_reward.gated_reward)
 
                     logger.info(
                         "Thompson Sampling updated: experiment=%s arm=%s "
                         "reward=%.4f (p90=%.4f gate=%d frames=%d)",
                         experiment_id,
                         active_arm,
-                        result.gated_reward,
-                        result.p90_intensity,
-                        result.semantic_gate,
-                        result.n_frames_in_window,
+                        result_reward.gated_reward,
+                        result_reward.p90_intensity,
+                        result_reward.semantic_gate,
+                        result_reward.n_frames_in_window,
                     )
                 else:
                     logger.info(
@@ -293,7 +329,7 @@ def persist_metrics(self: Task, metrics: dict[str, Any]) -> None:
                         "experiment=%s arm=%s frames=%d",
                         experiment_id,
                         active_arm,
-                        result.n_frames_in_window,
+                        result_reward.n_frames_in_window,
                     )
 
             except Exception:
