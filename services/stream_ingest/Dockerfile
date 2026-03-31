@@ -20,12 +20,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libusb-1.0-0 \
     && rm -rf /var/lib/apt/lists/*
 
-# §9.1 — Install scrcpy v3.1 from official GitHub release
+# §9.1 — Install scrcpy v3.3.4 from official GitHub release
 # scrcpy provides raw PCM audio capture from Android via USB (§4.A.1)
-ARG SCRCPY_VERSION=3.1
+ARG SCRCPY_VERSION=3.3.4
 RUN mkdir -p /usr/local/share/scrcpy \
     && wget -q "https://github.com/Genymobile/scrcpy/releases/download/v${SCRCPY_VERSION}/scrcpy-server-v${SCRCPY_VERSION}" \
         -O /usr/local/share/scrcpy/scrcpy-server \
+    && wget -q "https://raw.githubusercontent.com/Genymobile/scrcpy/master/app/data/icon.png" \
+        -O /usr/local/share/scrcpy/icon.png \
     && wget -q "https://github.com/Genymobile/scrcpy/releases/download/v${SCRCPY_VERSION}/scrcpy-linux-x86_64-v${SCRCPY_VERSION}.tar.gz" \
         -O /tmp/scrcpy.tar.gz \
     && tar xzf /tmp/scrcpy.tar.gz -C /tmp/ \

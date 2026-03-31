@@ -43,3 +43,5 @@ htmlcov/
 .claude/settings.local.json
 .workspace*
 docs/artifacts/
+scripts/debug_e2e.sh
+scripts/verify_e2e.sh

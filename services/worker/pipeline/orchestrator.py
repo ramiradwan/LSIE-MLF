@@ -369,8 +369,13 @@ class Orchestrator:
                     self._au12_normalizer.alpha,
                 )
 
+            # Convert PyAV VideoFrame to Numpy Array
+            frame_array = (
+                frame.to_ndarray(format="bgr24") if hasattr(frame, "to_ndarray") else frame
+            )
+
             # §4.D.2 — Extract 478-vertex 3D landmarks from BGR frame
-            landmarks = self._face_mesh.extract_landmarks(frame)
+            landmarks = self._face_mesh.extract_landmarks(frame_array.copy())
             if landmarks is None:
                 # §4.D contract — missing face returns null facial metrics
                 return
@@ -387,10 +392,10 @@ class Orchestrator:
                 now_utc = self.drift_corrector.correct_timestamp(time.time())
                 self._au12_series.append({"timestamp_s": now_utc, "intensity": float(intensity)})
 
-        except Exception:
+        except Exception as e:
             # §12 — AU12 extraction failure must not crash the main loop.
             # Frame is silently dropped; subsequent frames will retry.
-            logger.debug("AU12 frame processing failed", exc_info=True)
+            logger.error("AU12 frame processing failed: %s", e, exc_info=True)
 
     def assemble_segment(
         self,
@@ -439,6 +444,23 @@ class Orchestrator:
         codec = "h264" if has_video else "raw"
         resolution = [1920, 1080] if has_video else [1, 1]
 
+        # [Stage 2] Gap G-03 — Extract latest video frame FIRST
+        frame_data: bytes | None = None
+        if self.video_capture is not None:
+            try:
+                frame = self.video_capture.get_latest_frame()
+                if frame is not None:
+                    # --- GAP FIX: Convert PyAV VideoFrame to Numpy Array ---
+                    frame_array = (
+                        frame.to_ndarray(format="bgr24") if hasattr(frame, "to_ndarray") else frame
+                    )
+                    frame_data = frame_array.tobytes()
+                    # Feed the true frame dimensions into the strict schema field
+                    resolution = [frame_array.shape[1], frame_array.shape[0]]  # [width, height]
+            except Exception as e:
+                logger.error("Assemble segment frame extraction failed: %s", e)
+                pass
+
         # §6.1 — Construct and validate via Pydantic
         payload = InferenceHandoffPayload(
             session_id=uuid.UUID(self._session_id),
@@ -455,16 +477,6 @@ class Orchestrator:
         result: dict[str, Any] = payload.model_dump(mode="json")
         result["_audio_data"] = audio_data
         result["_segment_id"] = segment_id
-
-        # [Stage 2] Gap G-03 — Attach latest video frame (or None)
-        frame_data: bytes | None = None
-        if self.video_capture is not None:
-            try:
-                frame = self.video_capture.get_latest_frame()
-                if frame is not None:
-                    frame_data = frame.tobytes()
-            except Exception:
-                pass
         result["_frame_data"] = frame_data
 
         # [Stage 2] §4.E.1 — Inject experiment arm for downstream evaluation
@@ -553,7 +565,8 @@ class Orchestrator:
         # §4.C.2 — 16 kHz, mono, s16le = 2 bytes/sample = 32000 bytes/second
         bytes_per_second = 16000 * 2  # 16 kHz * 2 bytes (s16le)
         segment_bytes = bytes_per_second * SEGMENT_WINDOW_SECONDS
-        chunk_size = bytes_per_second  # Read 1 second at a time
+        # Read audio in 1/30th second chunks to match 30 FPS video
+        chunk_size = int(bytes_per_second / 30)
 
         last_drift_poll = 0.0
 
@@ -569,6 +582,22 @@ class Orchestrator:
             chunk = self.audio_resampler.read_chunk(chunk_size)
             if chunk:
                 self._audio_buffer.extend(chunk)
+
+            # --- GAP FIX: Self-Heal Video Capture ---
+            # PyAV crashes silently if the named pipe drops a keyframe.
+            # If the thread dies, automatically revive it so we don't lose telemetry.
+            if self.video_capture is None or not getattr(self.video_capture, "is_running", False):
+                try:
+                    from services.worker.pipeline.video_capture import VideoCapture
+
+                    if self.video_capture is not None:
+                        with contextlib.suppress(Exception):
+                            self.video_capture.stop()
+                    self.video_capture = VideoCapture()
+                    self.video_capture.start()
+                    logger.info("Video capture thread revived after pipe crash")
+                except Exception:
+                    pass
 
             # [v3.0] §4.D.2 + §7.4 — Process latest video frame for AU12
             self._process_video_frame()
@@ -594,7 +623,7 @@ class Orchestrator:
                     logger.error("Failed to dispatch segment: %s", exc)
 
             # Yield control to event loop
-            await asyncio.sleep(0.1)
+            await asyncio.sleep(0.01)
 
     # ------------------------------------------------------------------
     # Stage 2 — Session registration and experiment arm selection

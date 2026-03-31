@@ -33,7 +33,7 @@ services:
       - appnetwork
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER}"]
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
       interval: 5s
       timeout: 3s
       retries: 5
@@ -47,8 +47,17 @@ services:
       context: .
       dockerfile: services/stream_ingest/Dockerfile
     container_name: stream_scrcpy
-    devices:
-      - /dev/bus/usb:/dev/bus/usb
+    privileged: true  
+    devices:  
+      - /dev/bus/usb:/dev/bus/usb  
+    environment:
+      - ADB=/usr/bin/adb
+      - ADB_SERVER_SOCKET=tcp:host.docker.internal:5037 
+      - SCRCPY_SERVER_PATH=/usr/local/share/scrcpy/scrcpy-server
+      - SCRCPY_ICON_PATH=/usr/local/share/scrcpy/icon.png
+      - XDG_RUNTIME_DIR=/tmp                 # FIX: Prevent Wayland/Display abort
+      - SDL_VIDEODRIVER=dummy                # FIX: Force dummy video driver
+      - SDL_RENDER_DRIVER=software
     volumes:
       - ipc-share:/tmp/ipc/
     networks:
@@ -65,6 +74,13 @@ services:
       dockerfile: services/worker/Dockerfile
     container_name: worker
     env_file: .env
+    environment:
+      - ADB_SERVER_SOCKET=tcp:host.docker.internal:5037
+      # --- NEW ML CONSTRAINTS ---
+      - CELERYD_CONCURRENCY=1           # Force exactly 1 worker process
+      - OMP_NUM_THREADS=1               # Prevent CPU thread collisions in PyTorch
+      - HF_HOME=/data/interim/hf_cache  # Cache the 3GB Whisper model to disk!
+    command: ["celery", "-A", "services.worker.celery_app", "worker", "--loglevel=info", "-I", "services.worker.tasks.inference", "--concurrency=1"]
     volumes:
       - ipc-share:/tmp/ipc/
       - data-raw:/data/raw/
@@ -99,6 +115,8 @@ services:
       dockerfile: services/worker/Dockerfile
     container_name: orchestrator
     env_file: .env
+    environment:
+      - ADB_SERVER_SOCKET=tcp:host.docker.internal:5037 
     volumes:
       - ipc-share:/tmp/ipc/
       - data-raw:/data/raw/

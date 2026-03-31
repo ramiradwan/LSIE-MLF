@@ -29,7 +29,7 @@ class TestSemanticConstants:
         assert LLM_PARAMS["temperature"] == 0.0
         assert LLM_PARAMS["top_p"] == 1.0
         assert LLM_PARAMS["seed"] == 42
-        assert LLM_PARAMS["max_tokens"] == 500
+        assert LLM_PARAMS["max_completion_tokens"] == 500
 
     def test_output_schema_required_fields(self) -> None:
         """§8.2 — Schema requires reasoning, is_match, confidence_score."""

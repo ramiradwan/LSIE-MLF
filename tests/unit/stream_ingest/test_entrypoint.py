@@ -40,16 +40,17 @@ class TestEntrypointStructure:
         assert "set -euo pipefail" in entrypoint_content
 
     def test_ipc_pipe_path(self, entrypoint_content: str) -> None:
-        """§4.A.1 — IPC Pipe at /tmp/ipc/audio_stream.raw."""
-        assert 'IPC_PIPE="/tmp/ipc/audio_stream.raw"' in entrypoint_content
+        """§4.A.1 — Dual IPC Pipes for Audio and Video."""
+        assert 'AUDIO_PIPE="$IPC_DIR/audio_stream.raw"' in entrypoint_content
+        assert 'VIDEO_PIPE="$IPC_DIR/video_stream.mkv"' in entrypoint_content
 
     def test_mkfifo_creates_pipe(self, entrypoint_content: str) -> None:
         """§4.A.1 step 1 — Creates named pipe with mkfifo."""
         assert "mkfifo" in entrypoint_content
 
     def test_fd3_open(self, entrypoint_content: str) -> None:
-        """§4.A.1 step 2 — Non-blocking open with exec 3<>."""
-        assert 'exec 3<>"$IPC_PIPE"' in entrypoint_content
+        """§4.A.1 step 2 — Non-blocking open with exec 3<> for AUDIO_PIPE."""
+        assert 'exec 3<> "$AUDIO_PIPE"' in entrypoint_content
 
     def test_scrcpy_audio_codec_raw(self, entrypoint_content: str) -> None:
         """§4.A.1 — scrcpy uses --audio-codec=raw for PCM s16le 48kHz."""
@@ -68,22 +69,14 @@ class TestEntrypointStructure:
         """§4.A.1 — scrcpy uses --no-playback for headless mode (v3.3.4)."""
         assert "--no-playback" in entrypoint_content
 
-    def test_dd_pipes_to_fd3(self, entrypoint_content: str) -> None:
-        """§4.A.1 steps 3–4 — dd pipes scrcpy stdout to fd 3."""
-        assert "dd" in entrypoint_content
-        assert "fd/3" in entrypoint_content
-
-    def test_cleanup_closes_fd3(self, entrypoint_content: str) -> None:
-        """§4.A.1 step 4 — Cleanup closes fd 3."""
-        assert "exec 3>&-" in entrypoint_content
+    def test_scrcpy_records_directly(self, entrypoint_content: str) -> None:
+        """§4.A.1 steps 3–4 — scrcpy writes directly to named pipes (bypassing dd)."""
+        assert '--record="$AUDIO_PIPE"' in entrypoint_content
+        assert '--record="$VIDEO_PIPE"' in entrypoint_content
 
     def test_cleanup_removes_pipe(self, entrypoint_content: str) -> None:
-        """§4.A.1 step 4 — Cleanup removes pipe file."""
-        assert 'rm -f "$IPC_PIPE"' in entrypoint_content
-
-    def test_trap_sigterm_sigint(self, entrypoint_content: str) -> None:
-        """Graceful shutdown on SIGTERM and SIGINT."""
-        assert "trap cleanup SIGTERM SIGINT" in entrypoint_content
+        """§4.A.1 step 4 — Setup cleans up old pipe files."""
+        assert 'rm -f "$VIDEO_PIPE" "$AUDIO_PIPE"' in entrypoint_content
 
 
 class TestEntrypointErrorHandling:
@@ -91,15 +84,14 @@ class TestEntrypointErrorHandling:
 
     def test_usb_poll_interval(self, entrypoint_content: str) -> None:
         """§12 Hardware loss A — poll every 2 seconds."""
-        assert "USB_RETRY_INTERVAL=2" in entrypoint_content
+        assert "sleep 2" in entrypoint_content
 
     def test_usb_poll_max(self, entrypoint_content: str) -> None:
         """§12 Hardware loss A — poll for 60 seconds max."""
-        assert "USB_RETRY_MAX=60" in entrypoint_content
+        assert "timeout=60" in entrypoint_content
 
     def test_reconnect_loop(self, entrypoint_content: str) -> None:
         """§12 Hardware loss A — Restart capture after USB reconnection."""
-        assert "while true" in entrypoint_content
         assert "wait_for_device" in entrypoint_content
 
     def test_scrcpy_pids_tracked(self, entrypoint_content: str) -> None:

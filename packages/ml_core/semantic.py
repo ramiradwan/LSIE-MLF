@@ -33,7 +33,7 @@ SYSTEM_PROMPT: str = (
 LLM_PARAMS: dict[str, Any] = {
     "temperature": 0.0,
     "top_p": 1.0,
-    "max_tokens": 500,
+    "max_completion_tokens": 500,
     "seed": 42,
 }
 
@@ -117,7 +117,7 @@ class SemanticEvaluator:
                     # §8.1 — Deterministic inference parameters
                     temperature=LLM_PARAMS["temperature"],
                     top_p=LLM_PARAMS["top_p"],
-                    max_tokens=LLM_PARAMS["max_tokens"],
+                    max_completion_tokens=LLM_PARAMS["max_completion_tokens"],
                     seed=LLM_PARAMS["seed"],
                     # §8.2 — Structured JSON output
                     response_format={"type": "json_object"},

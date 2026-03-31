@@ -9,6 +9,7 @@ FROM nvidia/cuda:12.2.2-cudnn8-runtime-ubuntu22.04
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
+ENV PYTHONPATH=/app  
 
 # System deps including FFmpeg for audio resampling (§4.C.2)
 # and adb for drift correction (§4.C.1)
@@ -42,4 +43,4 @@ RUN mkdir -p /data/raw /data/interim /data/processed
 # §9.3 — Verify CUDA runtime is accessible at build time
 RUN python3.11 -c "import ctypes; ctypes.CDLL('libcudart.so')" || echo "CUDA runtime check (build-time only)"
 
-CMD ["celery", "-A", "services.worker.celery_app", "worker", "--loglevel=info"]
+CMD ["celery", "-A", "services.worker.celery_app", "worker", "--loglevel=info", "-I", "services.worker.tasks.inference"]

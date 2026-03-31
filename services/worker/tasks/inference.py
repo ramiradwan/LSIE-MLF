@@ -85,23 +85,58 @@ def process_segment(self: Task, payload: dict[str, Any]) -> dict[str, Any]:
     transcription: str = ""
     if audio_data:
         try:
+            import os
+            import subprocess
+
             from packages.ml_core.transcription import TranscriptionEngine
 
+            logger.info("=====================================================================")
+            logger.info("⏳ Initializing faster-whisper-large-v3...")
+            logger.info("📦 If this is the first run, a 3GB model is downloading. Please wait.")
+            logger.info("=====================================================================")
+
             engine = TranscriptionEngine()
-            # Write audio to temp file for faster-whisper
-            with tempfile.NamedTemporaryFile(suffix=".raw", delete=False) as tmp:
-                tmp.write(audio_data)
-                tmp_path = tmp.name
-            transcription = engine.transcribe(tmp_path)
+            logger.info("✅ Whisper model loaded/ready!")
+
+            # Write the raw PCM bytes to disk
+            with tempfile.NamedTemporaryFile(suffix=".raw", delete=False) as raw_file:
+                raw_file.write(audio_data)
+                raw_path = raw_file.name
+
+            # Use FFmpeg to translate the raw PCM into a pristine WAV container
+            wav_path = raw_path.replace(".raw", ".wav")
+            subprocess.run(
+                [
+                    "ffmpeg",
+                    "-y",
+                    "-loglevel",
+                    "error",
+                    "-f",
+                    "s16le",
+                    "-ar",
+                    "16000",
+                    "-ac",
+                    "1",
+                    "-i",
+                    raw_path,
+                    wav_path,
+                ],
+                check=True,
+            )
+
+            # Transcribe the pristine WAV file
+            transcription = engine.transcribe(wav_path)
+
+            # Clean up the temp files
+            os.remove(raw_path)
+            os.remove(wav_path)
+
         except Exception:
             # §12 Network disconnect D — retry once then null
             logger.warning("Transcription failed for %s", segment_id, exc_info=True)
 
     # --- §4.D.2 + §7.5 — Face Mesh + AU12 ---
     au12_intensity: float | None = None
-    # Note: Video frame extraction is handled by the capture container;
-    # audio-only segments may not have frame data available.
-    # When frame data is available, extract landmarks and compute AU12.
     frame_data: Any = payload.get("_frame_data")
     if frame_data is not None:
         try:
@@ -110,13 +145,22 @@ def process_segment(self: Task, payload: dict[str, Any]) -> dict[str, Any]:
             from packages.ml_core.au12 import AU12Normalizer
             from packages.ml_core.face_mesh import FaceMeshProcessor
 
+            # Read the spec-compliant resolution to reconstruct the 3D shape
+            media_source = payload.get("media_source", {})
+            res = media_source.get("resolution", [1920, 1080])
+            width, height = res[0], res[1]
+
             mesh = FaceMeshProcessor()
-            frame_array = np.frombuffer(frame_data, dtype=np.uint8)
+            # Fold flat bytes into 3D array and copy() to make it writeable
+            frame_array = (
+                np.frombuffer(frame_data, dtype=np.uint8).copy().reshape((height, width, 3))
+            )
             landmarks = mesh.extract_landmarks(frame_array)
 
             if landmarks is not None:
                 # §7.5 — AU12 scoring
                 normalizer = AU12Normalizer()
+                normalizer.b_neutral = 0.0  # Prevent uncalibrated crash on the single frame
                 au12_intensity = normalizer.compute_intensity(landmarks)
         except Exception:
             # §4.D contract — missing face returns null facial metrics
