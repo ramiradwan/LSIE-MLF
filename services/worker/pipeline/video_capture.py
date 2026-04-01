@@ -5,7 +5,7 @@ In-memory H.264 → numpy.ndarray bridge via PyAV for feeding
 MediaPipe FaceMesh from the video IPC Pipe.
 
 The Capture Container writes H.264 video in MKV streaming container
-to /tmp/ipc/video_stream.mkv (a named FIFO pipe). This module opens
+to /tmp/ipc/video_stream.mkv (an IPC Pipe). This module opens
 that pipe via PyAV's libavformat bindings and decodes frames directly
 into memory-view objects cast to numpy arrays — zero disk I/O.
 
@@ -15,7 +15,7 @@ memory during active processing. No persistence.
 Architecture rationale (from Stage 2 Deployment Research):
   - PyAV bypasses subprocess overhead by binding directly to FFmpeg's
     C libraries (libavformat, libavcodec)
-  - MKV is a streaming container (no seek required), safe for FIFO pipes
+  - MKV is a streaming container (no seek required), safe for IPC Pipes
   - Decoded frames are BGR24 numpy arrays ready for cv2.cvtColor → RGB
     as required by MediaPipe FaceMesh (§4.D.2)
   - Frame jitter must be minimized to prevent IOD fluctuation in AU12
@@ -52,7 +52,7 @@ class VideoCapture:
     """
     §4.D.2 / Gap G-03 — In-memory video frame capture via PyAV.
 
-    Opens the video IPC Pipe (MKV container over named FIFO) and
+    Opens the video IPC Pipe (MKV container over mkfifo pipe) and
     decodes H.264 frames into numpy arrays for MediaPipe FaceMesh.
 
     Runs a background thread to continuously decode frames into a
@@ -105,7 +105,7 @@ class VideoCapture:
 
         for attempt in range(VIDEO_PIPE_MAX_RETRIES):
             try:
-                # PyAV opens the named FIFO and reads MKV stream headers
+                # PyAV opens the IPC Pipe and reads MKV stream headers
                 # format=None lets PyAV auto-detect MKV from the pipe
                 container = av.open(
                     self._pipe_path,

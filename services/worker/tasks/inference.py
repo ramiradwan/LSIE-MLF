@@ -90,13 +90,10 @@ def process_segment(self: Task, payload: dict[str, Any]) -> dict[str, Any]:
 
             from packages.ml_core.transcription import TranscriptionEngine
 
-            logger.info("=====================================================================")
-            logger.info("⏳ Initializing faster-whisper-large-v3...")
-            logger.info("📦 If this is the first run, a 3GB model is downloading. Please wait.")
-            logger.info("=====================================================================")
+            logger.info("Initializing faster-whisper (first run downloads ~3GB model)")
 
             engine = TranscriptionEngine()
-            logger.info("✅ Whisper model loaded/ready!")
+            logger.info("Whisper model loaded")
 
             # Write the raw PCM bytes to disk
             with tempfile.NamedTemporaryFile(suffix=".raw", delete=False) as raw_file:

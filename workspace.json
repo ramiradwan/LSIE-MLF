@@ -1,8 +1,21 @@
 {
   "ci_commands": [
     {
+      "step": "ruff-lint",
+      "cmd": ["ruff", "check", "packages/", "services/", "tests/"]
+    },
+    {
+      "step": "ruff-format",
+      "cmd": ["ruff", "format", "--check", "packages/", "services/", "tests/"]
+    },
+    {
       "step": "mypy",
-      "cmd": ["mypy", "packages/", "tests/"]
+      "cmd": [
+        "mypy", "packages/", "services/", "tests/",
+        "--python-version", "3.11",
+        "--ignore-missing-imports",
+        "--explicit-package-bases"
+      ]
     },
     {
       "step": "tests",

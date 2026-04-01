@@ -369,7 +369,10 @@ class Orchestrator:
                     self._au12_normalizer.alpha,
                 )
 
-            # Convert PyAV VideoFrame to Numpy Array
+            # Convert to numpy array: PyAV VideoFrame has .to_ndarray(),
+            # but VideoCapture.get_latest_frame() already returns ndarray.
+            # The hasattr guard handles both paths — direct PyAV frames
+            # (from _decode_loop) and pre-converted ndarrays (from buffer).
             frame_array = (
                 frame.to_ndarray(format="bgr24") if hasattr(frame, "to_ndarray") else frame
             )
@@ -393,9 +396,10 @@ class Orchestrator:
                 self._au12_series.append({"timestamp_s": now_utc, "intensity": float(intensity)})
 
         except Exception as e:
-            # §12 — AU12 extraction failure must not crash the main loop.
-            # Frame is silently dropped; subsequent frames will retry.
-            logger.error("AU12 frame processing failed: %s", e, exc_info=True)
+            # §12 — AU12 extraction failure is non-critical (expected on
+            # frame drops, partial faces, or pipe jitter). Must not crash
+            # the main loop; subsequent frames will retry.
+            logger.debug("AU12 frame processing skipped: %s", e)
 
     def assemble_segment(
         self,
@@ -450,16 +454,18 @@ class Orchestrator:
             try:
                 frame = self.video_capture.get_latest_frame()
                 if frame is not None:
-                    # --- GAP FIX: Convert PyAV VideoFrame to Numpy Array ---
+                    # Convert to numpy array (same hasattr guard as _process_video_frame —
+                    # handles both PyAV VideoFrame and pre-converted ndarray from buffer)
                     frame_array = (
                         frame.to_ndarray(format="bgr24") if hasattr(frame, "to_ndarray") else frame
                     )
                     frame_data = frame_array.tobytes()
                     # Feed the true frame dimensions into the strict schema field
                     resolution = [frame_array.shape[1], frame_array.shape[0]]  # [width, height]
-            except Exception as e:
-                logger.error("Assemble segment frame extraction failed: %s", e)
-                pass
+            except Exception:
+                # §12 Worker crash — frame extraction failure is non-fatal;
+                # segment dispatches with frame_data=None (audio-only).
+                logger.warning("Assemble segment frame extraction failed", exc_info=True)
 
         # §6.1 — Construct and validate via Pydantic
         payload = InferenceHandoffPayload(
@@ -583,8 +589,8 @@ class Orchestrator:
             if chunk:
                 self._audio_buffer.extend(chunk)
 
-            # --- GAP FIX: Self-Heal Video Capture ---
-            # PyAV crashes silently if the named pipe drops a keyframe.
+            # §12 Worker crash C — Self-heal video capture thread.
+            # PyAV crashes silently if the IPC Pipe drops a keyframe.
             # If the thread dies, automatically revive it so we don't lose telemetry.
             if self.video_capture is None or not getattr(self.video_capture, "is_running", False):
                 try:
@@ -597,7 +603,9 @@ class Orchestrator:
                     self.video_capture.start()
                     logger.info("Video capture thread revived after pipe crash")
                 except Exception:
-                    pass
+                    # §12 Worker crash — video revival is best-effort; if it
+                    # fails, the next loop iteration will retry.
+                    logger.debug("Video revival failed", exc_info=True)
 
             # [v3.0] §4.D.2 + §7.4 — Process latest video frame for AU12
             self._process_video_frame()
