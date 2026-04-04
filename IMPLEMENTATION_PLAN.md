@@ -58,7 +58,7 @@ Fix all documentation that the ADO agent or the workspace-server reads as contex
 Create a formal tracking mechanism for spec deviations. The tech spec (v2.0) is a signed PDF that cannot be edited. Runtime deviations exist in code comments but are not consolidated. The ADO agent and review agent need a single authoritative source for "what the spec says" vs "what the implementation does."
 
 **2.1 `docs/SPEC_AMENDMENTS.md`**
-Create a registry of all known deviations from tech-spec-v2.0.pdf:
+Create a registry of all known deviations from tech-spec-v3.0.pdf:
 
 - SPEC-AMEND-001: §9.1 Worker image cuDNN 9 → cuDNN 8 for Pascal (SM 6.1) dp4a compatibility. Affects: Dockerfile, dependency matrix.
 - SPEC-AMEND-002: §9.1 Capture Container Ubuntu 22.04 → Ubuntu 24.04 for GLIBC 2.38+ (scrcpy v3.1+ prebuilt binary). Affects: Dockerfile.
@@ -135,7 +135,7 @@ The E2E debugging added emoji log lines (⏳, ✅, 📦) around Whisper model lo
 - _process_video_frame: the `hasattr(frame, "to_ndarray")` guard was added during E2E to handle both PyAV frames and raw numpy arrays. Add a comment explaining why this guard exists and when each branch fires.
 
 **4.3 Spec-section annotation sweep**
-Run a diff between the orchestrator.py we produced (with full §4.C.1, §12, §7.4 annotations) and the current repo version. Identify any spec-section comments that were lost during the E2E patching and restore them. Same for inference.py.
+Run a diff between the orchestrator.py we produced (with full §4.C.1, §12, §7A.4 annotations) and the current repo version. Identify any spec-section comments that were lost during the E2E patching and restore them. Same for inference.py.
 
 **4.4 `packages/ml_core/face_mesh.py` — Verify close() method exists**
 Confirm the close() method fix was applied during E2E. If not, add it.
@@ -170,7 +170,7 @@ Create the CI configuration file at repository root:
 Verify the workspace-server's `run_ci` function accepts this schema by checking its documentation. If it expects a different format, adapt accordingly.
 
 **5.2 `docs/content.json`** (if spec governance is needed for the ADO pipeline)
-This is the spec content index that the workspace-server's refactor planner validates against. Generation requires parsing the tech-spec-v2.0.pdf table of contents into a JSON structure with section IDs and titles. If the pipeline team has not yet defined the schema, defer this to the pipeline handoff and note it as a dependency.
+This is the spec content index that the workspace-server's refactor planner validates against. Generation requires parsing the tech-spec-v3.0.pdf table of contents into a JSON structure with section IDs and titles. If the pipeline team has not yet defined the schema, defer this to the pipeline handoff and note it as a dependency.
 
 **Why fifth:** Without workspace.json, the workspace-server falls back to hardcoded CI steps that may not match the project's actual CI configuration. The ADO agent's CI gate would use different commands than the GitHub Actions CI, producing inconsistent results.
 

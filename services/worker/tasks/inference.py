@@ -55,7 +55,7 @@ def process_segment(self: Task, payload: dict[str, Any]) -> dict[str, Any]:
     Executes the full Module D pipeline:
       1. Speech transcription (faster-whisper) — §4.D.1
       2. Face mesh landmark extraction (MediaPipe) — §4.D.2
-      3. AU12 intensity scoring — §7.5
+      3. AU12 intensity scoring — §7A.5
       4. Acoustic analysis (parselmouth) — §4.D.3
       5. Text preprocessing (spaCy) — §4.D.4
       6. Semantic evaluation (Azure OpenAI) — §8
@@ -132,7 +132,7 @@ def process_segment(self: Task, payload: dict[str, Any]) -> dict[str, Any]:
             # §12 Network disconnect D — retry once then null
             logger.warning("Transcription failed for %s", segment_id, exc_info=True)
 
-    # --- §4.D.2 + §7.5 — Face Mesh + AU12 ---
+    # --- §4.D.2 + §7A.5 — Face Mesh + AU12 ---
     au12_intensity: float | None = None
     frame_data: Any = payload.get("_frame_data")
     if frame_data is not None:
@@ -155,7 +155,7 @@ def process_segment(self: Task, payload: dict[str, Any]) -> dict[str, Any]:
             landmarks = mesh.extract_landmarks(frame_array)
 
             if landmarks is not None:
-                # §7.5 — AU12 scoring
+                # §7A.5 — AU12 scoring
                 normalizer = AU12Normalizer()
                 normalizer.b_neutral = 0.0  # Prevent uncalibrated crash on the single frame
                 au12_intensity = normalizer.compute_intensity(landmarks)

@@ -136,7 +136,7 @@ To trigger a stimulus injection (Thompson Sampling arm assignment) during a live
 
 ## Specification Reference
 
-This implementation is governed by the **LSIE-MLF Master Technical Specification v2.0** (Production Hardened, 15-Rule Deterministic Audit). All code decisions, module boundaries, interface contracts, error handling, and dependency versions are strictly pinpointed to the specification. See `docs/tech-spec-v2.0.pdf` for the full authoritative document.
+This implementation is governed by the **LSIE-MLF Master Technical Specification v3.0** (Production Hardened, 15-Rule Deterministic Audit). All code decisions, module boundaries, interface contracts, error handling, and dependency versions are strictly pinpointed to the specification. See `docs/tech-spec-v3.0.pdf` for the full authoritative document.
 
 ## License
 

@@ -19,13 +19,13 @@ class TestAU12Normalizer:
     """§7 — AU12 intensity computation."""
 
     def test_calibration_returns_zero(self, neutral_landmarks: LandmarkArray) -> None:
-        """§7.4 — During calibration, compute_intensity returns 0.0."""
+        """§7A.4 — During calibration, compute_intensity returns 0.0."""
         norm = AU12Normalizer()
         result = norm.compute_intensity(neutral_landmarks, is_calibrating=True)
         assert result == 0.0
 
     def test_calibration_sets_baseline(self, neutral_landmarks: LandmarkArray) -> None:
-        """§7.4 — Calibration accumulates buffer and sets b_neutral."""
+        """§7A.4 — Calibration accumulates buffer and sets b_neutral."""
         norm = AU12Normalizer()
         for _ in range(10):
             norm.compute_intensity(neutral_landmarks, is_calibrating=True)
@@ -33,7 +33,7 @@ class TestAU12Normalizer:
         assert norm.b_neutral > 0.0
 
     def test_inference_without_calibration_raises(self, neutral_landmarks: LandmarkArray) -> None:
-        """§7.5 — ValueError if baseline not calibrated."""
+        """§7A.5 — ValueError if baseline not calibrated."""
         norm = AU12Normalizer()
         with pytest.raises(ValueError, match="Baseline not calibrated"):
             norm.compute_intensity(neutral_landmarks, is_calibrating=False)
@@ -41,7 +41,7 @@ class TestAU12Normalizer:
     def test_smiling_scores_higher(
         self, neutral_landmarks: LandmarkArray, smiling_landmarks: LandmarkArray
     ) -> None:
-        """§7.4 — Wider mouth yields higher AU12 score."""
+        """§7A.4 — Wider mouth yields higher AU12 score."""
         norm = AU12Normalizer()
         for _ in range(10):
             norm.compute_intensity(neutral_landmarks, is_calibrating=True)
@@ -50,7 +50,7 @@ class TestAU12Normalizer:
         assert smile_score > neutral_score
 
     def test_output_clamped_to_five(self) -> None:
-        """§7.5 — AU12 output hard-clamped to 5.0."""
+        """§7A.5 — AU12 output hard-clamped to 5.0."""
         norm = AU12Normalizer(alpha=5.0)
         norm.b_neutral = 0.0
         norm.calibration_buffer = [0.0]
@@ -66,7 +66,7 @@ class TestAU12Normalizer:
         assert score <= 5.0
 
     def test_epsilon_guard_zero_iod(self) -> None:
-        """§7.5 — Returns 0.0 when IOD < epsilon (degenerate face)."""
+        """§7A.5 — Returns 0.0 when IOD < epsilon (degenerate face)."""
         norm = AU12Normalizer()
         lm = np.zeros((478, 3), dtype=np.float64)
         # All eye landmarks at same point → IOD ≈ 0

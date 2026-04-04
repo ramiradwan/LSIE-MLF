@@ -9,7 +9,7 @@ v2.0 Corrections: landmark indexing via landmarks[i], epsilon guard for
 IOD→0, output hard-clamped to 5.0, full type annotations.
 
 v3.0 — Mathematical Recipe Alignment:
-  - Default alpha_scale changed from 5.0 → 6.0 (§7.4, FACS-anchored
+  - Default alpha_scale changed from 5.0 → 6.0 (§7A.4, FACS-anchored
     derivation: 95th percentile Duchenne deviation ≈0.15 maps to 0.90).
   - Added compute_bounded_intensity() returning [0.0, 1.0] via tanh
     soft-saturation for fractional Beta-Bernoulli Thompson Sampling.
@@ -27,7 +27,7 @@ from typing import Any
 import numpy as np
 import numpy.typing as npt
 
-# §7.5 — Epsilon guard to avoid division by zero when IOD approaches zero.
+# §7A.5 — Epsilon guard to avoid division by zero when IOD approaches zero.
 EPSILON: float = 1e-6
 
 # v3.0 — Default alpha_scale derived from FACS-anchored calibration:
@@ -40,7 +40,7 @@ DEFAULT_ALPHA_SCALE: float = 6.0
 
 class AU12Normalizer:
     """
-    §7.4–7.5 — AU12 intensity scorer.
+    §7A.4–7A.5 — AU12 intensity scorer.
 
     Calibration phase computes a neutral baseline B_neutral from rolling
     average of D_mouth / IOD. Inference phase returns a FACS score via
@@ -65,14 +65,14 @@ class AU12Normalizer:
         """
         Extract IOD and D_mouth from a (478, 3) landmark array.
 
-        §7.2 — Landmark extraction
-        §7.3 — IOD derivation
-        §7.4 — D_mouth computation
+        §7A.2 — Landmark extraction
+        §7A.3 — IOD derivation
+        §7A.4 — D_mouth computation
 
         Returns:
             (iod, d_mouth) tuple, or None if IOD < epsilon (degenerate face).
         """
-        # §7.2 — Landmark extraction: eye corners and lip corners
+        # §7A.2 — Landmark extraction: eye corners and lip corners
         left_eye_outer: npt.NDArray[np.floating[Any]] = landmarks[33]
         left_eye_inner: npt.NDArray[np.floating[Any]] = landmarks[133]
         right_eye_inner: npt.NDArray[np.floating[Any]] = landmarks[362]
@@ -80,21 +80,21 @@ class AU12Normalizer:
         left_lip_corner: npt.NDArray[np.floating[Any]] = landmarks[61]
         right_lip_corner: npt.NDArray[np.floating[Any]] = landmarks[291]
 
-        # §7.3 — IOD derivation: 3D Euclidean distance between eye centers
+        # §7A.3 — IOD derivation: 3D Euclidean distance between eye centers
         left_eye_center: npt.NDArray[np.floating[Any]] = (left_eye_outer + left_eye_inner) / 2.0
         right_eye_center: npt.NDArray[np.floating[Any]] = (right_eye_inner + right_eye_outer) / 2.0
         iod: float = float(np.linalg.norm(right_eye_center - left_eye_center))
 
-        # §7.5 — Epsilon guard: degenerate face where IOD → 0
+        # §7A.5 — Epsilon guard: degenerate face where IOD → 0
         if iod < EPSILON:
             return None
 
-        # §7.4 — D_mouth: 3D Euclidean distance between lip corners
+        # §7A.4 — D_mouth: 3D Euclidean distance between lip corners
         d_mouth: float = float(np.linalg.norm(right_lip_corner - left_lip_corner))
         return (iod, d_mouth)
 
     def _update_calibration(self, ratio: float) -> None:
-        """§7.4 — Accumulate baseline buffer during calibration."""
+        """§7A.4 — Accumulate baseline buffer during calibration."""
         self.calibration_buffer.append(ratio)
         self.b_neutral = float(np.mean(self.calibration_buffer))
 
@@ -105,8 +105,8 @@ class AU12Normalizer:
         Exposed for per-subject range normalization in the reward pipeline.
         The reward module uses this to estimate x_max during calibration.
 
-        §7.3 — IOD derivation
-        §7.4 — D_mouth / IOD ratio
+        §7A.3 — IOD derivation
+        §7A.4 — D_mouth / IOD ratio
 
         Returns:
             Raw ratio, or None if face is degenerate (IOD < epsilon).
@@ -125,9 +125,9 @@ class AU12Normalizer:
         """
         Compute AU12 intensity from a (478, 3) landmark array.
 
-        §7.2 — Landmark extraction
-        §7.3 — IOD derivation
-        §7.4 — Distance, baseline calibration, and scoring
+        §7A.2 — Landmark extraction
+        §7A.3 — IOD derivation
+        §7A.4 — Distance, baseline calibration, and scoring
 
         Args:
             landmarks: MediaPipe Face Mesh output, shape (478, 3).
@@ -150,14 +150,14 @@ class AU12Normalizer:
             self._update_calibration(ratio)
             return 0.0
 
-        # §7.5 — Inference requires a calibrated baseline
+        # §7A.5 — Inference requires a calibrated baseline
         if self.b_neutral is None:
             raise ValueError("Baseline not calibrated")
 
-        # §7.4 — FACS score: linear projection from baseline deviation
+        # §7A.4 — FACS score: linear projection from baseline deviation
         score: float = self.alpha * (ratio - self.b_neutral)
 
-        # §7.5 — Hard-clamp to [0.0, 5.0] (backward compatible)
+        # §7A.5 — Hard-clamp to [0.0, 5.0] (backward compatible)
         return float(min(max(score, 0.0), 5.0))
 
     def compute_bounded_intensity(

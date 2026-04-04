@@ -6,7 +6,7 @@ and external WebSocket events. Manages audio resampling pipeline
 and segment assembly for handoff to Module D.
 
 v3.0 additions:
-  - Per-frame AU12 accumulation via compute_bounded_intensity() (§7.4)
+  - Per-frame AU12 accumulation via compute_bounded_intensity() (§7A.4)
   - Stimulus injection timestamping for reward window anchoring (§4.E.1)
   - Calibration lifecycle: pre-stimulus B_neutral → post-stimulus scoring
   - Payload wiring: _au12_series, _stimulus_time, _x_max fields
@@ -244,7 +244,7 @@ class Orchestrator:
     inference (§2 step 5).
 
     v3.0 additions:
-      - Per-frame AU12 telemetry accumulation (§7.4, §4.D.2)
+      - Per-frame AU12 telemetry accumulation (§7A.4, §4.D.2)
       - Stimulus injection timestamping (§4.E.1)
       - Calibration lifecycle: B_neutral accumulation → scoring transition
       - Payload wiring for reward pipeline (_au12_series, _stimulus_time)
@@ -295,7 +295,7 @@ class Orchestrator:
         self._au12_normalizer: Any = None
 
         # [v3.0] Calibration state: True until operator injects greeting.
-        # While True, AU12Normalizer accumulates B_neutral baseline (§7.4).
+        # While True, AU12Normalizer accumulates B_neutral baseline (§7A.4).
         self._is_calibrating: bool = True
 
         # [v3.0] FaceMesh processor — lazy-init on first frame
@@ -314,7 +314,7 @@ class Orchestrator:
         inference mode. All pre-stimulus frames contributed to B_neutral;
         all post-stimulus frames will be scored against that baseline.
 
-        §7.4 — Calibration phase ends at stimulus onset.
+        §7A.4 — Calibration phase ends at stimulus onset.
         §4.E.1 — Thompson Sampling experiment arm deployment trigger.
         """
         self._stimulus_time = self.drift_corrector.correct_timestamp(time.time())
@@ -331,7 +331,7 @@ class Orchestrator:
         [v3.0] Grab the latest video frame and compute AU12 intensity.
 
         §4.D.2 — MediaPipe FaceMesh landmark extraction
-        §7.4 — AU12 baseline calibration (pre-stimulus) and scoring (post-stimulus)
+        §7A.4 — AU12 baseline calibration (pre-stimulus) and scoring (post-stimulus)
 
         During calibration (before stimulus injection):
           - compute_bounded_intensity(is_calibrating=True) accumulates B_neutral
@@ -383,7 +383,7 @@ class Orchestrator:
                 # §4.D contract — missing face returns null facial metrics
                 return
 
-            # §7.4 — Compute bounded AU12 intensity in [0.0, 1.0]
+            # §7A.4 — Compute bounded AU12 intensity in [0.0, 1.0]
             intensity: float = self._au12_normalizer.compute_bounded_intensity(
                 landmarks,
                 is_calibrating=self._is_calibrating,
@@ -607,7 +607,7 @@ class Orchestrator:
                     # fails, the next loop iteration will retry.
                     logger.debug("Video revival failed", exc_info=True)
 
-            # [v3.0] §4.D.2 + §7.4 — Process latest video frame for AU12
+            # [v3.0] §4.D.2 + §7A.4 — Process latest video frame for AU12
             self._process_video_frame()
 
             # §2 step 5 — When we have 30s of audio, assemble segment

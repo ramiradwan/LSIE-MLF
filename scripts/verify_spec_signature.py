@@ -1,7 +1,7 @@
 """
 Spec Signature Verification — Trust Gate
 
-Verifies that docs/tech-spec-v2.0.pdf carries a valid digital signature
+Verifies that docs/tech-spec-v3.0.pdf carries a valid digital signature
 from a trusted signer before an AI agent references it as authoritative.
 Enforces strict Azure Artifact Signing PAdES-LTA pipeline structure and
 pins the trusted Root CA certificate by SHA-256 fingerprint.
@@ -12,7 +12,7 @@ You must inspect the signing certificate in the spec PDF, identify the
 signer organization, and explicitly add it to your .env file.
 
 Usage:
-    python scripts/verify_spec_signature.py docs/tech-spec-v2.0.pdf
+    python scripts/verify_spec_signature.py docs/tech-spec-v3.0.pdf
 
 Exit codes:
     0 — Signature valid, signer trusted

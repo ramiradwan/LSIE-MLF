@@ -19,7 +19,7 @@ Architecture rationale (from Stage 2 Deployment Research):
   - Decoded frames are BGR24 numpy arrays ready for cv2.cvtColor → RGB
     as required by MediaPipe FaceMesh (§4.D.2)
   - Frame jitter must be minimized to prevent IOD fluctuation in AU12
-    normalization (§7.3) and Thompson Sampling posterior corruption
+    normalization (§7A.3) and Thompson Sampling posterior corruption
 """
 
 from __future__ import annotations

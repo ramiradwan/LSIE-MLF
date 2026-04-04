@@ -3,7 +3,7 @@ Tests for services/worker/pipeline/stimulus.py — Phase 3.2 gap-fix coverage.
 
 Verifies the two stimulus injection mechanisms:
   §4.E.1 — Auto-trigger (E2E testing) and Redis pub/sub (production).
-  §7.4 — Calibration phase ends at stimulus onset.
+  §7A.4 — Calibration phase ends at stimulus onset.
 """
 
 from __future__ import annotations

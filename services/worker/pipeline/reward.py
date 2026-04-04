@@ -14,7 +14,7 @@ The final gated reward r_t ∈ [0, 1] feeds directly into the fractional
 Beta-Bernoulli update: α += r_t, β += (1 - r_t).
 
 Spec references:
-  §7.4 — AU12 baseline calibration and scoring
+  §7A.4 — AU12 baseline calibration and scoring
   §4.E.1 — Thompson Sampling reward update
   §8.2 — SemanticEvaluationResult (is_match boolean gate)
   §11 — Variable Extraction Matrix (AU12 Intensity Score)

@@ -9,7 +9,7 @@ TRUST_LOCK="/tmp/.lsie_spec_verified.lock"
 # Spec trust gate is now enforced at the system level once per session because Claude bypassed the 'gate' in /implement-file
 
 if [[ ! -f "$TRUST_LOCK" ]]; then
-    python scripts/verify_spec_signature.py docs/tech-spec-v2.0.pdf > /dev/null 2>&1
+    python scripts/verify_spec_signature.py docs/tech-spec-v3.0.pdf > /dev/null 2>&1
     if [[ $? -ne 0 ]]; then
         echo "❌ Error: Spec signature verification failed." >&2
         echo "Context: Attempted to edit '$FILE' without a verified spec." >&2

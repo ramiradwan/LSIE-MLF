@@ -1,8 +1,8 @@
 # LSIE-MLF Specification Reference
 
-This file extracts the key implementation-governing details from the Master Technical Specification v2.0. Claude Code loads this on demand via the `@docs/SPEC_REFERENCE.md` import in CLAUDE.md.
+This file extracts the key implementation-governing details from the Master Technical Specification v3.0. Claude Code loads this on demand via the `@docs/SPEC_REFERENCE.md` import in CLAUDE.md.
 
-For the full spec, see `docs/tech-spec-v2.0.pdf`.
+For the full spec, see `docs/tech-spec-v3.0.pdf`.
 
 ## Data flow pipeline (§2)
 
@@ -31,4 +31,4 @@ redis:7-alpine → postgres:16-alpine → stream_scrcpy(ubuntu:22.04+scrcpy) →
 
 ### SPEC-AMEND-001: Worker GPU Architecture Downgrade
 
-Section 9.1 of tech-spec-v2.0 mandated cuDNN 9, which lacks SM 6.1 binaries and causes a phantom docker tag CI failure. The spec is formally amended to use `nvidia/cuda:12.2.2-cudnn8-runtime-ubuntu22.04`. To meet the 30ms latency target on the GTX 1080 Ti without FP16 capability, `faster-whisper` is explicitly locked to `compute_type="int8"` to utilize dp4a vectorization. OCI runtime overrides (NVIDIA_DISABLE_REQUIRE=1) and JIT compilation are strictly prohibited due to CVE-2024-0132 and thermal constraints.
+Section 9.1 of tech-spec-v3.0 mandated cuDNN 9, which lacks SM 6.1 binaries and causes a phantom docker tag CI failure. The spec is formally amended to use `nvidia/cuda:12.2.2-cudnn8-runtime-ubuntu22.04`. To meet the 30ms latency target on the GTX 1080 Ti without FP16 capability, `faster-whisper` is explicitly locked to `compute_type="int8"` to utilize dp4a vectorization. OCI runtime overrides (NVIDIA_DISABLE_REQUIRE=1) and JIT compilation are strictly prohibited due to CVE-2024-0132 and thermal constraints.

@@ -1,6 +1,6 @@
 # LSIE-MLF Specification Amendment Registry
 
-This document tracks all known deviations from the **Master Technical Specification v2.0** (`docs/tech-spec-v2.0.pdf`). The spec is a signed PDF that cannot be edited. This registry is the single authoritative source for "what the spec says" vs "what the implementation does."
+This document tracks all known deviations from the **Master Technical Specification v3.0** (`docs/tech-spec-v3.0.pdf`). The spec is a signed PDF that cannot be edited. This registry is the single authoritative source for "what the spec says" vs "what the implementation does."
 
 Each amendment was made for a documented technical reason. The review agent should treat these as accepted deviations, not violations.
 

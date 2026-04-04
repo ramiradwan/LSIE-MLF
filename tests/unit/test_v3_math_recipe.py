@@ -10,8 +10,8 @@ Validates:
   - ThompsonSamplingEngine fractional update
 
 Spec references:
-  §7.4 — AU12 scoring and calibration
-  §7.5 — epsilon guard and bounds
+  §7A.4 — AU12 scoring and calibration
+  §7A.5 — epsilon guard and bounds
   §4.E.1 — Thompson Sampling fractional Beta-Bernoulli update
   §8.2 — Semantic validity gate
 """
@@ -122,13 +122,13 @@ class TestAU12NormalizerV3:
         assert score <= 5.0
 
     def test_calibration_returns_zero_bounded(self) -> None:
-        """§7.4 — Calibration returns 0.0 for both output methods."""
+        """§7A.4 — Calibration returns 0.0 for both output methods."""
         norm = AU12Normalizer()
         lm = _make_landmarks()
         assert norm.compute_bounded_intensity(lm, is_calibrating=True) == 0.0
 
     def test_inference_without_calibration_raises_bounded(self) -> None:
-        """§7.5 — ValueError if baseline not calibrated."""
+        """§7A.5 — ValueError if baseline not calibrated."""
         norm = AU12Normalizer()
         lm = _make_landmarks()
         with pytest.raises(ValueError, match="Baseline not calibrated"):

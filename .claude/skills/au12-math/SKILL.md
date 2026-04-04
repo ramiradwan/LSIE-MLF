@@ -3,20 +3,20 @@ name: au12-math
 description: AU12 facial action unit intensity computation from MediaPipe landmarks. Use when working on packages/ml_core/au12.py, face_mesh.py, or any code computing facial metrics, landmark extraction, IOD normalization, or FACS scoring.
 ---
 
-# AU12 Mathematical Specification (§7)
+# AU12 Mathematical Specification (§7A)
 
-## Landmark indices (§7.1–7.2)
+## Landmark indices (§7A.1–7A.2)
 
 Mouth corners: landmarks[61] (left), landmarks[291] (right).
 Left eye: landmarks[33] (outer), landmarks[133] (inner).
 Right eye: landmarks[362] (inner), landmarks[263] (outer).
 
-## IOD computation (§7.3)
+## IOD computation (§7A.3)
 
 Eye centers are midpoints: `e_l = mean([L33, L133], axis=0)`, `e_r = mean([L362, L263], axis=0)`.
 IOD = 3D Euclidean distance between e_l and e_r.
 
-## AU12 scoring (§7.4)
+## AU12 scoring (§7A.4)
 
 ```
 d_mouth = norm(L291 - L61)            # 3D Euclidean
