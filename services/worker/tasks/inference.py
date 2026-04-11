@@ -41,6 +41,19 @@ _FORWARD_FIELDS: tuple[str, ...] = (
 # See services/worker/pipeline/serialization.py for the encode/decode helpers.
 _BINARY_FIELDS: list[str] = ["_audio_data", "_frame_data"]
 
+# §2.7 — Parameterized INSERT for encounter audit trail persistence.
+_INSERT_ENCOUNTER_LOG_SQL: str = """
+    INSERT INTO encounter_log (
+        session_id, segment_id, experiment_id, arm, timestamp_utc,
+        gated_reward, p90_intensity, semantic_gate, is_valid,
+        n_frames, baseline_neutral, stimulus_time
+    ) VALUES (
+        %(session_id)s, %(segment_id)s, %(experiment_id)s, %(arm)s, %(timestamp_utc)s,
+        %(gated_reward)s, %(p90_intensity)s, %(semantic_gate)s, %(is_valid)s,
+        %(n_frames)s, %(baseline_neutral)s, %(stimulus_time)s
+    )
+"""
+
 
 @celery_app.task(  # type: ignore[untyped-decorator]
     bind=True,
@@ -238,6 +251,78 @@ def process_segment(self: Task, payload: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
+def _log_encounter(
+    store: Any,
+    metrics: dict[str, Any],
+    experiment_id: str,
+    arm: str,
+    result: Any,
+    stimulus_time: float | None,
+) -> None:
+    """
+    §4.E.1 — Persist RewardResult to encounter_log for audit trail.
+
+    §12.1 Module E — Failure must not propagate. If the INSERT fails,
+    log a warning and continue. The Thompson Sampling update has already
+    succeeded (or been correctly skipped) at this point.
+
+    Args:
+        store: Connected MetricsStore instance.
+        metrics: The full metrics dict from Module D (for session/segment IDs).
+        experiment_id: Thompson Sampling experiment ID.
+        arm: The arm that was tested in this encounter.
+        result: RewardResult from compute_reward().
+        stimulus_time: Drift-corrected epoch of stimulus injection stored in
+            encounter_log.stimulus_time as DOUBLE PRECISION. The wall-clock
+            observation timestamp remains metrics["timestamp_utc"] and maps to
+            encounter_log.timestamp_utc (TIMESTAMPTZ).
+    """
+    try:
+        conn = store._get_conn()
+        try:
+            # §2.7 typing is enforced by the encounter_log schema:
+            # timestamp_utc -> TIMESTAMPTZ, and reward/stimulus scalars ->
+            # DOUBLE PRECISION (gated_reward, p90_intensity,
+            # baseline_neutral, stimulus_time).
+            with conn.cursor() as cur:
+                cur.execute(
+                    _INSERT_ENCOUNTER_LOG_SQL,
+                    {
+                        "session_id": metrics.get("session_id"),
+                        "segment_id": metrics.get("segment_id"),
+                        "experiment_id": experiment_id,
+                        "arm": arm,
+                        "timestamp_utc": metrics.get("timestamp_utc"),
+                        "gated_reward": result.gated_reward,
+                        "p90_intensity": result.p90_intensity,
+                        "semantic_gate": result.semantic_gate,
+                        "is_valid": result.is_valid,
+                        "n_frames": result.n_frames_in_window,
+                        "baseline_neutral": result.baseline_b_neutral,
+                        "stimulus_time": stimulus_time,
+                    },
+                )
+            conn.commit()
+            logger.debug(
+                "Encounter logged: experiment=%s arm=%s reward=%.4f valid=%s",
+                experiment_id,
+                arm,
+                result.gated_reward,
+                result.is_valid,
+            )
+        finally:
+            store._put_conn(conn)
+    except Exception:
+        # §12.1 Module E — encounter_log failure must not crash persist_metrics.
+        # The TS update already succeeded. Log and continue.
+        logger.warning(
+            "Failed to log encounter for experiment=%s arm=%s",
+            experiment_id,
+            arm,
+            exc_info=True,
+        )
+
+
 @celery_app.task(  # type: ignore[untyped-decorator]
     bind=True,
     max_retries=5,
@@ -256,6 +341,9 @@ def persist_metrics(self: Task, metrics: dict[str, Any]) -> None:
         metrics: Structured inference results from Module D.
                  Includes _active_arm, _experiment_id, _expected_greeting,
                  and (v3.0) _au12_series, _stimulus_time from the Orchestrator.
+                 timestamp_utc persists as TIMESTAMPTZ, while _stimulus_time
+                 remains the drift-corrected epoch used by the reward pipeline
+                 and is stored in encounter_log.stimulus_time as DOUBLE PRECISION.
     """
     from services.worker.pipeline.analytics import MetricsStore, ThompsonSamplingEngine
 
@@ -305,6 +393,9 @@ def persist_metrics(self: Task, metrics: dict[str, Any]) -> None:
         experiment_id: str = metrics.get("_experiment_id", "")
         au12_raw_series: list[dict[str, Any]] | None = metrics.get("_au12_series")
         stimulus_time: float | None = metrics.get("_stimulus_time")
+        # §2.7 cross-artifact typing: timestamp_utc captures the wall-clock
+        # observation time as TIMESTAMPTZ, while stimulus_time is the reward
+        # pipeline's drift-corrected epoch scalar persisted as DOUBLE PRECISION.
         x_max: float | None = metrics.get("_x_max")
 
         if (
@@ -364,6 +455,14 @@ def persist_metrics(self: Task, metrics: dict[str, Any]) -> None:
                         result_reward.semantic_gate,
                         result_reward.n_frames_in_window,
                     )
+                    _log_encounter(
+                        store,
+                        metrics,
+                        experiment_id,
+                        active_arm,
+                        result_reward,
+                        stimulus_time,
+                    )
                 else:
                     logger.info(
                         "Thompson Sampling update SKIPPED (invalid): "
@@ -371,6 +470,14 @@ def persist_metrics(self: Task, metrics: dict[str, Any]) -> None:
                         experiment_id,
                         active_arm,
                         result_reward.n_frames_in_window,
+                    )
+                    _log_encounter(
+                        store,
+                        metrics,
+                        experiment_id,
+                        active_arm,
+                        result_reward,
+                        stimulus_time,
                     )
 
             except Exception:

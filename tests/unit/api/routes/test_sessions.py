@@ -117,7 +117,7 @@ class TestListSessions:
             patch("services.api.routes.sessions.get_connection", return_value=mock_conn),
             patch("services.api.routes.sessions.put_connection"),
         ):
-            result = asyncio.get_event_loop().run_until_complete(list_sessions())
+            result = asyncio.run(list_sessions())
 
         assert len(result) == 1
         assert result[0]["session_id"] == "sess-1"
@@ -133,7 +133,7 @@ class TestListSessions:
             patch("services.api.routes.sessions.get_connection", return_value=mock_conn),
             patch("services.api.routes.sessions.put_connection") as mock_put,
         ):
-            asyncio.get_event_loop().run_until_complete(list_sessions())
+            asyncio.run(list_sessions())
 
         mock_put.assert_called_once_with(mock_conn)
 
@@ -195,7 +195,7 @@ class TestGetSession:
             patch("services.api.routes.sessions.get_connection", return_value=mock_conn),
             patch("services.api.routes.sessions.put_connection"),
         ):
-            result = asyncio.get_event_loop().run_until_complete(get_session("sess-1"))
+            result = asyncio.run(get_session("sess-1"))
 
         assert result["session_id"] == "sess-1"
         assert "summary" in result
@@ -217,7 +217,7 @@ class TestGetSession:
             patch("services.api.routes.sessions.put_connection"),
             pytest.raises(Exception) as exc_info,
         ):
-            asyncio.get_event_loop().run_until_complete(get_session("nonexistent"))
+            asyncio.run(get_session("nonexistent"))
 
         assert exc_info.value.status_code == 404  # type: ignore[attr-defined]
 
@@ -236,7 +236,7 @@ class TestGetSession:
             patch("services.api.routes.sessions.put_connection"),
             contextlib.suppress(Exception),
         ):
-            asyncio.get_event_loop().run_until_complete(get_session("my-session"))
+            asyncio.run(get_session("my-session"))
 
         call_args = cursor.execute.call_args_list[0]
         assert "%(session_id)s" in call_args[0][0]
@@ -257,6 +257,6 @@ class TestGetSession:
             patch("services.api.routes.sessions.put_connection") as mock_put,
             contextlib.suppress(Exception),
         ):
-            asyncio.get_event_loop().run_until_complete(get_session("nonexistent"))
+            asyncio.run(get_session("nonexistent"))
 
         mock_put.assert_called_once_with(mock_conn)

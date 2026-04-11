@@ -90,7 +90,7 @@ class TestGroundTruthIngester:
             "payload": {"gift_id": 123},
         }
 
-        asyncio.get_event_loop().run_until_complete(ingester._handle_event(event))
+        asyncio.run(ingester._handle_event(event))
 
         assert len(ingester.event_buffer) == 1
         staged = ingester.event_buffer[0]
@@ -109,9 +109,8 @@ class TestGroundTruthIngester:
         event1: dict[str, Any] = {"event_type": "gift", "payload": {}}
         event2: dict[str, Any] = {"event_type": "like", "payload": {}}
 
-        loop = asyncio.get_event_loop()
-        loop.run_until_complete(ingester._handle_event(event1))
-        loop.run_until_complete(ingester._handle_event(event2))
+        asyncio.run(ingester._handle_event(event1))
+        asyncio.run(ingester._handle_event(event2))
 
         # Combo callback should have been called
         combo_callback.assert_called_once()
@@ -127,14 +126,14 @@ class TestGroundTruthIngester:
         event: dict[str, Any] = {"event_type": "test"}
 
         # Should not raise
-        asyncio.get_event_loop().run_until_complete(ingester._handle_event(event))
+        asyncio.run(ingester._handle_event(event))
 
     def test_handle_event_uses_default_unique_id(self) -> None:
         """When event lacks uniqueId, use ingester's unique_id."""
         ingester = GroundTruthIngester(unique_id="fallback_user", signer=MockSigner())
         event: dict[str, Any] = {"event_type": "chat", "payload": {"msg": "hi"}}
 
-        asyncio.get_event_loop().run_until_complete(ingester._handle_event(event))
+        asyncio.run(ingester._handle_event(event))
 
         staged = ingester.event_buffer[0]
         assert staged["uniqueId"] == "fallback_user"
@@ -160,7 +159,7 @@ class TestGroundTruthIngester:
         ingester.connect = AsyncMock(side_effect=ConnectionError("refused"))  # type: ignore[assignment]
 
         with patch("services.worker.pipeline.ground_truth.asyncio.sleep", new_callable=AsyncMock):
-            asyncio.get_event_loop().run_until_complete(ingester.run())
+            asyncio.run(ingester.run())
 
         assert not ingester._running
 
@@ -175,7 +174,7 @@ class TestGroundTruthIngester:
             sleep_calls.append(delay)
 
         with patch("services.worker.pipeline.ground_truth.asyncio.sleep", side_effect=mock_sleep):
-            asyncio.get_event_loop().run_until_complete(ingester.run())
+            asyncio.run(ingester.run())
 
         # §12.1 — 1, 2, 4, 8, 16, 30, 30, 30, 30, 30
         assert sleep_calls[0] == 1.0
@@ -193,10 +192,9 @@ class TestGroundTruthIngester:
             event_buffer=small_buf,
         )
 
-        loop = asyncio.get_event_loop()
         for i in range(5):
             event: dict[str, Any] = {"event_type": f"event_{i}", "payload": {}}
-            loop.run_until_complete(ingester._handle_event(event))
+            asyncio.run(ingester._handle_event(event))
 
         # maxlen=3 means oldest events evicted
         assert len(ingester.event_buffer) <= 3

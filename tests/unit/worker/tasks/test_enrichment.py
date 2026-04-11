@@ -56,7 +56,11 @@ def _get_scrape_context() -> Any:
     mock_app = MagicMock()
     mock_app.task.return_value = lambda f: f
 
-    with patch("services.worker.celery_app.celery_app", mock_app):
+    # Import the module directly to bypass Python 3.13's string resolution
+    import services.worker.celery_app
+
+    # Use patch.object instead of a string path
+    with patch.object(services.worker.celery_app, "celery_app", mock_app):
         # Force reimport with mocked celery
         mod_name = "services.worker.tasks.enrichment"
         if mod_name in sys.modules:

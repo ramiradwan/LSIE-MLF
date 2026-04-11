@@ -5,7 +5,7 @@
 -- docker-entrypoint-initdb.d/ mount. All tables use IF NOT EXISTS for
 -- idempotent re-runs.
 --
--- §2 step 7 — All metrics stored as DOUBLE PRECISION, timestamps as TIMESTAMPTZ.
+-- §2.7 — Scalar analytical fields use their §11-defined SQL types; floating-point metrics use DOUBLE PRECISION, integral gates/counts retain INTEGER or BOOLEAN, and timestamps use TIMESTAMPTZ.
 -- §5.2 — Only anonymized analytical metrics are persisted.
 -- =============================================================================
 
@@ -74,6 +74,24 @@ CREATE TABLE IF NOT EXISTS experiments (
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- §4.E.1 / §11 — Encounter Audit Log (reward computation trace)
+CREATE TABLE IF NOT EXISTS encounter_log (
+    id                  BIGSERIAL PRIMARY KEY,
+    session_id          UUID NOT NULL REFERENCES sessions(session_id),
+    segment_id          TEXT NOT NULL,
+    experiment_id       TEXT NOT NULL,
+    arm                 TEXT NOT NULL,
+    timestamp_utc       TIMESTAMPTZ NOT NULL,
+    gated_reward        DOUBLE PRECISION NOT NULL,
+    p90_intensity       DOUBLE PRECISION NOT NULL,
+    semantic_gate       INTEGER NOT NULL,
+    is_valid            BOOLEAN NOT NULL,
+    n_frames            INTEGER NOT NULL,
+    baseline_neutral    DOUBLE PRECISION,
+    stimulus_time       DOUBLE PRECISION,
+    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 -- §11 — External Context Metadata
 CREATE TABLE IF NOT EXISTS context (
     id              BIGSERIAL PRIMARY KEY,
@@ -90,3 +108,5 @@ CREATE INDEX IF NOT EXISTS idx_transcripts_session ON transcripts(session_id, ti
 CREATE INDEX IF NOT EXISTS idx_evaluations_session ON evaluations(session_id, timestamp_utc);
 CREATE INDEX IF NOT EXISTS idx_events_session ON events(session_id, timestamp_utc);
 CREATE INDEX IF NOT EXISTS idx_experiments_lookup ON experiments(experiment_id, arm);
+CREATE INDEX IF NOT EXISTS idx_encounter_log_experiment ON encounter_log(experiment_id, arm);
+CREATE INDEX IF NOT EXISTS idx_encounter_log_session ON encounter_log(session_id, timestamp_utc);

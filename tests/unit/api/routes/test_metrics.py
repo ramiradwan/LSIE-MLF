@@ -92,9 +92,7 @@ class TestGetMetrics:
             patch("services.api.routes.metrics.get_connection", return_value=mock_conn),
             patch("services.api.routes.metrics.put_connection"),
         ):
-            result = asyncio.get_event_loop().run_until_complete(
-                get_metrics(session_id=None, limit=100)
-            )
+            result = asyncio.run(get_metrics(session_id=None, limit=100))
 
         assert len(result) == 1
         assert result[0]["au12_intensity"] == 2.5
@@ -109,9 +107,7 @@ class TestGetMetrics:
             patch("services.api.routes.metrics.get_connection", return_value=mock_conn),
             patch("services.api.routes.metrics.put_connection"),
         ):
-            asyncio.get_event_loop().run_until_complete(
-                get_metrics(session_id="test-uuid", limit=50)
-            )
+            asyncio.run(get_metrics(session_id="test-uuid", limit=50))
 
         # Verify parameterized query was used
         call_args = mock_cursor.execute.call_args
@@ -128,7 +124,7 @@ class TestGetMetrics:
             patch("services.api.routes.metrics.get_connection", return_value=mock_conn) as _,
             patch("services.api.routes.metrics.put_connection") as mock_put,
         ):
-            asyncio.get_event_loop().run_until_complete(get_metrics(session_id=None, limit=10))
+            asyncio.run(get_metrics(session_id=None, limit=10))
 
         mock_put.assert_called_once_with(mock_conn)
 
@@ -149,7 +145,7 @@ class TestGetAU12Timeseries:
             patch("services.api.routes.metrics.get_connection", return_value=mock_conn),
             patch("services.api.routes.metrics.put_connection"),
         ):
-            result = asyncio.get_event_loop().run_until_complete(get_au12_timeseries("test-uuid"))
+            result = asyncio.run(get_au12_timeseries("test-uuid"))
 
         assert len(result) == 1
         assert result[0]["au12_intensity"] == 1.5
@@ -164,7 +160,7 @@ class TestGetAU12Timeseries:
             patch("services.api.routes.metrics.get_connection", return_value=mock_conn),
             patch("services.api.routes.metrics.put_connection"),
         ):
-            asyncio.get_event_loop().run_until_complete(get_au12_timeseries("my-session"))
+            asyncio.run(get_au12_timeseries("my-session"))
 
         call_args = mock_cursor.execute.call_args
         assert call_args[0][1]["session_id"] == "my-session"
@@ -186,9 +182,7 @@ class TestGetAcousticTimeseries:
             patch("services.api.routes.metrics.get_connection", return_value=mock_conn),
             patch("services.api.routes.metrics.put_connection"),
         ):
-            result = asyncio.get_event_loop().run_until_complete(
-                get_acoustic_timeseries("test-uuid")
-            )
+            result = asyncio.run(get_acoustic_timeseries("test-uuid"))
 
         assert len(result) == 1
         assert result[0]["pitch_f0"] == 180.0

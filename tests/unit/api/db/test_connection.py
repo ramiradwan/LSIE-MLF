@@ -50,7 +50,7 @@ class TestConnectionPool:
         """§2 step 7 — init_pool creates ThreadedConnectionPool."""
         from services.api.db import connection
 
-        asyncio.get_event_loop().run_until_complete(connection.init_pool())
+        asyncio.run(connection.init_pool())
         assert connection._pool is not None
 
     @patch.dict(
@@ -65,10 +65,9 @@ class TestConnectionPool:
         """init_pool only creates pool once."""
         from services.api.db import connection
 
-        loop = asyncio.get_event_loop()
-        loop.run_until_complete(connection.init_pool())
+        asyncio.run(connection.init_pool())
         first_pool = connection._pool
-        loop.run_until_complete(connection.init_pool())
+        asyncio.run(connection.init_pool())
         assert connection._pool is first_pool
 
     @patch.dict(
@@ -83,10 +82,9 @@ class TestConnectionPool:
         """close_pool calls closeall and resets to None."""
         from services.api.db import connection
 
-        loop = asyncio.get_event_loop()
-        loop.run_until_complete(connection.init_pool())
+        asyncio.run(connection.init_pool())
         pool_ref = connection._pool
-        loop.run_until_complete(connection.close_pool())
+        asyncio.run(connection.close_pool())
         pool_ref.closeall.assert_called_once()
         assert connection._pool is None
 
@@ -109,7 +107,7 @@ class TestConnectionPool:
         """get_connection returns a connection from the pool."""
         from services.api.db import connection
 
-        asyncio.get_event_loop().run_until_complete(connection.init_pool())
+        asyncio.run(connection.init_pool())
         mock_conn = MagicMock()
         connection._pool.getconn.return_value = mock_conn
         result = connection.get_connection()
@@ -127,7 +125,7 @@ class TestConnectionPool:
         """put_connection returns connection to pool."""
         from services.api.db import connection
 
-        asyncio.get_event_loop().run_until_complete(connection.init_pool())
+        asyncio.run(connection.init_pool())
         mock_conn = MagicMock()
         connection.put_connection(mock_conn)
         connection._pool.putconn.assert_called_once_with(mock_conn)

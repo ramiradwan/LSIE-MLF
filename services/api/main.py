@@ -16,7 +16,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from services.api.db.connection import close_pool, init_pool
-from services.api.routes import health, metrics, sessions, stimulus
+from services.api.routes import encounters, health, metrics, sessions, stimulus
 
 
 @asynccontextmanager
@@ -39,3 +39,4 @@ app.include_router(metrics.router, prefix="/api/v1", tags=["metrics"])
 app.include_router(sessions.router, prefix="/api/v1", tags=["sessions"])
 # Gap 5 — Stimulus injection trigger for the operator
 app.include_router(stimulus.router, prefix="/api/v1", tags=["stimulus"])
+app.include_router(encounters.router, prefix="/api/v1", tags=["encounters"])

@@ -24,11 +24,7 @@ def _get_stimulus_module() -> Any:
 
 def _run_async(coro: Any) -> Any:
     """Run an async function synchronously for testing."""
-    loop = asyncio.new_event_loop()
-    try:
-        return loop.run_until_complete(coro)
-    finally:
-        loop.close()
+    return asyncio.run(coro)
 
 
 class TestTriggerStimulus:
