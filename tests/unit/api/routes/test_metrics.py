@@ -13,7 +13,6 @@ from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import MagicMock, patch
 
-import tests.unit.api.routes.conftest  # noqa: F401 — trigger sys.modules mocks
 from services.api.routes.metrics import (
     _rows_to_dicts,
     _serialize,

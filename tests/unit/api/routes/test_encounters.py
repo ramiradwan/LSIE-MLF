@@ -15,7 +15,6 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-import tests.unit.api.routes.conftest  # noqa: F401 — trigger sys.modules mocks
 from services.api.routes.encounters import (
     get_encounter_summary,
     list_encounters,

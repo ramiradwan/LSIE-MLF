@@ -1,0 +1,145 @@
+"""Shared mocks for API unit tests.
+
+FastAPI and psycopg2 are container-only dependencies. Mock them at the
+sys.modules level before any API module is imported.
+"""
+
+from __future__ import annotations
+
+import sys
+from collections.abc import Callable
+from types import ModuleType, SimpleNamespace
+from typing import Any, TypeAlias
+from unittest.mock import MagicMock
+
+Handler: TypeAlias = Callable[..., Any]
+RouteDecorator: TypeAlias = Callable[[Handler], Handler]
+
+# --- Mock FastAPI before any API import ---
+_mock_fastapi: Any = ModuleType("fastapi")
+
+
+class APIRouter:
+    """Minimal APIRouter shim for unit tests."""
+
+    def __init__(self) -> None:
+        self.routes: list[SimpleNamespace] = []
+
+    def get(
+        self,
+        path: str,
+        *args: Any,
+        **kwargs: Any,
+    ) -> RouteDecorator:
+        del args, kwargs
+
+        def decorator(fn: Handler) -> Handler:
+            self.routes.append(SimpleNamespace(path=path, endpoint=fn, methods={"GET"}))
+            return fn
+
+        return decorator
+
+    def post(
+        self,
+        path: str,
+        *args: Any,
+        **kwargs: Any,
+    ) -> RouteDecorator:
+        del args, kwargs
+
+        def decorator(fn: Handler) -> Handler:
+            self.routes.append(SimpleNamespace(path=path, endpoint=fn, methods={"POST"}))
+            return fn
+
+        return decorator
+
+
+class FastAPI:
+    """Minimal FastAPI shim that records included routes."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        del args, kwargs
+        self.routes: list[SimpleNamespace] = []
+
+    def include_router(
+        self,
+        router: APIRouter,
+        prefix: str = "",
+        tags: list[str] | None = None,
+    ) -> None:
+        del tags
+        for route in router.routes:
+            self.routes.append(
+                SimpleNamespace(
+                    path=f"{prefix}{route.path}",
+                    endpoint=route.endpoint,
+                    methods=route.methods,
+                )
+            )
+
+    def add_middleware(self, *args: Any, **kwargs: Any) -> None:
+        """Accept middleware registration calls used by main.py."""
+        del args, kwargs
+
+
+class HTTPError(Exception):
+    """Minimal HTTPException-compatible shim."""
+
+    def __init__(self, status_code: int = 500, detail: str = "") -> None:
+        super().__init__(detail)
+        self.status_code = status_code
+        self.detail = detail
+
+
+def query(default: Any = None, **kwargs: Any) -> Any:
+    """Return the default value for Query parameters in unit tests."""
+    del kwargs
+    return default
+
+
+def body(default: Any = None, **kwargs: Any) -> Any:
+    """Return the default value for Body parameters in unit tests."""
+    del kwargs
+    return default
+
+
+def depends(dependency: Any = None) -> Any:
+    """Return dependency placeholder for unit tests."""
+    return dependency
+
+
+_mock_fastapi.APIRouter = APIRouter
+_mock_fastapi.FastAPI = FastAPI
+_mock_fastapi.HTTPException = HTTPError
+_mock_fastapi.Query = query
+_mock_fastapi.Body = body
+_mock_fastapi.Depends = depends
+
+sys.modules.setdefault("fastapi", _mock_fastapi)
+
+# Optional FastAPI submodules sometimes imported by main.py/tests.
+_mock_fastapi_middleware: Any = ModuleType("fastapi.middleware")
+_mock_fastapi_middleware_cors: Any = ModuleType("fastapi.middleware.cors")
+
+
+class CORSMiddleware:
+    """Placeholder CORSMiddleware for app.add_middleware()."""
+
+    pass
+
+
+_mock_fastapi_middleware_cors.CORSMiddleware = CORSMiddleware
+
+sys.modules.setdefault("fastapi.middleware", _mock_fastapi_middleware)
+sys.modules.setdefault("fastapi.middleware.cors", _mock_fastapi_middleware_cors)
+
+# Optional placeholder if any test imports fastapi.testclient.
+_mock_fastapi_testclient: Any = ModuleType("fastapi.testclient")
+_mock_fastapi_testclient.TestClient = MagicMock
+sys.modules.setdefault("fastapi.testclient", _mock_fastapi_testclient)
+
+# --- Mock psycopg2 ---
+_mock_pg: Any = MagicMock()
+sys.modules.setdefault("psycopg2", _mock_pg)
+sys.modules.setdefault("psycopg2.pool", _mock_pg.pool)
+sys.modules.setdefault("psycopg2.extensions", _mock_pg.extensions)
