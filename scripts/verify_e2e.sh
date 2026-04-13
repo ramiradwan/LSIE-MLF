@@ -19,7 +19,7 @@
 # Requires: docker, docker compose, psql (via docker exec), jq (optional)
 # =============================================================================
 
-set -euo pipefail
+set -uo pipefail
 
 # --- Colors and formatting ---
 RED='\033[0;31m'
