@@ -18,6 +18,7 @@ def _reset_api_modules() -> None:
         "services.api.routes.experiments",
         "services.api.routes.health",
         "services.api.routes.metrics",
+        "services.api.routes.physiology",
         "services.api.routes.sessions",
         "services.api.routes.stimulus",
     ]:
@@ -41,6 +42,17 @@ def main_module() -> Any:
 def test_routes_package_exports_experiments(routes_package: Any) -> None:
     """services.api.routes exposes the experiments router module."""
     assert "experiments" in dir(routes_package)
+
+
+def test_routes_package_exports_physiology(routes_package: Any) -> None:
+    """services.api.routes exposes the physiology router module."""
+    assert "physiology" in dir(routes_package)
+
+
+def test_main_app_registers_physiology_webhook(main_module: Any) -> None:
+    """The main app mounts the Oura webhook under /api/v1."""
+    api_paths = [route.path for route in main_module.app.routes if route.path.startswith("/api/v1")]
+    assert "/api/v1/ingest/oura/webhook" in api_paths
 
 
 def test_main_app_registers_experiments_after_encounters(main_module: Any) -> None:

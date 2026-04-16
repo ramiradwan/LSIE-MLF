@@ -106,6 +106,35 @@ CREATE TABLE IF NOT EXISTS context (
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- §4.E.2 / §7C — Per-segment physiological snapshot log
+CREATE TABLE IF NOT EXISTS physiology_log (
+    id                      BIGSERIAL PRIMARY KEY,
+    session_id              UUID NOT NULL REFERENCES sessions(session_id),
+    segment_id              TEXT NOT NULL,
+    subject_role            TEXT NOT NULL CHECK (subject_role IN ('streamer', 'operator')),
+    rmssd_ms                DOUBLE PRECISION,
+    heart_rate_bpm          INTEGER,
+    freshness_s             DOUBLE PRECISION NOT NULL,
+    is_stale                BOOLEAN NOT NULL,
+    provider                TEXT NOT NULL,
+    source_timestamp_utc    TIMESTAMPTZ,
+    created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- §7C — Co-modulation analytics log
+CREATE TABLE IF NOT EXISTS comodulation_log (
+    id                      BIGSERIAL PRIMARY KEY,
+    session_id              UUID NOT NULL REFERENCES sessions(session_id),
+    window_end_utc          TIMESTAMPTZ NOT NULL,
+    window_minutes          INTEGER NOT NULL,
+    co_modulation_index     DOUBLE PRECISION,
+    n_paired_observations   INTEGER NOT NULL,
+    coverage_ratio          DOUBLE PRECISION NOT NULL,
+    streamer_rmssd_mean     DOUBLE PRECISION,
+    operator_rmssd_mean     DOUBLE PRECISION,
+    created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
 -- Indexes
 CREATE INDEX IF NOT EXISTS idx_metrics_session ON metrics(session_id, timestamp_utc);
 CREATE INDEX IF NOT EXISTS idx_transcripts_session ON transcripts(session_id, timestamp_utc);
@@ -114,4 +143,8 @@ CREATE INDEX IF NOT EXISTS idx_events_session ON events(session_id, timestamp_ut
 CREATE INDEX IF NOT EXISTS idx_experiments_lookup ON experiments(experiment_id, arm);
 CREATE INDEX IF NOT EXISTS idx_encounter_log_experiment ON encounter_log(experiment_id, arm);
 CREATE INDEX IF NOT EXISTS idx_encounter_log_session ON encounter_log(session_id, timestamp_utc);
+CREATE INDEX IF NOT EXISTS idx_physiology_session
+    ON physiology_log(session_id, subject_role, created_at);
+CREATE INDEX IF NOT EXISTS idx_physiology_segment ON physiology_log(session_id, segment_id);
+CREATE INDEX IF NOT EXISTS idx_comod_session ON comodulation_log(session_id, window_end_utc);
 """

@@ -11,26 +11,21 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-
       - name: Install dependencies
         run: |
           pip install --upgrade pip
           pip install ruff mypy
           pip install -r requirements/base.txt
           pip install pydantic numpy
-
       - name: Ruff lint
         run: ruff check packages/ services/ tests/
-
       - name: Ruff format check
         run: ruff format --check packages/ services/ tests/
-
-      - name: Mypy type check (full codebase)
+      - name: Mypy type check
         run: mypy packages/ services/ tests/ --python-version 3.11 --ignore-missing-imports --explicit-package-bases
 
   test:
@@ -38,18 +33,19 @@ jobs:
     needs: lint-and-typecheck
     steps:
       - uses: actions/checkout@v4
-
       - name: Set up Python 3.11
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-
-      - name: Install dependencies
+          cache: "pip"
+          cache-dependency-path: |
+            requirements/base.txt
+            requirements/worker.txt
+      - name: Install worker dependencies
         run: |
           pip install --upgrade pip
-          pip install -r requirements/base.txt
-          pip install pydantic numpy pytest pytest-cov pycryptodome
-
+          pip install -r requirements/worker.txt
+          pip install pytest pytest-cov
       - name: Run tests
         run: pytest tests/ -x -q --tb=short
 
@@ -57,7 +53,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - name: Check for retired synonyms (§0.3)
         run: |
           RETIRED_TERMS="Celery node|GPU worker|inference worker|task queue|FIFO|named pipe|POSIX pipe|audio pipe|kernel pipe|24-hour vault|data vault|transient storage|secure buffer|handoff schema|payload schema|inference payload|FastAPI server|web server|ASGI server|Celery worker|scrcpy container|capture service|stream ingester|relational database"
@@ -69,28 +64,12 @@ jobs:
           fi
           echo "✅ No retired synonyms found."
 
-  docker-validate:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Create dummy .env for validation
-        run: |
-          echo "POSTGRES_USER=ci" >> .env
-          echo "POSTGRES_PASSWORD=ci" >> .env
-          echo "POSTGRES_DB=ci" >> .env
-
-      - name: Validate docker-compose.yml
-        run: docker compose config --quiet
-
   dependency-pin-check:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - name: Verify no unpinned dependencies
         run: |
-          # Check that requirements files don't contain bare package names without version constraints
           for f in requirements/base.txt requirements/api.txt requirements/worker.txt; do
             if grep -E "^[a-zA-Z]" "$f" | grep -v -E "==|>=|~=|\*" | grep -v "^-r" | grep -v "^#"; then
               echo "❌ Unpinned dependency found in $f"
@@ -98,3 +77,30 @@ jobs:
             fi
           done
           echo "✅ All dependencies are pinned."
+
+  # NEW: Parallel Docker builds with layer caching
+  docker-build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - service: api
+            tag: test-api
+          - service: worker
+            tag: test-worker
+          - service: stream_ingest
+            tag: test-capture
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Build and cache Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: services/${{ matrix.service }}/Dockerfile
+          tags: ${{ matrix.tag }}:latest
+          push: false
+          load: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

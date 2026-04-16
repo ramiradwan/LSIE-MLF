@@ -13,17 +13,45 @@ from __future__ import annotations
 import base64
 import subprocess
 import time
-from typing import Any
+import uuid
+from datetime import UTC, datetime
+from typing import Any, Literal
 from unittest.mock import MagicMock, patch
 
+from packages.schemas.physiology import PhysiologicalPayload, PhysiologicalSampleEvent
 from services.worker.pipeline.orchestrator import (
     DRIFT_FREEZE_AFTER_FAILURES,
     DRIFT_RESET_TIMEOUT,
     FFMPEG_RESAMPLE_CMD,
+    MAX_PHYSIO_DRAIN_PER_CYCLE,
+    PHYSIO_STALENESS_THRESHOLD_S,
     AudioResampler,
     DriftCorrector,
     Orchestrator,
 )
+
+
+def _physio_event_json(
+    *,
+    subject_role: Literal["streamer", "operator"] = "streamer",
+    source_timestamp_utc: datetime | None = None,
+    rmssd_ms: float | None = 42.0,
+    heart_rate_bpm: int | None = 72,
+) -> str:
+    timestamp = source_timestamp_utc or datetime.now(UTC)
+    event = PhysiologicalSampleEvent(
+        unique_id=uuid.uuid4(),
+        provider="oura",
+        subject_role=subject_role,
+        source_timestamp_utc=timestamp,
+        ingest_timestamp_utc=timestamp,
+        payload=PhysiologicalPayload(
+            rmssd_ms=rmssd_ms,
+            heart_rate_bpm=heart_rate_bpm,
+            sample_window_s=300,
+        ),
+    )
+    return event.model_dump_json()
 
 
 class TestDriftCorrector:
@@ -243,6 +271,42 @@ class TestAudioResampler:
 class TestOrchestrator:
     """§4.C / §2 step 5 — Orchestrator segment assembly."""
 
+    def test_physio_state_initialized_empty(self) -> None:
+        orch = Orchestrator()
+        assert orch._physio_state == {}
+
+    def test_drain_physio_events_updates_state(self) -> None:
+        orch = Orchestrator()
+        source_timestamp = datetime(2026, 3, 13, 12, 0, tzinfo=UTC)
+        mock_redis = MagicMock()
+        mock_redis.lpop.side_effect = [
+            _physio_event_json(subject_role="streamer", source_timestamp_utc=source_timestamp),
+            None,
+        ]
+        orch._redis = mock_redis
+
+        orch._drain_physio_events()
+
+        assert orch._physio_state == {
+            "streamer": {
+                "rmssd_ms": 42.0,
+                "heart_rate_bpm": 72,
+                "source_timestamp_utc": source_timestamp.isoformat(),
+                "provider": "oura",
+            }
+        }
+        assert mock_redis.lpop.call_count == 2
+
+    def test_drain_physio_events_bounded(self) -> None:
+        orch = Orchestrator()
+        mock_redis = MagicMock()
+        mock_redis.lpop.side_effect = [_physio_event_json()] * 200
+        orch._redis = mock_redis
+
+        orch._drain_physio_events()
+
+        assert mock_redis.lpop.call_count == MAX_PHYSIO_DRAIN_PER_CYCLE
+
     def test_assemble_segment_validates_payload(self) -> None:
         """§2 step 5 — InferenceHandoffPayload validated by Pydantic."""
         orch = Orchestrator(stream_url="https://example.com/stream")
@@ -259,6 +323,60 @@ class TestOrchestrator:
         assert "segments" in payload
         assert payload["_segment_id"] == "seg-0001"
         assert base64.b64decode(payload["_audio_data"]) == audio
+
+    def test_assemble_segment_includes_physiological_context(self) -> None:
+        orch = Orchestrator()
+        orch.drift_corrector.drift_offset = 999.0
+        orch._physio_state = {
+            "streamer": {
+                "rmssd_ms": 55.5,
+                "heart_rate_bpm": 70,
+                "source_timestamp_utc": datetime.fromtimestamp(900.0, tz=UTC).isoformat(),
+                "provider": "oura",
+            }
+        }
+
+        with patch("services.worker.pipeline.orchestrator.time.time", return_value=1000.0):
+            payload = orch.assemble_segment(b"\x00", [])
+
+        assert "_physiological_context" in payload
+        context = payload["_physiological_context"]
+        assert context["streamer"]["rmssd_ms"] == 55.5
+        assert context["streamer"]["heart_rate_bpm"] == 70
+        assert context["streamer"]["freshness_s"] == 100.0
+        assert context["streamer"]["is_stale"] is False
+        assert context["operator"] is None
+
+    def test_assemble_segment_without_physio(self) -> None:
+        orch = Orchestrator()
+
+        payload = orch.assemble_segment(b"\x00", [])
+
+        assert "_physiological_context" not in payload
+
+    def test_stale_sample_marked(self) -> None:
+        orch = Orchestrator()
+        now_wall = 1000.0
+        source_timestamp = datetime.fromtimestamp(
+            now_wall - PHYSIO_STALENESS_THRESHOLD_S - 1,
+            tz=UTC,
+        ).isoformat()
+        orch.drift_corrector.drift_offset = 5000.0
+        orch._physio_state = {
+            "streamer": {
+                "rmssd_ms": 40.0,
+                "heart_rate_bpm": 68,
+                "source_timestamp_utc": source_timestamp,
+                "provider": "oura",
+            }
+        }
+
+        with patch("services.worker.pipeline.orchestrator.time.time", return_value=now_wall):
+            payload = orch.assemble_segment(b"\x00", [])
+
+        snapshot = payload["_physiological_context"]["streamer"]
+        assert snapshot["freshness_s"] == PHYSIO_STALENESS_THRESHOLD_S + 1
+        assert snapshot["is_stale"] is True
 
     def test_assemble_segment_increments_counter(self) -> None:
         """Segment IDs increment."""
@@ -292,8 +410,11 @@ class TestOrchestrator:
         orch = Orchestrator()
         orch._running = True
         mock_proc = MagicMock()
+        mock_redis = MagicMock()
         orch.audio_resampler._process = mock_proc
+        orch._redis = mock_redis
 
         orch.stop()
         assert not orch._running
         mock_proc.terminate.assert_called_once()
+        mock_redis.close.assert_called_once()

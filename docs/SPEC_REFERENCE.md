@@ -1,18 +1,19 @@
 # LSIE-MLF Specification Reference
 
-This file extracts the key implementation-governing details from the Master Technical Specification v3.0. Claude Code loads this on demand via the `@docs/SPEC_REFERENCE.md` import in CLAUDE.md.
+This file extracts the key implementation-governing details from the immutable Master Technical Specification v3.0 together with accepted amendments in `docs/SPEC_AMENDMENTS.md`, including the v3.1 physiology extension/version-history context introduced by SPEC-AMEND-007. Claude Code loads this on demand via the `@docs/SPEC_REFERENCE.md` import in CLAUDE.md.
 
-For the full spec, see `docs/tech-spec-v3.0.pdf`.
+For the signed base spec, see `docs/tech-spec-v3.0.pdf`; the amendment registry defines the current governing behavior wherever the v3.1 physiology extension extends the original v3.0 text.
 
 ## Data flow pipeline (§2)
 
 1. Mobile USB → Capture Container (scrcpy raw PCM s16le 48kHz + H.264)
-2. Capture Container → ML Worker via IPC Pipe `/tmp/ipc/audio_stream.raw`
-3. ML Worker internal: FFmpeg resample 48kHz → 16kHz via `pipe:1`
-4. Module B → Module C: Python dicts with uniqueId, event_type, timestamp_utc, payload
-5. Module C → Module D: `InferenceHandoffPayload` validated by Pydantic, 30s segments
-6. Module D → Module E: Celery async task via Redis broker (session_id, segment_id, AU12, transcription, semantic, pitch, jitter, shimmer)
-7. Module E → PostgreSQL: parameterized INSERT, DOUBLE PRECISION metrics, TIMESTAMPTZ timestamps
+2. Capture Container → Orchestrator Container via IPC Pipe `/tmp/ipc/audio_stream.raw` and `/tmp/ipc/video_stream.mkv`
+3. API Server → Redis list `physio:events`: authenticated Oura webhook normalized into Physiological Sample Event
+4. Orchestrator internal: FFmpeg resample 48kHz → 16kHz via `pipe:1`, bounded Redis drain into Physiological State Buffer
+5. Module B → Module C: Python dicts with uniqueId, event_type, timestamp_utc, payload
+6. Module C → Module D: `InferenceHandoffPayload` validated by Pydantic, 30s segments, optional `_physiological_context`
+7. Module D → Module E: Celery async task via Redis broker (session_id, segment_id, AU12, transcription, semantic, pitch, jitter, shimmer)
+8. Module E → PostgreSQL: parameterized INSERT, DOUBLE PRECISION metrics, TIMESTAMPTZ timestamps, physiology analytics tables
 
 ## Error handling matrix (§12)
 
@@ -27,7 +28,21 @@ faster-whisper==1.2.1, mediapipe==0.10.x, parselmouth==0.4.4, spacy==3.7.x, psyc
 
 ## Container topology (§9)
 
-redis:7-alpine → postgres:16-alpine → stream_scrcpy(ubuntu:22.04+scrcpy) → worker(nvidia/cuda:12.2.2-cudnn8) → api(python:3.11-slim). Network: appnetwork bridge. Shared volume: ipc-share at /tmp/ipc/.
+redis:7-alpine → postgres:16-alpine → stream_scrcpy(ubuntu:24.04+scrcpy) → worker(nvidia/cuda:12.2.2-cudnn8) + orchestrator(nvidia/cuda:12.2.2-cudnn8) → api(python:3.11-slim, depends on redis + worker + postgres for physiology ingress, task dispatch, and persistence). Network: appnetwork bridge. Shared volume: ipc-share at /tmp/ipc/.
+
+## Physiology extension references (v3.1)
+
+### §4.B.2 — Physiological Ingestion Adapter
+API Server route `POST /api/v1/ingest/oura/webhook` verifies `x-oura-signature` with `OURA_WEBHOOK_SECRET`, validates `subject_role` plus provider metrics, normalizes the body into a Physiological Sample Event, and enqueues it to Redis list `physio:events`. Accepted payloads return `{status, event_id}`; duplicates are handled via Redis `SETNX` idempotency keys under `physio:seen:*`; malformed payloads return 422; Redis failures return 503.
+
+### §4.C.4 — Physiological State Buffer
+The orchestrator performs bounded non-blocking `LPOP` drains from `physio:events`, stores the latest per-`subject_role` snapshot in memory, and injects `_physiological_context` into segment payloads. `freshness_s` is computed at `assemble_segment()` wall-clock time rather than ADB drift-corrected device time, and stale snapshots remain present with `is_stale=True` instead of blocking dispatch.
+
+### §4.E.2 — Physiology Persistence
+Module E persists per-segment physiological snapshots from `_physiological_context` into PostgreSQL table `physiology_log` with `session_id`, `segment_id`, `subject_role`, `rmssd_ms`, `heart_rate_bpm`, freshness metadata, provider, and source timestamp. The table is keyed for segment-level replay and analytics joins.
+
+### §7C — Co-Modulation Analytics
+Module E computes the Co-Modulation Index as a rolling Pearson correlation over aligned 5-minute RMSSD bins for `streamer` and `operator`, persists the result to `comodulation_log`, and returns null when insufficient aligned non-stale pairs exist for the window.
 
 ### SPEC-AMEND-001: Worker GPU Architecture Downgrade
 

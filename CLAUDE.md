@@ -6,11 +6,11 @@ Build order and phase dependencies: @IMPLEMENTATION_PLAN.md
 
 ## Canonical names (§0.3) — MUST use only these identifiers in all code and config
 
-api, worker, redis, postgres, stream_scrcpy, IPC Pipe, Ephemeral Vault, InferenceHandoffPayload, ML Worker, API Server, Message Broker, Persistent Store, Capture Container
+IPC Pipe, Ephemeral Vault, InferenceHandoffPayload, ML Worker, API Server, Message Broker, Persistent Store, Capture Container, Physiological Sample Event, Physiological Context, Physiological State Buffer, subject_role, Co-Modulation Index
 
 ## Stack
 
-Python 3.11.x only (3.12+ breaks CTranslate2). FastAPI (api container), Celery (worker container), Redis (broker), PostgreSQL (store). CUDA ≥12 + cuDNN ≥9 in worker. All Pydantic models in `packages/schemas/`. All ML utilities in `packages/ml_core/`.
+Python 3.11.x only (3.12+ breaks CTranslate2). FastAPI (api container), Celery (worker container), Redis (broker), PostgreSQL (store). CUDA ≥12 + cuDNN ≥8 in worker (SPEC-AMEND-001). All Pydantic models in `packages/schemas/`. All ML utilities in `packages/ml_core/`.
 
 ## Hard rules
 

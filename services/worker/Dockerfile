@@ -13,7 +13,7 @@ ENV PYTHONPATH=/app
 
 # System deps including FFmpeg for audio resampling (§4.C.2)
 # and adb for drift correction (§4.C.1)
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update -o Acquire::ForceIPv4=true && apt-get install -y --no-install-recommends -o Acquire::ForceIPv4=true \
     python3.11 \
     python3.11-venv \
     python3-pip \

@@ -59,6 +59,11 @@ SEGMENT_WINDOW_SECONDS: int = 30
 # §2 step 3 — FFmpeg crash restart delay
 FFMPEG_RESTART_DELAY: float = 1.0  # seconds
 
+# §4.C.4 — Physiological State Buffer configuration
+PHYSIO_QUEUE_KEY: str = "physio:events"
+PHYSIO_STALENESS_THRESHOLD_S: float = 600.0  # 10 minutes
+MAX_PHYSIO_DRAIN_PER_CYCLE: int = 100  # Bounded drain to prevent stall
+
 
 class DriftCorrector:
     """
@@ -83,7 +88,7 @@ class DriftCorrector:
         Execute ADB epoch poll and update drift_offset.
 
         §4.C.1 — drift_offset = host_utc - android_epoch.
-        §12 Hardware loss C: freeze drift after 3 failures, reset to
+        §12 Hardware loss C: freeze drift after 3 failures; reset to
         zero after 5 minutes of frozen state.
 
         Returns:
@@ -291,6 +296,26 @@ class Orchestrator:
         # Set by record_stimulus_injection(). None until operator sends greeting.
         self._stimulus_time: float | None = None
 
+        # [v3.1] Physiological State Buffer — §4.C.4
+        # Keyed by subject_role ("streamer" | "operator").
+        # Updated by _drain_physio_events(), read by assemble_segment().
+        self._physio_state: dict[str, dict[str, Any]] = {}
+
+        # [v3.1] Redis client for non-blocking physiological drains.
+        # Client creation is best-effort; actual I/O happens on LPOP.
+        self._redis: Any = None
+        try:
+            import os
+
+            import redis as redis_lib
+
+            self._redis = redis_lib.Redis.from_url(
+                os.environ.get("REDIS_URL", "redis://redis:6379/0"),
+                decode_responses=True,
+            )
+        except Exception:
+            logger.debug("Physiology Redis client unavailable during init", exc_info=True)
+
         # [v3.0] Per-session AU12 normalizer — lazy-init on first frame
         self._au12_normalizer: Any = None
 
@@ -401,6 +426,49 @@ class Orchestrator:
             # the main loop; subsequent frames will retry.
             logger.debug("AU12 frame processing skipped: %s", e)
 
+    def _drain_physio_events(self) -> None:
+        """
+        §4.C.4 — Drain pending physiological events from Redis.
+
+        Called at the start of each segment assembly cycle. Non-blocking:
+        uses LPOP (not BLPOP) and processes at most
+        MAX_PHYSIO_DRAIN_PER_CYCLE events to avoid stalling dispatch.
+
+        Each valid event updates self._physio_state[subject_role] with
+        the latest measurement. Invalid or malformed events are logged
+        and discarded per §12.
+        """
+        if self._redis is None:
+            return
+
+        drained = 0
+        while drained < MAX_PHYSIO_DRAIN_PER_CYCLE:
+            try:
+                raw = self._redis.lpop(PHYSIO_QUEUE_KEY)
+            except Exception:
+                logger.warning("Physiological Redis drain unavailable", exc_info=True)
+                return
+
+            if raw is None:
+                break
+            drained += 1
+
+            try:
+                from packages.schemas.physiology import PhysiologicalSampleEvent
+
+                event = PhysiologicalSampleEvent.model_validate_json(raw)
+                self._physio_state[event.subject_role] = {
+                    "rmssd_ms": event.payload.rmssd_ms,
+                    "heart_rate_bpm": event.payload.heart_rate_bpm,
+                    "source_timestamp_utc": event.source_timestamp_utc.isoformat(),
+                    "provider": event.provider,
+                }
+            except Exception:
+                logger.warning("Malformed physiological event discarded", exc_info=True)
+
+        if drained > 0:
+            logger.debug("Drained %d physiological events from Redis", drained)
+
     def assemble_segment(
         self,
         audio_data: bytes,
@@ -502,6 +570,33 @@ class Orchestrator:
         # will skip the Thompson Sampling update for this segment.
         result["_stimulus_time"] = self._stimulus_time
 
+        # [v3.1] §4.C.4 — Attach physiological context if available.
+        # Freshness uses wall clock time, not DriftCorrector.
+        if self._physio_state:
+            now_wall = time.time()
+            context: dict[str, Any] = {}
+
+            for role in ("streamer", "operator"):
+                snapshot = self._physio_state.get(role)
+                if snapshot is None:
+                    context[role] = None
+                    continue
+
+                source_ts = datetime.fromisoformat(
+                    str(snapshot["source_timestamp_utc"]).replace("Z", "+00:00")
+                )
+                freshness_s = max(0.0, now_wall - source_ts.timestamp())
+                context[role] = {
+                    "rmssd_ms": snapshot["rmssd_ms"],
+                    "heart_rate_bpm": snapshot["heart_rate_bpm"],
+                    "source_timestamp_utc": snapshot["source_timestamp_utc"],
+                    "freshness_s": round(freshness_s, 1),
+                    "is_stale": freshness_s > PHYSIO_STALENESS_THRESHOLD_S,
+                    "provider": snapshot["provider"],
+                }
+
+            result["_physiological_context"] = context
+
         # [v3.0] Per-subject maximum response capability (future calibration).
         # Currently None; will be populated when explicit calibration gesture
         # (e.g., "please smile broadly") is implemented in the operator UI.
@@ -523,6 +618,11 @@ class Orchestrator:
         if self.video_capture is not None:
             with contextlib.suppress(Exception):
                 self.video_capture.stop()
+        # [v3.1] Release Redis client used for physiological drain.
+        if self._redis is not None and hasattr(self._redis, "close"):
+            with contextlib.suppress(Exception):
+                self._redis.close()
+            self._redis = None
         # [v3.0] Release FaceMesh resources
         if self._face_mesh is not None:
             with contextlib.suppress(Exception):
@@ -620,6 +720,8 @@ class Orchestrator:
                 while self.event_buffer:
                     events.append(self.event_buffer.popleft())
 
+                # [v3.1] Drain physiological events before assembling segment
+                self._drain_physio_events()
                 payload = self.assemble_segment(audio_data, events)
 
                 # §2 step 5 → §2 step 6 — Dispatch to Module D

@@ -75,3 +75,15 @@ Each amendment was made for a documented technical reason. The review agent shou
 | **New behavior** | `compute_type` hardcoded to `"int8"` as a class-level constant (`_COMPUTE_TYPE`). Cannot be overridden at instantiation. |
 | **Rationale** | Downstream effect of SPEC-AMEND-001. INT8 quantization uses dp4a vectorization which is available on Pascal (SM 6.1). FP16 is NOT available on GTX 1080 Ti — allowing overrides would cause silent fallback to CPU or CUDA errors. Locking the value prevents misconfiguration. |
 | **Affected files** | `packages/ml_core/transcription.py` (class constant `_COMPUTE_TYPE`, lines ~22-25) |
+
+---
+
+## SPEC-AMEND-007: Physiology Extension via API Ingress and Orchestrator Context
+
+| Field | Value |
+|---|---|
+| **Spec section** | §4.B.2 — Physiological Ingestion Adapter; §4.C.4 — Physiological State Buffer; §4.E.2 — Physiology Persistence; §7C — Co-Modulation Analytics |
+| **Original text** | `no physiological ingestion` |
+| **New behavior** | The API Server accepts authenticated Oura webhook deliveries, normalizes them into Physiological Sample Event payloads, and enqueues them to Redis list `physio:events`. The orchestrator drains Redis into a per-`subject_role` Physiological State Buffer, computes `freshness_s` / `is_stale`, and injects Physiological Context into segment payloads. Module E persists per-segment physiology snapshots to `physiology_log` and rolling Co-Modulation Index results to `comodulation_log`. |
+| **Rationale** | v3.1 extends the multimodal pipeline with wearable-derived physiology while preserving API/worker image separation, Redis-mediated inter-container transport, and the rule that raw webhook payloads remain transient rather than persistent analytical storage. The Redis queue keeps API ingress decoupled from orchestrator timing and avoids introducing direct container-to-container coupling for physiology delivery. |
+| **Affected files** | `services/api/routes/physiology.py`, `packages/schemas/physiology.py`, `services/worker/pipeline/orchestrator.py`, `services/worker/pipeline/analytics.py`, `services/api/db/schema.py`, `data/sql/03-physiology.sql`, `CLAUDE.md`, `.claude/skills/module-contracts/SKILL.md`, `.claude/skills/docker-topology/SKILL.md`, `README.md`, `docs/SPEC_REFERENCE.md` |

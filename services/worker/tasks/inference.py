@@ -262,7 +262,7 @@ def _log_encounter(
     """
     §4.E.1 — Persist RewardResult to encounter_log for audit trail.
 
-    §12.1 Module E — Failure must not propagate. If the INSERT fails,
+    §12.5 Module E — Failure must not propagate. If the INSERT fails,
     log a warning and continue. The Thompson Sampling update has already
     succeeded (or been correctly skipped) at this point.
 
@@ -313,7 +313,7 @@ def _log_encounter(
         finally:
             store._put_conn(conn)
     except Exception:
-        # §12.1 Module E — encounter_log failure must not crash persist_metrics.
+        # §12.5 Module E — encounter_log failure must not crash persist_metrics.
         # The TS update already succeeded. Log and continue.
         logger.warning(
             "Failed to log encounter for experiment=%s arm=%s",
@@ -334,7 +334,7 @@ def persist_metrics(self: Task, metrics: dict[str, Any]) -> None:
     §4.E.1 — [v3.0] Close Thompson Sampling feedback loop with continuous
     fractional Beta-Bernoulli reward.
 
-    Failure mode (§12.1): If database unreachable, buffer up to 1000
+    Failure mode (§12.5): If database unreachable, buffer up to 1000
     records in memory and retry every 5 seconds before overflow to CSV.
 
     Args:
@@ -360,7 +360,15 @@ def persist_metrics(self: Task, metrics: dict[str, Any]) -> None:
         return
 
     try:
-        store.insert_metrics(metrics)
+        physio_context: dict[str, Any] | None = metrics.get("_physiological_context")
+        persistable_metrics: dict[str, Any] = dict(metrics)
+        if physio_context is not None:
+            # §4.D / orchestrator_physio_buffer.py — preserve the orchestrator-
+            # injected dict exactly as received when handing the payload to
+            # Module E persistence methods.
+            persistable_metrics["_physiological_context"] = physio_context
+
+        store.insert_metrics(persistable_metrics)
         logger.info(
             "Metrics persisted for %s/%s",
             metrics.get("session_id"),
@@ -492,6 +500,73 @@ def persist_metrics(self: Task, metrics: dict[str, Any]) -> None:
                 "Thompson Sampling update SKIPPED (no AU12 telemetry): experiment=%s arm=%s",
                 experiment_id,
                 active_arm,
+            )
+
+        if physio_context is not None:
+            session_id = metrics.get("session_id", "")
+            segment_id = metrics.get("segment_id", "")
+            streamer_snapshot: dict[str, Any] | None = physio_context.get("streamer")
+            operator_snapshot: dict[str, Any] | None = physio_context.get("operator")
+            streamer_available: bool = streamer_snapshot is not None
+            operator_available: bool = operator_snapshot is not None
+            physio_available: bool = streamer_available or operator_available
+
+            for subject_role, snapshot in (
+                ("streamer", streamer_snapshot),
+                ("operator", operator_snapshot),
+            ):
+                if snapshot is None:
+                    continue
+                try:
+                    store.persist_physiology_snapshot(
+                        session_id=session_id,
+                        segment_id=segment_id,
+                        subject_role=subject_role,
+                        snapshot=snapshot,
+                    )
+                except Exception:
+                    logger.warning(
+                        "Physiological context persistence failed for %s/%s role=%s",
+                        session_id,
+                        segment_id,
+                        subject_role,
+                        exc_info=True,
+                    )
+
+            if (
+                session_id
+                and streamer_snapshot is not None
+                and operator_snapshot is not None
+                and not streamer_snapshot.get("is_stale", True)
+                and not operator_snapshot.get("is_stale", True)
+            ):
+                try:
+                    comodulation_result = store.compute_comodulation(session_id)
+                    if comodulation_result is None:
+                        logger.info(
+                            "Co-modulation unavailable: session=%s; no downstream action taken",
+                            session_id,
+                        )
+                    else:
+                        logger.info(
+                            "Co-modulation persisted: session=%s index=%.4f pairs=%d coverage=%.3f",
+                            session_id,
+                            comodulation_result["co_modulation_index"],
+                            comodulation_result["n_paired_observations"],
+                            comodulation_result["coverage_ratio"],
+                        )
+                except Exception:
+                    logger.warning(
+                        "Co-modulation computation failed for session=%s",
+                        session_id,
+                        exc_info=True,
+                    )
+
+            logger.info(
+                "Physiological context available: physio_available=%s streamer=%s operator=%s",
+                physio_available,
+                streamer_available,
+                operator_available,
             )
 
     except Exception:

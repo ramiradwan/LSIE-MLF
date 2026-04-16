@@ -16,7 +16,15 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from services.api.db.connection import close_pool, init_pool
-from services.api.routes import encounters, experiments, health, metrics, sessions, stimulus
+from services.api.routes import (
+    encounters,
+    experiments,
+    health,
+    metrics,
+    physiology,
+    sessions,
+    stimulus,
+)
 
 
 @asynccontextmanager
@@ -41,3 +49,4 @@ app.include_router(sessions.router, prefix="/api/v1", tags=["sessions"])
 app.include_router(stimulus.router, prefix="/api/v1", tags=["stimulus"])
 app.include_router(encounters.router, prefix="/api/v1", tags=["encounters"])
 app.include_router(experiments.router, prefix="/api/v1", tags=["experiments"])
+app.include_router(physiology.router, prefix="/api/v1", tags=["physiology"])

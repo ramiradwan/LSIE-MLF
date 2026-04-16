@@ -143,7 +143,7 @@ services:
     # This process produces Celery tasks; the worker service consumes them.
     command: ["python3.11", "-m", "services.worker.run_orchestrator"]
 
-  # --- API Server (§9.1, §9.6 starts after worker and postgres) ---
+  # --- API Server (§9.1, §9.6 starts after redis, worker, and postgres) ---
   api:
     build:
       context: .
@@ -158,6 +158,8 @@ services:
       - appnetwork
     restart: unless-stopped
     depends_on:
+      redis:
+        condition: service_healthy
       worker:
         condition: service_started
       postgres:

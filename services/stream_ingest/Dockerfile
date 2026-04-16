@@ -11,7 +11,7 @@ FROM ubuntu:24.04
 ENV DEBIAN_FRONTEND=noninteractive
 
 # §9.1 — System dependencies: adb for USB, ffmpeg for fallback, wget for scrcpy download
-RUN apt-get update && apt-get install -y --no-install-recommends \
+RUN apt-get update -o Acquire::ForceIPv4=true && apt-get install -y --no-install-recommends -o Acquire::ForceIPv4=true \
     adb \
     ca-certificates \
     ffmpeg \

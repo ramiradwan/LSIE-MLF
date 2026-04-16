@@ -91,6 +91,13 @@ class HTTPError(Exception):
         self.detail = detail
 
 
+class Request:
+    """Placeholder FastAPI Request type for unit tests."""
+
+    async def body(self) -> bytes:
+        raise NotImplementedError
+
+
 def query(default: Any = None, **kwargs: Any) -> Any:
     """Return the default value for Query parameters in unit tests."""
     del kwargs
@@ -108,12 +115,20 @@ def depends(dependency: Any = None) -> Any:
     return dependency
 
 
+def header(default: Any = None, **kwargs: Any) -> Any:
+    """Return the default value for Header parameters in unit tests."""
+    del kwargs
+    return default
+
+
 _mock_fastapi.APIRouter = APIRouter
 _mock_fastapi.FastAPI = FastAPI
 _mock_fastapi.HTTPException = HTTPError
+_mock_fastapi.Request = Request
 _mock_fastapi.Query = query
 _mock_fastapi.Body = body
 _mock_fastapi.Depends = depends
+_mock_fastapi.Header = header
 
 sys.modules.setdefault("fastapi", _mock_fastapi)
 

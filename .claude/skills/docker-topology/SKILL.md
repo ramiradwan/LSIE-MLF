@@ -12,7 +12,7 @@ description: Docker Compose container topology, GPU allocation, volume mounts, a
 3. stream_scrcpy (depends: redis)
 4. worker (depends: redis + postgres + stream_scrcpy)
 5. orchestrator (depends: redis + postgres + stream_scrcpy)
-6. api (depends: worker + postgres)
+6. api (depends: redis + worker + postgres; redis is required for Oura webhook physiology ingress enqueue)
 
 ## Container specs (§9.1)
 

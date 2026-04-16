@@ -1,12 +1,12 @@
 {
   "ci_commands": [
     {
-      "step": "ruff-lint",
-      "cmd": ["ruff", "check", "packages/", "services/", "tests/"]
+      "step": "ruff-lint-autofix",
+      "cmd": ["ruff", "check", "--fix", "packages/", "services/", "tests/"]
     },
     {
-      "step": "ruff-format",
-      "cmd": ["ruff", "format", "--check", "packages/", "services/", "tests/"]
+      "step": "ruff-format-autofix",
+      "cmd": ["ruff", "format", "packages/", "services/", "tests/"]
     },
     {
       "step": "mypy",

@@ -21,6 +21,12 @@ Side effects: persistent WebSocket, signature token refresh.
 Failures: disconnect → exponential backoff (1s initial, 30s max, 10 retries). EulerStream outage → degraded mode. Bad protobuf → log and discard.
 **Note:** Module B is fully implemented (SignatureProvider protocol, EulerStreamSigner, WebSocket reconnection, Action_Combo constraint) but not wired into the orchestrator loop. Integration requires EulerStream third-party API access — an external dependency not available in the current test environment. Wiring Module B is an ADO work item, not a hardening task.
 
+### Module B.2 — Physiological Ingestion Adapter (§4.B.2)
+Inputs: authenticated `POST /api/v1/ingest/oura/webhook` requests with `x-oura-signature`, `subject_role`, and provider payload fields under `data` (`timestamp`, `rmssd`, `heart_rate`).
+Outputs: normalized Physiological Sample Event objects (`event_type="physiological_sample"`, `provider="oura"`) enqueued to Redis list `physio:events`; HTTP 200 response body `{status, event_id}` for accepted or duplicate deliveries.
+Side effects: HMAC-SHA256 verification against `OURA_WEBHOOK_SECRET`; UUID derivation for idempotency; Redis `SETNX` idempotency keys under `physio:seen:*`; Redis-mediated API Server → Orchestrator transport; no raw webhook persistence.
+Failures: invalid signature → 401. Malformed JSON, missing/invalid `subject_role`, or invalid payload fields → 422. Duplicate delivery → 200 with `status="duplicate"` and no second enqueue. Redis enqueue/idempotency failure → 503.
+
 ## Module C — Orchestration & Synchronization
 Container: runs as a **separate orchestrator container** (same image as worker, different CMD: `python3.11 -m services.worker.run_orchestrator`) (SPEC-AMEND-003).
 Inputs: raw PCM from IPC Pipe (`/tmp/ipc/audio_stream.raw`), video frames from `/tmp/ipc/video_stream.mkv` (via PyAV), ground truth events from B, ADB epoch timestamps.
@@ -29,6 +35,13 @@ Stimulus injection: triggered via Redis pub/sub (`stimulus:trigger` channel) or 
 Video capture: self-healing thread reads from video pipe via PyAV, buffers latest frame in deque. Revival on pipe break with fresh MKV header from scrcpy restart.
 Side effects: persistent FFmpeg subprocess, in-memory deque buffer, Celery task dispatch via `process_segment.delay()`.
 Failures: missing pipe → poll 30s. FFmpeg crash → auto-restart. ADB failure → freeze drift, reset after 5min. Video pipe break → revival attempt, graceful degradation to audio-only.
+
+### Module C.4 — Physiological State Buffer (`PhysiologicalStateBuffer`) (§4.C.4)
+Inputs: non-blocking `LPOP` drain from Redis list `physio:events`; validated Physiological Sample Event JSON keyed by `subject_role` (`streamer` or `operator`).
+Outputs: `_physiological_context` injected into the segment payload with per-role snapshots containing `rmssd_ms`, `heart_rate_bpm`, `source_timestamp_utc`, `freshness_s`, `is_stale`, and `provider`.
+Staleness policy: bounded drain with `MAX_PHYSIO_DRAIN_PER_CYCLE=100`; freshness computed at `assemble_segment()` wall-clock time (not ADB drift-corrected device time); mark stale when `freshness_s > 600.0`; include stale snapshots in payloads without blocking dispatch.
+Side effects: maintains an in-memory Physiological State Buffer (`self._physio_state`) keyed by `subject_role`; reuses the orchestrator Redis connection already used for stimulus flow.
+Failures: Redis unavailable → skip drain and continue segment assembly. Malformed physiological event → log and discard. Missing physiology for a role → null role entry (or omit `_physiological_context` when no state exists). Stale samples → flagged with `is_stale=True` and treated as non-fatal context.
 
 ## Module D — Multimodal ML Processing
 Inputs: 16kHz audio, raw video frames, InferenceHandoffPayload.
