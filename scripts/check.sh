@@ -82,7 +82,16 @@ else
 fi
 echo ""
 
-# 7. Dependency pin check
+# 7. Schema consistency check (Pydantic vs SQL files vs Python DDL string vs content.json)
+echo "── Schema consistency check ──"
+if python scripts/check_schema_consistency.py; then
+    pass "Schema consistency check"
+else
+    fail "Schema consistency check"
+fi
+echo ""
+
+# 8. Dependency pin check
 echo "── Dependency pin check ──"
 UNPINNED=0
 for f in requirements/base.txt requirements/api.txt requirements/worker.txt; do

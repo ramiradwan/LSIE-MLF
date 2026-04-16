@@ -4,6 +4,10 @@ Real-time multimodal inference engine. All code decisions governed by the spec: 
 
 Build order and phase dependencies: @IMPLEMENTATION_PLAN.md
 
+Deferred integrations (implemented but not wired — do not activate without satisfying the documented gating dependency): @docs/DEFERRED_INTEGRATIONS.md
+
+Dependabot handling rules (auto-merge eligibility, human-review impact analysis, weekly cadence): @.github/DEPENDABOT_PROCESS.md — Dependabot PRs are processed on their own weekly cadence and are NEVER bundled into feature merge reviews. Do not include Dependabot bumps in a feature PR's review scope, and do not run the Dependabot sweep in parallel with the post-merge playbook.
+
 ## Canonical names (§0.3) — MUST use only these identifiers in all code and config
 
 IPC Pipe, Ephemeral Vault, InferenceHandoffPayload, ML Worker, API Server, Message Broker, Persistent Store, Capture Container, Physiological Sample Event, Physiological Context, Physiological State Buffer, subject_role, Co-Modulation Index
