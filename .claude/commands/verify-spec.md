@@ -1,7 +1,7 @@
-Before referencing docs/tech-spec-v3.0.pdf as authoritative, verify its digital signature.
+Before referencing docs/tech-spec-v3.1.pdf as authoritative, verify its digital signature.
 
 Steps:
-1. Run `python scripts/verify_spec_signature.py docs/tech-spec-v3.0.pdf`
+1. Run `python scripts/verify_spec_signature.py docs/tech-spec-v3.1.pdf`
 2. If PASS: the spec is signed by a signer listed in TRUSTED_SPEC_SIGNERS. Proceed with the task.
 3. If FAIL due to missing TRUSTED_SPEC_SIGNERS: the developer must inspect the PDF's digital
    signature certificate, identify the signing organization, and add it to .env. Do NOT guess

@@ -117,7 +117,7 @@ CREATE TABLE IF NOT EXISTS physiology_log (
     freshness_s             DOUBLE PRECISION NOT NULL,
     is_stale                BOOLEAN NOT NULL,
     provider                TEXT NOT NULL,
-    source_timestamp_utc    TIMESTAMPTZ,
+    source_timestamp_utc    TIMESTAMPTZ NOT NULL,
     created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 

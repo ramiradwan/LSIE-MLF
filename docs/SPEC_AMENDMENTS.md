@@ -1,8 +1,10 @@
 # LSIE-MLF Specification Amendment Registry
 
-This document tracks all known deviations from the **Master Technical Specification v3.0** (`docs/tech-spec-v3.0.pdf`). The spec is a signed PDF that cannot be edited. This registry is the single authoritative source for "what the spec says" vs "what the implementation does."
+This document tracks all known deviations from the **Master Technical Specification** (signed PDF, `docs/tech-spec-v3.1.pdf`). The spec is a signed PDF that cannot be edited. This registry is the single authoritative source for "what the spec says" vs "what the implementation does."
 
 Each amendment was made for a documented technical reason. The review agent should treat these as accepted deviations, not violations.
+
+SPEC-AMEND-001 through SPEC-AMEND-006 were originally raised against the v3.0 text and carry forward unchanged against v3.1 (none of them were incorporated into the v3.1 base text). SPEC-AMEND-007 was issued as the v3.1 physiology extension and is now embedded in the base spec text itself — it is retained here for historical traceability of the v3.0 → v3.1 transition.
 
 ---
 

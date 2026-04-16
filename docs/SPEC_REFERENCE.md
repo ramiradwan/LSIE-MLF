@@ -1,8 +1,8 @@
 # LSIE-MLF Specification Reference
 
-This file extracts the key implementation-governing details from the immutable Master Technical Specification v3.0 together with accepted amendments in `docs/SPEC_AMENDMENTS.md`, including the v3.1 physiology extension/version-history context introduced by SPEC-AMEND-007. Claude Code loads this on demand via the `@docs/SPEC_REFERENCE.md` import in CLAUDE.md.
+This file extracts the key implementation-governing details from the immutable Master Technical Specification **v3.1** (`docs/tech-spec-v3.1.pdf`) together with accepted amendments in `docs/SPEC_AMENDMENTS.md`. The v3.1 release incorporates the physiology/co-modulation extension (SPEC-AMEND-007) into the base spec text; earlier SPEC-AMEND-001 through SPEC-AMEND-006 remain governing where the v3.1 text has not superseded them. Claude Code loads this on demand via the `@docs/SPEC_REFERENCE.md` import in CLAUDE.md.
 
-For the signed base spec, see `docs/tech-spec-v3.0.pdf`; the amendment registry defines the current governing behavior wherever the v3.1 physiology extension extends the original v3.0 text.
+For the signed base spec, see `docs/tech-spec-v3.1.pdf`; the extracted JSON index is `docs/content.json`, generated via `python scripts/spec_ref_check.py --from-pdf docs/tech-spec-v3.1.pdf --extract > docs/content.json`. The amendment registry defines the current governing behavior wherever an amendment overrides the base spec.
 
 ## Data flow pipeline (§2)
 

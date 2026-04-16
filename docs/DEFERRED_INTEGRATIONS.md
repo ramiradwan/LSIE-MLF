@@ -2,7 +2,7 @@
 
 This file inventories code that is **implemented in the repository but not wired into the active runtime path**. These integrations exist as importable, tested modules but are not instantiated, called, or enqueued by any production code path. Each entry is gated by an external dependency or a future spec amendment.
 
-**Why this file exists.** When the ADO agent (or any contributor) does feature work, it must not "fix" a deferred integration by wiring it in without first satisfying the gating dependency. Activating any of these without the gate would either (a) crash at runtime against a missing external service, (b) violate the signed v3.0 spec, or (c) silently change the semantics of a stable subsystem.
+**Why this file exists.** When the ADO agent (or any contributor) does feature work, it must not "fix" a deferred integration by wiring it in without first satisfying the gating dependency. Activating any of these without the gate would either (a) crash at runtime against a missing external service, (b) violate the signed v3.1 spec (`docs/tech-spec-v3.1.pdf`), or (c) silently change the semantics of a stable subsystem.
 
 **Scope.** This is not a TODO list. Operator tooling that is intentionally launched manually (CLI, dashboard) is out of scope. Read endpoints that have not been built yet but where the underlying data is already persisted are also out of scope. The criterion is strict: *the code is present, but no production code path reaches it*.
 

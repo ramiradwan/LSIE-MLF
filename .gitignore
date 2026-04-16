@@ -42,4 +42,13 @@ htmlcov/
 # Ignore agent implementation artifacts and scaffolding
 .claude/settings.local.json
 .workspace*
-docs/artifacts/
+docs/artifacts/*
+# docs/artifacts/ is scratch-only by default. Allowlist specific files that
+# are frozen historical records worth tracking (point-in-time snapshots that
+# don't change) or append-only logs maintained by the playbook.
+!docs/artifacts/performance_baseline.md
+!docs/artifacts/HARDENING_SUMMARY.md
+
+# content.json is regenerated from docs/tech-spec-v3.1.pdf via
+# scripts/spec_ref_check.py --extract. Source of truth is the signed PDF.
+docs/content.json

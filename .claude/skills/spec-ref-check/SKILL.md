@@ -15,7 +15,7 @@ Run `--validate` after editing content.json or after any spec-related content ch
 
 ```bash
 # Validate all refs in the project against the authoritative PDF
-python scripts/spec_ref_check.py --from-pdf docs/tech-spec-v3.0.pdf --validate
+python scripts/spec_ref_check.py --from-pdf docs/tech-spec-v3.1.pdf --validate
 
 # Validate against standalone content.json
 python scripts/spec_ref_check.py --validate
@@ -29,7 +29,7 @@ python scripts/spec_ref_check.py --resolve "4.A.1"
 python scripts/spec_ref_check.py --resolve "12.3.2"
 
 # Extract content.json from the PDF to stdout
-python scripts/spec_ref_check.py --from-pdf docs/tech-spec-v3.0.pdf --extract > docs/artifacts/content.json
+python scripts/spec_ref_check.py --from-pdf docs/tech-spec-v3.1.pdf --extract > docs/content.json
 
 # JSON output for programmatic use
 python scripts/spec_ref_check.py --validate --json

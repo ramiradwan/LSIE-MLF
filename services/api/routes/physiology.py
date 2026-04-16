@@ -199,7 +199,12 @@ async def oura_webhook(
     except HTTPException:
         raise
     except Exception as exc:
-        logger.error("Redis enqueue failed for physiological event", exc_info=True)
+        logger.error(
+            "Redis enqueue failed for physiological event: subject=%s event_id=%s",
+            event.subject_role,
+            event.unique_id,
+            exc_info=True,
+        )
         raise HTTPException(status_code=503, detail="Service temporarily unavailable") from exc
     finally:
         if redis_client is not None and hasattr(redis_client, "close"):

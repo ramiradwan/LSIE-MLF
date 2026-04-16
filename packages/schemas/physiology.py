@@ -17,7 +17,7 @@ Design constraints:
     and is the shape of the _physiological_context dict key.
 
 Spec references:
-  §6     — Interface contracts and payload schemas
+  §6     — InferenceHandoffPayload interface contract
   §4.B.2 — Physiological Ingestion Adapter
   §0.3   — Canonical terms: Physiological Sample Event, Physiological
            Context, subject_role
