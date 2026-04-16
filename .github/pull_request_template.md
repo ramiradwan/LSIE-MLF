@@ -1,12 +1,12 @@
 ## Spec Reference
 
-Which sections of the LSIE-MLF Technical Specification v2.0 govern this change?
+Which sections of the LSIE-MLF Technical Specification v3.1 (`docs/tech-spec-v3.1.pdf`) govern this change? Resolve §N refs with `python scripts/spec_ref_check.py --resolve "<ref>"`.
 
 - §
 
 ## Implementation Phase
 
-Which phase from IMPLEMENTATION_PLAN.md does this PR belong to?
+If an active plan is in flight, which phase of `IMPLEMENTATION_PLAN.md` does this PR belong to? Otherwise leave blank.
 
 - Phase:
 
