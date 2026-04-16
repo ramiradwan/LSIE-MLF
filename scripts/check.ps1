@@ -19,35 +19,44 @@ Write-Host " LSIE-MLF Local CI Check" -ForegroundColor Cyan
 Write-Host "=======================================" -ForegroundColor Cyan
 Write-Host ""
 
+# Each gate mirrors .github/workflows/ci.yml exactly. Any drift here means a
+# green local run can still fail on GitHub. When updating CI, update this too.
+
 # 1. Ruff lint
 Write-Host "-- Ruff lint --"
-ruff check packages/ services/ tests/ 2>$null
+ruff check packages/ services/ tests/
 if ($LASTEXITCODE -eq 0) { Pass "Ruff lint" } else { Fail "Ruff lint" }
 Write-Host ""
 
 # 2. Ruff format
 Write-Host "-- Ruff format --"
-ruff format --check packages/ services/ tests/ 2>$null
+ruff format --check packages/ services/ tests/
 if ($LASTEXITCODE -eq 0) { Pass "Ruff format" } else { Fail "Ruff format" }
 Write-Host ""
 
-# 3. Mypy
+# 3. Mypy -- scope and flags MUST match ci.yml lint-and-typecheck job
 Write-Host "-- Mypy type check --"
-mypy packages/ --python-version 3.11 --ignore-missing-imports 2>$null
+mypy packages/ services/ tests/ --python-version 3.11 --ignore-missing-imports --explicit-package-bases
 if ($LASTEXITCODE -eq 0) { Pass "Mypy type check" } else { Fail "Mypy type check" }
 Write-Host ""
 
 # 4. Pytest
 Write-Host "-- Pytest --"
-python -m pytest tests/ -x -q --tb=short 2>$null
+python -m pytest tests/ -x -q --tb=short
 if ($LASTEXITCODE -eq 0) { Pass "Pytest" } else { Fail "Pytest" }
 Write-Host ""
 
-# 5. Canonical terminology audit
+# 5. Canonical terminology audit -- file types MUST match ci.yml scan
+# NOTE: $matches is a PowerShell automatic variable; use a different name.
 Write-Host "-- Canonical terminology audit --"
 $pattern = "Celery node|GPU worker|inference worker|task queue|FIFO|named pipe|POSIX pipe|audio pipe|kernel pipe|24-hour vault|data vault|transient storage|secure buffer|handoff schema|payload schema|inference payload|FastAPI server|web server|ASGI server|Celery worker|scrcpy container|capture service|stream ingester|relational database"
-$matches = Select-String -Path "services\**\*.py","packages\**\*.py","docker-compose.yml" -Pattern $pattern -ErrorAction SilentlyContinue
-if ($null -eq $matches) { Pass "No retired synonyms found" } else { Fail "Retired synonyms found:"; $matches | ForEach-Object { Write-Host "    $_" } }
+$paths = @(
+    "services\**\*.py","services\**\*.yml","services\**\*.yaml","services\**\*.sh","services\**\*.txt",
+    "packages\**\*.py","packages\**\*.yml","packages\**\*.yaml","packages\**\*.sh","packages\**\*.txt",
+    "docker-compose.yml"
+)
+$retiredHits = Select-String -Path $paths -Pattern $pattern -ErrorAction SilentlyContinue
+if ($null -eq $retiredHits) { Pass "No retired synonyms found" } else { Fail "Retired synonyms found:"; $retiredHits | ForEach-Object { Write-Host "    $_" } }
 Write-Host ""
 
 # 6. Docker compose

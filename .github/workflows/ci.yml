@@ -56,7 +56,7 @@ jobs:
       - name: Check for retired synonyms (§0.3)
         run: |
           RETIRED_TERMS="Celery node|GPU worker|inference worker|task queue|FIFO|named pipe|POSIX pipe|audio pipe|kernel pipe|24-hour vault|data vault|transient storage|secure buffer|handoff schema|payload schema|inference payload|FastAPI server|web server|ASGI server|Celery worker|scrcpy container|capture service|stream ingester|relational database"
-          MATCHES=$(grep -rn "$RETIRED_TERMS" services/ packages/ docker-compose.yml --include='*.py' --include='*.yml' --include='*.yaml' --include='*.sh' --include='*.txt' 2>/dev/null || true)
+          MATCHES=$(grep -rnE "$RETIRED_TERMS" services/ packages/ docker-compose.yml --include='*.py' --include='*.yml' --include='*.yaml' --include='*.sh' --include='*.txt' 2>/dev/null || true)
           if [ -n "$MATCHES" ]; then
             echo "❌ Retired synonyms found (§0.3 violation):"
             echo "$MATCHES"

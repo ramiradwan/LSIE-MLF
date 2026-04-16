@@ -25,9 +25,12 @@ echo " LSIE-MLF Local CI Check"
 echo "═══════════════════════════════════════"
 echo ""
 
+# Each gate mirrors .github/workflows/ci.yml exactly. Any drift here means a
+# green local run can still fail on GitHub. When updating CI, update this too.
+
 # 1. Ruff lint
 echo "── Ruff lint ──"
-if ruff check packages/ services/ tests/ 2>/dev/null; then
+if ruff check packages/ services/ tests/; then
     pass "Ruff lint"
 else
     fail "Ruff lint"
@@ -36,16 +39,16 @@ echo ""
 
 # 2. Ruff format
 echo "── Ruff format ──"
-if ruff format --check packages/ services/ tests/ 2>/dev/null; then
+if ruff format --check packages/ services/ tests/; then
     pass "Ruff format"
 else
     fail "Ruff format"
 fi
 echo ""
 
-# 3. Mypy
+# 3. Mypy — scope and flags MUST match ci.yml lint-and-typecheck job
 echo "── Mypy type check ──"
-if mypy packages/ --python-version 3.11 --ignore-missing-imports 2>/dev/null; then
+if mypy packages/ services/ tests/ --python-version 3.11 --ignore-missing-imports --explicit-package-bases; then
     pass "Mypy type check"
 else
     fail "Mypy type check"
@@ -54,17 +57,19 @@ echo ""
 
 # 4. Pytest
 echo "── Pytest ──"
-if python -m pytest tests/ -x -q --tb=short 2>/dev/null; then
+if python -m pytest tests/ -x -q --tb=short; then
     pass "Pytest"
 else
     fail "Pytest"
 fi
 echo ""
 
-# 5. Canonical terminology audit (§0.3)
+# 5. Canonical terminology audit (§0.3) — file-type filter matches ci.yml
 echo "── Canonical terminology audit ──"
 RETIRED_TERMS="Celery node|GPU worker|inference worker|task queue|FIFO|named pipe|POSIX pipe|audio pipe|kernel pipe|24-hour vault|data vault|transient storage|secure buffer|handoff schema|payload schema|inference payload|FastAPI server|web server|ASGI server|Celery worker|scrcpy container|capture service|stream ingester|relational database"
-MATCHES=$(grep -rn "$RETIRED_TERMS" services/ packages/ docker-compose.yml 2>/dev/null || true)
+MATCHES=$(grep -rnE "$RETIRED_TERMS" services/ packages/ docker-compose.yml \
+    --include='*.py' --include='*.yml' --include='*.yaml' --include='*.sh' --include='*.txt' \
+    2>/dev/null || true)
 if [ -z "$MATCHES" ]; then
     pass "No retired synonyms found"
 else
