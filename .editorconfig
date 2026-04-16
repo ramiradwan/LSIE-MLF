@@ -1,0 +1,25 @@
+# Cross-editor baseline. Complements .gitattributes — .gitattributes enforces
+# line endings at git level; .editorconfig tells the editor to produce them in
+# the first place, plus indentation, charset, and whitespace rules.
+
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 4
+
+# YAML and JSON: 2-space indent is the ecosystem convention.
+[*.{yml,yaml,json}]
+indent_size = 2
+
+# Markdown: preserve trailing whitespace (two trailing spaces = hard line break).
+[*.md]
+trim_trailing_whitespace = false
+
+# Windows-native scripts ship with CRLF.
+[*.{bat,ps1}]
+end_of_line = crlf

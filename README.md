@@ -158,13 +158,16 @@ Use the `requirements/` split intentionally:
 
 This keeps the API image lightweight and improves Docker layer caching.
 
-### CI Expectations
+### Local CI gate
 
-Before opening a PR, run the same classes of checks used in CI:
+Before opening a PR, run the full local check suite — it mirrors `.github/workflows/ci.yml` exactly, so a green local run predicts a green CI run:
 
-- lint / format
-- type checking
-- unit tests
+```bash
+bash scripts/check.sh          # macOS / Linux / Git Bash on Windows
+pwsh scripts/check.ps1         # PowerShell on Windows
+```
+
+The gate runs ruff lint, ruff format, mypy (strict, `packages/ services/ tests/`), pytest, the §0.3 canonical-terminology audit, `docker compose config`, schema consistency, and the dependency-pin check. Any drift between the local script and CI is treated as a bug in the script.
 
 At a minimum, changes touching worker or analytics code should be validated against the full worker test path.
 

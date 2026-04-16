@@ -1,0 +1,35 @@
+# Normalize line endings across platforms.
+# Without this file, Windows checkouts get CRLF line endings via core.autocrlf,
+# which silently breaks shell scripts run inside Linux containers (a CRLF shebang
+# like `#!/bin/bash\r` resolves as "file not found").
+
+# Default: treat as text and force LF on checkout everywhere.
+* text=auto eol=lf
+
+# Shell scripts MUST be LF — they run inside Linux containers.
+*.sh text eol=lf
+
+# Windows-native scripts need CRLF in working copies.
+*.bat text eol=crlf
+*.ps1 text eol=crlf
+
+# Explicit binary markers so git never tries to munge these.
+*.pdf binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.zip binary
+*.gz binary
+*.tar binary
+*.mkv binary
+*.mp4 binary
+*.wav binary
+*.pt binary
+*.onnx binary
+
+# Lockfiles and large generated docs: mark as text but exclude from
+# `git diff` output by default — they review better as "file changed" summaries.
+requirements/*.txt text
+docs/content.json text linguist-generated=true
