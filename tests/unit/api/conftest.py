@@ -22,7 +22,16 @@ _mock_fastapi: Any = ModuleType("fastapi")
 class APIRouter:
     """Minimal APIRouter shim for unit tests."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        prefix: str = "",
+        tags: list[str] | None = None,
+        **kwargs: Any,
+    ) -> None:
+        del kwargs
+        self.prefix = prefix
+        self.tags = tags or []
         self.routes: list[SimpleNamespace] = []
 
     def get(
@@ -68,10 +77,11 @@ class FastAPI:
         tags: list[str] | None = None,
     ) -> None:
         del tags
+        router_prefix = getattr(router, "prefix", "")
         for route in router.routes:
             self.routes.append(
                 SimpleNamespace(
-                    path=f"{prefix}{route.path}",
+                    path=f"{prefix}{router_prefix}{route.path}",
                     endpoint=route.endpoint,
                     methods=route.methods,
                 )

@@ -22,6 +22,7 @@ from services.api.routes import (
     experiments,
     health,
     metrics,
+    operator,
     physiology,
     sessions,
     stimulus,
@@ -52,3 +53,5 @@ app.include_router(encounters.router, prefix="/api/v1", tags=["encounters"])
 app.include_router(experiments.router, prefix="/api/v1", tags=["experiments"])
 app.include_router(physiology.router, prefix="/api/v1", tags=["physiology"])
 app.include_router(comodulation.router, prefix="/api/v1", tags=["comodulation"])
+# SPEC-AMEND-008 — Operator Console aggregate surface (Phase 2)
+app.include_router(operator.router, prefix="/api/v1")
