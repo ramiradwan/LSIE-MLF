@@ -6,7 +6,8 @@
 #
 #   pip install -r requirements/cli.txt
 #
-# §4.E.1 — Operator tooling (CLI + PySide6 Debug Studio).
+# §4.E.1 — Operator tooling: CLI, PySide6 Debug Studio (developer-facing),
+# and the PySide6 Operator Console (production-grade, SPEC-AMEND-008).
 
 typer>=0.12,<1.0
 rich>=13,<15
