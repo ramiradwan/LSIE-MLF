@@ -27,7 +27,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from services.operator_console.api_client import ApiClient
+from services.operator_console.api_client import ApiClient, ApiError
 from services.operator_console.config import ConsoleConfig
 from services.operator_console.theme import PALETTE
 from services.operator_console.widgets.status_pill import StatusPill
@@ -128,11 +128,12 @@ class SessionsView(QWidget):
 
         self._thread = QThread(self)
         self._worker = PollingWorker(
-            fetch=self._api.list_sessions,
+            job_name="scaffold_sessions",
             interval_ms=config.session_poll_interval_ms,
+            fetch=self._api.list_sessions,
         )
         self._worker.moveToThread(self._thread)
-        self._thread.started.connect(self._worker.start)
+        self._thread.started.connect(self._worker.run)
         self._worker.data_ready.connect(self._on_data)
         self._worker.error.connect(self._on_error)
         self._thread.start()
@@ -141,15 +142,35 @@ class SessionsView(QWidget):
         self._status.set_state("Refreshing…", "idle")
         self._worker.refresh_now()
 
-    def _on_data(self, payload: object) -> None:
-        if not isinstance(payload, list):
-            self._status.set_state("Unexpected response shape", "bad")
-            return
-        rows = [item for item in payload if isinstance(item, dict)]
+    def _on_data(self, _job_name: str, payload: object) -> None:
+        # Phase 3 shifted `list_sessions()` to return `list[SessionSummary]`.
+        # Phase 10 rewrites this scaffold around the new table model;
+        # until then the scaffold just renders a row count.
+        rows: list[dict[str, Any]] = []
+        if isinstance(payload, list):
+            for item in payload:
+                if isinstance(item, dict):
+                    rows.append(item)
+                else:
+                    # Pydantic DTO — render a minimal compat dict.
+                    rows.append(
+                        {
+                            "session_id": getattr(item, "session_id", "?"),
+                            "stream_url": "—",
+                            "started_at": getattr(item, "started_at_utc", "—"),
+                            "ended_at": getattr(item, "ended_at_utc", "—"),
+                            "metric_count": "—",
+                        }
+                    )
         self._model.set_rows(rows)
         self._status.set_state(f"Live · {len(rows)} session(s)", "ok")
 
-    def _on_error(self, message: str) -> None:
+    def _on_error(self, _job_name: str, error: object) -> None:
+        message = (
+            error.message
+            if isinstance(error, ApiError)
+            else str(error)
+        )
         self._status.set_state(message, "bad")
 
     def shutdown(self) -> None:
