@@ -54,9 +54,9 @@ This file inventories code that is **implemented in the repository but not wired
 
 The following were considered during the deferral scan and rejected as **not** deferred integrations:
 
-- **Co-Modulation Index read API** — the write path (`analytics.compute_comodulation_index` → `comodulation_log`) is fully wired in the active orchestrator/Module E loop. The absence of an HTTP read endpoint is an incomplete feature, not a deferred integration. Belongs in an ADO work item, not this file.
-- **Streamlit dashboard** (`services/worker/dashboard.py`) — intentionally launched manually by operators per §4.E.1. Operator tooling, not deferred integration.
-- **Operator CLI** (`scripts/lsie_cli.py`) — same reasoning as the dashboard.
+- **Co-Modulation Index read API** — the write path (`analytics.compute_comodulation_index` → `comodulation_log`) is fully wired in the active orchestrator/Module E loop. A `GET /api/v1/comodulation/{session_id}` read endpoint is now live (see `services/api/routes/comodulation.py`).
+- **PySide6 Debug Studio** (`scripts/debug_studio.py`) — intentionally launched manually by operators per §4.E.1. Operator tooling, not deferred integration. Supersedes the retired Streamlit dashboard (`services/worker/dashboard.py`, deleted 2026-04-17).
+- **Operator CLI** (`scripts/lsie_cli.py`) — same reasoning as Debug Studio.
 - **`SPEC-AMEND-001` / `SPEC-AMEND-002` references in production code** — these are *accepted* amendments documented in `docs/SPEC_AMENDMENTS.md`. Not pending; not deferred.
 
 ## Search methodology

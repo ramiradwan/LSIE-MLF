@@ -99,7 +99,7 @@ echo ""
 # 8. Dependency pin check
 echo "── Dependency pin check ──"
 UNPINNED=0
-for f in requirements/base.txt requirements/api.txt requirements/worker.txt; do
+for f in requirements/base.txt requirements/api.txt requirements/worker.txt requirements/cli.txt; do
     if grep -E "^[a-zA-Z]" "$f" 2>/dev/null | grep -v -E "==|>=|~=|\*" | grep -v "^-r" | grep -v "^#" | grep -q .; then
         fail "Unpinned dependency in $f"
         UNPINNED=1

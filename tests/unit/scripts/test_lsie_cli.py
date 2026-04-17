@@ -1,10 +1,11 @@
-"""Tests for Operator Session CLI — §4.E.1, §4.C, §2 step 7.
+"""Tests for the Typer-based Operator CLI — §4.E.1, §4.C, §2 step 7.
 
-Covers:
-  - Argument parser construction and validation
-  - Command dispatch for all subcommands
-  - API response formatting (_format_table, _fmt_float)
-  - Error handling for unreachable API and HTTP errors
+Covers every command group (session, experiment, encounter, metrics,
+physiology, comodulation, stimulus) plus API transport helpers.
+
+The CLI is exercised via ``typer.testing.CliRunner``. API calls are
+mocked at module level on ``_api_get`` / ``_api_post`` so the tests
+run offline.
 """
 
 from __future__ import annotations
@@ -17,93 +18,19 @@ from unittest.mock import MagicMock, patch
 from urllib.error import HTTPError, URLError
 
 import pytest
+from typer.testing import CliRunner
 
-from scripts.lsie_cli import (
-    _api_get,
-    _api_post,
-    _fmt_float,
-    _format_table,
-    build_parser,
-    cmd_experiment_show,
-    cmd_experiment_summary,
-    cmd_session_inject,
-    cmd_session_list,
-    cmd_session_status,
-)
+from scripts.lsie_cli import _api_get, _api_post, _fmt_float, app
+
+runner = CliRunner()
 
 
 def _make_http_error(code: int, detail: str) -> HTTPError:
-    """Build an HTTPError with a JSON detail payload."""
     payload = io.BytesIO(json.dumps({"detail": detail}).encode("utf-8"))
     return HTTPError("http://api.test", code, "error", Message(), payload)
 
 
-class TestBuildParser:
-    """Argument parser accepts all expected command shapes."""
-
-    def test_session_list(self) -> None:
-        args = build_parser().parse_args(["session", "list"])
-        assert args.command == "session"
-        assert args.subcommand == "list"
-
-    def test_session_status(self) -> None:
-        args = build_parser().parse_args(["session", "status", "abc-123"])
-        assert args.command == "session"
-        assert args.subcommand == "status"
-        assert args.session_id == "abc-123"
-
-    def test_session_inject(self) -> None:
-        args = build_parser().parse_args(["session", "inject"])
-        assert args.command == "session"
-        assert args.subcommand == "inject"
-
-    def test_experiment_show_default(self) -> None:
-        args = build_parser().parse_args(["experiment", "show"])
-        assert args.command == "experiment"
-        assert args.subcommand == "show"
-        assert args.experiment_id == "greeting_line_v1"
-
-    def test_experiment_show_custom(self) -> None:
-        args = build_parser().parse_args(["experiment", "show", "my_exp"])
-        assert args.experiment_id == "my_exp"
-
-    def test_experiment_summary(self) -> None:
-        args = build_parser().parse_args(["experiment", "summary", "exp_1"])
-        assert args.command == "experiment"
-        assert args.subcommand == "summary"
-        assert args.experiment_id == "exp_1"
-
-    def test_missing_command_exits(self) -> None:
-        with pytest.raises(SystemExit):
-            build_parser().parse_args([])
-
-
-class TestFormatTable:
-    """Table formatter produces aligned output."""
-
-    def test_basic_table(self) -> None:
-        rows = [{"a": "hello", "b": 42}, {"a": "x", "b": 1000}]
-        result = _format_table(rows, ["a", "b"])
-        lines = result.splitlines()
-        assert len(lines) == 4
-        assert lines[0].startswith("a")
-        assert "hello" in lines[2]
-        assert "1000" in lines[3]
-
-    def test_empty_rows(self) -> None:
-        assert _format_table([], ["a"]) == "(no data)"
-
-    def test_missing_column_shows_empty(self) -> None:
-        rows = [{"a": "value"}]
-        result = _format_table(rows, ["a", "missing_col"])
-        lines = result.splitlines()
-        assert len(lines) == 3
-        assert lines[2].startswith("value")
-
-
 class TestFmtFloat:
-    """Float formatter handles None and conversion fallbacks."""
-
     def test_none(self) -> None:
         assert _fmt_float(None) == "(n/a)"
 
@@ -115,8 +42,6 @@ class TestFmtFloat:
 
 
 class TestApiHelpers:
-    """API helpers normalize transport and HTTP failures."""
-
     @patch("scripts.lsie_cli.urlopen")
     def test_api_get_http_error(self, mock_urlopen: MagicMock, capsys: Any) -> None:
         mock_urlopen.side_effect = _make_http_error(503, "service unavailable")
@@ -150,22 +75,23 @@ class TestApiHelpers:
         captured = capsys.readouterr()
         assert captured.err.strip() == "API error (500): stimulus failed"
 
-    @patch("scripts.lsie_cli.urlopen")
-    def test_api_post_url_error(self, mock_urlopen: MagicMock, capsys: Any) -> None:
-        mock_urlopen.side_effect = URLError("connection refused")
 
-        with patch("scripts.lsie_cli.API_BASE", "http://api.test"), pytest.raises(SystemExit):
-            _api_post("/api/v1/stimulus")
+class TestRootHelp:
+    def test_help_lists_all_groups(self) -> None:
+        result = runner.invoke(app, ["--help"])
+        assert result.exit_code == 0
+        assert "session" in result.output
+        assert "experiment" in result.output
+        assert "encounter" in result.output
+        assert "metrics" in result.output
+        assert "physiology" in result.output
+        assert "comodulation" in result.output
+        assert "stimulus" in result.output
 
-        captured = capsys.readouterr()
-        assert captured.err.splitlines() == [
-            "Cannot reach API at http://api.test: connection refused",
-        ]
 
-
-class TestSessionList:
+class TestSessionCommands:
     @patch("scripts.lsie_cli._api_get")
-    def test_prints_table(self, mock_get: MagicMock, capsys: Any) -> None:
+    def test_session_list(self, mock_get: MagicMock) -> None:
         mock_get.return_value = [
             {
                 "session_id": "s1",
@@ -175,25 +101,20 @@ class TestSessionList:
                 "metric_count": 5,
             }
         ]
-        args = build_parser().parse_args(["session", "list"])
-        cmd_session_list(args)
-        out = capsys.readouterr().out
-        assert "s1" in out
-        assert "metric_count" in out
+        result = runner.invoke(app, ["session", "list"])
+        assert result.exit_code == 0
+        assert "s1" in result.output
         mock_get.assert_called_once_with("/api/v1/sessions")
 
     @patch("scripts.lsie_cli._api_get")
-    def test_empty_sessions(self, mock_get: MagicMock, capsys: Any) -> None:
+    def test_session_list_empty(self, mock_get: MagicMock) -> None:
         mock_get.return_value = []
-        args = build_parser().parse_args(["session", "list"])
-        cmd_session_list(args)
-        out = capsys.readouterr().out
-        assert "No sessions" in out
+        result = runner.invoke(app, ["session", "list"])
+        assert result.exit_code == 0
+        assert "No sessions" in result.output
 
-
-class TestSessionStatus:
     @patch("scripts.lsie_cli._api_get")
-    def test_prints_detail(self, mock_get: MagicMock, capsys: Any) -> None:
+    def test_session_status(self, mock_get: MagicMock) -> None:
         mock_get.return_value = {
             "session_id": "s1",
             "stream_url": "rtmp://example/live",
@@ -209,61 +130,83 @@ class TestSessionStatus:
                 "last_segment_at": "2025-04-01T00:05:00",
             },
         }
-        args = build_parser().parse_args(["session", "status", "s1"])
-        cmd_session_status(args)
-        out = capsys.readouterr().out
-        assert "Session:  s1" in out
-        assert "Segments:" in out
-        assert "0.4500" in out
+        result = runner.invoke(app, ["session", "status", "s1"])
+        assert result.exit_code == 0
+        assert "Session:  s1" in result.output
+        assert "0.4500" in result.output
         mock_get.assert_called_once_with("/api/v1/sessions/s1")
 
 
-class TestSessionInject:
-    @patch("scripts.lsie_cli._api_post")
-    def test_triggered(self, mock_post: MagicMock, capsys: Any) -> None:
-        mock_post.return_value = {"status": "triggered"}
-        args = build_parser().parse_args(["session", "inject"])
-        cmd_session_inject(args)
-        out = capsys.readouterr().out
-        assert out.strip() == "Stimulus injected. Calibration phase ended."
-        mock_post.assert_called_once_with("/api/v1/stimulus")
-
-    @patch("scripts.lsie_cli._api_post")
-    def test_published_with_warning(self, mock_post: MagicMock, capsys: Any) -> None:
-        mock_post.return_value = {
-            "status": "published",
-            "receivers": 0,
-            "warning": "No orchestrator instance is currently listening.",
-        }
-        args = build_parser().parse_args(["session", "inject"])
-        cmd_session_inject(args)
-        out = capsys.readouterr().out
-        assert "published" in out
-        assert "Warning:" in out
-
-
-class TestExperimentShow:
+class TestExperimentCommands:
     @patch("scripts.lsie_cli._api_get")
-    def test_prints_arms(self, mock_get: MagicMock, capsys: Any) -> None:
+    def test_experiment_list(self, mock_get: MagicMock) -> None:
+        mock_get.return_value = [{"experiment_id": "greeting_line_v1"}]
+        result = runner.invoke(app, ["experiment", "list"])
+        assert result.exit_code == 0
+        assert "greeting_line_v1" in result.output
+        mock_get.assert_called_once_with("/api/v1/experiments")
+
+    @patch("scripts.lsie_cli._api_get")
+    def test_experiment_show_default(self, mock_get: MagicMock) -> None:
         mock_get.return_value = {
             "experiment_id": "greeting_line_v1",
             "arms": [
-                {"arm": "warm", "alpha_param": 3.5, "beta_param": 2.1, "updated_at": "2025-04-01"},
-                {"arm": "direct", "alpha_param": 1.0, "beta_param": 1.0, "updated_at": None},
+                {
+                    "arm": "warm",
+                    "alpha_param": 3.5,
+                    "beta_param": 2.1,
+                    "updated_at": "2025-04-01",
+                },
             ],
         }
-        args = build_parser().parse_args(["experiment", "show", "greeting_line_v1"])
-        cmd_experiment_show(args)
-        out = capsys.readouterr().out
-        assert "Experiment: greeting_line_v1" in out
-        assert "warm" in out
-        assert "3.5" in out
+        result = runner.invoke(app, ["experiment", "show"])
+        assert result.exit_code == 0
+        assert "Experiment: greeting_line_v1" in result.output
+        assert "warm" in result.output
         mock_get.assert_called_once_with("/api/v1/experiments/greeting_line_v1")
 
-
-class TestExperimentSummary:
     @patch("scripts.lsie_cli._api_get")
-    def test_prints_summary(self, mock_get: MagicMock, capsys: Any) -> None:
+    def test_experiment_show_custom(self, mock_get: MagicMock) -> None:
+        mock_get.return_value = {"experiment_id": "my_exp", "arms": []}
+        result = runner.invoke(app, ["experiment", "show", "my_exp"])
+        assert result.exit_code == 0
+        mock_get.assert_called_once_with("/api/v1/experiments/my_exp")
+
+
+class TestEncounterCommands:
+    @patch("scripts.lsie_cli._api_get")
+    def test_encounter_list_no_filters(self, mock_get: MagicMock) -> None:
+        mock_get.return_value = []
+        result = runner.invoke(app, ["encounter", "list"])
+        assert result.exit_code == 0
+        mock_get.assert_called_once_with("/api/v1/encounters?limit=100")
+
+    @patch("scripts.lsie_cli._api_get")
+    def test_encounter_list_all_filters(self, mock_get: MagicMock) -> None:
+        mock_get.return_value = []
+        result = runner.invoke(
+            app,
+            [
+                "encounter",
+                "list",
+                "--experiment",
+                "greeting_line_v1",
+                "--arm",
+                "warm",
+                "--valid-only",
+                "--limit",
+                "50",
+            ],
+        )
+        assert result.exit_code == 0
+        call_args = mock_get.call_args[0][0]
+        assert "experiment_id=greeting_line_v1" in call_args
+        assert "arm=warm" in call_args
+        assert "valid_only=true" in call_args
+        assert "limit=50" in call_args
+
+    @patch("scripts.lsie_cli._api_get")
+    def test_encounter_summary_default(self, mock_get: MagicMock) -> None:
         mock_get.return_value = [
             {
                 "arm": "warm",
@@ -275,10 +218,98 @@ class TestExperimentSummary:
                 "avg_frames": 45,
             }
         ]
-        args = build_parser().parse_args(["experiment", "summary", "greeting_line_v1"])
-        cmd_experiment_summary(args)
-        out = capsys.readouterr().out
-        assert "Encounter summary for: greeting_line_v1" in out
-        assert "warm" in out
-        assert "12" in out
+        result = runner.invoke(app, ["encounter", "summary"])
+        assert result.exit_code == 0
+        assert "greeting_line_v1" in result.output
+        assert "warm" in result.output
         mock_get.assert_called_once_with("/api/v1/encounters/greeting_line_v1/summary")
+
+
+class TestMetricsCommands:
+    @patch("scripts.lsie_cli._api_get")
+    def test_metrics_au12(self, mock_get: MagicMock) -> None:
+        mock_get.return_value = [
+            {"segment_id": "seg1", "timestamp_utc": "2025-04-01T00:00:00", "au12_intensity": 0.3},
+        ]
+        result = runner.invoke(app, ["metrics", "au12", "s1"])
+        assert result.exit_code == 0
+        assert "seg1" in result.output
+        mock_get.assert_called_once_with("/api/v1/metrics/s1/au12")
+
+    @patch("scripts.lsie_cli._api_get")
+    def test_metrics_acoustic(self, mock_get: MagicMock) -> None:
+        mock_get.return_value = []
+        result = runner.invoke(app, ["metrics", "acoustic", "s1"])
+        assert result.exit_code == 0
+        mock_get.assert_called_once_with("/api/v1/metrics/s1/acoustic")
+
+
+class TestPhysiologyCommands:
+    @patch("scripts.lsie_cli._api_get")
+    def test_physiology_show_latest(self, mock_get: MagicMock) -> None:
+        mock_get.return_value = [
+            {
+                "subject_role": "streamer",
+                "segment_id": "seg1",
+                "rmssd_ms": 52.1,
+                "heart_rate_bpm": 68,
+                "freshness_s": 42.0,
+                "is_stale": False,
+                "provider": "oura",
+                "source_timestamp_utc": "2025-04-01T00:00:00",
+            }
+        ]
+        result = runner.invoke(app, ["physiology", "show", "s1"])
+        assert result.exit_code == 0
+        assert "streamer" in result.output
+        assert "oura" in result.output
+        mock_get.assert_called_once_with("/api/v1/physiology/s1")
+
+    @patch("scripts.lsie_cli._api_get")
+    def test_physiology_show_series(self, mock_get: MagicMock) -> None:
+        mock_get.return_value = []
+        result = runner.invoke(app, ["physiology", "show", "s1", "--series", "--limit", "200"])
+        assert result.exit_code == 0
+        mock_get.assert_called_once_with("/api/v1/physiology/s1?series=true&limit=200")
+
+
+class TestComodulationCommands:
+    @patch("scripts.lsie_cli._api_get")
+    def test_comodulation_show(self, mock_get: MagicMock) -> None:
+        mock_get.return_value = [
+            {
+                "window_end_utc": "2025-04-01T00:05:00",
+                "window_minutes": 5,
+                "co_modulation_index": 0.61,
+                "n_paired_observations": 60,
+                "coverage_ratio": 0.95,
+                "streamer_rmssd_mean": 52.1,
+                "operator_rmssd_mean": 60.8,
+            }
+        ]
+        result = runner.invoke(app, ["comodulation", "show", "s1"])
+        assert result.exit_code == 0
+        assert "0.61" in result.output
+        mock_get.assert_called_once_with("/api/v1/comodulation/s1?limit=100")
+
+
+class TestStimulusCommands:
+    @patch("scripts.lsie_cli._api_post")
+    def test_stimulus_inject_triggered(self, mock_post: MagicMock) -> None:
+        mock_post.return_value = {"status": "triggered"}
+        result = runner.invoke(app, ["stimulus", "inject"])
+        assert result.exit_code == 0
+        assert "Stimulus injected" in result.output
+        mock_post.assert_called_once_with("/api/v1/stimulus")
+
+    @patch("scripts.lsie_cli._api_post")
+    def test_stimulus_inject_with_warning(self, mock_post: MagicMock) -> None:
+        mock_post.return_value = {
+            "status": "published",
+            "receivers": 0,
+            "warning": "No orchestrator instance is currently listening.",
+        }
+        result = runner.invoke(app, ["stimulus", "inject"])
+        assert result.exit_code == 0
+        assert "published" in result.output
+        assert "Warning:" in result.output

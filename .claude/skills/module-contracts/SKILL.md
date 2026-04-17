@@ -51,7 +51,7 @@ Failures: GPU OOM → worker restart. Whisper load fail → abort startup. No fa
 
 ## Module E — Experimentation & Analytics
 Inputs: inference payloads via Celery from Module D.
-Outputs: time-series in PostgreSQL, Thompson Sampling assignments, Streamlit dashboards.
+Outputs: time-series in PostgreSQL, Thompson Sampling assignments, operator readback via FastAPI + PySide6 Debug Studio.
 Failures: DB outage → buffer 1000 records, retry 5s, overflow to CSV. Celery deser error → log and discard.
 
 ## Module F — Context Enrichment

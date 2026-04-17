@@ -1,17 +1,19 @@
 #!/usr/bin/env python3  
 from __future__ import annotations  
   
-import json  
-import math  
-import os  
-import shlex  
-import shutil  
-import subprocess  
-import sys  
-import threading  
-import time  
-from collections import deque  
-from typing import Any  
+import json
+import math
+import os
+import shlex
+import shutil
+import subprocess
+import sys
+import threading
+import time
+import urllib.error
+import urllib.request
+from collections import deque
+from typing import Any
   
 import cv2  
 import mediapipe as mp  
@@ -35,28 +37,73 @@ from PySide6.QtGui import (
     QPixmap,  
     QShortcut,  
 )  
-from PySide6.QtWidgets import (  
-    QApplication,  
-    QButtonGroup,  
-    QFrame,  
-    QGraphicsDropShadowEffect,  
-    QGridLayout,  
-    QHBoxLayout,  
-    QLabel,  
-    QMainWindow,  
-    QPlainTextEdit,  
-    QPushButton,  
-    QScrollArea,  
-    QSizeGrip,  
-    QSizePolicy,  
-    QSplitter,  
-    QVBoxLayout,  
-    QWidget,  
-)  
+from PySide6.QtWidgets import (
+    QApplication,
+    QButtonGroup,
+    QFrame,
+    QGraphicsDropShadowEffect,
+    QGridLayout,
+    QHBoxLayout,
+    QHeaderView,
+    QInputDialog,
+    QLabel,
+    QMainWindow,
+    QPlainTextEdit,
+    QPushButton,
+    QScrollArea,
+    QSizeGrip,
+    QSizePolicy,
+    QSplitter,
+    QTableWidget,
+    QTableWidgetItem,
+    QTabWidget,
+    QVBoxLayout,
+    QWidget,
+)
   
-# -----------------------------------------------------------------------------  
-# LSIE-MLF Debug Studio — corrected optimized single-file build  
-# -----------------------------------------------------------------------------  
+# -----------------------------------------------------------------------------
+# LSIE-MLF Debug Studio (§4.E.1 operator tooling)
+#
+# Data consumption contract — three disjoint read paths, one write path.
+# Each worker thread below owns exactly one path; no thread mixes sources.
+#
+#   1. LIVE PATH  (StreamThread)
+#      Source:      /tmp/ipc/video_stream.mkv (IPC Pipe, in-process MediaPipe)
+#      Cadence:     ~30 fps, sub-100 ms frame-to-display latency
+#      Why direct:  Per-frame landmarks are never persisted (§5 data governance
+#                   — only per-segment aggregates enter the Persistent Store).
+#                   A DB or API hop would add poll latency that would break the
+#                   live preview; the data also does not exist at those layers.
+#      Consumers:   VideoPane, AU12Tile, TrackingPointsTile, Face/FPS tiles.
+#
+#   2. ANALYTICS PATH  (AnalyticsThread, polls OPERATOR_SNAPSHOT_SQL)
+#      Source:      PostgreSQL via `docker compose exec postgres psql`
+#      Cadence:     ANALYTICS_POLL_SECONDS (default 1 s), fingerprint-deduped
+#      Why direct:  Operator readback is a high-frequency multi-table JOIN over
+#                   session history. Going through FastAPI per tick would cost
+#                   an HTTP round-trip for every poll and force the API to
+#                   grow a read endpoint for every table we surface. Direct
+#                   psql keeps the GUI decoupled from the API uptime and
+#                   consistent across tabs. The CLI (scripts/lsie_cli.py) has
+#                   the opposite tradeoff — one-shot queries, so it uses the
+#                   REST API.
+#      Consumers:   All "Analytics" tab panels and the right-hand side panels
+#                   on the "Live" tab (transcript, semantic eval, reward,
+#                   acoustic metrics, physiology, co-modulation, per-arm).
+#
+#   3. HARDWARE PATH  (HardwareTelemetryThread)
+#      Source:      nvidia-smi (host) + `adb shell` (device), out-of-band
+#      Why direct:  Host/device telemetry is not a Persistent Store concern;
+#                   it never transits the API or DB. Read straight from the
+#                   tools that own it.
+#      Consumers:   Host System tile, Device CPU tile, Foreground App tile.
+#
+#   WRITE PATH  (stimulus inject)
+#      Target:      FastAPI `POST /api/v1/stimulus`
+#      Why API:     The API owns the Redis pub/sub publish. Write authority
+#                   stays with a single service — the GUI does not talk to
+#                   Redis directly.
+# -----------------------------------------------------------------------------
   
 APP_NAME = "LSIE-MLF Debug Studio"  
   
@@ -84,12 +131,14 @@ OVERLAY_RAW = "raw"
 OVERLAY_LIPS = "lips"  
 OVERLAY_FULL = "full"  
   
-POSTGRES_SERVICE = os.getenv("LSIE_DB_SERVICE", "postgres")  
-POSTGRES_USER = os.getenv("POSTGRES_USER", "lsie")  
-POSTGRES_DB = os.getenv("POSTGRES_DB", "lsie_mlf")  
-ANALYTICS_POLL_SECONDS = max(  
-    0.25, float(os.getenv("LSIE_ANALYTICS_POLL_SECONDS", "1.0"))  
-)  
+POSTGRES_SERVICE = os.getenv("LSIE_DB_SERVICE", "postgres")
+POSTGRES_USER = os.getenv("POSTGRES_USER", "lsie")
+POSTGRES_DB = os.getenv("POSTGRES_DB", "lsie_mlf")
+ANALYTICS_POLL_SECONDS = max(
+    0.25, float(os.getenv("LSIE_ANALYTICS_POLL_SECONDS", "1.0"))
+)
+API_BASE = os.getenv("LSIE_API_URL", "http://localhost:8000").rstrip("/")
+DEFAULT_EXPERIMENT_ID = os.getenv("LSIE_EXPERIMENT_ID", "greeting_line_v1")
 METRICS_UPDATE_INTERVAL = 0.15  
   
 MODE_LABELS = {  
@@ -101,67 +150,145 @@ MODE_LABELS = {
 LIP_MARKER_COLOR = (0, 255, 0)  
 LIP_OUTLINE_COLOR = (0, 0, 0)  
   
-OPERATOR_SNAPSHOT_SQL = r"""  
-WITH recent_metrics AS (  
-  SELECT *  
-  FROM metrics  
-  ORDER BY timestamp_utc DESC  
-  LIMIT 60  
-),  
-latest_transcript AS (  
-  SELECT *  
-  FROM transcripts  
-  ORDER BY timestamp_utc DESC  
-  LIMIT 1  
-),  
-latest_evaluation AS (  
-  SELECT *  
-  FROM evaluations  
-  ORDER BY timestamp_utc DESC  
-  LIMIT 1  
-),  
-latest_encounter AS (  
-  SELECT *  
-  FROM encounter_log  
-  ORDER BY created_at DESC  
-  LIMIT 1  
-),  
-greeting_experiments AS (  
-  SELECT *  
-  FROM experiments  
-  WHERE experiment_id = 'greeting_line_v1'  
-  ORDER BY arm  
-)  
-SELECT json_build_object(  
-  'metrics',  
-  COALESCE(  
-    (SELECT row_to_json(m) FROM (  
-      SELECT *  
-      FROM recent_metrics  
-      ORDER BY timestamp_utc DESC  
-      LIMIT 1  
-    ) m),  
-    '{}'::json  
-  ),  
-  'metrics_history',  
-  COALESCE(  
-    (SELECT json_agg(row_to_json(mh)) FROM (  
-      SELECT pitch_f0, jitter, shimmer  
-      FROM recent_metrics  
-      ORDER BY timestamp_utc DESC  
-    ) mh),  
-    '[]'::json  
-  ),  
-  'transcript',  
-  COALESCE((SELECT row_to_json(t) FROM latest_transcript t), '{}'::json),  
-  'evaluation',  
-  COALESCE((SELECT row_to_json(e) FROM latest_evaluation e), '{}'::json),  
-  'encounter',  
-  COALESCE((SELECT row_to_json(el) FROM latest_encounter el), '{}'::json),  
-  'experiments',  
-  COALESCE((SELECT json_agg(x) FROM greeting_experiments x), '[]'::json)  
-);  
-"""  
+# Core snapshot — queries only tables that exist in every v2+ deployment.
+# Split from the physiology/comodulation query so a missing v3.1 migration
+# on an old volume doesn't break the rest of the operator readback.
+OPERATOR_SNAPSHOT_SQL = r"""
+WITH recent_metrics AS (
+  SELECT *
+  FROM metrics
+  ORDER BY timestamp_utc DESC
+  LIMIT 60
+),
+latest_transcript AS (
+  SELECT *
+  FROM transcripts
+  ORDER BY timestamp_utc DESC
+  LIMIT 1
+),
+latest_evaluation AS (
+  SELECT *
+  FROM evaluations
+  ORDER BY timestamp_utc DESC
+  LIMIT 1
+),
+latest_encounter AS (
+  SELECT *
+  FROM encounter_log
+  ORDER BY created_at DESC
+  LIMIT 1
+),
+greeting_experiments AS (
+  SELECT *
+  FROM experiments
+  WHERE experiment_id = 'greeting_line_v1'
+  ORDER BY arm
+),
+active_session AS (
+  SELECT session_id
+  FROM sessions
+  ORDER BY started_at DESC
+  LIMIT 1
+),
+encounter_summary AS (
+  SELECT
+    arm,
+    COUNT(*) AS encounter_count,
+    COUNT(*) FILTER (WHERE is_valid) AS valid_count,
+    AVG(gated_reward) AS avg_reward,
+    AVG(gated_reward) FILTER (WHERE is_valid) AS avg_valid_reward,
+    AVG(semantic_gate::double precision) AS gate_rate,
+    AVG(n_frames::double precision) AS avg_frames
+  FROM encounter_log
+  WHERE experiment_id = 'greeting_line_v1'
+  GROUP BY arm
+  ORDER BY arm
+)
+SELECT json_build_object(
+  'metrics',
+  COALESCE(
+    (SELECT row_to_json(m) FROM (
+      SELECT *
+      FROM recent_metrics
+      ORDER BY timestamp_utc DESC
+      LIMIT 1
+    ) m),
+    '{}'::json
+  ),
+  'metrics_history',
+  COALESCE(
+    (SELECT json_agg(row_to_json(mh)) FROM (
+      SELECT pitch_f0, jitter, shimmer
+      FROM recent_metrics
+      ORDER BY timestamp_utc DESC
+    ) mh),
+    '[]'::json
+  ),
+  'transcript',
+  COALESCE((SELECT row_to_json(t) FROM latest_transcript t), '{}'::json),
+  'evaluation',
+  COALESCE((SELECT row_to_json(e) FROM latest_evaluation e), '{}'::json),
+  'encounter',
+  COALESCE((SELECT row_to_json(el) FROM latest_encounter el), '{}'::json),
+  'experiments',
+  COALESCE((SELECT json_agg(x) FROM greeting_experiments x), '[]'::json),
+  'session_id',
+  (SELECT session_id::text FROM active_session),
+  'encounter_summary',
+  COALESCE((SELECT json_agg(row_to_json(es)) FROM encounter_summary es), '[]'::json)
+);
+"""
+
+# Physiology snapshot — depends on v3.1 tables (data/sql/03-physiology.sql).
+# If those tables don't exist yet, AnalyticsThread degrades gracefully: the
+# core query still flows, and this one is skipped until the next restart.
+OPERATOR_PHYSIO_SQL = r"""
+WITH active_session AS (
+  SELECT session_id
+  FROM sessions
+  ORDER BY started_at DESC
+  LIMIT 1
+),
+latest_streamer_physio AS (
+  SELECT *
+  FROM physiology_log
+  WHERE session_id = (SELECT session_id FROM active_session)
+    AND subject_role = 'streamer'
+  ORDER BY created_at DESC
+  LIMIT 1
+),
+latest_operator_physio AS (
+  SELECT *
+  FROM physiology_log
+  WHERE session_id = (SELECT session_id FROM active_session)
+    AND subject_role = 'operator'
+  ORDER BY created_at DESC
+  LIMIT 1
+),
+comodulation_history AS (
+  SELECT *
+  FROM comodulation_log
+  WHERE session_id = (SELECT session_id FROM active_session)
+  ORDER BY window_end_utc DESC
+  LIMIT 60
+)
+SELECT json_build_object(
+  'streamer_physio',
+  COALESCE((SELECT row_to_json(s) FROM latest_streamer_physio s), '{}'::json),
+  'operator_physio',
+  COALESCE((SELECT row_to_json(o) FROM latest_operator_physio o), '{}'::json),
+  'comodulation',
+  COALESCE(
+    (SELECT json_agg(row_to_json(c) ORDER BY c.window_end_utc ASC) FROM (
+      SELECT window_end_utc, window_minutes, co_modulation_index,
+             n_paired_observations, coverage_ratio,
+             streamer_rmssd_mean, operator_rmssd_mean
+      FROM comodulation_history
+    ) c),
+    '[]'::json
+  )
+);
+"""
   
 APP_STYLESHEET = """  
 QWidget {  
@@ -383,16 +510,82 @@ QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
 QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {  
     background: transparent;  
 }  
-QSplitter::handle {  
-    background: transparent;  
-}  
-QSplitter::handle:vertical {  
-    height: 16px;  
-}  
-QSplitter::handle:horizontal {  
-    width: 16px;  
-}  
-"""  
+QSplitter::handle {
+    background: transparent;
+}
+QSplitter::handle:vertical {
+    height: 16px;
+}
+QSplitter::handle:horizontal {
+    width: 16px;
+}
+QTabWidget::pane {
+    background: transparent;
+    border: none;
+    top: -1px;
+}
+QTabWidget#MainTabs::tab-bar {
+    left: 0px;
+}
+QTabBar {
+    background: transparent;
+    qproperty-drawBase: 0;
+}
+QTabBar::tab {
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(255, 255, 255, 0.05);
+    border-bottom: none;
+    border-top-left-radius: 10px;
+    border-top-right-radius: 10px;
+    color: #94A3B8;
+    padding: 8px 22px;
+    margin-right: 4px;
+    font-weight: 600;
+    font-size: 13px;
+    letter-spacing: 0.3px;
+}
+QTabBar::tab:hover {
+    color: #E2E8F0;
+    background: rgba(255, 255, 255, 0.06);
+}
+QTabBar::tab:selected {
+    background: rgba(255, 255, 255, 0.08);
+    color: #FFFFFF;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-bottom: none;
+}
+QTableWidget {
+    background: rgba(0, 0, 0, 0.2);
+    border: 1px solid rgba(255, 255, 255, 0.04);
+    border-radius: 10px;
+    color: #E2E8F0;
+    gridline-color: rgba(255, 255, 255, 0.04);
+    selection-background-color: transparent;
+    font-size: 13px;
+}
+QTableWidget::item {
+    padding: 6px 8px;
+    border: none;
+}
+QHeaderView {
+    background: transparent;
+}
+QHeaderView::section {
+    background: rgba(255, 255, 255, 0.04);
+    color: #94A3B8;
+    border: none;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+    padding: 8px 10px;
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+}
+QTableCornerButton::section {
+    background: rgba(255, 255, 255, 0.04);
+    border: none;
+}
+"""
   
   
 def run_psql_json(query: str) -> dict[str, Any]:  
@@ -766,27 +959,50 @@ def start_stream_processes() -> tuple[subprocess.Popen[bytes], subprocess.Popen[
     return source_proc, decoder_proc  
   
   
-class StreamThread(QThread):  
-    frame_ready = Signal(QImage)  
-    status_changed = Signal(str, str)  
-    metrics_changed = Signal(object)  
-    log_message = Signal(str)  
+class StreamThread(QThread):
+    """LIVE PATH — reads frames from the IPC Pipe and runs MediaPipe in-process.
+
+    See the data-consumption contract at the top of this module: this thread
+    owns path (1) and MUST NOT read from PostgreSQL or the API.
+    """
+
+    frame_ready = Signal(QImage)
+    status_changed = Signal(str, str)
+    metrics_changed = Signal(object)
+    log_message = Signal(str)
   
-    def __init__(self) -> None:  
-        super().__init__()  
-        self._stop_event = threading.Event()  
-        self._restart_event = threading.Event()  
-        self._proc_lock = threading.Lock()  
-        self._overlay_lock = threading.Lock()  
-  
-        self._source_proc: subprocess.Popen[bytes] | None = None  
-        self._decoder_proc: subprocess.Popen[bytes] | None = None  
-  
-        self._reconnects = 0  
-        self._fps_history: deque[float] = deque(maxlen=60)  
-        self._fps_ema = 0.0  
-        self._overlay_mode = OVERLAY_FULL  
-        self._au12_normalizer = LiveAU12Normalizer()  
+    def __init__(self) -> None:
+        super().__init__()
+        self._stop_event = threading.Event()
+        self._restart_event = threading.Event()
+        self._proc_lock = threading.Lock()
+        self._overlay_lock = threading.Lock()
+
+        self._source_proc: subprocess.Popen[bytes] | None = None
+        self._decoder_proc: subprocess.Popen[bytes] | None = None
+
+        self._reconnects = 0
+        # Windowed FPS measurement: ring of recent frame timestamps (last ~2s)
+        # avoids the per-frame 1/dt artifact where pipe-buffer bursts produce
+        # 300 fps spikes and quiet reads produce <10 fps dips. Actual
+        # throughput is clamped upstream by `ffmpeg -vf fps=30`.
+        self._frame_times: deque[float] = deque(maxlen=120)
+        # Windowed-FPS samples (one per emit tick) for stable min/avg/max.
+        self._fps_samples: deque[float] = deque(maxlen=60)
+        self._overlay_mode = OVERLAY_FULL
+        self._au12_normalizer = LiveAU12Normalizer()
+        # Single-slot latest-frame decoupling. FFmpeg decodes faster than
+        # MediaPipe + Qt paint when the processor occasionally stalls past the
+        # 33 ms budget; without this, the OS pipe buffer fills and the
+        # processor catches up by painting a burst of now-stale frames,
+        # producing visible slow-mo stutter. The reader thread drains stdout
+        # as fast as it arrives and keeps only the freshest frame; the
+        # processor loop always paints the current moment.
+        self._frame_cond = threading.Condition()
+        self._latest_frame: bytes | None = None
+        self._reader_thread: threading.Thread | None = None
+        self._reader_stop = threading.Event()
+        self._dropped_frames = 0
   
     def stop(self) -> None:  
         self._stop_event.set()  
@@ -804,20 +1020,75 @@ class StreamThread(QThread):
         with self._overlay_lock:  
             return self._overlay_mode  
   
-    def _stop_processes(self) -> None:  
-        with self._proc_lock:  
-            stop_process(self._decoder_proc)  
-            stop_process(self._source_proc)  
-            self._decoder_proc = None  
-            self._source_proc = None  
-  
-    def _connect_fresh_stream(self) -> None:  
-        if self._stop_event.is_set():  
-            return  
-        source_proc, decoder_proc = start_stream_processes()  
-        with self._proc_lock:  
-            self._source_proc = source_proc  
-            self._decoder_proc = decoder_proc  
+    def _stop_processes(self) -> None:
+        # Signal reader to exit before tearing down its stdout, then close
+        # processes, then join. Order matters: closing stdout unblocks the
+        # reader's blocked read so the join completes quickly.
+        self._reader_stop.set()
+        with self._proc_lock:
+            stop_process(self._decoder_proc)
+            stop_process(self._source_proc)
+            self._decoder_proc = None
+            self._source_proc = None
+        reader = self._reader_thread
+        if reader is not None and reader.is_alive():
+            reader.join(timeout=2.0)
+        self._reader_thread = None
+        with self._frame_cond:
+            self._latest_frame = None
+            self._frame_cond.notify_all()
+
+    def _connect_fresh_stream(self) -> None:
+        if self._stop_event.is_set():
+            return
+        source_proc, decoder_proc = start_stream_processes()
+        with self._proc_lock:
+            self._source_proc = source_proc
+            self._decoder_proc = decoder_proc
+
+        self._reader_stop.clear()
+        with self._frame_cond:
+            self._latest_frame = None
+        self._dropped_frames = 0
+        stdout = decoder_proc.stdout
+        if stdout is None:
+            raise EOFError("Decoder process has no stdout")
+        self._reader_thread = threading.Thread(
+            target=self._reader_loop,
+            args=(stdout,),
+            name="StreamThread-reader",
+            daemon=True,
+        )
+        self._reader_thread.start()
+
+    def _reader_loop(self, stdout: Any) -> None:
+        """Drain the decoder's stdout at line rate into a single-slot buffer.
+
+        Dropping the previous unread frame when a new one arrives is the
+        whole point: the processor always paints the current moment, even
+        when it briefly falls behind the 30 fps budget.
+        """
+        while not self._reader_stop.is_set():
+            try:
+                frame = read_exact(stdout, FRAME_BYTES)
+            except (ValueError, OSError):
+                break
+            if len(frame) != FRAME_BYTES:
+                break
+            with self._frame_cond:
+                if self._latest_frame is not None:
+                    self._dropped_frames += 1
+                self._latest_frame = frame
+                self._frame_cond.notify()
+
+    def _take_frame(self, timeout: float) -> bytes | None:
+        """Return the freshest buffered frame, or None on timeout/shutdown."""
+        with self._frame_cond:
+            if self._latest_frame is None:
+                self._frame_cond.wait(timeout=timeout)
+            frame = self._latest_frame
+            self._latest_frame = None
+            return frame
   
     def run(self) -> None:  
         try:  
@@ -851,25 +1122,27 @@ class StreamThread(QThread):
                         if self._stop_event.is_set():  
                             break  
   
-                        self._fps_history.clear()  
-                        self._fps_ema = 0.0  
-                        last_metrics_emit_time = 0.0  
+                        self._frame_times.clear()
+                        self._fps_samples.clear()
+                        last_metrics_emit_time = 0.0
+
+                        self.status_changed.emit("LIVE", "ok")
+                        self.log_message.emit("Live stream connected")
+
+                        fps_window_seconds = 1.0
   
-                        self.status_changed.emit("LIVE", "ok")  
-                        self.log_message.emit("Live stream connected")  
-  
-                        last_ts = time.perf_counter()  
-  
-                        while not self._stop_event.is_set() and not self._restart_event.is_set():  
-                            with self._proc_lock:  
-                                decoder_proc = self._decoder_proc  
-  
-                            if decoder_proc is None or decoder_proc.stdout is None:  
-                                raise EOFError("Decoder process unavailable")  
-  
-                            raw_frame = read_exact(decoder_proc.stdout, FRAME_BYTES)  
-                            if len(raw_frame) != FRAME_BYTES:  
-                                raise EOFError("Stream stalled or ended")  
+                        while not self._stop_event.is_set() and not self._restart_event.is_set():
+                            raw_frame = self._take_frame(timeout=1.0)
+                            if raw_frame is None:
+                                reader = self._reader_thread
+                                if reader is None or not reader.is_alive():
+                                    raise EOFError("Stream stalled or ended")
+                                # Reader is alive but nothing arrived inside
+                                # the timeout — let the loop re-check the
+                                # stop/restart events and wait again.
+                                continue
+                            if len(raw_frame) != FRAME_BYTES:
+                                raise EOFError("Stream stalled or ended")
   
                             image = np.frombuffer(raw_frame, dtype=np.uint8).reshape(  
                                 (FRAME_HEIGHT, FRAME_WIDTH, 3)  
@@ -897,45 +1170,54 @@ class StreamThread(QThread):
                                 mesh_connection_spec=mesh_connection_spec,  
                             )  
   
-                            now = time.perf_counter()  
-                            inst_fps = 1.0 / max(now - last_ts, 1e-6)  
-                            last_ts = now  
-  
-                            self._fps_history.append(inst_fps)  
-                            self._fps_ema = (  
-                                inst_fps  
-                                if self._fps_ema == 0.0  
-                                else (0.90 * self._fps_ema + 0.10 * inst_fps)  
-                            )  
-  
-                            self.frame_ready.emit(ndarray_to_qimage(image))  
-  
-                            if (  
-                                now - last_metrics_emit_time >= METRICS_UPDATE_INTERVAL  
-                                and self._fps_history  
-                            ):  
-                                last_metrics_emit_time = now  
-                                fps_min = min(self._fps_history)  
-                                fps_max = max(self._fps_history)  
-                                fps_avg = sum(self._fps_history) / len(self._fps_history)  
-  
-                                self.metrics_changed.emit(  
-                                    {  
-                                        "stream": "LIVE",  
-                                        "face": overlay_metrics["face"],  
-                                        "fps": f"{self._fps_ema:.1f}",  
-                                        "fps_min": f"{fps_min:.1f}",  
-                                        "fps_max": f"{fps_max:.1f}",  
-                                        "fps_avg": f"{fps_avg:.1f}",  
-                                        "reconnects": str(self._reconnects),  
-                                        "overlay": overlay_metrics["overlay"],  
-                                        "au12_val": overlay_metrics["au12_val"],  
-                                        "au12_status": overlay_metrics["au12_status"],  
-                                        "left_lip": overlay_metrics["left_lip"],  
-                                        "right_lip": overlay_metrics["right_lip"],  
-                                        "mouth_span": overlay_metrics["mouth_span"],  
-                                    }  
-                                )  
+                            now = time.perf_counter()
+                            self._frame_times.append(now)
+                            # Drop timestamps older than the measurement window.
+                            while (
+                                self._frame_times
+                                and now - self._frame_times[0] > fps_window_seconds
+                            ):
+                                self._frame_times.popleft()
+
+                            self.frame_ready.emit(ndarray_to_qimage(image))
+
+                            if now - last_metrics_emit_time >= METRICS_UPDATE_INTERVAL:
+                                last_metrics_emit_time = now
+
+                                if len(self._frame_times) >= 2:
+                                    window_elapsed = (
+                                        self._frame_times[-1] - self._frame_times[0]
+                                    )
+                                    current_fps = (
+                                        (len(self._frame_times) - 1) / window_elapsed
+                                        if window_elapsed > 0
+                                        else 0.0
+                                    )
+                                else:
+                                    current_fps = 0.0
+
+                                self._fps_samples.append(current_fps)
+                                fps_min = min(self._fps_samples)
+                                fps_max = max(self._fps_samples)
+                                fps_avg = sum(self._fps_samples) / len(self._fps_samples)
+
+                                self.metrics_changed.emit(
+                                    {
+                                        "stream": "LIVE",
+                                        "face": overlay_metrics["face"],
+                                        "fps": f"{current_fps:.1f}",
+                                        "fps_min": f"{fps_min:.1f}",
+                                        "fps_max": f"{fps_max:.1f}",
+                                        "fps_avg": f"{fps_avg:.1f}",
+                                        "reconnects": str(self._reconnects),
+                                        "overlay": overlay_metrics["overlay"],
+                                        "au12_val": overlay_metrics["au12_val"],
+                                        "au12_status": overlay_metrics["au12_status"],
+                                        "left_lip": overlay_metrics["left_lip"],
+                                        "right_lip": overlay_metrics["right_lip"],
+                                        "mouth_span": overlay_metrics["mouth_span"],
+                                    }
+                                )
   
                         self._stop_processes()  
   
@@ -997,9 +1279,15 @@ class StreamThread(QThread):
             self.log_message.emit("Worker stopped")  
   
   
-class HardwareTelemetryThread(QThread):  
-    hw_stats_ready = Signal(dict)  
-    log_message = Signal(str)  
+class HardwareTelemetryThread(QThread):
+    """HARDWARE PATH — nvidia-smi and adb out-of-band.
+
+    See the data-consumption contract at the top of this module: host/device
+    telemetry never transits the API or the Persistent Store.
+    """
+
+    hw_stats_ready = Signal(dict)
+    log_message = Signal(str)
   
     def __init__(self) -> None:  
         super().__init__()  
@@ -1288,39 +1576,66 @@ echo "${btemp}|${cpu_used}|${sr_cpu}|${focus}"
         self.log_message.emit("Hardware telemetry thread stopped")  
   
   
-class AnalyticsThread(QThread):  
-    snapshot_ready = Signal(object)  
-    log_message = Signal(str)  
+class AnalyticsThread(QThread):
+    """ANALYTICS PATH — polls PostgreSQL via OPERATOR_SNAPSHOT_SQL.
+
+    See the data-consumption contract at the top of this module. Every panel
+    that shows persisted session state (right-hand side on the Live tab, and
+    the entire Analytics tab) is fed from a single snapshot emitted here. Do
+    not add HTTP calls to this thread — GUI writes go through the API, but
+    GUI reads stay on psql.
+    """
+
+    snapshot_ready = Signal(object)
+    log_message = Signal(str)
   
-    def __init__(self) -> None:  
-        super().__init__()  
-        self._stop_event = threading.Event()  
-        self._last_snapshot_fingerprint = ""  
-        self._last_error = ""  
-  
-    def stop(self) -> None:  
-        self._stop_event.set()  
-  
-    def run(self) -> None:  
-        self.log_message.emit("DB polling thread started (bypassing HTTP)")  
-        while not self._stop_event.is_set():  
-            try:  
-                snapshot = run_psql_json(OPERATOR_SNAPSHOT_SQL)  
-                if snapshot:  
-                    fingerprint = json.dumps(snapshot, sort_keys=True, separators=(",", ":"))  
-                    if fingerprint != self._last_snapshot_fingerprint:  
-                        self._last_snapshot_fingerprint = fingerprint  
-                        self.snapshot_ready.emit(snapshot)  
-                self._last_error = ""  
-            except Exception as exc:  
-                msg = f"DB poll error: {exc}"  
-                if msg != self._last_error:  
-                    self._last_error = msg  
-                    self.log_message.emit(msg)  
-  
-            self._stop_event.wait(ANALYTICS_POLL_SECONDS)  
-  
-        self.log_message.emit("DB polling thread stopped")  
+    def __init__(self) -> None:
+        super().__init__()
+        self._stop_event = threading.Event()
+        self._last_snapshot_fingerprint = ""
+        self._last_error = ""
+        self._physio_available = True
+
+    def stop(self) -> None:
+        self._stop_event.set()
+
+    def run(self) -> None:
+        self.log_message.emit("DB polling thread started (bypassing HTTP)")
+        while not self._stop_event.is_set():
+            try:
+                snapshot = run_psql_json(OPERATOR_SNAPSHOT_SQL)
+                if self._physio_available:
+                    try:
+                        physio = run_psql_json(OPERATOR_PHYSIO_SQL)
+                    except RuntimeError as physio_exc:
+                        if "does not exist" in str(physio_exc):
+                            self._physio_available = False
+                            self.log_message.emit(
+                                "Physiology tables missing — run migrations in "
+                                "data/sql/03-physiology.sql to enable the "
+                                "Analytics-tab physiology panels"
+                            )
+                        else:
+                            raise
+                    else:
+                        if physio:
+                            snapshot.update(physio)
+
+                if snapshot:
+                    fingerprint = json.dumps(snapshot, sort_keys=True, separators=(",", ":"))
+                    if fingerprint != self._last_snapshot_fingerprint:
+                        self._last_snapshot_fingerprint = fingerprint
+                        self.snapshot_ready.emit(snapshot)
+                self._last_error = ""
+            except Exception as exc:
+                msg = f"DB poll error: {exc}"
+                if msg != self._last_error:
+                    self._last_error = msg
+                    self.log_message.emit(msg)
+
+            self._stop_event.wait(ANALYTICS_POLL_SECONDS)
+
+        self.log_message.emit("DB polling thread stopped")
   
   
 class CustomTitleBar(QWidget):  
@@ -2157,40 +2472,47 @@ class MainWindow(QMainWindow):
   
         side_scroll.setWidget(side_widget)  
   
-        top_split.addWidget(side_scroll)  
-        top_split.setSizes([1040, 420])  
-  
-        main_split = QSplitter(Qt.Orientation.Vertical)  
-        main_split.setChildrenCollapsible(False)  
-  
-        log_surface = QFrame()  
-        log_surface.setObjectName("Surface")  
-        log_layout = QVBoxLayout(log_surface)  
-        log_layout.setContentsMargins(24, 20, 24, 24)  
-        log_layout.setSpacing(16)  
-  
-        log_header = QHBoxLayout()  
-        log_title = QLabel("Session Log")  
-        log_title.setObjectName("PanelTitle")  
-  
-        self.clear_log_button = QPushButton("Clear Log")  
-        self.clear_log_button.setObjectName("GlassButton")  
-  
-        log_header.addWidget(log_title)  
-        log_header.addStretch(1)  
-        log_header.addWidget(self.clear_log_button)  
-  
-        self.log_output = QPlainTextEdit()  
-        self.log_output.setReadOnly(True)  
-        self.log_output.setUndoRedoEnabled(False)  
-        self.log_output.document().setMaximumBlockCount(1200)  
-  
-        log_layout.addLayout(log_header)  
-        log_layout.addWidget(self.log_output)  
-  
-        main_split.addWidget(top_split)  
-        main_split.addWidget(log_surface)  
-        main_split.setSizes([850, 150])  
+        top_split.addWidget(side_scroll)
+        top_split.setSizes([1040, 420])
+
+        analytics_tab = self._build_analytics_tab()
+
+        self.tab_widget = QTabWidget()
+        self.tab_widget.setObjectName("MainTabs")
+        self.tab_widget.addTab(top_split, "Live")
+        self.tab_widget.addTab(analytics_tab, "Analytics")
+
+        main_split = QSplitter(Qt.Orientation.Vertical)
+        main_split.setChildrenCollapsible(False)
+
+        log_surface = QFrame()
+        log_surface.setObjectName("Surface")
+        log_layout = QVBoxLayout(log_surface)
+        log_layout.setContentsMargins(24, 20, 24, 24)
+        log_layout.setSpacing(16)
+
+        log_header = QHBoxLayout()
+        log_title = QLabel("Session Log")
+        log_title.setObjectName("PanelTitle")
+
+        self.clear_log_button = QPushButton("Clear Log")
+        self.clear_log_button.setObjectName("GlassButton")
+
+        log_header.addWidget(log_title)
+        log_header.addStretch(1)
+        log_header.addWidget(self.clear_log_button)
+
+        self.log_output = QPlainTextEdit()
+        self.log_output.setReadOnly(True)
+        self.log_output.setUndoRedoEnabled(False)
+        self.log_output.document().setMaximumBlockCount(1200)
+
+        log_layout.addLayout(log_header)
+        log_layout.addWidget(self.log_output)
+
+        main_split.addWidget(self.tab_widget)
+        main_split.addWidget(log_surface)
+        main_split.setSizes([850, 150])
   
         content_layout.addWidget(main_split, 1)  
         main_layout.addWidget(content_widget, 1)  
@@ -2216,7 +2538,132 @@ class MainWindow(QMainWindow):
         ):  
             shortcut.setContext(Qt.ShortcutContext.ApplicationShortcut)  
   
-    def changeEvent(self, event: QEvent) -> None:  
+    def _build_analytics_tab(self) -> QWidget:
+        container = QScrollArea()
+        container.setWidgetResizable(True)
+
+        inner = QWidget()
+        inner_layout = QVBoxLayout(inner)
+        inner_layout.setContentsMargins(24, 24, 24, 24)
+        inner_layout.setSpacing(16)
+
+        # Stimulus control bar
+        stimulus_bar = QHBoxLayout()
+        stimulus_bar.setContentsMargins(0, 0, 0, 0)
+        stimulus_bar.setSpacing(12)
+
+        self.stimulus_button = QPushButton("Inject Stimulus")
+        self.stimulus_button.setObjectName("GlassButton")
+
+        self.stimulus_custom_button = QPushButton("Inject Custom Line…")
+        self.stimulus_custom_button.setObjectName("GlassButton")
+
+        self.stimulus_status_label = QLabel("")
+        self.stimulus_status_label.setObjectName("CardHint")
+        self.stimulus_status_label.setWordWrap(True)
+
+        stimulus_bar.addWidget(self.stimulus_button)
+        stimulus_bar.addWidget(self.stimulus_custom_button)
+        stimulus_bar.addWidget(self.stimulus_status_label, 1)
+
+        inner_layout.addLayout(stimulus_bar)
+
+        # Physiology panel — two columns (streamer / operator)
+        physio_panel = PanelCard("Physiological State")
+
+        physio_row = QHBoxLayout()
+        physio_row.setContentsMargins(0, 0, 0, 0)
+        physio_row.setSpacing(12)
+
+        self.streamer_rmssd = InlineStat("Streamer RMSSD", "--", "ms")
+        self.streamer_hr = InlineStat("Streamer HR", "--", "bpm")
+        self.streamer_freshness = InlineStat("Streamer Freshness", "--", "s")
+
+        self.operator_rmssd = InlineStat("Operator RMSSD", "--", "ms")
+        self.operator_hr = InlineStat("Operator HR", "--", "bpm")
+        self.operator_freshness = InlineStat("Operator Freshness", "--", "s")
+
+        streamer_col = QVBoxLayout()
+        streamer_col.setSpacing(8)
+        self.streamer_badge = StatusBadge()
+        self.streamer_badge.set_status("NO DATA", "neutral")
+        self.streamer_provider_label = QLabel("Provider: --")
+        self.streamer_provider_label.setObjectName("CardHint")
+        streamer_col.addWidget(self.streamer_badge)
+        streamer_col.addWidget(self.streamer_rmssd)
+        streamer_col.addWidget(self.streamer_hr)
+        streamer_col.addWidget(self.streamer_freshness)
+        streamer_col.addWidget(self.streamer_provider_label)
+
+        operator_col = QVBoxLayout()
+        operator_col.setSpacing(8)
+        self.operator_badge = StatusBadge()
+        self.operator_badge.set_status("NO DATA", "neutral")
+        self.operator_provider_label = QLabel("Provider: --")
+        self.operator_provider_label.setObjectName("CardHint")
+        operator_col.addWidget(self.operator_badge)
+        operator_col.addWidget(self.operator_rmssd)
+        operator_col.addWidget(self.operator_hr)
+        operator_col.addWidget(self.operator_freshness)
+        operator_col.addWidget(self.operator_provider_label)
+
+        physio_row.addLayout(streamer_col, 1)
+        physio_row.addLayout(operator_col, 1)
+
+        physio_panel.body_layout.addLayout(physio_row)
+        inner_layout.addWidget(physio_panel)
+
+        # Co-Modulation Index panel
+        comod_panel = PanelCard("Co-Modulation Index (5-min rolling)")
+
+        comod_top_row = QHBoxLayout()
+        comod_top_row.setContentsMargins(0, 0, 0, 0)
+        comod_top_row.setSpacing(12)
+
+        self.comod_value = InlineStat("Latest CMI", "--")
+        self.comod_coverage = InlineStat("Coverage Ratio", "--")
+        self.comod_pairs = InlineStat("Paired Obs.", "--")
+
+        comod_top_row.addWidget(self.comod_value)
+        comod_top_row.addWidget(self.comod_coverage)
+        comod_top_row.addWidget(self.comod_pairs)
+
+        self.comod_sparkline = SparklineWidget("#F59E0B")
+        self.comod_sparkline.setMinimumHeight(120)
+
+        self.comod_hint_label = QLabel("Awaiting alignment — insufficient paired observations")
+        self.comod_hint_label.setObjectName("CardHint")
+        self.comod_hint_label.setWordWrap(True)
+        self.comod_hint_label.setVisible(False)
+
+        comod_panel.body_layout.addLayout(comod_top_row)
+        comod_panel.body_layout.addWidget(self.comod_sparkline)
+        comod_panel.body_layout.addWidget(self.comod_hint_label)
+        inner_layout.addWidget(comod_panel)
+
+        # Encounter reward summary (per-arm)
+        summary_panel = PanelCard(f"Encounter Reward Summary · {DEFAULT_EXPERIMENT_ID}")
+
+        self.encounter_table = QTableWidget(0, 6)
+        self.encounter_table.setHorizontalHeaderLabels(
+            ["Arm", "Encounters", "Valid", "Avg Reward", "Gate Rate", "Avg Frames"]
+        )
+        self.encounter_table.verticalHeader().setVisible(False)
+        self.encounter_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.encounter_table.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
+        self.encounter_table.setMinimumHeight(160)
+        header = self.encounter_table.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+
+        summary_panel.body_layout.addWidget(self.encounter_table)
+        inner_layout.addWidget(summary_panel)
+
+        inner_layout.addStretch(1)
+
+        container.setWidget(inner)
+        return container
+
+    def changeEvent(self, event: QEvent) -> None:
         if event.type() == QEvent.Type.WindowStateChange:  
             maximized = self.isMaximized()  
   
@@ -2237,9 +2684,11 @@ class MainWindow(QMainWindow):
   
         super().changeEvent(event)  
   
-    def _connect_signals(self) -> None:  
-        self.restart_button.clicked.connect(self._manual_restart)  
-        self.clear_log_button.clicked.connect(self.log_output.clear)  
+    def _connect_signals(self) -> None:
+        self.restart_button.clicked.connect(self._manual_restart)
+        self.clear_log_button.clicked.connect(self.log_output.clear)
+        self.stimulus_button.clicked.connect(self._inject_stimulus_default)
+        self.stimulus_custom_button.clicked.connect(self._inject_stimulus_custom)
   
         self.shortcut_restart.activated.connect(self._manual_restart)  
         self.shortcut_clear.activated.connect(self.log_output.clear)  
@@ -2422,9 +2871,162 @@ class MainWindow(QMainWindow):
             except (TypeError, ValueError):  
                 continue  
   
-        set_plaintext_if_changed(self.experiment_output, "\n".join(exp_lines))  
-  
-    def _append_log(self, message: str) -> None:  
+        set_plaintext_if_changed(self.experiment_output, "\n".join(exp_lines))
+
+        streamer_physio = snapshot.get("streamer_physio") or {}
+        operator_physio = snapshot.get("operator_physio") or {}
+        comodulation = snapshot.get("comodulation") or []
+        encounter_summary = snapshot.get("encounter_summary") or []
+
+        self._update_physio_column(
+            streamer_physio,
+            self.streamer_badge,
+            self.streamer_rmssd,
+            self.streamer_hr,
+            self.streamer_freshness,
+            self.streamer_provider_label,
+        )
+        self._update_physio_column(
+            operator_physio,
+            self.operator_badge,
+            self.operator_rmssd,
+            self.operator_hr,
+            self.operator_freshness,
+            self.operator_provider_label,
+        )
+
+        self._update_comodulation(comodulation)
+        self._update_encounter_summary(encounter_summary)
+
+    def _update_physio_column(
+        self,
+        row: dict[str, Any],
+        badge: StatusBadge,
+        rmssd_tile: InlineStat,
+        hr_tile: InlineStat,
+        freshness_tile: InlineStat,
+        provider_label: QLabel,
+    ) -> None:
+        if not row:
+            badge.set_status("NO DATA", "neutral")
+            rmssd_tile.set_value("--")
+            hr_tile.set_value("--")
+            freshness_tile.set_value("--")
+            set_text_if_changed(provider_label, "Provider: --")
+            return
+
+        is_stale = bool(row.get("is_stale"))
+        if is_stale:
+            badge.set_status("STALE", "warn")
+        else:
+            badge.set_status("FRESH", "ok")
+
+        rmssd_tile.set_value(format_optional_float(row.get("rmssd_ms"), 1))
+        hr = row.get("heart_rate_bpm")
+        hr_tile.set_value(str(hr) if hr is not None else "--")
+        freshness_tile.set_value(format_optional_float(row.get("freshness_s"), 1))
+        set_text_if_changed(provider_label, f"Provider: {row.get('provider', '--')}")
+
+    def _update_comodulation(self, history: list[dict[str, Any]]) -> None:
+        values: list[float] = []
+        for row in history:
+            cmi = row.get("co_modulation_index")
+            if cmi is None:
+                continue
+            try:
+                values.append(float(cmi))
+            except (TypeError, ValueError):
+                continue
+        self.comod_sparkline.set_values(values)
+
+        latest = history[-1] if history else {}
+        cmi_value = latest.get("co_modulation_index") if latest else None
+        coverage = latest.get("coverage_ratio") if latest else None
+        pairs = latest.get("n_paired_observations") if latest else None
+
+        if cmi_value is None:
+            self.comod_value.set_value("--")
+            self.comod_hint_label.setVisible(bool(latest))
+        else:
+            self.comod_value.set_value(format_optional_float(cmi_value, 3))
+            self.comod_hint_label.setVisible(False)
+
+        self.comod_coverage.set_value(format_optional_float(coverage, 2))
+        self.comod_pairs.set_value(str(pairs) if pairs is not None else "--")
+
+    def _update_encounter_summary(self, rows: list[dict[str, Any]]) -> None:
+        self.encounter_table.setRowCount(len(rows))
+        for row_idx, row in enumerate(rows):
+            cells = [
+                str(row.get("arm", "--")),
+                str(row.get("encounter_count", 0)),
+                str(row.get("valid_count", 0)),
+                format_optional_float(row.get("avg_reward"), 3),
+                format_optional_float(row.get("gate_rate"), 2),
+                format_optional_float(row.get("avg_frames"), 1),
+            ]
+            for col_idx, text in enumerate(cells):
+                item = QTableWidgetItem(text)
+                item.setTextAlignment(Qt.AlignCenter)
+                self.encounter_table.setItem(row_idx, col_idx, item)
+
+    def _inject_stimulus_default(self) -> None:
+        self._post_stimulus(None)
+
+    def _inject_stimulus_custom(self) -> None:
+        text, ok = QInputDialog.getText(
+            self,
+            "Inject Custom Stimulus",
+            "Line text (leave blank for default):",
+        )
+        if not ok:
+            return
+        trimmed = text.strip() or None
+        self._post_stimulus(trimmed)
+
+    def _post_stimulus(self, line_text: str | None) -> None:
+        # WRITE PATH — the only place this module talks to FastAPI. The API
+        # owns the Redis pub/sub publish; do not bypass it from the GUI.
+        url = f"{API_BASE}/api/v1/stimulus"
+        payload = json.dumps({"line_text": line_text} if line_text else {}).encode("utf-8")
+        req = urllib.request.Request(
+            url,
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=5.0) as resp:
+                body = resp.read().decode("utf-8")
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace") if exc.fp else str(exc)
+            msg = f"Stimulus inject failed ({exc.code}): {detail[:200]}"
+            set_text_if_changed(self.stimulus_status_label, msg)
+            self._append_log(msg)
+            return
+        except urllib.error.URLError as exc:
+            msg = f"Stimulus inject unreachable: {exc.reason}"
+            set_text_if_changed(self.stimulus_status_label, msg)
+            self._append_log(msg)
+            return
+
+        try:
+            decoded = json.loads(body)
+        except json.JSONDecodeError:
+            decoded = {"status": "unknown", "raw": body[:120]}
+
+        status = decoded.get("status", "unknown")
+        receivers = decoded.get("receivers")
+        summary = f"Stimulus {status}"
+        if receivers is not None:
+            summary += f" · receivers={receivers}"
+        warning = decoded.get("warning")
+        if warning:
+            summary += f" · {warning}"
+        set_text_if_changed(self.stimulus_status_label, summary)
+        self._append_log(summary)
+
+    def _append_log(self, message: str) -> None:
         ts = time.strftime("%H:%M:%S")  
         self.log_output.appendPlainText(f"[{ts}] {message}")  
   

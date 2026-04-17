@@ -1,38 +1,75 @@
-"""Operator Session CLI — §4.E.1, §4.C, §2 step 7.
+"""Operator CLI — §4.E.1, §4.C, §2 step 7.
 
-Thin command-line interface wrapping the LSIE-MLF REST API for
-streamlined operator workflow during live stream experiments.
+Typer-based command-line interface wrapping the LSIE-MLF REST API.
+All data access goes through the FastAPI server; the CLI never talks
+to Postgres or Redis directly (§2 step 7).
 
-Entry point: python -m scripts.lsie_cli <command> [options]
+Entry point: ``python -m scripts <group> <command> [options]``
 
-Commands:
-    session list            — List all sessions with metric counts
-    session status <id>     — Session detail with summary metrics
-    session inject          — Trigger stimulus injection (greeting delivered)
-    experiment show <id>    — Arm state with alpha/beta posteriors
-    experiment summary <id> — Encounter-level reward summary per arm
+Command groups:
+    session       — list, status
+    experiment    — list, show
+    encounter     — list, summary
+    metrics       — au12, acoustic
+    physiology    — show
+    comodulation  — show
+    stimulus      — inject
 
-§4.E.1 — Operator intervention bridge and experiment inspection.
-§4.C   — Session lifecycle visibility.
+§4.E.1    — Operator intervention bridge and experiment inspection.
+§4.C      — Session lifecycle visibility.
 §2 step 7 — All data access through parameterized API endpoints.
 """
 
 from __future__ import annotations
 
-import argparse
 import json
 import os
 import sys
-from typing import Any, Mapping, Sequence
+from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
-API_BASE: str = os.environ.get("LSIE_API_URL", "http://localhost:8000").rstrip("/")
+import typer
+from rich.console import Console
+from rich.table import Table
+
+_DEFAULT_API_BASE = "http://localhost:8000"
 _DEFAULT_EXPERIMENT_ID = "greeting_line_v1"
+
+API_BASE: str = os.environ.get("LSIE_API_URL", _DEFAULT_API_BASE).rstrip("/")
+
+console = Console(highlight=False)
+
+app = typer.Typer(
+    name="lsie",
+    help="LSIE-MLF Operator CLI — §4.E.1",
+    no_args_is_help=True,
+    add_completion=False,
+)
+session_app = typer.Typer(help="Session management", no_args_is_help=True)
+experiment_app = typer.Typer(help="Thompson Sampling experiment inspection", no_args_is_help=True)
+encounter_app = typer.Typer(help="Encounter log and reward summaries", no_args_is_help=True)
+metrics_app = typer.Typer(help="Per-session metric time-series", no_args_is_help=True)
+physiology_app = typer.Typer(help="Physiological snapshot readback (§4.E.2)", no_args_is_help=True)
+comodulation_app = typer.Typer(help="Co-Modulation Index history (§7C)", no_args_is_help=True)
+stimulus_app = typer.Typer(help="Operator stimulus trigger (§4.E.1)", no_args_is_help=True)
+
+app.add_typer(session_app, name="session")
+app.add_typer(experiment_app, name="experiment")
+app.add_typer(encounter_app, name="encounter")
+app.add_typer(metrics_app, name="metrics")
+app.add_typer(physiology_app, name="physiology")
+app.add_typer(comodulation_app, name="comodulation")
+app.add_typer(stimulus_app, name="stimulus")
+
+
+# ---------------------------------------------------------------------------
+# HTTP helpers — stdlib only (no new runtime dependency beyond typer+rich)
+# ---------------------------------------------------------------------------
 
 
 def _api_get(path: str) -> Any:
-    """Perform a GET request and return the parsed JSON body."""
+    """Perform a GET request against the API server and return parsed JSON."""
     url = f"{API_BASE}{path}"
     request = Request(url, method="GET")
     request.add_header("Accept", "application/json")
@@ -54,7 +91,7 @@ def _api_get(path: str) -> Any:
 
 
 def _api_post(path: str) -> Any:
-    """Perform a POST request and return the parsed JSON body."""
+    """Perform a POST request against the API server and return parsed JSON."""
     url = f"{API_BASE}{path}"
     request = Request(url, method="POST", data=b"")
     request.add_header("Content-Type", "application/json")
@@ -75,24 +112,9 @@ def _api_post(path: str) -> Any:
         raise SystemExit(1) from exc
 
 
-def _format_table(rows: Sequence[Mapping[str, Any]], columns: Sequence[str]) -> str:
-    """Format rows as an aligned plain-text table."""
-    if not rows:
-        return "(no data)"
-
-    widths = [len(column) for column in columns]
-    rendered_rows: list[list[str]] = []
-    for row in rows:
-        rendered = [str(row.get(column, "")) for column in columns]
-        rendered_rows.append(rendered)
-        for index, value in enumerate(rendered):
-            widths[index] = max(widths[index], len(value))
-
-    lines = ["  ".join(column.ljust(widths[index]) for index, column in enumerate(columns))]
-    lines.append("  ".join("-" * width for width in widths))
-    for rendered in rendered_rows:
-        lines.append("  ".join(value.ljust(widths[index]) for index, value in enumerate(rendered)))
-    return "\n".join(lines)
+# ---------------------------------------------------------------------------
+# Rendering helpers
+# ---------------------------------------------------------------------------
 
 
 def _fmt_float(value: Any) -> str:
@@ -107,152 +129,285 @@ def _fmt_float(value: Any) -> str:
         return str(value)
 
 
-def cmd_session_list(args: argparse.Namespace) -> None:
-    """GET /api/v1/sessions — list sessions."""
-    _ = args
+def _render_table(
+    rows: list[dict[str, Any]],
+    columns: list[str],
+    *,
+    title: str | None = None,
+    empty_message: str = "(no data)",
+) -> None:
+    """Render a list of row-dicts as a rich table. Empty → plain message."""
+    if not rows:
+        console.print(empty_message)
+        return
+
+    table = Table(title=title, show_lines=False, pad_edge=False)
+    for column in columns:
+        table.add_column(column, overflow="fold")
+    for row in rows:
+        table.add_row(*[str(row.get(column, "")) for column in columns])
+    console.print(table)
+
+
+# ---------------------------------------------------------------------------
+# Root callback — global --api-url option
+# ---------------------------------------------------------------------------
+
+
+@app.callback()
+def _root(
+    api_url: str | None = typer.Option(
+        None,
+        "--api-url",
+        help="API base URL (default: $LSIE_API_URL or http://localhost:8000)",
+    ),
+) -> None:
+    """Global options applied before every command."""
+    if api_url:
+        global API_BASE
+        API_BASE = api_url.rstrip("/")
+
+
+# ---------------------------------------------------------------------------
+# session
+# ---------------------------------------------------------------------------
+
+
+@session_app.command("list")
+def session_list() -> None:
+    """GET /api/v1/sessions — list all sessions."""
     sessions = _api_get("/api/v1/sessions")
     if not sessions:
-        print("No sessions found. Start a stream to generate data.")
+        console.print("No sessions found. Start a stream to generate data.")
         return
-    columns = ("session_id", "stream_url", "started_at", "ended_at", "metric_count")
-    print(_format_table(sessions, columns))
+    _render_table(
+        sessions,
+        ["session_id", "stream_url", "started_at", "ended_at", "metric_count"],
+    )
 
 
-def cmd_session_status(args: argparse.Namespace) -> None:
+@session_app.command("status")
+def session_status(session_id: str = typer.Argument(..., help="Session identifier")) -> None:
     """GET /api/v1/sessions/{id} — show session details and summary metrics."""
-    data = _api_get(f"/api/v1/sessions/{args.session_id}")
-    print(f"Session:  {data['session_id']}")
-    print(f"Stream:   {data.get('stream_url', '(none)')}")
-    print(f"Started:  {data.get('started_at', '(unknown)')}")
-    print(f"Ended:    {data.get('ended_at', '(active)')}")
+    data = _api_get(f"/api/v1/sessions/{session_id}")
+    console.print(f"Session:  {data['session_id']}")
+    console.print(f"Stream:   {data.get('stream_url', '(none)')}")
+    console.print(f"Started:  {data.get('started_at', '(unknown)')}")
+    console.print(f"Ended:    {data.get('ended_at', '(active)')}")
 
     summary = data.get("summary")
     if not summary:
-        print("\n(no metrics yet)")
+        console.print("\n(no metrics yet)")
         return
 
-    print()
-    print(f"Segments:    {summary.get('total_segments', 0)}")
-    print(f"Avg AU12:    {_fmt_float(summary.get('avg_au12'))}")
-    print(f"Avg Pitch:   {_fmt_float(summary.get('avg_pitch_f0'))} Hz")
-    print(f"Avg Jitter:  {_fmt_float(summary.get('avg_jitter'))}")
-    print(f"Avg Shimmer: {_fmt_float(summary.get('avg_shimmer'))}")
-    print(f"Time range:  {summary.get('first_segment_at', '?')} → {summary.get('last_segment_at', '?')}")
+    console.print("")
+    console.print(f"Segments:    {summary.get('total_segments', 0)}")
+    console.print(f"Avg AU12:    {_fmt_float(summary.get('avg_au12'))}")
+    console.print(f"Avg Pitch:   {_fmt_float(summary.get('avg_pitch_f0'))} Hz")
+    console.print(f"Avg Jitter:  {_fmt_float(summary.get('avg_jitter'))}")
+    console.print(f"Avg Shimmer: {_fmt_float(summary.get('avg_shimmer'))}")
+    console.print(
+        f"Time range:  {summary.get('first_segment_at', '?')} → "
+        f"{summary.get('last_segment_at', '?')}"
+    )
 
 
-def cmd_session_inject(args: argparse.Namespace) -> None:
-    """POST /api/v1/stimulus — publish a stimulus trigger."""
-    _ = args
-    result = _api_post("/api/v1/stimulus")
-    status = result.get("status", "unknown")
-    if status == "triggered":
-        print("Stimulus injected. Calibration phase ended.")
+# ---------------------------------------------------------------------------
+# experiment
+# ---------------------------------------------------------------------------
+
+
+@experiment_app.command("list")
+def experiment_list() -> None:
+    """GET /api/v1/experiments — list experiment IDs."""
+    rows = _api_get("/api/v1/experiments")
+    if not rows:
+        console.print("(no experiments registered)")
         return
-
-    print(f"Stimulus response: {status}")
-    warning = result.get("warning")
-    if warning:
-        print(f"Warning: {warning}")
+    _render_table(rows, ["experiment_id"])
 
 
-def cmd_experiment_show(args: argparse.Namespace) -> None:
-    """GET /api/v1/experiments/{id} — show experiment arm state."""
-    data = _api_get(f"/api/v1/experiments/{args.experiment_id}")
-    print(f"Experiment: {data['experiment_id']}")
-    print()
+@experiment_app.command("show")
+def experiment_show(
+    experiment_id: str = typer.Argument(
+        _DEFAULT_EXPERIMENT_ID,
+        help=f"Experiment ID (default: {_DEFAULT_EXPERIMENT_ID})",
+    ),
+) -> None:
+    """GET /api/v1/experiments/{id} — show Thompson Sampling arm state."""
+    data = _api_get(f"/api/v1/experiments/{experiment_id}")
+    console.print(f"Experiment: {data['experiment_id']}")
+    console.print("")
 
     arms = data.get("arms", [])
     if not arms:
-        print("(no arms registered)")
+        console.print("(no arms registered)")
         return
 
-    columns = ("arm", "alpha_param", "beta_param", "updated_at")
-    print(_format_table(arms, columns))
+    _render_table(arms, ["arm", "alpha_param", "beta_param", "updated_at"])
 
 
-def cmd_experiment_summary(args: argparse.Namespace) -> None:
-    """GET /api/v1/encounters/{id}/summary — show reward summary per arm."""
-    summary_rows = _api_get(f"/api/v1/encounters/{args.experiment_id}/summary")
-    columns = (
-        "arm",
-        "encounter_count",
-        "valid_count",
-        "avg_reward",
-        "avg_valid_reward",
-        "gate_rate",
-        "avg_frames",
+# ---------------------------------------------------------------------------
+# encounter
+# ---------------------------------------------------------------------------
+
+
+@encounter_app.command("list")
+def encounter_list(
+    experiment: str | None = typer.Option(None, "--experiment", help="Filter by experiment_id"),
+    arm: str | None = typer.Option(None, "--arm", help="Filter by arm"),
+    valid_only: bool = typer.Option(False, "--valid-only", help="Only is_valid=TRUE rows"),
+    limit: int = typer.Option(100, "--limit", min=1, max=1000),
+) -> None:
+    """GET /api/v1/encounters — list encounter log entries."""
+    params: list[str] = []
+    if experiment is not None:
+        params.append(f"experiment_id={experiment}")
+    if arm is not None:
+        params.append(f"arm={arm}")
+    if valid_only:
+        params.append("valid_only=true")
+    params.append(f"limit={limit}")
+    query = "&".join(params)
+    rows = _api_get(f"/api/v1/encounters?{query}")
+    _render_table(
+        rows,
+        [
+            "id",
+            "session_id",
+            "arm",
+            "timestamp_utc",
+            "gated_reward",
+            "p90_intensity",
+            "semantic_gate",
+            "is_valid",
+            "n_frames",
+        ],
     )
-    print(f"Encounter summary for: {args.experiment_id}")
-    print()
-    print(_format_table(summary_rows, columns))
 
 
-def build_parser() -> argparse.ArgumentParser:
-    """Build the CLI parser."""
-    parser = argparse.ArgumentParser(
-        prog="lsie",
-        description="LSIE-MLF Operator CLI — §4.E.1",
-    )
-    parser.add_argument(
-        "--api-url",
-        default=None,
-        help="API base URL (default: $LSIE_API_URL or http://localhost:8000)",
-    )
-
-    top_level = parser.add_subparsers(dest="command", required=True)
-
-    session_parser = top_level.add_parser("session", help="Session management")
-    session_subcommands = session_parser.add_subparsers(dest="subcommand", required=True)
-    session_subcommands.add_parser("list", help="List all sessions")
-
-    status_parser = session_subcommands.add_parser("status", help="Show session details")
-    status_parser.add_argument("session_id", help="Session identifier")
-
-    session_subcommands.add_parser("inject", help="Trigger stimulus injection")
-
-    experiment_parser = top_level.add_parser("experiment", help="Experiment inspection")
-    experiment_subcommands = experiment_parser.add_subparsers(dest="subcommand", required=True)
-
-    show_parser = experiment_subcommands.add_parser("show", help="Show experiment state")
-    show_parser.add_argument(
-        "experiment_id",
-        nargs="?",
-        default=_DEFAULT_EXPERIMENT_ID,
+@encounter_app.command("summary")
+def encounter_summary(
+    experiment_id: str = typer.Argument(
+        _DEFAULT_EXPERIMENT_ID,
         help=f"Experiment ID (default: {_DEFAULT_EXPERIMENT_ID})",
+    ),
+) -> None:
+    """GET /api/v1/encounters/{id}/summary — per-arm reward summary."""
+    rows = _api_get(f"/api/v1/encounters/{experiment_id}/summary")
+    console.print(f"Encounter summary for: {experiment_id}")
+    console.print("")
+    _render_table(
+        rows,
+        [
+            "arm",
+            "encounter_count",
+            "valid_count",
+            "avg_reward",
+            "avg_valid_reward",
+            "gate_rate",
+            "avg_frames",
+        ],
     )
 
-    summary_parser = experiment_subcommands.add_parser("summary", help="Show encounter summary")
-    summary_parser.add_argument(
-        "experiment_id",
-        nargs="?",
-        default=_DEFAULT_EXPERIMENT_ID,
-        help=f"Experiment ID (default: {_DEFAULT_EXPERIMENT_ID})",
+
+# ---------------------------------------------------------------------------
+# metrics
+# ---------------------------------------------------------------------------
+
+
+@metrics_app.command("au12")
+def metrics_au12(session_id: str = typer.Argument(..., help="Session identifier")) -> None:
+    """GET /api/v1/metrics/{session_id}/au12 — AU12 intensity time-series."""
+    rows = _api_get(f"/api/v1/metrics/{session_id}/au12")
+    _render_table(rows, ["segment_id", "timestamp_utc", "au12_intensity"])
+
+
+@metrics_app.command("acoustic")
+def metrics_acoustic(session_id: str = typer.Argument(..., help="Session identifier")) -> None:
+    """GET /api/v1/metrics/{session_id}/acoustic — pitch/jitter/shimmer series."""
+    rows = _api_get(f"/api/v1/metrics/{session_id}/acoustic")
+    _render_table(rows, ["segment_id", "timestamp_utc", "pitch_f0", "jitter", "shimmer"])
+
+
+# ---------------------------------------------------------------------------
+# physiology
+# ---------------------------------------------------------------------------
+
+
+@physiology_app.command("show")
+def physiology_show(
+    session_id: str = typer.Argument(..., help="Session identifier"),
+    series: bool = typer.Option(False, "--series", help="Return full time-series"),
+    limit: int = typer.Option(500, "--limit", min=1, max=5000, help="Max rows in series mode"),
+) -> None:
+    """GET /api/v1/physiology/{session_id} — latest per-role snapshot or time-series."""
+    query = f"?series=true&limit={limit}" if series else ""
+    rows = _api_get(f"/api/v1/physiology/{session_id}{query}")
+    _render_table(
+        rows,
+        [
+            "subject_role",
+            "segment_id",
+            "rmssd_ms",
+            "heart_rate_bpm",
+            "freshness_s",
+            "is_stale",
+            "provider",
+            "source_timestamp_utc",
+        ],
     )
 
-    return parser
+
+# ---------------------------------------------------------------------------
+# comodulation
+# ---------------------------------------------------------------------------
+
+
+@comodulation_app.command("show")
+def comodulation_show(
+    session_id: str = typer.Argument(..., help="Session identifier"),
+    limit: int = typer.Option(100, "--limit", min=1, max=2000),
+) -> None:
+    """GET /api/v1/comodulation/{session_id} — rolling Co-Modulation Index."""
+    rows = _api_get(f"/api/v1/comodulation/{session_id}?limit={limit}")
+    _render_table(
+        rows,
+        [
+            "window_end_utc",
+            "window_minutes",
+            "co_modulation_index",
+            "n_paired_observations",
+            "coverage_ratio",
+            "streamer_rmssd_mean",
+            "operator_rmssd_mean",
+        ],
+    )
+
+
+# ---------------------------------------------------------------------------
+# stimulus
+# ---------------------------------------------------------------------------
+
+
+@stimulus_app.command("inject")
+def stimulus_inject() -> None:
+    """POST /api/v1/stimulus — publish a stimulus trigger to the orchestrator."""
+    result = _api_post("/api/v1/stimulus")
+    status = result.get("status", "unknown")
+    if status == "triggered":
+        console.print("Stimulus injected. Calibration phase ended.")
+        return
+
+    console.print(f"Stimulus response: {status}")
+    warning = result.get("warning")
+    if warning:
+        console.print(f"Warning: {warning}")
 
 
 def main() -> None:
-    """Run the CLI."""
-    parser = build_parser()
-    args = parser.parse_args()
-
-    if args.api_url:
-        global API_BASE
-        API_BASE = args.api_url.rstrip("/")
-
-    handlers = {
-        ("session", "list"): cmd_session_list,
-        ("session", "status"): cmd_session_status,
-        ("session", "inject"): cmd_session_inject,
-        ("experiment", "show"): cmd_experiment_show,
-        ("experiment", "summary"): cmd_experiment_summary,
-    }
-    handler = handlers.get((args.command, args.subcommand))
-    if handler is None:
-        parser.print_help()
-        raise SystemExit(1)
-    handler(args)
+    """Run the CLI. Kept as a function so scripts/__main__.py can import it."""
+    app()
 
 
 if __name__ == "__main__":

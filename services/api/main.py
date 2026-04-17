@@ -17,6 +17,7 @@ from fastapi import FastAPI
 
 from services.api.db.connection import close_pool, init_pool
 from services.api.routes import (
+    comodulation,
     encounters,
     experiments,
     health,
@@ -50,3 +51,4 @@ app.include_router(stimulus.router, prefix="/api/v1", tags=["stimulus"])
 app.include_router(encounters.router, prefix="/api/v1", tags=["encounters"])
 app.include_router(experiments.router, prefix="/api/v1", tags=["experiments"])
 app.include_router(physiology.router, prefix="/api/v1", tags=["physiology"])
+app.include_router(comodulation.router, prefix="/api/v1", tags=["comodulation"])

@@ -32,10 +32,11 @@ from contextlib import suppress
 from datetime import UTC, datetime
 from typing import Any
 
-from fastapi import APIRouter, Header, HTTPException, Request
+from fastapi import APIRouter, Header, HTTPException, Query, Request
 from pydantic import ValidationError
 
 from packages.schemas.physiology import PhysiologicalPayload, PhysiologicalSampleEvent
+from services.api.db.connection import get_connection, put_connection
 
 logger = logging.getLogger(__name__)
 
@@ -218,3 +219,84 @@ async def oura_webhook(
         event.payload.heart_rate_bpm,
     )
     return {"status": "accepted", "event_id": str(event.unique_id)}
+
+
+# §4.E.2 / §7C — Per-segment physiological snapshot readback (latest per subject_role).
+_LATEST_PHYSIO_SQL: str = """
+    SELECT DISTINCT ON (p.subject_role)
+        p.session_id, p.segment_id, p.subject_role, p.rmssd_ms,
+        p.heart_rate_bpm, p.freshness_s, p.is_stale, p.provider,
+        p.source_timestamp_utc, p.created_at
+    FROM physiology_log p
+    WHERE p.session_id = %(session_id)s
+    ORDER BY p.subject_role, p.created_at DESC
+"""
+
+# §4.E.2 — Per-segment physiological snapshot series (time-series form).
+_SERIES_PHYSIO_SQL: str = """
+    SELECT p.session_id, p.segment_id, p.subject_role, p.rmssd_ms,
+           p.heart_rate_bpm, p.freshness_s, p.is_stale, p.provider,
+           p.source_timestamp_utc, p.created_at
+    FROM physiology_log p
+    WHERE p.session_id = %(session_id)s
+    ORDER BY p.created_at ASC
+    LIMIT %(limit)s
+"""
+
+
+def _serialize_physio(val: Any) -> Any:
+    if hasattr(val, "isoformat"):
+        return val.isoformat()
+    return val
+
+
+def _rows_to_dicts(cursor: Any) -> list[dict[str, Any]]:
+    if cursor.description is None:
+        return []
+    columns = [desc[0] for desc in cursor.description]
+    rows: list[Any] = cursor.fetchall()
+    return [
+        {col: _serialize_physio(val) for col, val in zip(columns, row, strict=True)} for row in rows
+    ]
+
+
+@router.get("/physiology/{session_id}")
+async def get_physiology(
+    session_id: str,
+    series: bool = Query(False),
+    limit: int = Query(500, ge=1, le=5000),
+) -> list[dict[str, Any]]:
+    """§4.E.2 — Physiological snapshot readback for a session.
+
+    Default returns the latest snapshot per ``subject_role``
+    (streamer and operator). ``?series=true`` returns the full
+    time-series of snapshots for the session, ordered by insertion.
+
+    Args:
+        session_id: Session UUID whose physiology_log rows to return.
+        series: If True, return the time-series instead of latest-per-role.
+        limit: Max rows for series mode (1-5000, default 500).
+    """
+    conn = None
+    try:
+        conn = get_connection()
+        with conn.cursor() as cur:
+            if series:
+                cur.execute(
+                    _SERIES_PHYSIO_SQL,
+                    {"session_id": session_id, "limit": limit},
+                )
+            else:
+                cur.execute(
+                    _LATEST_PHYSIO_SQL,
+                    {"session_id": session_id},
+                )
+            return _rows_to_dicts(cur)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.error("Failed to query physiology for %s: %s", session_id, exc)
+        raise HTTPException(status_code=500, detail="Internal server error") from exc
+    finally:
+        if conn is not None:
+            put_connection(conn)
