@@ -1,0 +1,433 @@
+"""Unit tests for operator-console shared DTOs.
+
+Focus (per Phase 1 done-when):
+  * UTC-aware timestamps are required; naive datetimes are rejected.
+  * `CoModulationSummary.null_reason` surfaces when
+    `co_modulation_index is None` (§7C null-valid semantics).
+  * `StimulusRequest.client_action_id` is the API Server dedup key and
+    must be present (§4.C authoritative stimulus bookkeeping).
+  * Enum values round-trip through JSON.
+"""
+
+from __future__ import annotations
+
+import json
+import uuid
+from datetime import UTC, datetime, timedelta, timezone
+from uuid import UUID
+
+import pytest
+from pydantic import ValidationError
+
+from packages.schemas.operator_console import (
+    AlertEvent,
+    AlertKind,
+    AlertSeverity,
+    ArmSummary,
+    CoModulationSummary,
+    EncounterState,
+    EncounterSummary,
+    ExperimentDetail,
+    ExperimentSummary,
+    HealthSnapshot,
+    HealthState,
+    HealthSubsystemStatus,
+    LatestEncounterSummary,
+    OverviewSnapshot,
+    PhysiologyCurrentSnapshot,
+    SessionPhysiologySnapshot,
+    SessionSummary,
+    StimulusAccepted,
+    StimulusActionState,
+    StimulusRequest,
+    UiStatusKind,
+)
+
+
+def _utc(year: int = 2026, month: int = 1, day: int = 1, hour: int = 12) -> datetime:
+    return datetime(year, month, day, hour, 0, tzinfo=UTC)
+
+
+# ----------------------------------------------------------------------
+# UTC enforcement
+# ----------------------------------------------------------------------
+
+
+class TestUtcTimestampEnforcement:
+    def test_session_summary_rejects_naive_started_at(self) -> None:
+        naive = datetime(2026, 1, 1, 12, 0)  # no tzinfo
+        with pytest.raises(ValidationError) as info:
+            SessionSummary(
+                session_id=uuid.uuid4(),
+                status="active",
+                started_at_utc=naive,
+            )
+        assert "UTC-aware" in str(info.value)
+
+    def test_session_summary_accepts_utc_aware(self) -> None:
+        s = SessionSummary(
+            session_id=uuid.uuid4(),
+            status="active",
+            started_at_utc=_utc(),
+        )
+        assert s.started_at_utc.tzinfo is UTC
+
+    def test_session_summary_accepts_non_utc_offset(self) -> None:
+        # Any tz-aware datetime is acceptable — rejection is only for naive.
+        aware = datetime(2026, 1, 1, 12, 0, tzinfo=timezone(timedelta(hours=2)))
+        s = SessionSummary(
+            session_id=uuid.uuid4(),
+            status="active",
+            started_at_utc=aware,
+        )
+        assert s.started_at_utc.utcoffset() is not None
+
+    def test_encounter_summary_rejects_naive_stimulus_time(self) -> None:
+        naive = datetime(2026, 1, 1, 12, 0)
+        with pytest.raises(ValidationError):
+            EncounterSummary(
+                encounter_id="e-1",
+                session_id=uuid.uuid4(),
+                segment_timestamp_utc=_utc(),
+                state=EncounterState.COMPLETED,
+                stimulus_time_utc=naive,
+            )
+
+    def test_physiology_snapshot_rejects_naive_source_timestamp(self) -> None:
+        naive = datetime(2026, 1, 1, 12, 0)
+        with pytest.raises(ValidationError):
+            PhysiologyCurrentSnapshot(
+                subject_role="streamer",
+                rmssd_ms=42.5,
+                heart_rate_bpm=68,
+                provider="oura",
+                source_timestamp_utc=naive,
+                freshness_s=5.0,
+                is_stale=False,
+            )
+
+    def test_health_snapshot_requires_utc_generated_at(self) -> None:
+        naive = datetime(2026, 1, 1, 12, 0)
+        with pytest.raises(ValidationError):
+            HealthSnapshot(
+                generated_at_utc=naive,
+                overall_state=HealthState.OK,
+            )
+
+    def test_stimulus_accepted_requires_utc_received_at(self) -> None:
+        naive = datetime(2026, 1, 1, 12, 0)
+        with pytest.raises(ValidationError):
+            StimulusAccepted(
+                session_id=uuid.uuid4(),
+                client_action_id=uuid.uuid4(),
+                accepted=True,
+                received_at_utc=naive,
+            )
+
+
+# ----------------------------------------------------------------------
+# §7C null-valid co-modulation
+# ----------------------------------------------------------------------
+
+
+class TestCoModulationNullValid:
+    def test_null_index_with_reason_is_accepted(self) -> None:
+        summary = CoModulationSummary(
+            session_id=uuid.uuid4(),
+            co_modulation_index=None,
+            n_paired_observations=0,
+            coverage_ratio=0.0,
+            null_reason="insufficient aligned non-stale pairs",
+        )
+        assert summary.co_modulation_index is None
+        assert summary.null_reason == "insufficient aligned non-stale pairs"
+
+    def test_populated_index_survives_roundtrip(self) -> None:
+        summary = CoModulationSummary(
+            session_id=uuid.uuid4(),
+            co_modulation_index=0.42,
+            n_paired_observations=12,
+            coverage_ratio=0.8,
+            window_start_utc=_utc(),
+            window_end_utc=_utc(hour=13),
+        )
+        restored = CoModulationSummary.model_validate_json(summary.model_dump_json())
+        assert restored == summary
+
+    @pytest.mark.parametrize("value", [-1.5, 1.5])
+    def test_index_is_bounded_to_pearson_range(self, value: float) -> None:
+        with pytest.raises(ValidationError):
+            CoModulationSummary(
+                session_id=uuid.uuid4(),
+                co_modulation_index=value,
+                n_paired_observations=5,
+                coverage_ratio=0.5,
+            )
+
+    def test_coverage_ratio_bounded_0_to_1(self) -> None:
+        with pytest.raises(ValidationError):
+            CoModulationSummary(
+                session_id=uuid.uuid4(),
+                co_modulation_index=0.1,
+                n_paired_observations=5,
+                coverage_ratio=1.5,
+            )
+
+
+# ----------------------------------------------------------------------
+# StimulusRequest dedup key
+# ----------------------------------------------------------------------
+
+
+class TestStimulusRequestDedupKey:
+    def test_client_action_id_is_required(self) -> None:
+        with pytest.raises(ValidationError) as info:
+            StimulusRequest(operator_note="test")  # type: ignore[call-arg]
+        assert "client_action_id" in str(info.value)
+
+    def test_client_action_id_accepted_as_uuid(self) -> None:
+        action_id = uuid.uuid4()
+        request = StimulusRequest(client_action_id=action_id, operator_note=None)
+        assert request.client_action_id == action_id
+        assert isinstance(request.client_action_id, UUID)
+
+    def test_client_action_id_roundtrips_through_json(self) -> None:
+        action_id = uuid.uuid4()
+        request = StimulusRequest(client_action_id=action_id, operator_note="pinned")
+        restored = StimulusRequest.model_validate_json(request.model_dump_json())
+        assert restored.client_action_id == action_id
+        assert restored.operator_note == "pinned"
+
+    def test_operator_note_defaults_to_none(self) -> None:
+        request = StimulusRequest(client_action_id=uuid.uuid4())
+        assert request.operator_note is None
+
+
+# ----------------------------------------------------------------------
+# Enum round-trip
+# ----------------------------------------------------------------------
+
+
+class TestEnumRoundTrip:
+    def test_ui_status_kind_values(self) -> None:
+        for kind in UiStatusKind:
+            assert UiStatusKind(kind.value) is kind
+
+    def test_alert_severity_values(self) -> None:
+        for severity in AlertSeverity:
+            assert AlertSeverity(severity.value) is severity
+
+    def test_alert_kind_values(self) -> None:
+        for kind in AlertKind:
+            assert AlertKind(kind.value) is kind
+
+    def test_encounter_state_values(self) -> None:
+        for state in EncounterState:
+            assert EncounterState(state.value) is state
+
+    def test_stimulus_action_state_values(self) -> None:
+        for state in StimulusActionState:
+            assert StimulusActionState(state.value) is state
+
+    def test_health_state_values(self) -> None:
+        for state in HealthState:
+            assert HealthState(state.value) is state
+
+    def test_alert_event_enum_serializes_as_value(self) -> None:
+        event = AlertEvent(
+            alert_id="a-1",
+            severity=AlertSeverity.CRITICAL,
+            kind=AlertKind.SUBSYSTEM_ERROR,
+            message="capture offline",
+            subsystem_key="capture",
+            emitted_at_utc=_utc(),
+        )
+        dumped = json.loads(event.model_dump_json())
+        assert dumped["severity"] == "critical"
+        assert dumped["kind"] == "subsystem_error"
+        restored = AlertEvent.model_validate_json(event.model_dump_json())
+        assert restored.severity is AlertSeverity.CRITICAL
+        assert restored.kind is AlertKind.SUBSYSTEM_ERROR
+
+    def test_encounter_state_in_encounter_summary_roundtrips(self) -> None:
+        summary = EncounterSummary(
+            encounter_id="e-1",
+            session_id=uuid.uuid4(),
+            segment_timestamp_utc=_utc(),
+            state=EncounterState.REJECTED_GATE_CLOSED,
+            semantic_gate=0,
+            p90_intensity=0.3,
+            gated_reward=0.0,
+        )
+        restored = EncounterSummary.model_validate_json(summary.model_dump_json())
+        assert restored.state is EncounterState.REJECTED_GATE_CLOSED
+
+
+# ----------------------------------------------------------------------
+# Composite DTOs
+# ----------------------------------------------------------------------
+
+
+class TestCompositeDtos:
+    def test_overview_snapshot_accepts_all_null_inner_cards(self) -> None:
+        snap = OverviewSnapshot(generated_at_utc=_utc())
+        assert snap.active_session is None
+        assert snap.latest_encounter is None
+        assert snap.experiment_summary is None
+        assert snap.physiology is None
+        assert snap.health is None
+        assert snap.alerts == []
+
+    def test_overview_snapshot_validates_nested_dtos(self) -> None:
+        snap = OverviewSnapshot(
+            generated_at_utc=_utc(),
+            active_session=SessionSummary(
+                session_id=uuid.uuid4(),
+                status="active",
+                started_at_utc=_utc(),
+            ),
+            latest_encounter=LatestEncounterSummary(
+                encounter_id="e-1",
+                session_id=uuid.uuid4(),
+                segment_timestamp_utc=_utc(),
+                state=EncounterState.COMPLETED,
+                p90_intensity=0.87,
+                gated_reward=0.87,
+                semantic_gate=1,
+                n_frames_in_window=120,
+            ),
+        )
+        assert snap.latest_encounter is not None
+        assert snap.latest_encounter.gated_reward == pytest.approx(0.87)
+
+    def test_session_physiology_snapshot_bundles_roles_and_comodulation(self) -> None:
+        session_id = uuid.uuid4()
+        snap = SessionPhysiologySnapshot(
+            session_id=session_id,
+            streamer=PhysiologyCurrentSnapshot(
+                subject_role="streamer",
+                rmssd_ms=40.0,
+                heart_rate_bpm=70,
+                provider="oura",
+                source_timestamp_utc=_utc(),
+                freshness_s=10.0,
+                is_stale=False,
+            ),
+            operator=PhysiologyCurrentSnapshot(
+                subject_role="operator",
+                rmssd_ms=None,
+                heart_rate_bpm=None,
+                provider=None,
+                source_timestamp_utc=None,
+                freshness_s=None,
+                is_stale=None,
+            ),
+            comodulation=CoModulationSummary(
+                session_id=session_id,
+                co_modulation_index=None,
+                n_paired_observations=0,
+                coverage_ratio=0.0,
+                null_reason="insufficient aligned non-stale pairs",
+            ),
+            generated_at_utc=_utc(),
+        )
+        assert snap.operator is not None
+        assert snap.operator.rmssd_ms is None
+        assert snap.comodulation is not None
+        assert snap.comodulation.null_reason is not None
+
+    def test_experiment_detail_carries_arm_posteriors(self) -> None:
+        detail = ExperimentDetail(
+            experiment_id="greeting_line_v1",
+            label="greetings-v1",
+            active_arm_id="arm-a",
+            arms=[
+                ArmSummary(
+                    arm_id="arm-a",
+                    greeting_text="hi",
+                    posterior_alpha=2.0,
+                    posterior_beta=3.0,
+                    evaluation_variance=0.04,
+                    selection_count=12,
+                    recent_reward_mean=0.7,
+                    recent_semantic_pass_rate=0.85,
+                ),
+            ],
+            last_updated_utc=_utc(),
+        )
+        assert detail.arms[0].posterior_alpha == pytest.approx(2.0)
+        assert detail.arms[0].posterior_beta == pytest.approx(3.0)
+
+    def test_arm_summary_rejects_non_positive_posterior(self) -> None:
+        with pytest.raises(ValidationError):
+            ArmSummary(
+                arm_id="arm-a",
+                greeting_text="hi",
+                posterior_alpha=0.0,
+                posterior_beta=1.0,
+            )
+
+    def test_health_subsystem_carries_recovery_fields(self) -> None:
+        row = HealthSubsystemStatus(
+            subsystem_key="capture",
+            label="Capture Container",
+            state=HealthState.RECOVERING,
+            last_success_utc=_utc(),
+            detail="FFmpeg restarting after pipe overflow",
+            recovery_mode="ffmpeg_restart",
+            operator_action_hint="monitor; intervene if still recovering in 60s",
+        )
+        assert row.recovery_mode == "ffmpeg_restart"
+        assert row.operator_action_hint is not None
+
+    def test_experiment_summary_rejects_negative_arm_count(self) -> None:
+        with pytest.raises(ValidationError):
+            ExperimentSummary(experiment_id="greeting_line_v1", arm_count=-1)
+
+
+# ----------------------------------------------------------------------
+# Reward-explanation field completeness (§7B)
+# ----------------------------------------------------------------------
+
+
+class TestRewardExplanationFields:
+    def test_encounter_summary_carries_all_reward_explanation_fields(self) -> None:
+        enc = EncounterSummary(
+            encounter_id="e-1",
+            session_id=uuid.uuid4(),
+            segment_timestamp_utc=_utc(),
+            state=EncounterState.COMPLETED,
+            active_arm="arm-a",
+            expected_greeting="hi there",
+            stimulus_time_utc=_utc(hour=13),
+            semantic_gate=1,
+            semantic_confidence=0.92,
+            p90_intensity=0.88,
+            gated_reward=0.88,
+            n_frames_in_window=120,
+            baseline_b_neutral=0.1,
+            physiology_attached=True,
+            physiology_stale=False,
+            notes=["gate-open"],
+        )
+        # r_t = p90_intensity × semantic_gate per §7B
+        assert enc.semantic_gate == 1
+        assert enc.gated_reward == pytest.approx(enc.p90_intensity or 0.0)
+        assert enc.baseline_b_neutral == pytest.approx(0.1)
+        assert enc.n_frames_in_window == 120
+
+    def test_gated_reward_is_zero_when_gate_closed(self) -> None:
+        enc = EncounterSummary(
+            encounter_id="e-2",
+            session_id=uuid.uuid4(),
+            segment_timestamp_utc=_utc(),
+            state=EncounterState.REJECTED_GATE_CLOSED,
+            p90_intensity=0.75,
+            semantic_gate=0,
+            gated_reward=0.0,
+            n_frames_in_window=120,
+        )
+        # The DTO does not enforce the product — that's the pipeline's job —
+        # but it must be able to represent a gate-closed encounter cleanly.
+        assert enc.gated_reward == 0.0
+        assert enc.state is EncounterState.REJECTED_GATE_CLOSED
