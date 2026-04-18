@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-spec_ref_check.py — Resolve, index, and validate spec references (v3/v3.1 schema)
+spec_ref_check.py — Resolve, index, and validate spec references (v3/v3.1/v3.2 schema)
 ==================================================================================
 
 Auto-generates a spec_ref index from the content.json payload embedded in tech-spec,
@@ -32,8 +32,8 @@ Usage:
     python scripts/spec_ref_check.py --validate
     python scripts/spec_ref_check.py --resolve "7A.4"
     python scripts/spec_ref_check.py --resolve "4.A.1"
-    python scripts/spec_ref_check.py --from-pdf docs/tech-spec-v3.1.pdf --validate
-    python scripts/spec_ref_check.py --from-pdf docs/tech-spec-v3.1.pdf --extract > content.json
+    python scripts/spec_ref_check.py --from-pdf docs/tech-spec-v3.2.pdf --validate
+    python scripts/spec_ref_check.py --from-pdf docs/tech-spec-v3.2.pdf --extract > content.json
 
 Dependencies: None for core functionality. PyMuPDF (fitz) required
 only for --from-pdf extraction.
@@ -764,6 +764,20 @@ def _sort_ref(ref: str) -> tuple[Any, ...]:
 
 
 def main() -> int:
+    # The script prints section markers (§) and arrow glyphs (→) that are
+    # not representable in cp1252. On Windows the default stdout encoding
+    # is cp1252, so plain print() raises UnicodeEncodeError when stdout
+    # is a console without PYTHONIOENCODING=utf-8 set, or when stdout is
+    # redirected to a file. Reconfigure both streams to UTF-8 if the
+    # runtime supports it (Python 3.7+).
+    for _stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(_stream, "reconfigure", None)
+        if reconfigure is not None:
+            try:
+                reconfigure(encoding="utf-8")
+            except (ValueError, OSError):
+                pass
+
     parser = argparse.ArgumentParser(
         description="Resolve and validate spec references against content.json",
     )
@@ -816,7 +830,17 @@ def main() -> int:
             print("ERROR: --extract requires --from-pdf", file=sys.stderr)
             return 1
         spec = extract_content_from_pdf(args.from_pdf)
-        print(json.dumps(spec, indent=2, ensure_ascii=False))
+        # The extracted spec contains characters outside cp1252 (e.g.
+        # U+2011 NON-BREAKING HYPHEN). On Windows the default stdout
+        # encoding is cp1252, so a plain print() raises
+        # UnicodeEncodeError when stdout is redirected to a file.
+        # Write UTF-8 bytes directly so the JSON is portable regardless
+        # of the host console encoding.
+        payload = json.dumps(spec, indent=2, ensure_ascii=False) + "\n"
+        try:
+            sys.stdout.buffer.write(payload.encode("utf-8"))
+        except AttributeError:
+            print(payload, end="")
         return 0
 
     try:

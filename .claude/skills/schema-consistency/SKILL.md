@@ -22,7 +22,7 @@ Run the script:
 
 - Before committing any change under `packages/schemas/`, `data/sql/`, or `services/api/db/schema.py`.
 - Before merging a PR that touches any of those paths.
-- After regenerating `docs/artifacts/content.json` from the signed PDF (`scripts/spec_ref_check.py --from-pdf docs/tech-spec-v3.1.pdf --extract`).
+- After regenerating `docs/artifacts/content.json` from the signed PDF (`scripts/spec_ref_check.py --from-pdf docs/tech-spec-v3.2.pdf --extract`).
 - As Standing Post-Merge Chore #3 in the playbook (Schema-Code Consistency Verification).
 - As CI gate step 7 in `scripts/check.sh` (already wired — non-zero exit fails the local check suite).
 

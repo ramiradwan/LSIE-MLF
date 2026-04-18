@@ -1,6 +1,6 @@
-Run the 21-item autonomous implementation audit checklist from §13 of the spec (v3.1).
+Run the 21-item autonomous implementation audit checklist from §13 of the spec (v3.2).
 
-Source of truth: `docs/content.json` (extracted from `docs/tech-spec-v3.1.pdf`). Resolve individual items with:
+Source of truth: `docs/content.json` (extracted from `docs/tech-spec-v3.2.pdf`). Resolve individual items with:
 
 ```bash
 python scripts/spec_ref_check.py --resolve "13.<n>" --json
@@ -24,11 +24,11 @@ For each item below, verify the criterion and report PASS or FAIL with evidence:
 14. Data classification — transient/debug/permanent tiers enforced per §5.2.
 15. Canonical terminology — grep for retired synonyms from §0.3; must find zero matches.
 16. Reward pipeline — Thompson Sampling reward pipeline implements the §7B math recipe: P90 aggregation, binary semantic gate, fractional Beta-Bernoulli posterior updates with Beta(1,1) prior, stimulus window [t+0.5s, t+5.0s].
-17. Physiological schema backward compatibility — `_physiological_context` optional on InferenceHandoffPayload; payloads without physiology remain valid; `PhysiologicalSampleEvent` validates against §6.2.
+17. Physiological schema compatibility — `_physiological_context` optional on InferenceHandoffPayload; payloads without physiology remain valid; the `physiological_sample_event_schema` field carries the `PhysiologicalChunkEvent` definition (§6.2).
 18. Physiological freshness gating — `is_stale` is True when `freshness_s` exceeds `PHYSIO_STALENESS_THRESHOLD_S`; stale samples do not block segment dispatch; Module E excludes stale samples from Co-Modulation Index computation.
-19. Physiological data governance — no raw Oura webhook JSON reaches the Persistent Store; only normalized scalar derivatives (RMSSD, HR, freshness, Co-Modulation Index) persisted to `physiology_log` and `comodulation_log`.
-20. Co-modulation determinism — returns null when fewer than 4 paired observations exist; uses `scipy.stats.pearsonr`; deterministic for identical input.
-21. Reward pipeline invariance — §7B pipeline (`compute_reward`, `ThompsonSamplingEngine.update`) unchanged in v3.1; no physiological data enters reward computation; all v3.0 math recipe tests pass unmodified.
+19. Physiological data governance — no raw Oura webhook JSON reaches the Persistent Store; only normalized scalar derivatives and metadata (RMSSD, HR, validity_ratio, freshness, source_kind, derivation_method, Co-Modulation Index) persisted to `physiology_log` and `comodulation_log`.
+20. Co-modulation determinism — returns null when fewer than 4 paired 1-minute aligned observations exist or either aligned series has zero variance; uses `scipy.stats.pearsonr`; deterministic for identical input.
+21. Reward pipeline invariance — §7B pipeline (`compute_reward`, `ThompsonSamplingEngine.update`) unchanged through v3.2; no physiological data enters reward computation; all v3.0 math recipe tests pass unmodified.
 
 Run the canonical name grep (use `grep -E` — the alternation is extended-regex):
 

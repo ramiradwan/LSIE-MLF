@@ -46,7 +46,11 @@ else
 fi
 echo ""
 
-# 3. Mypy — scope and flags MUST match ci.yml lint-and-typecheck job
+# 3. Mypy — scope and flags MUST match ci.yml lint-and-typecheck job.
+# The local venv must also have PySide6 installed (via requirements/cli.txt
+# or `pip install PySide6`); without it, every QObject/QWidget subclass in
+# services/operator_console resolves to Any and mypy fails the same way CI
+# would. CI installs PySide6 explicitly in the lint-and-typecheck job.
 echo "── Mypy type check ──"
 if mypy packages/ services/ tests/ --python-version 3.11 --ignore-missing-imports --explicit-package-bases; then
     pass "Mypy type check"

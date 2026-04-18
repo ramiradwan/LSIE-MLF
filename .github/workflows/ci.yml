@@ -21,6 +21,14 @@ jobs:
           pip install ruff mypy
           pip install -r requirements/base.txt
           pip install pydantic numpy
+          # PySide6 ships its own type stubs. The operator console
+          # (services/operator_console/) subclasses QObject/QWidget/
+          # QAbstractTableModel etc. With --ignore-missing-imports these
+          # base classes resolve to Any on a Qt-less runner, which mypy
+          # rejects under the default disallow_subclassing_any rule. The
+          # rest of cli.txt (mediapipe, opencv, etc.) is not needed for
+          # type checking and is intentionally not installed here.
+          pip install "PySide6>=6.7,<7.0"
       - name: Ruff lint
         run: ruff check packages/ services/ tests/
       - name: Ruff format check
@@ -41,12 +49,35 @@ jobs:
           cache-dependency-path: |
             requirements/base.txt
             requirements/worker.txt
+      - name: Install Qt runtime libraries
+        # PySide6's QtWidgets dynamically loads libEGL.so.1 / libGL.so.1
+        # at import time, even under QT_QPA_PLATFORM=offscreen. The
+        # ubuntu-latest runner does not ship these by default, so the
+        # operator-console conftests (unit + integration) fail at import
+        # before any test body runs. libxkbcommon / libdbus / libfontconfig
+        # are additional transitive dlopen targets for QtGui / QtWidgets.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libegl1 libgl1 libxkbcommon0 libdbus-1-3 libfontconfig1
       - name: Install worker dependencies
         run: |
           pip install --upgrade pip
           pip install -r requirements/worker.txt
           pip install pytest pytest-cov
+          # The operator-console tests import PySide6.QtWidgets via their
+          # session-scoped qt_app fixture. PySide6 is not in
+          # requirements/worker.txt (it lives in requirements/cli.txt with
+          # the rest of the operator-host deps), so install just the Qt
+          # binding here — mediapipe / opencv from cli.txt are not needed.
+          pip install "PySide6>=6.7,<7.0"
       - name: Run tests
+        env:
+          # Belt-and-suspenders: conftest sets this with setdefault, but
+          # pinning it at the job level keeps the intent visible in the
+          # workflow and guards against a future test that imports Qt
+          # before the fixture runs.
+          QT_QPA_PLATFORM: offscreen
         run: pytest tests/ -x -q --tb=short
 
   canonical-terminology-audit:

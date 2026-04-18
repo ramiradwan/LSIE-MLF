@@ -34,7 +34,11 @@ ruff format --check packages/ services/ tests/
 if ($LASTEXITCODE -eq 0) { Pass "Ruff format" } else { Fail "Ruff format" }
 Write-Host ""
 
-# 3. Mypy -- scope and flags MUST match ci.yml lint-and-typecheck job
+# 3. Mypy -- scope and flags MUST match ci.yml lint-and-typecheck job.
+# The local venv must also have PySide6 installed (via requirements/cli.txt
+# or `pip install PySide6`); without it, every QObject/QWidget subclass in
+# services/operator_console resolves to Any and mypy fails the same way CI
+# would. CI installs PySide6 explicitly in the lint-and-typecheck job.
 Write-Host "-- Mypy type check --"
 mypy packages/ services/ tests/ --python-version 3.11 --ignore-missing-imports --explicit-package-bases
 if ($LASTEXITCODE -eq 0) { Pass "Mypy type check" } else { Fail "Mypy type check" }
