@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from packages.schemas.operator_console import UiStatusKind
 from services.operator_console.api_client import ApiClient, ApiError
 from services.operator_console.config import ConsoleConfig
 from services.operator_console.theme import PALETTE
@@ -93,7 +94,9 @@ class SessionsView(QWidget):
         self._api = ApiClient(config.api_base_url, config.api_timeout_seconds)
 
         self._model = SessionsTableModel(self)
-        self._status = StatusPill("Loading…", "idle", self)
+        self._status = StatusPill(self)
+        self._status.set_text("Loading…")
+        self._status.set_kind(UiStatusKind.NEUTRAL)
 
         header = QLabel("Sessions", self)
         header.setStyleSheet(f"font-size: 18px; font-weight: 600; color: {PALETTE.text_primary};")
@@ -139,7 +142,8 @@ class SessionsView(QWidget):
         self._thread.start()
 
     def _refresh_now(self) -> None:
-        self._status.set_state("Refreshing…", "idle")
+        self._status.set_text("Refreshing…")
+        self._status.set_kind(UiStatusKind.NEUTRAL)
         self._worker.refresh_now()
 
     def _on_data(self, _job_name: str, payload: object) -> None:
@@ -163,15 +167,13 @@ class SessionsView(QWidget):
                         }
                     )
         self._model.set_rows(rows)
-        self._status.set_state(f"Live · {len(rows)} session(s)", "ok")
+        self._status.set_text(f"Live · {len(rows)} session(s)")
+        self._status.set_kind(UiStatusKind.OK)
 
     def _on_error(self, _job_name: str, error: object) -> None:
-        message = (
-            error.message
-            if isinstance(error, ApiError)
-            else str(error)
-        )
-        self._status.set_state(message, "bad")
+        message = error.message if isinstance(error, ApiError) else str(error)
+        self._status.set_text(message)
+        self._status.set_kind(UiStatusKind.ERROR)
 
     def shutdown(self) -> None:
         self._worker.stop()

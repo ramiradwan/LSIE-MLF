@@ -1,7 +1,18 @@
-"""Minimal status indicator — colored dot + label.
+"""Status indicator pill — coloured dot + short label.
 
-Intentionally tiny replacement for the Debug Studio's ``StatusBadge`` —
-the operator console prefers flat, minimal affordances over glass/glow.
+Phase 5 refactor: now takes the shared `UiStatusKind` enum from the
+Phase-1 DTOs rather than ad-hoc string kinds, so every surface
+(overview cards, health rows, action-bar recovery hints) maps health
+and lifecycle state through the same palette bucket.
+
+The pill is a pure presentation widget: it does not subscribe to the
+store, does not talk to `ApiClient`, and holds no state beyond the
+values set on it from the outside.
+
+Spec references:
+  §4.E.1         — operator-facing status affordances
+  §12            — subsystem state categories (OK/DEGRADED/RECOVERING/ERROR)
+  SPEC-AMEND-008 — PySide6 Operator Console surface
 """
 
 from __future__ import annotations
@@ -10,22 +21,30 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QPainter, QPaintEvent
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QWidget
 
+from packages.schemas.operator_console import UiStatusKind
 from services.operator_console.theme import PALETTE
+
+# §12 status colouring. RECOVERING picks the accent colour so it reads
+# as "self-healing in progress" rather than "warning" (which would
+# conflate it with DEGRADED).
+_KIND_COLORS: dict[UiStatusKind, str] = {
+    UiStatusKind.OK: PALETTE.status_ok,
+    UiStatusKind.INFO: PALETTE.accent,
+    UiStatusKind.WARN: PALETTE.status_warn,
+    UiStatusKind.ERROR: PALETTE.status_bad,
+    UiStatusKind.NEUTRAL: PALETTE.text_muted,
+    UiStatusKind.PROGRESS: PALETTE.accent,
+}
 
 
 class StatusPill(QWidget):
-    _COLORS: dict[str, str] = {
-        "ok": PALETTE.status_ok,
-        "warn": PALETTE.status_warn,
-        "bad": PALETTE.status_bad,
-        "idle": PALETTE.text_muted,
-    }
+    """Coloured dot + text label, laid out horizontally."""
 
-    def __init__(self, text: str = "", kind: str = "idle", parent: QWidget | None = None) -> None:
+    def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self._kind = kind
+        self._kind: UiStatusKind = UiStatusKind.NEUTRAL
         self._dot = _Dot(self._color(), self)
-        self._label = QLabel(text, self)
+        self._label = QLabel("", self)
         self._label.setObjectName("StatusPillLabel")
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -34,13 +53,23 @@ class StatusPill(QWidget):
         layout.addWidget(self._label)
         layout.addStretch(1)
 
-    def set_state(self, text: str, kind: str) -> None:
-        self._kind = kind
-        self._dot.set_color(self._color())
+    def set_text(self, text: str) -> None:
         self._label.setText(text)
 
+    def set_kind(self, kind: UiStatusKind) -> None:
+        if kind == self._kind:
+            return
+        self._kind = kind
+        self._dot.set_color(self._color())
+
+    def kind(self) -> UiStatusKind:
+        return self._kind
+
+    def text(self) -> str:
+        return self._label.text()
+
     def _color(self) -> QColor:
-        return QColor(self._COLORS.get(self._kind, PALETTE.text_muted))
+        return QColor(_KIND_COLORS.get(self._kind, PALETTE.text_muted))
 
 
 class _Dot(QWidget):
