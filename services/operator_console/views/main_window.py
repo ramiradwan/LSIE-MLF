@@ -53,8 +53,30 @@ from packages.schemas.operator_console import (
 from services.operator_console.config import OperatorConsoleConfig
 from services.operator_console.polling import PollingCoordinator
 from services.operator_console.state import AppRoute, OperatorStore, StimulusUiContext
+from services.operator_console.table_models.alerts_table_model import AlertsTableModel
+from services.operator_console.table_models.encounters_table_model import (
+    EncountersTableModel,
+)
+from services.operator_console.table_models.experiments_table_model import (
+    ExperimentsTableModel,
+)
+from services.operator_console.table_models.health_table_model import HealthTableModel
+from services.operator_console.table_models.sessions_table_model import (
+    SessionsTableModel,
+)
 from services.operator_console.theme import PALETTE
-from services.operator_console.views.placeholder_view import PlaceholderView
+from services.operator_console.viewmodels.experiments_vm import ExperimentsViewModel
+from services.operator_console.viewmodels.health_vm import HealthViewModel
+from services.operator_console.viewmodels.live_session_vm import LiveSessionViewModel
+from services.operator_console.viewmodels.overview_vm import OverviewViewModel
+from services.operator_console.viewmodels.physiology_vm import PhysiologyViewModel
+from services.operator_console.viewmodels.sessions_vm import SessionsViewModel
+from services.operator_console.views.experiments_view import ExperimentsView
+from services.operator_console.views.health_view import HealthView
+from services.operator_console.views.live_session_view import LiveSessionView
+from services.operator_console.views.overview_view import OverviewView
+from services.operator_console.views.physiology_view import PhysiologyView
+from services.operator_console.views.sessions_view import SessionsView
 from services.operator_console.widgets.action_bar import ActionBar
 from services.operator_console.workers import OneShotSignals
 
@@ -79,44 +101,6 @@ _NAV_SPEC: tuple[_NavEntry, ...] = (
     _NavEntry(AppRoute.HEALTH, "Health"),
     _NavEntry(AppRoute.SESSIONS, "Sessions"),
 )
-
-
-# Placeholder copy for each route — Phases 9/10 replace these views with
-# their real implementations. The placeholder text is operator-facing
-# language (what will live there), not developer-facing TODO notes.
-_PLACEHOLDER_COPY: dict[AppRoute, tuple[str, str]] = {
-    AppRoute.OVERVIEW: (
-        "Overview",
-        "Active session, experiment, physiology, health, and the attention "
-        "queue in a single glance. Ships in Phase 9.",
-    ),
-    AppRoute.LIVE_SESSION: (
-        "Live Session",
-        "Encounter timeline with per-segment reward explanation "
-        "(p90_intensity, semantic_gate, gated_reward, n_frames_in_window, "
-        "baseline_b_neutral) and physiology freshness. Ships in Phase 9.",
-    ),
-    AppRoute.EXPERIMENTS: (
-        "Experiments",
-        "Thompson Sampling posteriors per arm with evaluation variance and "
-        "a plain-language update summary. Ships in Phase 10.",
-    ),
-    AppRoute.PHYSIOLOGY: (
-        "Physiology",
-        "Operator and streamer RMSSD, heart rate, freshness, and the §7C "
-        "Co-Modulation Index (null-valid is a legitimate outcome). "
-        "Ships in Phase 10.",
-    ),
-    AppRoute.HEALTH: (
-        "Health",
-        "Subsystem status rollup with degraded vs recovering vs error "
-        "distinctions and operator-action hints. Ships in Phase 10.",
-    ),
-    AppRoute.SESSIONS: (
-        "Sessions",
-        "Recent sessions with status, active arm, latest reward, and duration. Ships in Phase 10.",
-    ),
-}
 
 
 class MainWindow(QMainWindow):
@@ -188,15 +172,59 @@ class MainWindow(QMainWindow):
     def _register_pages(self) -> None:
         """Eager-instantiate every route's page widget.
 
-        Phase 6 uses `PlaceholderView` for all six routes; Phases 9/10
-        swap in the real views. Eager instantiation keeps route changes
-        cheap (no rebuild, no re-wiring) and lets the coordinator's
-        poll lifecycle be the single source of truth for "is this page
-        active?" via `on_route_changed`.
+        All six routes now have real implementations. Table models + VMs
+        are constructed here so they share the window's lifetime and the
+        coordinator's route scoping is the single source of truth for
+        "is this page active?" via `on_route_changed`.
         """
-        for entry in _NAV_SPEC:
-            title, subtitle = _PLACEHOLDER_COPY[entry.route]
-            self._pages[entry.route] = PlaceholderView(title, subtitle)
+        # Table models (Phase 7) — one per tabular surface. Parented to
+        # the window so their lifetime is shell-scoped.
+        self._encounters_model = EncountersTableModel(self)
+        self._experiments_arms_model = ExperimentsTableModel(self)
+        self._health_model = HealthTableModel(self)
+        self._alerts_model = AlertsTableModel(self)
+        self._sessions_model = SessionsTableModel(self)
+
+        # Viewmodels (Phase 8) — subscribe to the store, expose
+        # read-only getters + the one write path (Live Session's
+        # stimulus lifecycle, Sessions' selection push).
+        self._overview_vm = OverviewViewModel(self._store, self)
+        self._live_session_vm = LiveSessionViewModel(
+            self._store, self._encounters_model, self
+        )
+        self._experiments_vm = ExperimentsViewModel(
+            self._store, self._experiments_arms_model, self
+        )
+        self._physiology_vm = PhysiologyViewModel(self._store, self)
+        self._health_vm = HealthViewModel(
+            self._store, self._health_model, self._alerts_model, self
+        )
+        self._sessions_vm = SessionsViewModel(
+            self._store, self._sessions_model, self
+        )
+
+        overview_view = OverviewView(self._overview_vm, self)
+        overview_view.session_activated.connect(self._on_session_activated)
+        self._pages[AppRoute.OVERVIEW] = overview_view
+
+        self._pages[AppRoute.LIVE_SESSION] = LiveSessionView(
+            self._live_session_vm, self
+        )
+        self._pages[AppRoute.EXPERIMENTS] = ExperimentsView(
+            self._experiments_vm, self
+        )
+        self._pages[AppRoute.PHYSIOLOGY] = PhysiologyView(
+            self._physiology_vm, self
+        )
+        self._pages[AppRoute.HEALTH] = HealthView(self._health_vm, self)
+
+        sessions_view = SessionsView(self._sessions_vm, self)
+        # Sessions page emits `session_selected(UUID)` on double-click;
+        # route it through the same handler Overview's active-session
+        # card uses so the shell keeps a single place that pushes
+        # selection into the store + jumps to Live Session.
+        sessions_view.session_selected.connect(self._on_session_activated)
+        self._pages[AppRoute.SESSIONS] = sessions_view
 
     def _build_stack(self) -> QStackedWidget:
         stack = QStackedWidget(self)
@@ -281,13 +309,33 @@ class MainWindow(QMainWindow):
         route = AppRoute(route_value)
         page = self._pages.get(route)
         if page is not None:
+            # Fire on_deactivated on the page we're leaving and
+            # on_activated on the page we're entering. Pages that do
+            # not define the hooks are ignored (duck-typed so the
+            # remaining scaffold views continue to work).
+            previous = self._stack.currentWidget()
+            if previous is not None and previous is not page:
+                deactivate = getattr(previous, "on_deactivated", None)
+                if callable(deactivate):
+                    deactivate()
             self._stack.setCurrentWidget(page)
+            activate = getattr(page, "on_activated", None)
+            if callable(activate):
+                activate()
         btn = self._nav_buttons.get(route)
         if btn is not None and not btn.isChecked():
             # Block signals so we don't re-emit clicked and bounce back
             # into _on_route_selected.
             with _SignalBlocker(btn):
                 btn.setChecked(True)
+
+    @Slot(object)
+    def _on_session_activated(self, session_id: object) -> None:
+        """Overview's Active Session card was clicked — jump to Live Session."""
+        if not isinstance(session_id, UUID):
+            return
+        self._store.set_selected_session_id(session_id)
+        self._store.set_route(AppRoute.LIVE_SESSION)
 
     # ------------------------------------------------------------------
     # Session / ActionBar context

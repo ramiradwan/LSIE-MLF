@@ -1,181 +1,181 @@
-"""Sessions panel — live list of recent sessions sourced from the API.
+"""Sessions page — history + recent sessions picker.
 
-This is the plumbing-test panel for the console: confirms that
-``PollingWorker`` + ``ApiClient`` + the QTableView model chain render
-correctly without freezing the UI when the API is slow or unreachable.
+Phase 10 rewrites the scaffold SessionsView into a proper page: no more
+per-page `QThread` or `ApiClient`, no more ad-hoc dict rows. The shared
+`PollingCoordinator` drives the underlying fetch, `OperatorStore` holds
+the state, and the view now emits `session_selected(UUID)` when an
+operator picks a row so the shell can jump into Live Session with the
+same session already wired through.
+
+Columns come from `SessionsTableModel` (Phase 7) and render through
+`formatters.py`; no inline formatting here.
+
+Spec references:
+  §4.E.1         — Sessions / history operator surface
+  §7B            — latest_reward readback column
+  SPEC-AMEND-008 — PySide6 Operator Console
 """
 
 from __future__ import annotations
 
-from typing import Any
+from uuid import UUID
 
-from PySide6.QtCore import (
-    QAbstractTableModel,
-    QModelIndex,
-    QObject,
-    QPersistentModelIndex,
-    Qt,
-    QThread,
-)
+from PySide6.QtCore import Qt, Signal, Slot
 from PySide6.QtWidgets import (
-    QHBoxLayout,
+    QAbstractItemView,
     QHeaderView,
-    QLabel,
-    QPushButton,
     QTableView,
     QVBoxLayout,
     QWidget,
 )
 
-from packages.schemas.operator_console import UiStatusKind
-from services.operator_console.api_client import ApiClient, ApiError
-from services.operator_console.config import ConsoleConfig
-from services.operator_console.theme import PALETTE
-from services.operator_console.widgets.status_pill import StatusPill
-from services.operator_console.workers import PollingWorker
-
-_Idx = QModelIndex | QPersistentModelIndex
-# Qt's QAbstractItemModel API uses invalid-index sentinels for the root
-# parent; we cache one at module load so ``rowCount`` / ``columnCount``
-# don't construct fresh QModelIndex instances on every call (and so ruff
-# B008 is satisfied).
-_ROOT_INDEX: QModelIndex = QModelIndex()
-
-
-class SessionsTableModel(QAbstractTableModel):
-    _COLUMNS = ("session_id", "stream_url", "started_at", "ended_at", "metric_count")
-    _HEADERS = ("Session", "Stream URL", "Started", "Ended", "Metrics")
-
-    def __init__(self, parent: QObject | None = None) -> None:
-        super().__init__(parent)
-        self._rows: list[dict[str, Any]] = []
-
-    def set_rows(self, rows: list[dict[str, Any]]) -> None:
-        self.beginResetModel()
-        self._rows = list(rows)
-        self.endResetModel()
-
-    def rowCount(self, parent: _Idx = _ROOT_INDEX) -> int:  # noqa: N802 — Qt override
-        if isinstance(parent, QModelIndex) and parent.isValid():
-            return 0
-        return len(self._rows)
-
-    def columnCount(self, parent: _Idx = _ROOT_INDEX) -> int:  # noqa: N802 — Qt override
-        return len(self._COLUMNS)
-
-    def data(self, index: _Idx, role: int = Qt.ItemDataRole.DisplayRole) -> Any:
-        if not index.isValid() or role != Qt.ItemDataRole.DisplayRole:
-            return None
-        row = self._rows[index.row()]
-        key = self._COLUMNS[index.column()]
-        value = row.get(key)
-        if value is None:
-            return "—"
-        return str(value)
-
-    def headerData(  # noqa: N802 — Qt override
-        self,
-        section: int,
-        orientation: Qt.Orientation,
-        role: int = Qt.ItemDataRole.DisplayRole,
-    ) -> Any:
-        if role != Qt.ItemDataRole.DisplayRole:
-            return None
-        if orientation == Qt.Orientation.Horizontal:
-            return self._HEADERS[section]
-        return None
+from packages.schemas.operator_console import AlertSeverity
+from services.operator_console.viewmodels.sessions_vm import SessionsViewModel
+from services.operator_console.widgets.alert_banner import AlertBanner
+from services.operator_console.widgets.empty_state import EmptyStateWidget
+from services.operator_console.widgets.section_header import SectionHeader
 
 
 class SessionsView(QWidget):
-    def __init__(self, config: ConsoleConfig, parent: QWidget | None = None) -> None:
+    """Sessions history page: table only + session-selected signal."""
+
+    # Emitted when the operator picks a row. The shell routes this into
+    # the store + page change; other pages react through the store.
+    session_selected = Signal(object)  # UUID
+
+    def __init__(
+        self,
+        vm: SessionsViewModel,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
         self.setObjectName("ContentSurface")
-        self._config = config
-        self._api = ApiClient(config.api_base_url, config.api_timeout_seconds)
+        self._vm = vm
 
-        self._model = SessionsTableModel(self)
-        self._status = StatusPill(self)
-        self._status.set_text("Loading…")
-        self._status.set_kind(UiStatusKind.NEUTRAL)
+        self._header = SectionHeader(
+            "Sessions",
+            "Recent sessions — click a row to open it in Live Session.",
+            self,
+        )
+        self._error_banner = AlertBanner(self)
+        self._empty_state = EmptyStateWidget(self)
+        self._empty_state.set_title("No sessions yet")
+        self._empty_state.set_message(
+            "Sessions will appear here as they are created by the capture stack."
+        )
 
-        header = QLabel("Sessions", self)
-        header.setStyleSheet(f"font-size: 18px; font-weight: 600; color: {PALETTE.text_primary};")
+        self._table = self._build_table()
 
-        refresh_btn = QPushButton("Refresh", self)
-        refresh_btn.clicked.connect(self._refresh_now)
-
-        top_bar = QHBoxLayout()
-        top_bar.setContentsMargins(0, 0, 0, 0)
-        top_bar.setSpacing(12)
-        top_bar.addWidget(header)
-        top_bar.addStretch(1)
-        top_bar.addWidget(self._status)
-        top_bar.addWidget(refresh_btn)
-
-        table = QTableView(self)
-        table.setModel(self._model)
-        table.setAlternatingRowColors(True)
-        table.setSelectionBehavior(QTableView.SelectionBehavior.SelectRows)
-        table.setSelectionMode(QTableView.SelectionMode.SingleSelection)
-        table.verticalHeader().setVisible(False)
-        horiz = table.horizontalHeader()
-        horiz.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        horiz.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
-        horiz.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+        self._body_container = QWidget(self)
+        body = QVBoxLayout(self._body_container)
+        body.setContentsMargins(0, 0, 0, 0)
+        body.setSpacing(0)
+        body.addWidget(self._table)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(32, 32, 32, 32)
-        layout.setSpacing(16)
-        layout.addLayout(top_bar)
-        layout.addWidget(table)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(14)
+        layout.addWidget(self._header)
+        layout.addWidget(self._error_banner)
+        layout.addWidget(self._empty_state)
+        layout.addWidget(self._body_container, 1)
+        layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
-        self._thread = QThread(self)
-        self._worker = PollingWorker(
-            job_name="scaffold_sessions",
-            interval_ms=config.session_poll_interval_ms,
-            fetch=self._api.list_sessions,
-        )
-        self._worker.moveToThread(self._thread)
-        self._thread.started.connect(self._worker.run)
-        self._worker.data_ready.connect(self._on_data)
-        self._worker.error.connect(self._on_error)
-        self._thread.start()
+        self._vm.changed.connect(self._refresh)
+        self._vm.error_changed.connect(self._on_error_changed)
+        # Forward the VM's selection signal to the shell.
+        self._vm.session_selected.connect(self._on_vm_session_selected)
 
-    def _refresh_now(self) -> None:
-        self._status.set_text("Refreshing…")
-        self._status.set_kind(UiStatusKind.NEUTRAL)
-        self._worker.refresh_now()
+        self._refresh()
 
-    def _on_data(self, _job_name: str, payload: object) -> None:
-        # Phase 3 shifted `list_sessions()` to return `list[SessionSummary]`.
-        # Phase 10 rewrites this scaffold around the new table model;
-        # until then the scaffold just renders a row count.
-        rows: list[dict[str, Any]] = []
-        if isinstance(payload, list):
-            for item in payload:
-                if isinstance(item, dict):
-                    rows.append(item)
-                else:
-                    # Pydantic DTO — render a minimal compat dict.
-                    rows.append(
-                        {
-                            "session_id": getattr(item, "session_id", "?"),
-                            "stream_url": "—",
-                            "started_at": getattr(item, "started_at_utc", "—"),
-                            "ended_at": getattr(item, "ended_at_utc", "—"),
-                            "metric_count": "—",
-                        }
-                    )
-        self._model.set_rows(rows)
-        self._status.set_text(f"Live · {len(rows)} session(s)")
-        self._status.set_kind(UiStatusKind.OK)
+    # ------------------------------------------------------------------
+    # Page lifecycle hooks
+    # ------------------------------------------------------------------
 
-    def _on_error(self, _job_name: str, error: object) -> None:
-        message = error.message if isinstance(error, ApiError) else str(error)
-        self._status.set_text(message)
-        self._status.set_kind(UiStatusKind.ERROR)
+    def on_activated(self) -> None:
+        self._refresh()
 
-    def shutdown(self) -> None:
-        self._worker.stop()
-        self._thread.quit()
-        self._thread.wait(2000)
+    def on_deactivated(self) -> None:
+        return None
+
+    # ------------------------------------------------------------------
+    # Construction helpers
+    # ------------------------------------------------------------------
+
+    def _build_table(self) -> QTableView:
+        table = QTableView(self)
+        table.setObjectName("SessionsTable")
+        table.setModel(self._vm.sessions_model())
+        table.setAlternatingRowColors(True)
+        table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        vertical = table.verticalHeader()
+        if vertical is not None:
+            vertical.setVisible(False)
+        horizontal = table.horizontalHeader()
+        if horizontal is not None:
+            horizontal.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        selection_model = table.selectionModel()
+        if selection_model is not None:
+            selection_model.selectionChanged.connect(self._on_table_selection_changed)
+        # A double-click is the explicit "open this session" gesture —
+        # single-click selects, double-click commits to the VM + shell.
+        table.doubleClicked.connect(self._on_table_double_clicked)
+        return table
+
+    # ------------------------------------------------------------------
+    # Render
+    # ------------------------------------------------------------------
+
+    def _refresh(self) -> None:
+        has_rows = self._vm.sessions_model().rowCount() > 0
+        self._empty_state.setVisible(not has_rows)
+        self._body_container.setVisible(has_rows)
+
+    # ------------------------------------------------------------------
+    # Selection handling
+    # ------------------------------------------------------------------
+
+    def _on_table_selection_changed(self, *_: object) -> None:
+        # Single-click updates the store's selected_session_id only —
+        # the shell shouldn't auto-navigate on every keyboard nav.
+        selection_model = self._table.selectionModel()
+        if selection_model is None:
+            return
+        indexes = selection_model.selectedRows()
+        if not indexes:
+            return
+        row = indexes[0].row()
+        summary = self._vm.sessions_model().row_at(row)
+        if summary is None:
+            return
+        self._vm.store.set_selected_session_id(summary.session_id)
+
+    def _on_table_double_clicked(self, *_: object) -> None:
+        selection_model = self._table.selectionModel()
+        if selection_model is None:
+            return
+        indexes = selection_model.selectedRows()
+        if not indexes:
+            return
+        row = indexes[0].row()
+        summary = self._vm.sessions_model().row_at(row)
+        if summary is None:
+            return
+        self._vm.select_session(summary.session_id)
+
+    @Slot(object)
+    def _on_vm_session_selected(self, session_id: object) -> None:
+        if isinstance(session_id, UUID):
+            self.session_selected.emit(session_id)
+
+    # ------------------------------------------------------------------
+    # Slots
+    # ------------------------------------------------------------------
+
+    def _on_error_changed(self, message: str) -> None:
+        if message:
+            self._error_banner.set_alert(AlertSeverity.WARNING, message)
+        else:
+            self._error_banner.set_alert(None, None)

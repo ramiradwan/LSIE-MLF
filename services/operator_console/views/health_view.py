@@ -1,0 +1,303 @@
+"""Health page — §12 subsystem rollup + alert timeline.
+
+The operator-trust surface for subsystem state. §12 draws three lines
+the UI must not collapse:
+  * **ok** — green, self-evident
+  * **degraded** — subsystem is impaired but the system knows how to
+    keep moving (e.g., Azure retry-then-null, DB write buffer)
+  * **recovering** — subsystem is actively self-healing (ADB drift
+    reset, FFmpeg restart)
+  * **error** — subsystem is hard-down and the operator has to act
+
+The page presents these as a subsystem table (recovery-mode column
+distinct from the detail column) and a full alert timeline below. Every
+string passes through `formatters.py`; no inline formatting.
+
+Spec references:
+  §4.E.1         — Health operator surface
+  §12            — degraded vs recovering vs error; operator-action hints
+  SPEC-AMEND-008 — PySide6 Operator Console
+"""
+
+from __future__ import annotations
+
+from PySide6.QtCore import QModelIndex, Qt, Slot
+from PySide6.QtWidgets import (
+    QAbstractItemView,
+    QFrame,
+    QHBoxLayout,
+    QHeaderView,
+    QLabel,
+    QTableView,
+    QVBoxLayout,
+    QWidget,
+)
+
+from packages.schemas.operator_console import (
+    AlertSeverity,
+    HealthSnapshot,
+    HealthState,
+    UiStatusKind,
+)
+from services.operator_console.formatters import (
+    build_health_detail,
+    format_health_state,
+    format_timestamp,
+)
+from services.operator_console.viewmodels.health_vm import HealthViewModel
+from services.operator_console.widgets.alert_banner import AlertBanner
+from services.operator_console.widgets.empty_state import EmptyStateWidget
+from services.operator_console.widgets.event_timeline import EventTimelineWidget
+from services.operator_console.widgets.metric_card import MetricCard
+from services.operator_console.widgets.section_header import SectionHeader
+
+
+# §12 subsystem state → overview card pill kind. Recovering renders as
+# `PROGRESS` (self-healing in flight) so it reads distinct from both
+# degraded (impaired but stable) and error (down).
+_HEALTH_STATUS: dict[HealthState, UiStatusKind] = {
+    HealthState.OK: UiStatusKind.OK,
+    HealthState.DEGRADED: UiStatusKind.WARN,
+    HealthState.RECOVERING: UiStatusKind.PROGRESS,
+    HealthState.ERROR: UiStatusKind.ERROR,
+    HealthState.UNKNOWN: UiStatusKind.NEUTRAL,
+}
+
+
+class HealthView(QWidget):
+    """Health page: rollup cards + subsystem table + alert timeline."""
+
+    def __init__(
+        self,
+        vm: HealthViewModel,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setObjectName("ContentSurface")
+        self._vm = vm
+
+        self._header = SectionHeader(
+            "Health",
+            "Subsystem rollup — degraded, recovering, and error states kept distinct.",
+            self,
+        )
+        self._error_banner = AlertBanner(self)
+        self._empty_state = EmptyStateWidget(self)
+        self._empty_state.set_title("No health snapshot")
+        self._empty_state.set_message(
+            "Health data will appear once the API Server reports its first rollup."
+        )
+
+        self._overall_card = MetricCard("Overall", self)
+        self._degraded_card = MetricCard("Degraded", self)
+        self._recovering_card = MetricCard("Recovering", self)
+        self._error_card = MetricCard("Error", self)
+
+        cards = QHBoxLayout()
+        cards.setContentsMargins(0, 0, 0, 0)
+        cards.setSpacing(14)
+        cards.addWidget(self._overall_card, 1)
+        cards.addWidget(self._degraded_card, 1)
+        cards.addWidget(self._recovering_card, 1)
+        cards.addWidget(self._error_card, 1)
+
+        self._subsystem_table = self._build_subsystem_table()
+        self._alerts_timeline = EventTimelineWidget(self)
+        self._alerts_timeline.set_model(self._vm.alerts_model())
+
+        self._subsystem_panel = _TablePanel(
+            "Subsystems",
+            "Recovery mode and operator hints stay distinct from the detail column.",
+            self._subsystem_table,
+            self,
+        )
+        self._alerts_panel = _TablePanel(
+            "Alert timeline",
+            "Newest alerts first. Retriable alerts may re-emit on each state tick.",
+            self._alerts_timeline,
+            self,
+        )
+
+        body = QVBoxLayout()
+        body.setContentsMargins(0, 0, 0, 0)
+        body.setSpacing(14)
+        body.addLayout(cards)
+        body.addWidget(self._subsystem_panel, 2)
+        body.addWidget(self._alerts_panel, 2)
+
+        self._body_container = QWidget(self)
+        self._body_container.setLayout(body)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(24, 24, 24, 24)
+        layout.setSpacing(14)
+        layout.addWidget(self._header)
+        layout.addWidget(self._error_banner)
+        layout.addWidget(self._empty_state)
+        layout.addWidget(self._body_container, 1)
+        layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+
+        self._vm.changed.connect(self._refresh)
+        self._vm.error_changed.connect(self._on_error_changed)
+        # Keep the alert timeline auto-scrolled to the latest event when
+        # new rows land — operators watch the tail.
+        self._vm.alerts_model().rowsInserted.connect(self._on_alerts_rows_inserted)
+
+        self._refresh()
+
+    # ------------------------------------------------------------------
+    # Page lifecycle hooks
+    # ------------------------------------------------------------------
+
+    def on_activated(self) -> None:
+        self._refresh()
+        self._alerts_timeline.scroll_to_latest()
+
+    def on_deactivated(self) -> None:
+        return None
+
+    # ------------------------------------------------------------------
+    # Construction helpers
+    # ------------------------------------------------------------------
+
+    def _build_subsystem_table(self) -> QTableView:
+        table = QTableView(self)
+        table.setObjectName("HealthSubsystemTable")
+        table.setModel(self._vm.health_model())
+        table.setAlternatingRowColors(True)
+        table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        vertical = table.verticalHeader()
+        if vertical is not None:
+            vertical.setVisible(False)
+        horizontal = table.horizontalHeader()
+        if horizontal is not None:
+            horizontal.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        return table
+
+    # ------------------------------------------------------------------
+    # Render
+    # ------------------------------------------------------------------
+
+    def _refresh(self) -> None:
+        snapshot = self._vm.snapshot()
+        if snapshot is None:
+            self._empty_state.setVisible(True)
+            self._body_container.setVisible(False)
+            return
+        self._empty_state.setVisible(False)
+        self._body_container.setVisible(True)
+
+        self._render_overall(snapshot)
+        self._render_counts(snapshot)
+
+    def _render_overall(self, snapshot: HealthSnapshot) -> None:
+        kind = _HEALTH_STATUS[snapshot.overall_state]
+        self._overall_card.set_primary_text(format_health_state(snapshot.overall_state))
+        self._overall_card.set_secondary_text(
+            f"generated {format_timestamp(snapshot.generated_at_utc)}"
+        )
+        self._overall_card.set_status(kind, format_health_state(snapshot.overall_state))
+
+    def _render_counts(self, snapshot: HealthSnapshot) -> None:
+        self._degraded_card.set_primary_text(str(snapshot.degraded_count))
+        self._degraded_card.set_secondary_text(
+            "impaired but stable" if snapshot.degraded_count else "none"
+        )
+        self._degraded_card.set_status(
+            UiStatusKind.WARN if snapshot.degraded_count else UiStatusKind.NEUTRAL,
+            "degraded" if snapshot.degraded_count else None,
+        )
+
+        self._recovering_card.set_primary_text(str(snapshot.recovering_count))
+        self._recovering_card.set_secondary_text(
+            "self-healing in flight" if snapshot.recovering_count else "none"
+        )
+        self._recovering_card.set_status(
+            UiStatusKind.PROGRESS if snapshot.recovering_count else UiStatusKind.NEUTRAL,
+            "recovering" if snapshot.recovering_count else None,
+        )
+
+        self._error_card.set_primary_text(str(snapshot.error_count))
+        self._error_card.set_secondary_text(
+            _describe_error_hint(snapshot)
+            if snapshot.error_count
+            else "none"
+        )
+        self._error_card.set_status(
+            UiStatusKind.ERROR if snapshot.error_count else UiStatusKind.NEUTRAL,
+            "error" if snapshot.error_count else None,
+        )
+
+    # ------------------------------------------------------------------
+    # Slots
+    # ------------------------------------------------------------------
+
+    def _on_error_changed(self, message: str) -> None:
+        if message:
+            self._error_banner.set_alert(AlertSeverity.WARNING, message)
+        else:
+            self._error_banner.set_alert(None, None)
+
+    @Slot(QModelIndex, int, int)
+    def _on_alerts_rows_inserted(
+        self,
+        _parent: QModelIndex,
+        _first: int,
+        _last: int,
+    ) -> None:
+        # Model rows append at the start (newest-first) for the alerts
+        # feed; for the timeline wrapper we still want the latest row
+        # visible, so ask it to scroll to the bottom defensively.
+        self._alerts_timeline.scroll_to_latest()
+
+
+# ----------------------------------------------------------------------
+# Panels
+# ----------------------------------------------------------------------
+
+
+class _TablePanel(QFrame):
+    """A framed titled panel hosting a tabular widget.
+
+    Kept as a simple wrapper so the subsystem table and the alert
+    timeline present consistently — title + subtitle + embedded widget.
+    """
+
+    def __init__(
+        self,
+        title: str,
+        subtitle: str,
+        inner: QWidget,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setObjectName("Panel")
+        self.setFrameShape(QFrame.Shape.NoFrame)
+
+        self._title = QLabel(title, self)
+        self._title.setObjectName("PanelTitle")
+        self._subtitle = QLabel(subtitle, self)
+        self._subtitle.setObjectName("PanelSubtitle")
+        self._subtitle.setWordWrap(True)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 12, 16, 12)
+        layout.setSpacing(6)
+        layout.addWidget(self._title)
+        layout.addWidget(self._subtitle)
+        layout.addWidget(inner, 1)
+
+
+def _describe_error_hint(snapshot: HealthSnapshot) -> str:
+    """Pick the first error subsystem's operator hint, or a neutral line.
+
+    The count card is a summary; surfacing a hint for the first error
+    row gives the operator a nudge without having to scroll the table.
+    """
+    for row in snapshot.subsystems:
+        if row.state == HealthState.ERROR:
+            hint = row.operator_action_hint or build_health_detail(row)
+            return hint
+    return "see subsystem table below"
