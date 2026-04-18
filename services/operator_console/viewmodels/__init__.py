@@ -12,5 +12,17 @@ Spec references:
 from __future__ import annotations
 
 from services.operator_console.viewmodels.base import ViewModelBase
+from services.operator_console.viewmodels.experiments_vm import ExperimentsViewModel
+from services.operator_console.viewmodels.health_vm import HealthViewModel
+from services.operator_console.viewmodels.live_session_vm import LiveSessionViewModel
+from services.operator_console.viewmodels.overview_vm import OverviewViewModel
+from services.operator_console.viewmodels.physiology_vm import PhysiologyViewModel
 
-__all__ = ["ViewModelBase"]
+__all__ = [
+    "ExperimentsViewModel",
+    "HealthViewModel",
+    "LiveSessionViewModel",
+    "OverviewViewModel",
+    "PhysiologyViewModel",
+    "ViewModelBase",
+]
