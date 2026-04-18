@@ -1,0 +1,254 @@
+"""Tests for `MainWindow` and `app.build_*` factories — Phase 6.
+
+Covers the bits the shell has to get right:
+  * factories compose the store/coordinator/window in the documented
+    order without side effects (no polling kicked off);
+  * nav clicks forward to the store's route;
+  * store `route_changed` re-syncs the stack + sidebar check state;
+  * ActionBar context updates when `selected_session_id` + live session
+    DTO are both present and identify the same session;
+  * `closeEvent` stops the coordinator (drain polling threads);
+  * stimulus request path transitions the store into SUBMITTING, dedup
+    key is carried, and the ActionBar reacts to the state signal.
+"""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime
+from typing import cast
+from unittest.mock import MagicMock
+from uuid import UUID, uuid4
+
+import pytest
+from PySide6.QtGui import QCloseEvent
+
+from packages.schemas.operator_console import (
+    SessionSummary,
+    StimulusActionState,
+)
+from services.operator_console.app import (
+    build_main_window,
+    build_polling_coordinator,
+    build_store,
+)
+from services.operator_console.config import OperatorConsoleConfig
+from services.operator_console.polling import PollingCoordinator
+from services.operator_console.state import AppRoute, OperatorStore, StimulusUiContext
+from services.operator_console.views.main_window import MainWindow
+from services.operator_console.workers import OneShotSignals
+
+pytestmark = pytest.mark.usefixtures("qt_app")
+
+
+def _make_config() -> OperatorConsoleConfig:
+    return OperatorConsoleConfig(
+        api_base_url="http://localhost:8000",
+        api_timeout_seconds=5.0,
+        environment_label="test",
+        overview_poll_ms=1000,
+        session_header_poll_ms=1000,
+        live_encounters_poll_ms=1000,
+        experiments_poll_ms=1000,
+        physiology_poll_ms=1000,
+        comodulation_poll_ms=1000,
+        health_poll_ms=1000,
+        alerts_poll_ms=1000,
+        sessions_poll_ms=1000,
+        default_experiment_id="greeting_line_v1",
+    )
+
+
+def _make_window(
+    coordinator: PollingCoordinator | None = None,
+) -> tuple[MainWindow, OperatorStore, PollingCoordinator]:
+    config = _make_config()
+    store = build_store()
+    coord: PollingCoordinator
+    if coordinator is None:
+        # Build a real coordinator; we never call .start() so no threads
+        # are spun up, but the QObject + signal wiring is exercised.
+        client = MagicMock()
+        coord = build_polling_coordinator(config, client, store)
+    else:
+        coord = coordinator
+    window = build_main_window(config, store, coord)
+    return window, store, coord
+
+
+def _make_session(
+    session_id: UUID,
+    *,
+    active_arm: str | None = "greeting_v1",
+    expected_greeting: str | None = "hei rakas",
+) -> SessionSummary:
+    return SessionSummary(
+        session_id=session_id,
+        status="active",
+        started_at_utc=datetime(2026, 4, 17, 12, 0, 0, tzinfo=UTC),
+        active_arm=active_arm,
+        expected_greeting=expected_greeting,
+    )
+
+
+# ---------------------------------------------------------------------
+# Construction / factories
+# ---------------------------------------------------------------------
+
+
+def test_factories_compose_without_starting_polling() -> None:
+    window, _store, coord = _make_window()
+    # Coordinator is inert until .start() is called.
+    assert not coord._started
+    # Window wears the configured env label in its title.
+    assert "test" in window.windowTitle()
+
+
+def test_window_registers_six_pages_in_nav_order() -> None:
+    window, _store, _coord = _make_window()
+    pages = window._pages
+    assert list(pages.keys()) == [
+        AppRoute.OVERVIEW,
+        AppRoute.LIVE_SESSION,
+        AppRoute.EXPERIMENTS,
+        AppRoute.PHYSIOLOGY,
+        AppRoute.HEALTH,
+        AppRoute.SESSIONS,
+    ]
+    stack = window._stack
+    assert stack.count() == 6
+
+
+def test_initial_route_is_overview_and_action_bar_disabled() -> None:
+    window, store, _coord = _make_window()
+    assert store.route() == AppRoute.OVERVIEW
+    bar = window._action_bar
+    # No session selected yet — submit disabled.
+    assert bar._submit_button.isEnabled() is False
+
+
+# ---------------------------------------------------------------------
+# Navigation
+# ---------------------------------------------------------------------
+
+
+def test_nav_click_forwards_to_store_route(qtbot_unused: None = None) -> None:  # noqa: ARG001
+    window, store, _coord = _make_window()
+    btn = window._nav_buttons[AppRoute.EXPERIMENTS]
+    btn.click()
+    assert store.route() == AppRoute.EXPERIMENTS
+
+
+def test_store_route_change_syncs_stack_and_sidebar() -> None:
+    window, store, _coord = _make_window()
+    store.set_route(AppRoute.PHYSIOLOGY)
+    stack = window._stack
+    expected_page = window._pages[AppRoute.PHYSIOLOGY]
+    assert stack.currentWidget() is expected_page
+    assert window._nav_buttons[AppRoute.PHYSIOLOGY].isChecked() is True
+
+
+# ---------------------------------------------------------------------
+# ActionBar context
+# ---------------------------------------------------------------------
+
+
+def test_action_bar_enables_when_session_and_live_match() -> None:
+    window, store, _coord = _make_window()
+    session_id = uuid4()
+    # Selecting a session alone is not enough — live_session DTO must
+    # describe that same session for arm/greeting to surface.
+    store.set_selected_session_id(session_id)
+    live = _make_session(session_id)
+    store.set_live_session(live)
+
+    bar = window._action_bar
+    assert bar._submit_button.isEnabled() is True
+    assert "greeting_v1" in bar._session_label.text()
+    assert bar._greeting_label.isHidden() is False
+
+
+def test_action_bar_ignores_live_session_of_other_session() -> None:
+    window, store, _coord = _make_window()
+    selected = uuid4()
+    other = uuid4()
+    store.set_selected_session_id(selected)
+    # A live_session DTO for a *different* session id must not leak its
+    # arm/greeting into the action bar.
+    store.set_live_session(_make_session(other))
+    bar = window._action_bar
+    # Button is still enabled (a session is selected) but the context
+    # strings should not come from the mismatched live DTO.
+    assert bar._active_arm is None
+    assert bar._expected_greeting is None
+
+
+# ---------------------------------------------------------------------
+# Stimulus submit path
+# ---------------------------------------------------------------------
+
+
+def test_stimulus_requested_transitions_store_to_submitting() -> None:
+    window, store, coord = _make_window()
+    # Stub out `submit_stimulus` so no thread is dispatched.
+    returned_signals = OneShotSignals()
+    coord.submit_stimulus = MagicMock(return_value=returned_signals)  # type: ignore[method-assign]
+
+    session_id = uuid4()
+    store.set_selected_session_id(session_id)
+    store.set_live_session(_make_session(session_id))
+
+    window._on_stimulus_requested("operator test note")
+
+    ctx = store.stimulus_ui_context()
+    assert ctx.state == StimulusActionState.SUBMITTING
+    assert ctx.client_action_id is not None
+    assert ctx.operator_note == "operator test note"
+    # Coordinator was called with the selected session id and a real
+    # StimulusRequest carrying the dedup key.
+    coord.submit_stimulus.assert_called_once()
+    call_session_id, call_request = coord.submit_stimulus.call_args.args
+    assert call_session_id == session_id
+    assert call_request.client_action_id == ctx.client_action_id
+
+
+def test_stimulus_state_changed_reaches_action_bar() -> None:
+    window, store, _coord = _make_window()
+    session_id = uuid4()
+    store.set_selected_session_id(session_id)
+    store.set_live_session(_make_session(session_id))
+
+    store.set_stimulus_ui_context(StimulusUiContext(state=StimulusActionState.MEASURING))
+    bar = window._action_bar
+    assert bar._submit_button.text() == "Measuring…"
+    assert bar._submit_button.isEnabled() is False
+
+
+# ---------------------------------------------------------------------
+# Close / shutdown
+# ---------------------------------------------------------------------
+
+
+def test_close_event_stops_coordinator() -> None:
+    window, _store, coord = _make_window()
+    coord.stop = MagicMock()  # type: ignore[method-assign]
+    event = QCloseEvent()
+    window.closeEvent(event)
+    coord.stop.assert_called_once()
+    assert event.isAccepted()
+
+
+def test_close_event_calls_shutdown_on_scaffold_pages() -> None:
+    window, _store, _coord = _make_window()
+    # Swap one page for a stub exposing shutdown() to confirm the
+    # close handler still honours legacy scaffold pages.
+    shutdown_called = {"called": False}
+
+    class _ScaffoldPage:
+        def shutdown(self) -> None:
+            shutdown_called["called"] = True
+
+    pages = cast(dict[AppRoute, object], window._pages)
+    pages[AppRoute.SESSIONS] = _ScaffoldPage()
+
+    window.closeEvent(QCloseEvent())
+    assert shutdown_called["called"] is True
