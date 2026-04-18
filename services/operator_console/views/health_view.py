@@ -51,7 +51,6 @@ from services.operator_console.widgets.event_timeline import EventTimelineWidget
 from services.operator_console.widgets.metric_card import MetricCard
 from services.operator_console.widgets.section_header import SectionHeader
 
-
 # §12 subsystem state → overview card pill kind. Recovering renders as
 # `PROGRESS` (self-healing in flight) so it reads distinct from both
 # degraded (impaired but stable) and error (down).
@@ -221,9 +220,7 @@ class HealthView(QWidget):
 
         self._error_card.set_primary_text(str(snapshot.error_count))
         self._error_card.set_secondary_text(
-            _describe_error_hint(snapshot)
-            if snapshot.error_count
-            else "none"
+            _describe_error_hint(snapshot) if snapshot.error_count else "none"
         )
         self._error_card.set_status(
             UiStatusKind.ERROR if snapshot.error_count else UiStatusKind.NEUTRAL,

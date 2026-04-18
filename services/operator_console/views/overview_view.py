@@ -66,7 +66,6 @@ from services.operator_console.widgets.empty_state import EmptyStateWidget
 from services.operator_console.widgets.metric_card import MetricCard
 from services.operator_console.widgets.section_header import SectionHeader
 
-
 # Cap on the attention queue length on the Overview — the full alert
 # timeline lives on the Health page (Phase 10). Keeping the overview
 # tight means the operator sees the top items and clicks through when
@@ -333,9 +332,7 @@ class OverviewView(QWidget):
             critical = sum(1 for a in alerts if a.severity == AlertSeverity.CRITICAL)
             warnings = sum(1 for a in alerts if a.severity == AlertSeverity.WARNING)
             self._attention_card.set_primary_text(f"{len(alerts)} open")
-            self._attention_card.set_secondary_text(
-                f"{critical} critical · {warnings} warning"
-            )
+            self._attention_card.set_secondary_text(f"{critical} critical · {warnings} warning")
             if critical:
                 self._attention_card.set_status(UiStatusKind.ERROR, "critical")
             elif warnings:

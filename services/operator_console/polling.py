@@ -61,7 +61,6 @@ from services.operator_console.workers import (
     run_one_shot,
 )
 
-
 # ----------------------------------------------------------------------
 # Job identity constants — also used as error-scope strings so the
 # store's per-scope error signal matches the job name that produced it.
@@ -98,9 +97,7 @@ class _JobHandle:
 
     __slots__ = ("spec", "worker", "thread")
 
-    def __init__(
-        self, spec: PollJobSpec, worker: PollingWorker, thread: QThread
-    ) -> None:
+    def __init__(self, spec: PollJobSpec, worker: PollingWorker, thread: QThread) -> None:
         self.spec = spec
         self.worker = worker
         self.thread = thread
@@ -197,9 +194,7 @@ class PollingCoordinator(QObject):
     # Stimulus (single write path)
     # ------------------------------------------------------------------
 
-    def submit_stimulus(
-        self, session_id: UUID, request: StimulusRequest
-    ) -> OneShotSignals:
+    def submit_stimulus(self, session_id: UUID, request: StimulusRequest) -> OneShotSignals:
         """Dispatch a `POST /stimulus` on the thread pool. §4.C.
 
         On success, overview / live-session / alerts refresh immediately
@@ -263,9 +258,7 @@ class PollingCoordinator(QObject):
                 session_scoped=True,
             ),
             # Experiment detail — EXPERIMENTS route.
-            PollJobSpec(
-                JOB_EXPERIMENT, cfg.experiments_poll_ms, AppRoute.EXPERIMENTS
-            ),
+            PollJobSpec(JOB_EXPERIMENT, cfg.experiments_poll_ms, AppRoute.EXPERIMENTS),
             # Physiology — PHYSIOLOGY route.
             PollJobSpec(
                 JOB_PHYSIOLOGY,
@@ -375,9 +368,7 @@ class PollingCoordinator(QObject):
             self._store.set_encounters(_as_list(payload, EncounterSummary))
         elif job_name == JOB_EXPERIMENT and isinstance(payload, ExperimentDetail):
             self._store.set_experiment(payload)
-        elif job_name == JOB_PHYSIOLOGY and isinstance(
-            payload, SessionPhysiologySnapshot
-        ):
+        elif job_name == JOB_PHYSIOLOGY and isinstance(payload, SessionPhysiologySnapshot):
             self._store.set_physiology(payload)
         elif job_name == JOB_HEALTH and isinstance(payload, HealthSnapshot):
             self._store.set_health(payload)
@@ -386,9 +377,7 @@ class PollingCoordinator(QObject):
         else:
             # Shape mismatch is a bug, not a recoverable error. Surface
             # it via the same error scope so tests see it.
-            self._store.set_error(
-                job_name, f"unexpected payload shape for {job_name}"
-            )
+            self._store.set_error(job_name, f"unexpected payload shape for {job_name}")
 
     # ------------------------------------------------------------------
     # Fetch-callable factories (one per job). Each captures client +
@@ -435,9 +424,7 @@ class PollingCoordinator(QObject):
         client = self._client
         session_id = self._store.selected_session_id()
         if session_id is None:
-            raise RuntimeError(
-                "live-session job started without a selected session"
-            )
+            raise RuntimeError("live-session job started without a selected session")
         captured_id = session_id
 
         def fetch() -> SessionSummary:

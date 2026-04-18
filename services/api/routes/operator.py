@@ -74,6 +74,19 @@ def get_action_service() -> OperatorActionService:
     return OperatorActionService()
 
 
+# Module-level singletons for FastAPI defaults — extracted to satisfy
+# B008 (no function calls in argument defaults). Behavior is identical:
+# FastAPI resolves `Depends(...)` at request time regardless of where
+# the sentinel is declared.
+_ReadDep = Depends(get_read_service)
+_ActionDep = Depends(get_action_service)
+_LimitSessionsQuery = Query(50, ge=1, le=500)
+_LimitEncountersQuery = Query(100, ge=1, le=1000)
+_BeforeUtcQuery = Query(None)
+_LimitAlertsQuery = Query(50, ge=1, le=500)
+_SinceUtcQuery = Query(None)
+
+
 # ----------------------------------------------------------------------
 # Read endpoints
 # ----------------------------------------------------------------------
@@ -81,7 +94,7 @@ def get_action_service() -> OperatorActionService:
 
 @router.get("/overview", response_model=OverviewSnapshot)
 async def get_overview(
-    service: OperatorReadService = Depends(get_read_service),
+    service: OperatorReadService = _ReadDep,
 ) -> OverviewSnapshot:
     """§4.E.1 — Six-card operator Overview."""
     try:
@@ -95,8 +108,8 @@ async def get_overview(
 
 @router.get("/sessions", response_model=list[SessionSummary])
 async def list_sessions(
-    limit: int = Query(50, ge=1, le=500),
-    service: OperatorReadService = Depends(get_read_service),
+    limit: int = _LimitSessionsQuery,
+    service: OperatorReadService = _ReadDep,
 ) -> list[SessionSummary]:
     try:
         return service.list_sessions(limit=limit)
@@ -110,7 +123,7 @@ async def list_sessions(
 @router.get("/sessions/{session_id}", response_model=SessionSummary)
 async def get_session(
     session_id: UUID,
-    service: OperatorReadService = Depends(get_read_service),
+    service: OperatorReadService = _ReadDep,
 ) -> SessionSummary:
     try:
         summary = service.get_session(session_id)
@@ -124,20 +137,16 @@ async def get_session(
     return summary
 
 
-@router.get(
-    "/sessions/{session_id}/encounters", response_model=list[EncounterSummary]
-)
+@router.get("/sessions/{session_id}/encounters", response_model=list[EncounterSummary])
 async def list_session_encounters(
     session_id: UUID,
-    limit: int = Query(100, ge=1, le=1000),
-    before_utc: datetime | None = Query(None),
-    service: OperatorReadService = Depends(get_read_service),
+    limit: int = _LimitEncountersQuery,
+    before_utc: datetime | None = _BeforeUtcQuery,
+    service: OperatorReadService = _ReadDep,
 ) -> list[EncounterSummary]:
     """§7B — per-segment encounter rows with reward explanation."""
     try:
-        return service.list_encounters(
-            session_id, limit=limit, before_utc=before_utc
-        )
+        return service.list_encounters(session_id, limit=limit, before_utc=before_utc)
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
@@ -148,7 +157,7 @@ async def list_session_encounters(
 @router.get("/experiments/{experiment_id}", response_model=ExperimentDetail)
 async def get_experiment_detail(
     experiment_id: str,
-    service: OperatorReadService = Depends(get_read_service),
+    service: OperatorReadService = _ReadDep,
 ) -> ExperimentDetail:
     try:
         detail = service.get_experiment_detail(experiment_id)
@@ -158,18 +167,14 @@ async def get_experiment_detail(
         logger.error("operator get_experiment failed: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail="Internal server error") from exc
     if detail is None:
-        raise HTTPException(
-            status_code=404, detail=f"experiment {experiment_id!r} not found"
-        )
+        raise HTTPException(status_code=404, detail=f"experiment {experiment_id!r} not found")
     return detail
 
 
-@router.get(
-    "/sessions/{session_id}/physiology", response_model=SessionPhysiologySnapshot
-)
+@router.get("/sessions/{session_id}/physiology", response_model=SessionPhysiologySnapshot)
 async def get_session_physiology(
     session_id: UUID,
-    service: OperatorReadService = Depends(get_read_service),
+    service: OperatorReadService = _ReadDep,
 ) -> SessionPhysiologySnapshot:
     """§4.E.2 + §7C — per-role physiology + co-modulation (null-valid)."""
     try:
@@ -186,7 +191,7 @@ async def get_session_physiology(
 
 @router.get("/health", response_model=HealthSnapshot)
 async def get_health(
-    service: OperatorReadService = Depends(get_read_service),
+    service: OperatorReadService = _ReadDep,
 ) -> HealthSnapshot:
     """§12 — subsystem rollup with degraded/recovering/error distinction."""
     try:
@@ -200,9 +205,9 @@ async def get_health(
 
 @router.get("/alerts", response_model=list[AlertEvent])
 async def list_alerts(
-    limit: int = Query(50, ge=1, le=500),
-    since_utc: datetime | None = Query(None),
-    service: OperatorReadService = Depends(get_read_service),
+    limit: int = _LimitAlertsQuery,
+    since_utc: datetime | None = _SinceUtcQuery,
+    service: OperatorReadService = _ReadDep,
 ) -> list[AlertEvent]:
     try:
         return service.list_alerts(limit=limit, since_utc=since_utc)
@@ -222,7 +227,7 @@ async def list_alerts(
 async def submit_stimulus(
     session_id: UUID,
     request: StimulusRequest,
-    service: OperatorActionService = Depends(get_action_service),
+    service: OperatorActionService = _ActionDep,
 ) -> StimulusAccepted:
     """§4.C — operator-issued stimulus submission.
 
@@ -233,9 +238,7 @@ async def submit_stimulus(
     try:
         return service.submit_stimulus(session_id, request)
     except SessionNotFoundError as exc:
-        raise HTTPException(
-            status_code=404, detail=f"session {session_id} not found"
-        ) from exc
+        raise HTTPException(status_code=404, detail=f"session {session_id} not found") from exc
     except SessionAlreadyEndedError as exc:
         raise HTTPException(
             status_code=409,

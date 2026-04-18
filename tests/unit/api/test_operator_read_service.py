@@ -228,9 +228,7 @@ class TestHealthRecoveryFields:
         )
         svc = _service(cursor, now=now)
         snapshot = svc.get_health()
-        physio_row = next(
-            row for row in snapshot.subsystems if row.subsystem_key == "physiology"
-        )
+        physio_row = next(row for row in snapshot.subsystems if row.subsystem_key == "physiology")
         assert physio_row.state is HealthState.RECOVERING
         assert physio_row.recovery_mode == "physio_adapter_retry"
         assert physio_row.operator_action_hint is not None

@@ -178,9 +178,7 @@ def test_live_session_view_countdown_timer_stops_when_not_measuring() -> None:
             authoritative_stimulus_time_utc=_NOW,
         )
     )
-    store.set_stimulus_ui_context(
-        StimulusUiContext(state=StimulusActionState.COMPLETED)
-    )
+    store.set_stimulus_ui_context(StimulusUiContext(state=StimulusActionState.COMPLETED))
     assert view._countdown_timer.isActive() is False
 
 

@@ -67,9 +67,7 @@ class RedisClientLike(Protocol):
     the real `redis` package in unit tests.
     """
 
-    def set(
-        self, name: str, value: str, *, nx: bool = ..., ex: int = ...
-    ) -> Any: ...
+    def set(self, name: str, value: str, *, nx: bool = ..., ex: int = ...) -> Any: ...
 
     def publish(self, channel: str, message: str) -> int: ...
 
@@ -101,9 +99,7 @@ class OperatorActionService:
         self._redis_factory = redis_factory
         self._clock = clock
 
-    def submit_stimulus(
-        self, session_id: UUID, request: StimulusRequest
-    ) -> StimulusAccepted:
+    def submit_stimulus(self, session_id: UUID, request: StimulusRequest) -> StimulusAccepted:
         """§4.C — operator-issued stimulus with idempotency + state guard.
 
         Raises:
@@ -154,9 +150,7 @@ class OperatorActionService:
             try:
                 receivers = client.publish(_STIMULUS_CHANNEL, "inject")
             except Exception as exc:  # noqa: BLE001
-                raise StimulusPublishError(
-                    "failed to publish stimulus trigger to broker"
-                ) from exc
+                raise StimulusPublishError("failed to publish stimulus trigger to broker") from exc
         finally:
             try:
                 client.close()

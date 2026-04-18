@@ -28,7 +28,7 @@ Spec references:
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from packages.schemas.operator_console import (
     CoModulationSummary,
@@ -57,7 +57,7 @@ def format_timestamp(value: datetime | None) -> str:
         # Defensive: our DTOs reject naive timestamps at the boundary,
         # but a defensively-coded viewmodel may still hand one in.
         return value.isoformat()
-    as_utc = value.astimezone(timezone.utc)
+    as_utc = value.astimezone(UTC)
     return as_utc.strftime("%Y-%m-%d %H:%M:%SZ")
 
 
@@ -138,11 +138,7 @@ def format_freshness(
     """
     if freshness_s is None:
         return _EM_DASH
-    stale = (
-        bool(is_stale)
-        if is_stale is not None
-        else freshness_s >= _DEGREE_OF_FRESHNESS_STALE_S
-    )
+    stale = bool(is_stale) if is_stale is not None else freshness_s >= _DEGREE_OF_FRESHNESS_STALE_S
     label = "stale" if stale else "fresh"
     return f"{freshness_s:.0f}s ({label})"
 
@@ -196,10 +192,7 @@ def build_reward_explanation(encounter: EncounterSummary) -> str:
     as a frame-count issue, and vice-versa for `n_frames_in_window=0`.
     """
     if encounter.n_frames_in_window == 0:
-        return (
-            "No valid AU12 frames in the measurement window — "
-            "reward not computed."
-        )
+        return "No valid AU12 frames in the measurement window — reward not computed."
     if encounter.semantic_gate == 0:
         return (
             f"Semantic gate closed (confidence "
@@ -209,22 +202,20 @@ def build_reward_explanation(encounter: EncounterSummary) -> str:
             f"admitted."
         )
     parts: list[str] = []
+    gate_text = encounter.semantic_gate if encounter.semantic_gate is not None else _EM_DASH
     parts.append(
         f"P90 intensity {format_reward(encounter.p90_intensity)} × "
-        f"semantic gate {encounter.semantic_gate if encounter.semantic_gate is not None else _EM_DASH} "
+        f"semantic gate {gate_text} "
         f"= gated reward {format_reward(encounter.gated_reward)}."
     )
     if encounter.baseline_b_neutral is not None:
-        parts.append(
-            f"Baseline B_neutral {format_reward(encounter.baseline_b_neutral)}."
-        )
+        parts.append(f"Baseline B_neutral {format_reward(encounter.baseline_b_neutral)}.")
     if encounter.n_frames_in_window is not None:
         parts.append(f"{encounter.n_frames_in_window} AU12 frame(s) in window.")
     if encounter.physiology_attached:
         stale = encounter.physiology_stale is True
         parts.append(
-            "Physiology attached "
-            + ("(stale snapshot)." if stale else "(fresh snapshot).")
+            "Physiology attached " + ("(stale snapshot)." if stale else "(fresh snapshot).")
         )
     return " ".join(parts)
 
@@ -241,9 +232,7 @@ def build_physiology_explanation(snapshot: SessionPhysiologySnapshot | None) -> 
     parts: list[str] = []
     parts.append(_role_line("streamer", snapshot.streamer))
     parts.append(_role_line("operator", snapshot.operator))
-    parts.append(
-        "Co-Modulation Index: " + format_comodulation_index(snapshot.comodulation)
-    )
+    parts.append("Co-Modulation Index: " + format_comodulation_index(snapshot.comodulation))
     return " • ".join(parts)
 
 

@@ -19,7 +19,7 @@ from __future__ import annotations
 import io
 import json
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from email.message import Message
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -45,7 +45,6 @@ from services.operator_console.api_client import (
     ApiError,
     UrllibTransport,
 )
-
 
 # ----------------------------------------------------------------------
 # Fake transport — captures calls and returns canned bytes
@@ -100,7 +99,7 @@ class FakeTransport:
 
 
 def _utc(year: int, month: int, day: int, hour: int = 0, minute: int = 0) -> datetime:
-    return datetime(year, month, day, hour, minute, tzinfo=timezone.utc)
+    return datetime(year, month, day, hour, minute, tzinfo=UTC)
 
 
 def _http_error(code: int, detail: str) -> HTTPError:
@@ -193,9 +192,7 @@ class TestQuerystringAssembly:
         transport = FakeTransport()
         client = ApiClient("http://api.test", transport=transport)
         with pytest.raises(ValueError, match="UTC-aware"):
-            client.list_session_encounters(
-                uuid4(), before_utc=datetime(2026, 4, 17, 11, 30)
-            )
+            client.list_session_encounters(uuid4(), before_utc=datetime(2026, 4, 17, 11, 30))
 
     def test_list_alerts_encodes_since_utc(self) -> None:
         transport = FakeTransport()
@@ -295,9 +292,7 @@ class TestRetryableSemantics:
 class TestEndpointAttribution:
     def test_transport_error_gets_endpoint_attached_by_client(self) -> None:
         transport = FakeTransport()
-        transport.enqueue_error(
-            ApiError(message="boom", retryable=True)
-        )
+        transport.enqueue_error(ApiError(message="boom", retryable=True))
         client = ApiClient("http://api.test", transport=transport)
         with pytest.raises(ApiError) as info:
             client.get_health()

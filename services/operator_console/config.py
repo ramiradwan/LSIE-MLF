@@ -146,10 +146,6 @@ def _validate_positive_intervals(config: OperatorConsoleConfig) -> None:
     }
     bad = [f"{name}={value}" for name, value in checks.items() if value <= 0]
     if bad:
-        raise ValueError(
-            "operator console poll intervals must be > 0; got " + ", ".join(bad)
-        )
+        raise ValueError("operator console poll intervals must be > 0; got " + ", ".join(bad))
     if config.api_timeout_seconds <= 0:
-        raise ValueError(
-            f"api_timeout_seconds must be > 0; got {config.api_timeout_seconds}"
-        )
+        raise ValueError(f"api_timeout_seconds must be > 0; got {config.api_timeout_seconds}")

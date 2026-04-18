@@ -116,9 +116,7 @@ class OperatorReadService:
                         exp_id, arm_rows, active_arm_row, enc_row
                     )
 
-                physiology = self._build_session_physiology(
-                    cur, active_session.session_id, now
-                )
+                physiology = self._build_session_physiology(cur, active_session.session_id, now)
 
             health = self._build_health_snapshot(cur, now)
             alerts = self._list_alerts_internal(cur, limit=20, since_utc=None)
@@ -153,9 +151,7 @@ class OperatorReadService:
         before_utc: datetime | None = None,
     ) -> list[EncounterSummary]:
         with self._cursor() as cur:
-            rows = q.fetch_session_encounters(
-                cur, session_id, limit=limit, before_utc=before_utc
-            )
+            rows = q.fetch_session_encounters(cur, session_id, limit=limit, before_utc=before_utc)
         return [self._build_encounter_summary(row) for row in rows]
 
     def get_experiment_detail(self, experiment_id: str) -> ExperimentDetail | None:
@@ -166,9 +162,7 @@ class OperatorReadService:
             active_arm_row = q.fetch_active_arm_for_experiment(cur, experiment_id)
 
         arms = [self._build_arm_summary(row) for row in arm_rows]
-        active_arm_id = (
-            (active_arm_row or {}).get("arm") if active_arm_row is not None else None
-        )
+        active_arm_id = (active_arm_row or {}).get("arm") if active_arm_row is not None else None
         last_updated = _latest_datetime(row.get("updated_at") for row in arm_rows)
         return ExperimentDetail(
             experiment_id=experiment_id,
@@ -248,9 +242,7 @@ class OperatorReadService:
             experiment_id=experiment_id if isinstance(experiment_id, str) else None,
             active_arm=active_arm if isinstance(active_arm, str) else None,
             expected_greeting=None,  # orchestrator-owned; not persisted.
-            last_segment_completed_at_utc=_ensure_utc(
-                row.get("last_segment_completed_at_utc")
-            ),
+            last_segment_completed_at_utc=_ensure_utc(row.get("last_segment_completed_at_utc")),
             latest_reward=_as_float(row.get("latest_reward")),
             latest_semantic_gate=_as_int(row.get("latest_semantic_gate")),
         )
@@ -327,9 +319,7 @@ class OperatorReadService:
         active_arm_row: dict[str, Any] | None,
         latest_encounter_row: dict[str, Any] | None,
     ) -> ExperimentSummary:
-        active_arm_id = (
-            (active_arm_row or {}).get("arm") if active_arm_row is not None else None
-        )
+        active_arm_id = (active_arm_row or {}).get("arm") if active_arm_row is not None else None
         last_updated = _latest_datetime(row.get("updated_at") for row in arm_rows)
         latest_reward: float | None = None
         if latest_encounter_row is not None:
@@ -343,9 +333,7 @@ class OperatorReadService:
             latest_reward=latest_reward,
         )
 
-    def _build_physiology_snapshot(
-        self, row: dict[str, Any]
-    ) -> PhysiologyCurrentSnapshot:
+    def _build_physiology_snapshot(self, row: dict[str, Any]) -> PhysiologyCurrentSnapshot:
         """§4.E.2 — per-subject_role physiology row."""
         role = row.get("subject_role")
         if role not in ("streamer", "operator"):
@@ -488,9 +476,7 @@ class OperatorReadService:
                         else None
                     ),
                     operator_action_hint=(
-                        hint
-                        if state in {HealthState.DEGRADED, HealthState.RECOVERING}
-                        else None
+                        hint if state in {HealthState.DEGRADED, HealthState.RECOVERING} else None
                     ),
                 )
             )
@@ -531,9 +517,7 @@ class OperatorReadService:
         self, cur: Any, *, limit: int, since_utc: datetime | None
     ) -> list[AlertEvent]:
         alerts: list[AlertEvent] = []
-        stale_rows = q.fetch_recent_stale_physiology(
-            cur, since_utc=since_utc, limit=limit
-        )
+        stale_rows = q.fetch_recent_stale_physiology(cur, since_utc=since_utc, limit=limit)
         for row in stale_rows:
             alerts.append(
                 AlertEvent(
@@ -549,9 +533,7 @@ class OperatorReadService:
                     emitted_at_utc=_ensure_utc_strict(row["created_at"]),
                 )
             )
-        ended_rows = q.fetch_recently_ended_sessions(
-            cur, since_utc=since_utc, limit=limit
-        )
+        ended_rows = q.fetch_recently_ended_sessions(cur, since_utc=since_utc, limit=limit)
         for row in ended_rows:
             alerts.append(
                 AlertEvent(

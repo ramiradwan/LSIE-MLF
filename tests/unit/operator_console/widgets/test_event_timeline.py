@@ -9,7 +9,13 @@ from __future__ import annotations
 from typing import Any
 
 import pytest
-from PySide6.QtCore import QAbstractTableModel, QModelIndex, QObject, Qt
+from PySide6.QtCore import (
+    QAbstractTableModel,
+    QModelIndex,
+    QObject,
+    QPersistentModelIndex,
+    Qt,
+)
 
 from services.operator_console.widgets.event_timeline import EventTimelineWidget
 
@@ -23,15 +29,23 @@ class _ListModel(QAbstractTableModel):
         super().__init__(parent)
         self._rows = rows
 
-    def rowCount(self, parent: QModelIndex = _ROOT_INDEX) -> int:  # noqa: N802
+    def rowCount(  # noqa: N802
+        self, parent: QModelIndex | QPersistentModelIndex = _ROOT_INDEX
+    ) -> int:
         if parent.isValid():
             return 0
         return len(self._rows)
 
-    def columnCount(self, parent: QModelIndex = _ROOT_INDEX) -> int:  # noqa: N802
+    def columnCount(  # noqa: N802
+        self, parent: QModelIndex | QPersistentModelIndex = _ROOT_INDEX
+    ) -> int:
         return 1
 
-    def data(self, index: QModelIndex, role: int = Qt.ItemDataRole.DisplayRole) -> Any:
+    def data(
+        self,
+        index: QModelIndex | QPersistentModelIndex,
+        role: int = Qt.ItemDataRole.DisplayRole,
+    ) -> Any:
         if not index.isValid() or role != Qt.ItemDataRole.DisplayRole:
             return None
         return self._rows[index.row()]

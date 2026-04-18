@@ -30,6 +30,46 @@ faster-whisper==1.2.1, mediapipe==0.10.x, parselmouth==0.4.4, spacy==3.7.x, psyc
 
 redis:7-alpine → postgres:16-alpine → stream_scrcpy(ubuntu:24.04+scrcpy) → worker(nvidia/cuda:12.2.2-cudnn8) + orchestrator(nvidia/cuda:12.2.2-cudnn8) → api(python:3.11-slim, depends on redis + worker + postgres for physiology ingress, task dispatch, and persistence). Network: appnetwork bridge. Shared volume: ipc-share at /tmp/ipc/.
 
+## §4.E.1 — Operator Console (SPEC-AMEND-008)
+
+The operator surface is the PySide6 Operator Console running on the
+operator's host, not a container. All data flows through the API
+Server's `/api/v1/operator/*` aggregate routes — the console does not
+open direct Postgres or Redis connections. Launch with
+`python -m services.operator_console`; packaging is driven by
+`build/operator_console.spec` (PyInstaller one-dir).
+
+The console is split into six pages, each backed by a dedicated
+viewmodel that subscribes to the shared `OperatorStore`:
+
+- **Overview** — active session, experiment, physiology, health, latest
+  encounter, and an attention queue fed by alerts. First surface the
+  operator sees; clicking the active-session card jumps to Live Session.
+- **Live Session** — per-segment encounter table plus a reward-explanation
+  detail pane exposing §7B's inputs (`p90_intensity`, `semantic_gate`,
+  `gated_reward`, `n_frames_in_window`, `baseline_b_neutral`). Hosts
+  the stimulus action rail; countdown derives from the authoritative
+  `_stimulus_time` readback, not from the click wall-clock.
+- **Experiments** — §7B Thompson Sampling readback: active arm, per-arm
+  posterior α/β, evaluation variance, and selection count. Must not
+  imply `semantic_confidence` moves the reward.
+- **Physiology** — operator and streamer RMSSD, heart rate, and
+  freshness with §4.C.4's four distinct states (fresh / stale / absent
+  / no-rmssd). §7C Co-Modulation Index `null` is rendered as a
+  legitimate `null-valid` outcome with its `null_reason`, not an error.
+- **Health** — §12 subsystem rollup keeping `degraded` (WARN),
+  `recovering` (PROGRESS), and `error` (ERROR) visually distinct; the
+  first error subsystem's `operator_action_hint` is surfaced on the
+  error summary card so the operator does not have to scroll.
+- **Sessions** — recent-sessions history; double-click emits
+  `session_selected(UUID)` which the shell routes through the same
+  navigation handler Overview uses.
+
+Stimulus action-rail lifecycle (§4.C): `IDLE → SUBMITTING → ACCEPTED →
+MEASURING → COMPLETED` (or `FAILED` on terminal error). The ActionBar
+disables the submit button during SUBMITTING so a second physical click
+cannot re-dispatch; idempotency across the wire uses `client_action_id`.
+
 ## Physiology extension references (v3.1)
 
 ### §4.B.2 — Physiological Ingestion Adapter

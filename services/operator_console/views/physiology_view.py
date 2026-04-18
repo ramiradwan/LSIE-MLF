@@ -361,9 +361,7 @@ class _CoModulationPanel(QFrame):
         self._observations_card.set_secondary_text("aligned non-stale pairs")
         self._observations_card.set_status(UiStatusKind.NEUTRAL, None)
 
-        self._coverage_card.set_primary_text(
-            format_percentage(summary.coverage_ratio, digits=0)
-        )
+        self._coverage_card.set_primary_text(format_percentage(summary.coverage_ratio, digits=0))
         self._coverage_card.set_secondary_text("window coverage")
         self._coverage_card.set_status(UiStatusKind.NEUTRAL, None)
 

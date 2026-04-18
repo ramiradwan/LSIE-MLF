@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import patch
 from uuid import UUID, uuid4
@@ -37,7 +37,6 @@ from services.operator_console.config import OperatorConsoleConfig, load_config
 from services.operator_console.polling import (
     JOB_ALERTS,
     JOB_ENCOUNTERS,
-    JOB_EXPERIMENT,
     JOB_HEALTH,
     JOB_LIVE_SESSION,
     JOB_OVERVIEW,
@@ -58,7 +57,7 @@ pytestmark = pytest.mark.usefixtures("qt_app")
 
 
 def _utc(year: int, month: int, day: int, hour: int = 0, minute: int = 0) -> datetime:
-    return datetime(year, month, day, hour, minute, tzinfo=timezone.utc)
+    return datetime(year, month, day, hour, minute, tzinfo=UTC)
 
 
 @pytest.fixture
@@ -140,9 +139,7 @@ class TestRouteScoping:
         assert set(harness.started) == {JOB_OVERVIEW, JOB_ALERTS}
         assert harness.stopped == []
 
-    def test_route_change_stops_old_and_starts_new(
-        self, harness: _CoordinatorHarness
-    ) -> None:
+    def test_route_change_stops_old_and_starts_new(self, harness: _CoordinatorHarness) -> None:
         coord = harness.coordinator
         store = coord._store  # exposed for the test
         coord.start()
@@ -155,9 +152,7 @@ class TestRouteScoping:
         assert JOB_SESSIONS in harness.started
         assert JOB_ALERTS not in harness.stopped
 
-    def test_live_session_requires_selected_session(
-        self, harness: _CoordinatorHarness
-    ) -> None:
+    def test_live_session_requires_selected_session(self, harness: _CoordinatorHarness) -> None:
         coord = harness.coordinator
         store = coord._store
         coord.start()
@@ -198,9 +193,7 @@ class TestRouteScoping:
         assert JOB_LIVE_SESSION in harness.started
         assert JOB_ENCOUNTERS in harness.started
 
-    def test_leaving_route_stops_its_jobs(
-        self, harness: _CoordinatorHarness
-    ) -> None:
+    def test_leaving_route_stops_its_jobs(self, harness: _CoordinatorHarness) -> None:
         coord = harness.coordinator
         store = coord._store
         coord.start()
@@ -209,9 +202,7 @@ class TestRouteScoping:
         store.set_route(AppRoute.OVERVIEW)
         assert JOB_HEALTH in harness.stopped
 
-    def test_stop_tears_down_everything(
-        self, harness: _CoordinatorHarness
-    ) -> None:
+    def test_stop_tears_down_everything(self, harness: _CoordinatorHarness) -> None:
         coord = harness.coordinator
         coord.start()
         harness.stopped.clear()
@@ -319,9 +310,7 @@ class TestErrorHandling:
 class _FakeOneShot:
     """In-process replacement for `run_one_shot` that fires immediately."""
 
-    def __init__(
-        self, job_name: str, fn: Callable[[], object], mode: str
-    ) -> None:
+    def __init__(self, job_name: str, fn: Callable[[], object], mode: str) -> None:
         self.signals = OneShotSignals()
         # Connect the coordinator's slots first — the caller wires them
         # after this constructor returns. Fire after a short deferred
@@ -339,16 +328,12 @@ class _FakeOneShot:
             else:
                 self.signals.succeeded.emit(self._job_name, result)
         elif self._mode == "failure":
-            self.signals.failed.emit(
-                self._job_name, ApiError(message="boom", retryable=True)
-            )
+            self.signals.failed.emit(self._job_name, ApiError(message="boom", retryable=True))
         self.signals.finished.emit(self._job_name)
 
 
 class TestStimulusOneShot:
-    def _patch_one_shot(
-        self, mode: str
-    ) -> tuple[Any, list[_FakeOneShot]]:
+    def _patch_one_shot(self, mode: str) -> tuple[Any, list[_FakeOneShot]]:
         registry: list[_FakeOneShot] = []
 
         def fake_run_one_shot(job_name: str, fn: Callable[[], object]) -> OneShotSignals:
@@ -358,9 +343,7 @@ class TestStimulusOneShot:
 
         return fake_run_one_shot, registry
 
-    def test_success_triggers_refresh_fan_out(
-        self, harness: _CoordinatorHarness
-    ) -> None:
+    def test_success_triggers_refresh_fan_out(self, harness: _CoordinatorHarness) -> None:
         coord = harness.coordinator
         session_id = uuid4()
         action_id = uuid4()
@@ -391,9 +374,7 @@ class TestStimulusOneShot:
         # And cleared any stimulus error scope
         assert coord._store.error(JOB_STIMULUS) is None
 
-    def test_failure_surfaces_error_and_job_failed(
-        self, harness: _CoordinatorHarness
-    ) -> None:
+    def test_failure_surfaces_error_and_job_failed(self, harness: _CoordinatorHarness) -> None:
         coord = harness.coordinator
         session_id = uuid4()
         action_id = uuid4()
@@ -418,9 +399,7 @@ class TestStimulusOneShot:
 
 
 class TestFetchFactories:
-    def test_overview_fetch_calls_client_get_overview(
-        self, cfg: OperatorConsoleConfig
-    ) -> None:
+    def test_overview_fetch_calls_client_get_overview(self, cfg: OperatorConsoleConfig) -> None:
         calls: list[str] = []
 
         class _SpyClient:
@@ -434,9 +413,7 @@ class TestFetchFactories:
         fetch()
         assert calls == ["get_overview"]
 
-    def test_encounters_fetch_captures_selected_session(
-        self, cfg: OperatorConsoleConfig
-    ) -> None:
+    def test_encounters_fetch_captures_selected_session(self, cfg: OperatorConsoleConfig) -> None:
         called_with: list[UUID] = []
 
         class _SpyClient:
@@ -463,9 +440,7 @@ class TestFetchFactories:
         with pytest.raises(RuntimeError, match="selected session"):
             coord._make_fetch_encounters()
 
-    def test_experiment_fetch_uses_config_default(
-        self, cfg: OperatorConsoleConfig
-    ) -> None:
+    def test_experiment_fetch_uses_config_default(self, cfg: OperatorConsoleConfig) -> None:
         calls: list[str] = []
 
         class _SpyClient:

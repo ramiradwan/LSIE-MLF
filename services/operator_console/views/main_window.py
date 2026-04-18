@@ -189,33 +189,19 @@ class MainWindow(QMainWindow):
         # read-only getters + the one write path (Live Session's
         # stimulus lifecycle, Sessions' selection push).
         self._overview_vm = OverviewViewModel(self._store, self)
-        self._live_session_vm = LiveSessionViewModel(
-            self._store, self._encounters_model, self
-        )
-        self._experiments_vm = ExperimentsViewModel(
-            self._store, self._experiments_arms_model, self
-        )
+        self._live_session_vm = LiveSessionViewModel(self._store, self._encounters_model, self)
+        self._experiments_vm = ExperimentsViewModel(self._store, self._experiments_arms_model, self)
         self._physiology_vm = PhysiologyViewModel(self._store, self)
-        self._health_vm = HealthViewModel(
-            self._store, self._health_model, self._alerts_model, self
-        )
-        self._sessions_vm = SessionsViewModel(
-            self._store, self._sessions_model, self
-        )
+        self._health_vm = HealthViewModel(self._store, self._health_model, self._alerts_model, self)
+        self._sessions_vm = SessionsViewModel(self._store, self._sessions_model, self)
 
         overview_view = OverviewView(self._overview_vm, self)
         overview_view.session_activated.connect(self._on_session_activated)
         self._pages[AppRoute.OVERVIEW] = overview_view
 
-        self._pages[AppRoute.LIVE_SESSION] = LiveSessionView(
-            self._live_session_vm, self
-        )
-        self._pages[AppRoute.EXPERIMENTS] = ExperimentsView(
-            self._experiments_vm, self
-        )
-        self._pages[AppRoute.PHYSIOLOGY] = PhysiologyView(
-            self._physiology_vm, self
-        )
+        self._pages[AppRoute.LIVE_SESSION] = LiveSessionView(self._live_session_vm, self)
+        self._pages[AppRoute.EXPERIMENTS] = ExperimentsView(self._experiments_vm, self)
+        self._pages[AppRoute.PHYSIOLOGY] = PhysiologyView(self._physiology_vm, self)
         self._pages[AppRoute.HEALTH] = HealthView(self._health_vm, self)
 
         sessions_view = SessionsView(self._sessions_vm, self)

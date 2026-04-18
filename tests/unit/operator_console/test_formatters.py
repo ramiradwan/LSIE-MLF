@@ -7,7 +7,7 @@ wording, §7C co-modulation null-reason, and the §12 health mapping.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from uuid import UUID
 
 from packages.schemas.operator_console import (
@@ -41,7 +41,7 @@ _SESSION_ID = UUID("00000000-0000-0000-0000-000000000005")
 
 
 def _utc(year: int, month: int, day: int, hour: int = 0, minute: int = 0) -> datetime:
-    return datetime(year, month, day, hour, minute, tzinfo=timezone.utc)
+    return datetime(year, month, day, hour, minute, tzinfo=UTC)
 
 
 # ----------------------------------------------------------------------
@@ -132,10 +132,7 @@ class TestCoModulationRendering:
             null_reason="insufficient aligned non-stale pairs",
         )
         # §7C: null is a legitimate outcome, not an error
-        assert (
-            format_comodulation_index(summary)
-            == "insufficient aligned non-stale pairs"
-        )
+        assert format_comodulation_index(summary) == "insufficient aligned non-stale pairs"
 
     def test_value_summary_renders_signed_three_decimals(self) -> None:
         summary = CoModulationSummary(
@@ -234,9 +231,7 @@ class TestRewardExplanation:
         assert "baseline" in text.lower()
 
     def test_physiology_attached_stale_surfaces_stale(self) -> None:
-        text = build_reward_explanation(
-            _encounter(physiology_attached=True, physiology_stale=True)
-        )
+        text = build_reward_explanation(_encounter(physiology_attached=True, physiology_stale=True))
         assert "stale" in text.lower()
 
     def test_physiology_attached_fresh_surfaces_fresh(self) -> None:

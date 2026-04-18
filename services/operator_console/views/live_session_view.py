@@ -55,7 +55,6 @@ from services.operator_console.formatters import (
     format_timestamp,
     truncate_expected_greeting,
 )
-from services.operator_console.state import StimulusUiContext
 from services.operator_console.viewmodels.live_session_vm import LiveSessionViewModel
 from services.operator_console.widgets.alert_banner import AlertBanner
 from services.operator_console.widgets.empty_state import EmptyStateWidget
@@ -455,9 +454,9 @@ class _EncounterDetailPanel(QFrame):
             self._explanation.setText(explanation)
             return
 
+        ts_text = format_timestamp(encounter.segment_timestamp_utc)
         self._subtitle.setText(
-            f"Encounter {encounter.encounter_id} · {format_timestamp(encounter.segment_timestamp_utc)} · "
-            f"state {encounter.state.value}"
+            f"Encounter {encounter.encounter_id} · {ts_text} · state {encounter.state.value}"
         )
         self._p90_card.set_primary_text(format_reward(encounter.p90_intensity))
         self._p90_card.set_secondary_text(
@@ -478,9 +477,7 @@ class _EncounterDetailPanel(QFrame):
 
         self._reward_card.set_primary_text(format_reward(encounter.gated_reward))
         reward_status = (
-            UiStatusKind.OK
-            if encounter.state == EncounterState.COMPLETED
-            else UiStatusKind.NEUTRAL
+            UiStatusKind.OK if encounter.state == EncounterState.COMPLETED else UiStatusKind.NEUTRAL
         )
         self._reward_card.set_status(reward_status, encounter.state.value)
         self._reward_card.set_secondary_text("§7B r_t = p90 × gate")
@@ -520,9 +517,7 @@ class _EncounterDetailPanel(QFrame):
             return
         total = int(seconds)
         minutes, secs = divmod(total, 60)
-        self._countdown_label.setText(
-            f"Measurement window: {minutes:02d}:{secs:02d} remaining"
-        )
+        self._countdown_label.setText(f"Measurement window: {minutes:02d}:{secs:02d} remaining")
         self._countdown_label.setVisible(True)
 
 

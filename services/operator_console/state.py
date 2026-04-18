@@ -33,7 +33,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from enum import Enum
+from enum import StrEnum
 from uuid import UUID
 
 from PySide6.QtCore import QObject, Signal
@@ -50,10 +50,10 @@ from packages.schemas.operator_console import (
 )
 
 
-class AppRoute(str, Enum):
+class AppRoute(StrEnum):
     """Six operator-facing pages per Phase 6's navigation layout.
 
-    `str`-subclass so the enum value doubles as a stable signal payload
+    `StrEnum` so the enum value doubles as a stable signal payload
     (`route_changed = Signal(str)` per the checklist).
     """
 

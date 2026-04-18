@@ -130,6 +130,39 @@ To remove volumes as well:
 docker compose down -v
 ```
 
+### 5) Launch the Operator Console (optional, host-side)
+
+The production-grade Operator Console is a PySide6 desktop app that runs
+on the operator's host — **not in a container**. It polls the API
+Server's `/api/v1/operator/*` aggregate routes and opens no direct
+connection to Postgres or Redis (per SPEC-AMEND-008).
+
+```bash
+pip install -r requirements/cli.txt
+python -m services.operator_console
+```
+
+Environment variables (all optional; sensible defaults apply):
+
+| Variable | Purpose |
+|---|---|
+| `LSIE_OPERATOR_API_BASE_URL` | API Server base URL (default `http://localhost:8000`) |
+| `LSIE_OPERATOR_API_TIMEOUT_SECONDS` | Per-request timeout, default `5` |
+| `LSIE_OPERATOR_ENVIRONMENT_LABEL` | Free-text label shown in the statusline (e.g. `dev`, `staging`) |
+| `LSIE_OPERATOR_*_POLL_MS` | Per-surface poll cadences (overview, sessions, health, …) — see `services/operator_console/config.py` for the full list |
+
+The console ships six pages: Overview, Live Session, Experiments,
+Physiology, Health, and Sessions. Page behavior traces to the spec:
+
+- Live Session's reward explanation uses `p90_intensity`, `semantic_gate`,
+  `gated_reward`, `n_frames_in_window`, and `baseline_b_neutral` (§7B).
+- Physiology surfaces `fresh` / `stale` / `absent` / `no-rmssd` as four
+  distinct states (§4.C.4).
+- Co-modulation `null` is rendered as a legitimate `null-valid` outcome
+  with its `null_reason`, not as an error (§7C).
+- Health distinguishes `degraded` / `recovering` / `error` with
+  operator-action hints on the error summary card (§12).
+
 ---
 
 ## Where to Make Changes

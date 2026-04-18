@@ -326,9 +326,7 @@ def fetch_experiment_arms(cursor: Any, experiment_id: str) -> list[dict[str, Any
     return _rows_to_dicts(cursor)
 
 
-def fetch_active_arm_for_experiment(
-    cursor: Any, experiment_id: str
-) -> dict[str, Any] | None:
+def fetch_active_arm_for_experiment(cursor: Any, experiment_id: str) -> dict[str, Any] | None:
     cursor.execute(_ACTIVE_ARM_FOR_EXPERIMENT_SQL, {"experiment_id": experiment_id})
     return _row_to_dict(cursor)
 

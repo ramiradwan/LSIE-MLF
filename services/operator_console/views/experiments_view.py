@@ -73,8 +73,7 @@ class ExperimentsView(QWidget):
         self._empty_state = EmptyStateWidget(self)
         self._empty_state.set_title("No experiment yet")
         self._empty_state.set_message(
-            "Experiment data will appear once an arm has been selected "
-            "for the active session."
+            "Experiment data will appear once an arm has been selected for the active session."
         )
 
         self._experiment_card = MetricCard("Experiment", self)
@@ -185,9 +184,7 @@ class ExperimentsView(QWidget):
         active = _find_arm(detail.arms, arm_id)
         self._active_arm_card.set_primary_text(arm_id)
         if active is None:
-            self._active_arm_card.set_secondary_text(
-                "Active arm id not present in arm list."
-            )
+            self._active_arm_card.set_secondary_text("Active arm id not present in arm list.")
             self._active_arm_card.set_status(UiStatusKind.WARN, "missing")
             return
         secondary_bits: list[str] = [
@@ -195,9 +192,7 @@ class ExperimentsView(QWidget):
             f"β {format_reward(active.posterior_beta)}",
         ]
         if active.evaluation_variance is not None:
-            secondary_bits.append(
-                f"var {format_reward(active.evaluation_variance)}"
-            )
+            secondary_bits.append(f"var {format_reward(active.evaluation_variance)}")
         secondary_bits.append(f"{active.selection_count} selection(s)")
         self._active_arm_card.set_secondary_text(" · ".join(secondary_bits))
         self._active_arm_card.set_status(UiStatusKind.OK, "active")

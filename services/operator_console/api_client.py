@@ -36,9 +36,6 @@ from uuid import UUID
 
 from pydantic import BaseModel, TypeAdapter, ValidationError
 
-_ModelT = TypeVar("_ModelT", bound=BaseModel)
-_ListItemT = TypeVar("_ListItemT")
-
 from packages.schemas.operator_console import (
     AlertEvent,
     EncounterSummary,
@@ -51,6 +48,8 @@ from packages.schemas.operator_console import (
     StimulusRequest,
 )
 
+_ModelT = TypeVar("_ModelT", bound=BaseModel)
+_ListItemT = TypeVar("_ListItemT")
 
 # ----------------------------------------------------------------------
 # ApiError — with endpoint + retryable
@@ -178,12 +177,8 @@ def _parse_error_body(exc: HTTPError) -> str:
 
 # Pre-built type adapters for list-returning endpoints. Keeping them at
 # module scope avoids re-parsing the schema on every call.
-_SESSION_LIST_ADAPTER: TypeAdapter[list[SessionSummary]] = TypeAdapter(
-    list[SessionSummary]
-)
-_ENCOUNTER_LIST_ADAPTER: TypeAdapter[list[EncounterSummary]] = TypeAdapter(
-    list[EncounterSummary]
-)
+_SESSION_LIST_ADAPTER: TypeAdapter[list[SessionSummary]] = TypeAdapter(list[SessionSummary])
+_ENCOUNTER_LIST_ADAPTER: TypeAdapter[list[EncounterSummary]] = TypeAdapter(list[EncounterSummary])
 _ALERT_LIST_ADAPTER: TypeAdapter[list[AlertEvent]] = TypeAdapter(list[AlertEvent])
 
 
@@ -240,8 +235,7 @@ class ApiClient:
                 raise ValueError("before_utc must be UTC-aware")
             params["before_utc"] = before_utc.isoformat()
         path = (
-            f"/api/v1/operator/sessions/{_path_segment(session_id)}"
-            f"/encounters?{urlencode(params)}"
+            f"/api/v1/operator/sessions/{_path_segment(session_id)}/encounters?{urlencode(params)}"
         )
         return self._get_list(path, _ENCOUNTER_LIST_ADAPTER)
 
@@ -250,9 +244,7 @@ class ApiClient:
         path = f"/api/v1/operator/experiments/{_path_segment(experiment_id)}"
         return self._get_model(path, ExperimentDetail)
 
-    def get_session_physiology(
-        self, session_id: UUID | str
-    ) -> SessionPhysiologySnapshot:
+    def get_session_physiology(self, session_id: UUID | str) -> SessionPhysiologySnapshot:
         """`GET /api/v1/operator/sessions/{id}/physiology` — §4.E.2 + §7C."""
         path = f"/api/v1/operator/sessions/{_path_segment(session_id)}/physiology"
         return self._get_model(path, SessionPhysiologySnapshot)
@@ -300,24 +292,18 @@ class ApiClient:
         raw = self._request("GET", path, body=None)
         return self._validate_model(path, raw, model)
 
-    def _post_model(
-        self, path: str, body: bytes, model: type[_ModelT]
-    ) -> _ModelT:
+    def _post_model(self, path: str, body: bytes, model: type[_ModelT]) -> _ModelT:
         raw = self._request("POST", path, body=body)
         return self._validate_model(path, raw, model)
 
-    def _get_list(
-        self, path: str, adapter: TypeAdapter[list[_ListItemT]]
-    ) -> list[_ListItemT]:
+    def _get_list(self, path: str, adapter: TypeAdapter[list[_ListItemT]]) -> list[_ListItemT]:
         raw = self._request("GET", path, body=None)
         return self._validate_adapter(path, raw, adapter)
 
     def _request(self, method: str, path: str, *, body: bytes | None) -> bytes:
         url = f"{self._base_url}{path}"
         try:
-            return self._transport.request(
-                method, url, body=body, timeout_s=self._timeout
-            )
+            return self._transport.request(method, url, body=body, timeout_s=self._timeout)
         except ApiError as exc:
             # Attach endpoint if the transport did not already.
             if exc.endpoint is None:
@@ -325,9 +311,7 @@ class ApiClient:
             raise
 
     @staticmethod
-    def _validate_model(
-        path: str, raw: bytes, model: type[_ModelT]
-    ) -> _ModelT:
+    def _validate_model(path: str, raw: bytes, model: type[_ModelT]) -> _ModelT:
         try:
             payload = json.loads(raw.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:

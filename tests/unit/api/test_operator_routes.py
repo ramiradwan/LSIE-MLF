@@ -83,9 +83,7 @@ class TestOperatorReadRoutes:
 
     def test_get_session_found(self) -> None:
         sid = uuid.uuid4()
-        summary = SessionSummary(
-            session_id=sid, status="active", started_at_utc=_now()
-        )
+        summary = SessionSummary(session_id=sid, status="active", started_at_utc=_now())
         svc = MagicMock()
         svc.get_session.return_value = summary
         result = asyncio.run(get_session(session_id=sid, service=svc))
@@ -104,11 +102,7 @@ class TestOperatorReadRoutes:
         sid = uuid.uuid4()
         svc = MagicMock()
         svc.list_encounters.return_value = []
-        asyncio.run(
-            list_session_encounters(
-                session_id=sid, limit=25, before_utc=None, service=svc
-            )
-        )
+        asyncio.run(list_session_encounters(session_id=sid, limit=25, before_utc=None, service=svc))
         svc.list_encounters.assert_called_once_with(sid, limit=25, before_utc=None)
 
     def test_get_experiment_detail_missing_raises_404(self) -> None:
@@ -120,14 +114,10 @@ class TestOperatorReadRoutes:
         assert exc.status_code == 404
 
     def test_get_experiment_detail_found(self) -> None:
-        detail = ExperimentDetail(
-            experiment_id="greeting_line_v1", arms=[], last_updated_utc=None
-        )
+        detail = ExperimentDetail(experiment_id="greeting_line_v1", arms=[], last_updated_utc=None)
         svc = MagicMock()
         svc.get_experiment_detail.return_value = detail
-        result = asyncio.run(
-            get_experiment_detail(experiment_id="greeting_line_v1", service=svc)
-        )
+        result = asyncio.run(get_experiment_detail(experiment_id="greeting_line_v1", service=svc))
         assert result is detail
 
     def test_get_session_physiology_missing_raises_404(self) -> None:
@@ -141,18 +131,14 @@ class TestOperatorReadRoutes:
 
     def test_get_session_physiology_found(self) -> None:
         sid = uuid.uuid4()
-        snap = SessionPhysiologySnapshot(
-            session_id=sid, generated_at_utc=_now()
-        )
+        snap = SessionPhysiologySnapshot(session_id=sid, generated_at_utc=_now())
         svc = MagicMock()
         svc.get_session_physiology.return_value = snap
         result = asyncio.run(get_session_physiology(session_id=sid, service=svc))
         assert result is snap
 
     def test_get_health_returns_dto(self) -> None:
-        health = HealthSnapshot(
-            generated_at_utc=_now(), overall_state=HealthState.OK
-        )
+        health = HealthSnapshot(generated_at_utc=_now(), overall_state=HealthState.OK)
         svc = MagicMock()
         svc.get_health.return_value = health
         result = asyncio.run(get_health(service=svc))
@@ -192,9 +178,7 @@ class TestStimulusSubmission:
         )
         svc = MagicMock()
         svc.submit_stimulus.return_value = accepted
-        result = asyncio.run(
-            submit_stimulus(session_id=sid, request=request, service=svc)
-        )
+        result = asyncio.run(submit_stimulus(session_id=sid, request=request, service=svc))
         assert result is accepted
         svc.submit_stimulus.assert_called_once_with(sid, request)
 
@@ -204,9 +188,7 @@ class TestStimulusSubmission:
         svc = MagicMock()
         svc.submit_stimulus.side_effect = SessionNotFoundError(str(sid))
         with pytest.raises(Exception) as exc_info:
-            asyncio.run(
-                submit_stimulus(session_id=sid, request=request, service=svc)
-            )
+            asyncio.run(submit_stimulus(session_id=sid, request=request, service=svc))
         exc: Any = exc_info.value
         assert exc.status_code == 404
 
@@ -216,9 +198,7 @@ class TestStimulusSubmission:
         svc = MagicMock()
         svc.submit_stimulus.side_effect = SessionAlreadyEndedError(str(sid))
         with pytest.raises(Exception) as exc_info:
-            asyncio.run(
-                submit_stimulus(session_id=sid, request=request, service=svc)
-            )
+            asyncio.run(submit_stimulus(session_id=sid, request=request, service=svc))
         exc: Any = exc_info.value
         assert exc.status_code == 409
 
@@ -228,9 +208,7 @@ class TestStimulusSubmission:
         svc = MagicMock()
         svc.submit_stimulus.side_effect = StimulusPublishError("broker down")
         with pytest.raises(Exception) as exc_info:
-            asyncio.run(
-                submit_stimulus(session_id=sid, request=request, service=svc)
-            )
+            asyncio.run(submit_stimulus(session_id=sid, request=request, service=svc))
         exc: Any = exc_info.value
         assert exc.status_code == 503
 
@@ -482,9 +460,7 @@ class TestOperatorActionServiceIdempotency:
             redis_factory=lambda: redis,
             clock=_now,
         )
-        result = svc.submit_stimulus(
-            sid, StimulusRequest(client_action_id=action_id)
-        )
+        result = svc.submit_stimulus(sid, StimulusRequest(client_action_id=action_id))
         assert result.accepted is True
         assert result.message is not None
         assert "no orchestrator" in result.message.lower()

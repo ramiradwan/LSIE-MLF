@@ -110,8 +110,7 @@ def test_health_view_error_card_surfaces_operator_action_hint() -> None:
     assert view._error_card._status._kind is UiStatusKind.ERROR  # type: ignore[attr-defined]
     # The first error row's operator-action hint should be pulled through.
     assert (
-        "restart"
-        in view._error_card._secondary.text()  # type: ignore[attr-defined]
+        "restart" in view._error_card._secondary.text()  # type: ignore[attr-defined]
     )
 
 

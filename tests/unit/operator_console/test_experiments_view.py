@@ -94,8 +94,7 @@ def test_experiments_view_active_arm_missing_surfaces_warn() -> None:
     store.set_experiment(detail)
     assert view._active_arm_card._primary.text() == "ghost"  # type: ignore[attr-defined]
     assert (
-        "not present"
-        in view._active_arm_card._secondary.text()  # type: ignore[attr-defined]
+        "not present" in view._active_arm_card._secondary.text()  # type: ignore[attr-defined]
     )
 
 
