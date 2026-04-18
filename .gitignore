@@ -49,6 +49,6 @@ docs/artifacts/*
 !docs/artifacts/performance_baseline.md
 !docs/artifacts/HARDENING_SUMMARY.md
 
-# content.json is regenerated from docs/tech-spec-v3.1.pdf via
+# content.json is regenerated from docs/tech-spec-v3.2.pdf via
 # scripts/spec_ref_check.py --extract. Source of truth is the signed PDF.
 docs/content.json

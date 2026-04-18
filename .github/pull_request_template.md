@@ -1,6 +1,6 @@
 ## Spec Reference
 
-Which sections of the LSIE-MLF Technical Specification v3.1 (`docs/tech-spec-v3.1.pdf`) govern this change? Resolve §N refs with `python scripts/spec_ref_check.py --resolve "<ref>"`.
+Which sections of the LSIE-MLF Technical Specification v3.2 (`docs/tech-spec-v3.2.pdf`) govern this change? Resolve §N refs with `python scripts/spec_ref_check.py --resolve "<ref>"`.
 
 - §
 

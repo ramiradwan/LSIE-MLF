@@ -132,10 +132,9 @@ docker compose down -v
 
 ### 5) Launch the Operator Console (optional, host-side)
 
-The production-grade Operator Console is a PySide6 desktop app that runs
+Operator Console is a PySide6 desktop app that runs
 on the operator's host — **not in a container**. It polls the API
-Server's `/api/v1/operator/*` aggregate routes and opens no direct
-connection to Postgres or Redis (per SPEC-AMEND-008).
+Server's `/api/v1/operator/*` aggregate routes.
 
 ```bash
 pip install -r requirements/cli.txt
@@ -216,7 +215,7 @@ Keep README-level guidance brief and put detailed governance, retention, and sec
 
 ## Specification
 
-LSIE-MLF is implemented against the specification `docs/tech-spec-v3.1.pdf`.
+LSIE-MLF is implemented against the specification `docs/tech-spec-v3.2.pdf`.
 
 This README is intentionally operational. It explains how the repository is organized, how to run it locally, and where to make changes. Detailed contracts, mathematical formulas, failure handling, and version history belong in the specification and amendment log.
 

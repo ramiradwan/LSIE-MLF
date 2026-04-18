@@ -27,7 +27,7 @@ The playbook is operator-facing: each chore should be runnable from a clean chec
 
 **Inputs.** The merge diff, the current contents of all skill files, the README topology table and data-flow diagram, and `docs/SPEC_AMENDMENTS.md`.
 
-**Outputs.** Updated docs in the same merge or a fast-follow doc-only PR. Any new amendment to the signed v3.1 spec (`docs/tech-spec-v3.1.pdf`) must be registered in `docs/SPEC_AMENDMENTS.md` with ID, section, original text, new behavior, rationale, and affected files.
+**Outputs.** Updated docs in the same merge or a fast-follow doc-only PR. Any new amendment to the signed v3.2 spec (`docs/tech-spec-v3.2.pdf`) must be registered in `docs/SPEC_AMENDMENTS.md` with ID, section, original text, new behavior, rationale, and affected files.
 
 **Success.** Every container, env var, port, schema field, and Redis key referenced in the merged code is described in at least one of the four doc surfaces. **Failure.** Any new artifact that exists in code but is invisible to the workspace-server, or any spec deviation not registered in `SPEC_AMENDMENTS.md`.
 
@@ -83,7 +83,7 @@ The playbook is operator-facing: each chore should be runnable from a clean chec
 
 ### 8. §13 Audit Checklist Execution
 
-**Purpose.** Run the 21-item autonomous implementation audit from §13 of the spec v3.1 (see `.claude/commands/audit.md`). This is the final gate on every merge — the sum of items 1–7 above plus the items they do not cover (canonical name list integrity, requirements pin compliance, image-separation enforcement, `from __future__ import annotations` usage, and the six physiology-specific items 16–21).
+**Purpose.** Run the 21-item autonomous implementation audit from §13 of the spec v3.2 (see `.claude/commands/audit.md`). This is the final gate on every merge — the sum of items 1–7 above plus the items they do not cover (canonical name list integrity, requirements pin compliance, image-separation enforcement, `from __future__ import annotations` usage, and the six physiology-specific items 16–21).
 
 **Inputs.** The current state of `main` after the merge, plus any follow-up commits triggered by chores 1–7.
 

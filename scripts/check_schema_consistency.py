@@ -12,7 +12,7 @@ silent drift:
   3. **Python DDL string** ``services.api.db.schema.SCHEMA_SQL`` (used
      by the API Server's bootstrap path)
   4. **JSON Schema blocks** under ``interface_contracts.schemas`` in the
-     ``content.json`` payload referenced by ``docs/tech-spec-v3.1.pdf``
+     ``content.json`` payload referenced by ``docs/tech-spec-v3.2.pdf``
      (the spec contract surface that the review agent loads)
 
 This script loads all four, normalizes them onto a common type / nullability
@@ -603,7 +603,7 @@ def load_default_sources(
     except Exception as exc:
         warnings.append(f"Could not load services.api.db.schema.SCHEMA_SQL: {exc}")
 
-    # 4. content.json (referenced by docs/tech-spec-v3.1.pdf)
+    # 4. content.json (referenced by docs/tech-spec-v3.2.pdf)
     json_schema_entities: dict[str, EntitySpec] = {}
     candidates = [
         repo_root / "docs" / "artifacts" / "content.json",
