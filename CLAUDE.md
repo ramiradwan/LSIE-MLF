@@ -10,7 +10,7 @@ Dependabot handling rules (auto-merge eligibility, human-review impact analysis,
 
 ## Canonical names (§0.3) — MUST use only these identifiers in all code and config
 
-IPC Pipe, Ephemeral Vault, InferenceHandoffPayload, ML Worker, API Server, Message Broker, Persistent Store, Capture Container, Physiological Sample Event, Physiological Context, Physiological State Buffer, subject_role, Co-Modulation Index
+IPC Pipe, Ephemeral Vault, InferenceHandoffPayload, ML Worker, API Server, Message Broker, Persistent Store, Capture Container, Physiological Chunk Event, Physiological Context, Physiological State Buffer, subject_role, Co-Modulation Index
 
 ## Stack
 

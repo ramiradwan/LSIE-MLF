@@ -1,6 +1,6 @@
 # LSIE-MLF Specification Reference
 
-This file extracts the key implementation-governing details from the immutable Master Technical Specification **v3.2** (`docs/tech-spec-v3.2.pdf`) together with accepted amendments in `docs/SPEC_AMENDMENTS.md`. The v3.1 release incorporated the physiology/co-modulation extension (SPEC-AMEND-007) into the base spec text. The v3.2 release additionally incorporates the dual-PySide6 operator surface (SPEC-AMEND-008) and the corrected Oura ingestion model (SPEC-AMEND-009 — webhooks treated as change notifications, OAuth2-backed hydration, normalized PhysiologicalChunkEvent transport, Module C rolling-window RMSSD derivation, 1-minute resampling for co-modulation). SPEC-AMEND-001 through SPEC-AMEND-006 remain governing where the v3.2 text has not superseded them. Until the SPEC-AMEND-009 migration lands, the implementation continues to ship the v3.1 scalar-webhook ingestion described under §4.B.2 / §4.C.4 below; SPEC-AMEND-009 is therefore tracked as a current spec→implementation deviation in the amendment registry. Claude Code loads this on demand via the `@docs/SPEC_REFERENCE.md` import in CLAUDE.md.
+This file extracts the key implementation-governing details from the immutable Master Technical Specification **v3.2** (`docs/tech-spec-v3.2.pdf`) together with accepted amendments in `docs/SPEC_AMENDMENTS.md`. The v3.1 release incorporated the physiology/co-modulation extension (SPEC-AMEND-007) into the base spec text. The v3.2 release additionally incorporates the dual-PySide6 operator surface (SPEC-AMEND-008) and the corrected Oura ingestion model (SPEC-AMEND-009 — webhooks treated as change notifications, OAuth2-backed hydration, normalized Physiological Chunk Event transport, Module C rolling-window RMSSD derivation, 1-minute resampling for co-modulation). SPEC-AMEND-001 through SPEC-AMEND-006 remain governing where the v3.2 text has not superseded them. The repository now ships the SPEC-AMEND-009 physiology path: webhook notifications enqueue hydration work to `physio:hydrate`, the API-hosted Oura hydration worker fetches provider resources and emits Physiological Chunk Event records to `physio:events`, the Orchestrator derives scalar `_physiological_context` snapshots from rolling chunk buffers, and Module E persists only scalar physiology analytics. Claude Code loads this on demand via the `@docs/SPEC_REFERENCE.md` import in CLAUDE.md.
 
 For the signed base spec, see `docs/tech-spec-v3.2.pdf`; the extracted JSON index is `docs/content.json`, generated via `python scripts/spec_ref_check.py --from-pdf docs/tech-spec-v3.2.pdf --extract > docs/content.json`. The amendment registry defines the current governing behavior wherever an amendment overrides the base spec.
 
@@ -8,12 +8,13 @@ For the signed base spec, see `docs/tech-spec-v3.2.pdf`; the extracted JSON inde
 
 1. Mobile USB → Capture Container (scrcpy raw PCM s16le 48kHz + H.264)
 2. Capture Container → Orchestrator Container via IPC Pipe `/tmp/ipc/audio_stream.raw` and `/tmp/ipc/video_stream.mkv`
-3. API Server → Redis list `physio:events`: authenticated Oura webhook normalized into Physiological Sample Event
-4. Orchestrator internal: FFmpeg resample 48kHz → 16kHz via `pipe:1`, bounded Redis drain into Physiological State Buffer
-5. Module B → Module C: Python dicts with uniqueId, event_type, timestamp_utc, payload
-6. Module C → Module D: `InferenceHandoffPayload` validated by Pydantic, 30s segments, optional `_physiological_context`
-7. Module D → Module E: Celery async task via Redis broker (session_id, segment_id, AU12, transcription, semantic, pitch, jitter, shimmer)
-8. Module E → PostgreSQL: parameterized INSERT, DOUBLE PRECISION metrics, TIMESTAMPTZ timestamps, physiology analytics tables
+3. API Server → Redis list `physio:hydrate`: authenticated Oura webhook notification normalized into hydration work
+4. API-hosted Oura hydration worker → Redis list `physio:events`: OAuth2-backed provider fetch normalized into Physiological Chunk Event
+5. Orchestrator internal: FFmpeg resample 48kHz → 16kHz via `pipe:1`, bounded Redis drain into Physiological State Buffer, rolling-window RMSSD derivation
+6. Module B → Module C: Python dicts with uniqueId, event_type, timestamp_utc, payload
+7. Module C → Module D: `InferenceHandoffPayload` validated by Pydantic, 30s segments, optional `_physiological_context`
+8. Module D → Module E: Celery async task via Redis broker (session_id, segment_id, AU12, transcription, semantic, pitch, jitter, shimmer)
+9. Module E → PostgreSQL: parameterized INSERT, DOUBLE PRECISION metrics, TIMESTAMPTZ timestamps, scalar-only physiology analytics tables
 
 ## Error handling matrix (§12)
 
@@ -70,19 +71,19 @@ MEASURING → COMPLETED` (or `FAILED` on terminal error). The ActionBar
 disables the submit button during SUBMITTING so a second physical click
 cannot re-dispatch; idempotency across the wire uses `client_action_id`.
 
-## Physiology extension references (v3.1)
+## Physiology extension references (v3.2)
 
 ### §4.B.2 — Physiological Ingestion Adapter
-API Server route `POST /api/v1/ingest/oura/webhook` verifies `x-oura-signature` with `OURA_WEBHOOK_SECRET`, validates `subject_role` plus provider metrics, normalizes the body into a Physiological Sample Event, and enqueues it to Redis list `physio:events`. Accepted payloads return `{status, event_id}`; duplicates are handled via Redis `SETNX` idempotency keys under `physio:seen:*`; malformed payloads return 422; Redis failures return 503.
+API Server route `POST /api/v1/ingest/oura/webhook` verifies `x-oura-signature` with `OURA_WEBHOOK_SECRET`, validates `subject_role` plus Oura notification metadata (`event_type`, `data_type`, `start_datetime`, `end_datetime`), deduplicates via Redis `SETNX` idempotency keys under `physio:seen:*`, and enqueues hydration metadata to Redis list `physio:hydrate`. Within the API Server runtime, `OuraHydrationService` drains `physio:hydrate`, fetches provider resources via OAuth2, normalizes them into Physiological Chunk Event records (`event_type="physiological_chunk"`, `provider="oura"`), and pushes validated payloads to Redis list `physio:events`. Accepted deliveries return `{status, event_id}`; duplicates return 200 with `status="duplicate"`; malformed payloads return 422; Redis failures return 503.
 
 ### §4.C.4 — Physiological State Buffer
-The orchestrator performs bounded non-blocking `LPOP` drains from `physio:events`, stores the latest per-`subject_role` snapshot in memory, and injects `_physiological_context` into segment payloads. `freshness_s` is computed at `assemble_segment()` wall-clock time rather than ADB drift-corrected device time, and stale snapshots remain present with `is_stale=True` instead of blocking dispatch.
+The Orchestrator performs bounded non-blocking `LPOP` drains from `physio:events`, stores rolling per-`subject_role` chunk buffers in memory, and derives scalar `_physiological_context` snapshots over the trailing 5-minute window. It prefers overlapping `ibi` chunks, otherwise overlapping `session` chunks, computes `validity_ratio` / `is_valid`, carries `source_kind` and `derivation_method`, computes `freshness_s` at `assemble_segment()` wall-clock time rather than ADB drift-corrected device time, and leaves stale snapshots present with `is_stale=True` instead of blocking dispatch.
 
 ### §4.E.2 — Physiology Persistence
-Module E persists per-segment physiological snapshots from `_physiological_context` into PostgreSQL table `physiology_log` with `session_id`, `segment_id`, `subject_role`, `rmssd_ms`, `heart_rate_bpm`, freshness metadata, provider, and source timestamp. The table is keyed for segment-level replay and analytics joins.
+Module E persists per-segment derived physiological snapshots from `_physiological_context` into PostgreSQL table `physiology_log` with `session_id`, `segment_id`, `subject_role`, `rmssd_ms`, `heart_rate_bpm`, freshness metadata, provider, `source_kind`, `derivation_method`, `window_s`, `validity_ratio`, `is_valid`, and source timestamp. Persistence remains scalar-only for replay and analytics joins.
 
 ### §7C — Co-Modulation Analytics
-Module E computes the Co-Modulation Index as a rolling Pearson correlation over aligned 5-minute RMSSD bins for `streamer` and `operator`, persists the result to `comodulation_log`, and returns null when insufficient aligned non-stale pairs exist for the window.
+Module E computes the Co-Modulation Index as a rolling Pearson correlation over 1-minute resampled, time-aligned valid RMSSD snapshots for `streamer` and `operator` across the trailing 10-minute window, persists the result to `comodulation_log`, and returns null when fewer than four aligned non-stale pairs exist or either aligned series has zero variance.
 
 ### SPEC-AMEND-001: Worker GPU Architecture Downgrade
 

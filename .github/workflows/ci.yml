@@ -20,6 +20,7 @@ jobs:
           pip install --upgrade pip
           pip install ruff mypy
           pip install -r requirements/base.txt
+          pip install -r requirements/api.txt
           pip install pydantic numpy
           # PySide6 ships its own type stubs. The operator console
           # (services/operator_console/) subclasses QObject/QWidget/
@@ -48,6 +49,7 @@ jobs:
           cache: "pip"
           cache-dependency-path: |
             requirements/base.txt
+            requirements/api.txt
             requirements/worker.txt
       - name: Install Qt runtime libraries
         # PySide6's QtWidgets dynamically loads libEGL.so.1 / libGL.so.1
@@ -64,6 +66,7 @@ jobs:
         run: |
           pip install --upgrade pip
           pip install -r requirements/worker.txt
+          pip install -r requirements/api.txt
           pip install pytest pytest-cov
           # The operator-console tests import PySide6.QtWidgets via their
           # session-scoped qt_app fixture. PySide6 is not in

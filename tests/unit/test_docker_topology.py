@@ -13,13 +13,20 @@ Validates docker-compose.yml and Dockerfiles against:
 
 from __future__ import annotations
 
+import re
+import shutil
+import subprocess
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 import pytest
 
-COMPOSE_PATH = Path("docker-compose.yml")
-WORKER_DOCKERFILE_PATH = Path("services/worker/Dockerfile")
-API_DOCKERFILE_PATH = Path("services/api/Dockerfile")
+REPO_ROOT = Path(__file__).resolve().parents[2]
+COMPOSE_PATH = REPO_ROOT / "docker-compose.yml"
+ENV_EXAMPLE_PATH = REPO_ROOT / ".env.example"
+WORKER_DOCKERFILE_PATH = REPO_ROOT / "services/worker/Dockerfile"
+API_DOCKERFILE_PATH = REPO_ROOT / "services/api/Dockerfile"
+_COMPOSE_INTERPOLATION_RE = re.compile(r"\$\{([A-Z0-9_]+)(?::-?[^}]*)?}")
 
 
 @pytest.fixture()
@@ -198,3 +205,55 @@ class TestApiDockerfile:
         """Root __init__.py files copied for Python package resolution."""
         assert "packages/__init__.py" in api_dockerfile
         assert "services/__init__.py" in api_dockerfile
+
+
+class TestComposeEnvExample:
+    """Regression guards for `.env.example` compatibility with compose parsing."""
+
+    def test_env_example_covers_compose_interpolation_vars(self, compose_content: str) -> None:
+        """Every `${VAR}` used by compose interpolation is defined in `.env.example`."""
+        example_vars = {
+            line.split("=", 1)[0].strip()
+            for line in ENV_EXAMPLE_PATH.read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.lstrip().startswith("#") and "=" in line
+        }
+        compose_vars = set(_COMPOSE_INTERPOLATION_RE.findall(compose_content))
+
+        assert compose_vars <= example_vars
+
+    def test_compose_config_quiet_accepts_env_example(self) -> None:
+        """`docker compose config --quiet` succeeds when `.env.example` seeds `.env`."""
+        docker = shutil.which("docker")
+        if docker is None:
+            pytest.skip("docker CLI is not available in this test environment")
+
+        with TemporaryDirectory() as tmpdir:
+            temp_root = Path(tmpdir)
+            (temp_root / "docker-compose.yml").write_text(
+                COMPOSE_PATH.read_text(encoding="utf-8"),
+                encoding="utf-8",
+            )
+            env_example = ENV_EXAMPLE_PATH.read_text(encoding="utf-8")
+            (temp_root / ".env.example").write_text(env_example, encoding="utf-8")
+            (temp_root / ".env").write_text(env_example, encoding="utf-8")
+
+            for dockerfile in (
+                "services/stream_ingest/Dockerfile",
+                "services/worker/Dockerfile",
+                "services/api/Dockerfile",
+            ):
+                dockerfile_path = temp_root / dockerfile
+                dockerfile_path.parent.mkdir(parents=True, exist_ok=True)
+                dockerfile_path.write_text("FROM scratch\n", encoding="utf-8")
+
+            result = subprocess.run(
+                [docker, "compose", "config", "--quiet"],
+                cwd=temp_root,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+
+        assert result.returncode == 0, (
+            result.stderr.strip() or result.stdout.strip() or "docker compose config --quiet failed"
+        )

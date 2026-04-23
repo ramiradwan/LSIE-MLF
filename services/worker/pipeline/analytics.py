@@ -54,24 +54,26 @@ _INSERT_EVALUATION_SQL: str = """
 _INSERT_PHYSIOLOGY_SQL: str = """
     INSERT INTO physiology_log
         (session_id, segment_id, subject_role, rmssd_ms, heart_rate_bpm,
-         freshness_s, is_stale, provider, source_timestamp_utc)
+         freshness_s, is_stale, provider, source_kind, derivation_method,
+         window_s, validity_ratio, is_valid, source_timestamp_utc)
     VALUES
         (%(session_id)s, %(segment_id)s, %(subject_role)s, %(rmssd_ms)s,
          %(heart_rate_bpm)s, %(freshness_s)s, %(is_stale)s, %(provider)s,
-         %(source_timestamp_utc)s)
+         %(source_kind)s, %(derivation_method)s, %(window_s)s,
+         %(validity_ratio)s, %(is_valid)s, %(source_timestamp_utc)s)
 """
 
 # §7C — Parameterized INSERT for rolling co-modulation analytics
 _INSERT_COMODULATION_SQL: str = """
     INSERT INTO comodulation_log
-        (session_id, window_end_utc, window_minutes, co_modulation_index,
-         n_paired_observations, coverage_ratio, streamer_rmssd_mean,
-         operator_rmssd_mean)
+        (session_id, window_start_utc, window_end_utc, window_minutes,
+         co_modulation_index, n_paired_observations, coverage_ratio,
+         streamer_rmssd_mean, operator_rmssd_mean)
     VALUES
-        (%(session_id)s, %(window_end_utc)s, %(window_minutes)s,
-         %(co_modulation_index)s, %(n_paired_observations)s,
-         %(coverage_ratio)s, %(streamer_rmssd_mean)s,
-         %(operator_rmssd_mean)s)
+        (%(session_id)s, %(window_start_utc)s, %(window_end_utc)s,
+         %(window_minutes)s, %(co_modulation_index)s,
+         %(n_paired_observations)s, %(coverage_ratio)s,
+         %(streamer_rmssd_mean)s, %(operator_rmssd_mean)s)
 """
 
 # §7C — Minimum paired observations for valid co-modulation output
@@ -80,13 +82,18 @@ MIN_COMOD_PAIRS: int = 4
 # §7C — Rolling co-modulation analysis window
 COMOD_WINDOW_MINUTES: int = 10
 
+# §7C.2 — Resampling rule for co-modulation alignment
+COMOD_RESAMPLE_RULE: str = "1min"
+
 _QUERY_RECENT_PHYSIOLOGY_SQL: str = """
     SELECT subject_role, rmssd_ms, source_timestamp_utc
     FROM physiology_log
     WHERE session_id = %(session_id)s
-      AND source_timestamp_utc >= %(window_start_utc)s
-      AND is_stale = FALSE
+      AND source_timestamp_utc > %(window_start_utc)s
+      AND source_timestamp_utc <= %(window_end_utc)s
       AND rmssd_ms IS NOT NULL
+      AND is_valid = TRUE
+      AND is_stale = FALSE
     ORDER BY source_timestamp_utc ASC
 """
 
@@ -376,6 +383,14 @@ class MetricsStore:
         snapshot: dict[str, Any],
     ) -> None:
         """§4.E.2 — Persist a single physiological snapshot to physiology_log."""
+        source_kind = snapshot.get("source_kind")
+        derivation_method = snapshot.get("derivation_method")
+        window_s = snapshot.get("window_s")
+        if window_s is None:
+            window_s = snapshot.get("window_length_s")
+        validity_ratio = snapshot.get("validity_ratio")
+        is_valid = snapshot.get("is_valid")
+
         psycopg2 = _import_psycopg2()
         conn = self._get_conn()
         try:
@@ -392,6 +407,11 @@ class MetricsStore:
                         "freshness_s": snapshot["freshness_s"],
                         "is_stale": snapshot["is_stale"],
                         "provider": snapshot["provider"],
+                        "source_kind": source_kind,
+                        "derivation_method": derivation_method,
+                        "window_s": window_s,
+                        "validity_ratio": validity_ratio,
+                        "is_valid": is_valid,
                         "source_timestamp_utc": snapshot.get("source_timestamp_utc"),
                     },
                 )
@@ -402,13 +422,13 @@ class MetricsStore:
         finally:
             self._put_conn(conn)
 
-    def compute_comodulation(self, session_id: str) -> dict[str, Any] | None:
+    def compute_comodulation(self, session_id: str) -> dict[str, Any]:
         """
         §4.E.2 / §7C — Compute and persist rolling co-modulation analytics.
 
-        Uses 5-minute mean resampling for each subject role, then performs
-        an inner join on aligned bin timestamps before computing Pearson r.
-        Returns None when fewer than MIN_COMOD_PAIRS aligned bins exist.
+        Uses 1-minute mean resampling for each subject role over the rolling
+        10-minute window, persists every non-error invocation, and returns the
+        persisted result payload even when Pearson correlation cannot be emitted.
         """
         import pandas as pd
         from scipy.stats import pearsonr
@@ -423,97 +443,117 @@ class MetricsStore:
                     {
                         "session_id": session_id,
                         "window_start_utc": window_start_utc,
+                        "window_end_utc": window_end_utc,
                     },
                 )
                 rows = cur.fetchall()
 
-            if not rows:
-                conn.rollback()
+            result: dict[str, Any] = {
+                "session_id": session_id,
+                "window_start_utc": window_start_utc,
+                "window_end_utc": window_end_utc,
+                "window_minutes": COMOD_WINDOW_MINUTES,
+                "co_modulation_index": None,
+                "n_paired_observations": 0,
+                "coverage_ratio": 0.0,
+                "streamer_rmssd_mean": None,
+                "operator_rmssd_mean": None,
+            }
+
+            empty_series = pd.Series(dtype="float64")
+            streamer_1m = empty_series
+            operator_1m = empty_series
+            aligned = pd.DataFrame(columns=["streamer", "operator"])
+
+            if rows:
+                df = pd.DataFrame(
+                    rows,
+                    columns=["subject_role", "rmssd_ms", "source_timestamp_utc"],
+                )
+                df["source_timestamp_utc"] = pd.to_datetime(
+                    df["source_timestamp_utc"],
+                    utc=True,
+                    errors="coerce",
+                )
+                df["rmssd_ms"] = pd.to_numeric(df["rmssd_ms"], errors="coerce")
+                df = df.dropna(subset=["subject_role", "rmssd_ms", "source_timestamp_utc"])
+                df = df[df["subject_role"].isin(["streamer", "operator"])]
+                df = df[
+                    (df["source_timestamp_utc"] > pd.Timestamp(window_start_utc))
+                    & (df["source_timestamp_utc"] <= pd.Timestamp(window_end_utc))
+                ]
+
+                if not df.empty:
+                    streamer = (
+                        df[df["subject_role"] == "streamer"]
+                        .set_index("source_timestamp_utc")["rmssd_ms"]
+                        .sort_index()
+                    )
+                    operator = (
+                        df[df["subject_role"] == "operator"]
+                        .set_index("source_timestamp_utc")["rmssd_ms"]
+                        .sort_index()
+                    )
+
+                    streamer_1m = streamer.resample(COMOD_RESAMPLE_RULE).mean().dropna()
+                    operator_1m = operator.resample(COMOD_RESAMPLE_RULE).mean().dropna()
+                    aligned = pd.concat(
+                        [
+                            streamer_1m.rename("streamer"),
+                            operator_1m.rename("operator"),
+                        ],
+                        axis=1,
+                        join="inner",
+                    ).dropna()
+                else:
+                    logger.info(
+                        "Co-modulation unavailable: session=%s has no parseable "
+                        "eligible RMSSD samples",
+                        session_id,
+                    )
+            else:
                 logger.info(
                     "Co-modulation unavailable: session=%s has no eligible "
                     "non-stale physiology rows",
                     session_id,
                 )
-                return None
 
-            df = pd.DataFrame(rows, columns=["subject_role", "rmssd_ms", "source_timestamp_utc"])
-            df["source_timestamp_utc"] = pd.to_datetime(
-                df["source_timestamp_utc"],
-                utc=True,
-                errors="coerce",
+            n_pairs = int(len(aligned))
+            coverage_ratio = float(n_pairs / max(len(streamer_1m), len(operator_1m), 1))
+            result["n_paired_observations"] = n_pairs
+            result["coverage_ratio"] = coverage_ratio
+            result["streamer_rmssd_mean"] = (
+                float(streamer_1m.mean()) if not streamer_1m.empty else None
             )
-            df["rmssd_ms"] = pd.to_numeric(df["rmssd_ms"], errors="coerce")
-            df = df.dropna(subset=["subject_role", "rmssd_ms", "source_timestamp_utc"])
-
-            if df.empty:
-                conn.rollback()
-                logger.info(
-                    "Co-modulation unavailable: session=%s has no parseable RMSSD samples",
-                    session_id,
-                )
-                return None
-
-            streamer = (
-                df[df["subject_role"] == "streamer"]
-                .set_index("source_timestamp_utc")["rmssd_ms"]
-                .sort_index()
-            )
-            operator = (
-                df[df["subject_role"] == "operator"]
-                .set_index("source_timestamp_utc")["rmssd_ms"]
-                .sort_index()
+            result["operator_rmssd_mean"] = (
+                float(operator_1m.mean()) if not operator_1m.empty else None
             )
 
-            if streamer.empty or operator.empty:
-                conn.rollback()
+            if n_pairs >= MIN_COMOD_PAIRS:
+                streamer_variance = float(aligned["streamer"].var(ddof=0))
+                operator_variance = float(aligned["operator"].var(ddof=0))
+                if streamer_variance > 0.0 and operator_variance > 0.0:
+                    r_value, _ = pearsonr(aligned["streamer"], aligned["operator"])
+                    if r_value == r_value:
+                        result["co_modulation_index"] = float(r_value)
+                    else:
+                        logger.info(
+                            "Co-modulation unavailable: session=%s Pearson "
+                            "correlation is undefined",
+                            session_id,
+                        )
+                else:
+                    logger.info(
+                        "Co-modulation unavailable: session=%s aligned series have zero variance",
+                        session_id,
+                    )
+            else:
                 logger.info(
-                    "Co-modulation unavailable: session=%s requires streamer and "
-                    "operator RMSSD series",
-                    session_id,
-                )
-                return None
-
-            streamer_5m = streamer.resample("5min").mean().dropna()
-            operator_5m = operator.resample("5min").mean().dropna()
-            aligned = pd.concat(
-                [streamer_5m.rename("streamer"), operator_5m.rename("operator")],
-                axis=1,
-                join="inner",
-            ).dropna()
-
-            n_pairs = len(aligned)
-            coverage_ratio = n_pairs / max(len(streamer_5m), len(operator_5m), 1)
-
-            if n_pairs < MIN_COMOD_PAIRS:
-                conn.rollback()
-                logger.info(
-                    "Co-modulation unavailable: session=%s aligned_bins=%d minimum=%d",
+                    "Co-modulation unavailable: session=%s aligned_observations=%d minimum=%d",
                     session_id,
                     n_pairs,
                     MIN_COMOD_PAIRS,
                 )
-                return None
-
-            r_value, _ = pearsonr(aligned["streamer"], aligned["operator"])
-            r_value = float(r_value)
-            if r_value != r_value:
-                conn.rollback()
-                logger.info(
-                    "Co-modulation unavailable: session=%s Pearson correlation is undefined",
-                    session_id,
-                )
-                return None
-
-            result: dict[str, Any] = {
-                "session_id": session_id,
-                "window_end_utc": window_end_utc,
-                "window_minutes": COMOD_WINDOW_MINUTES,
-                "co_modulation_index": r_value,
-                "n_paired_observations": n_pairs,
-                "coverage_ratio": round(coverage_ratio, 3),
-                "streamer_rmssd_mean": float(aligned["streamer"].mean()),
-                "operator_rmssd_mean": float(aligned["operator"].mean()),
-            }
 
             with conn.cursor() as cur:
                 cur.execute(_INSERT_COMODULATION_SQL, result)

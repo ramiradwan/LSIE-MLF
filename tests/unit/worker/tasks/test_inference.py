@@ -68,6 +68,7 @@ class TestProcessSegment:
         mock_persist.delay.assert_called_once()
         call_args = mock_persist.delay.call_args[0][0]
         assert call_args["session_id"] == "550e8400-e29b-41d4-a716-446655440000"
+        assert "_physiological_context" not in call_args
 
     def test_no_audio_skips_transcription(self) -> None:
         """No transcription when audio_data is None."""
@@ -133,6 +134,35 @@ class TestProcessSegment:
         assert result["pitch_f0"] is None
         assert result["jitter"] is None
         assert result["shimmer"] is None
+
+    def test_forwards_physiological_context_unchanged_when_present(self) -> None:
+        """§4.D — Enriched physiological context is forwarded unchanged to Module E."""
+        mod = _get_inference_module()
+        mock_persist = MagicMock()
+        physio_context = {
+            "streamer": {
+                "rmssd_ms": None,
+                "heart_rate_bpm": 72,
+                "source_timestamp_utc": "2026-03-13T11:59:30+00:00",
+                "freshness_s": 30.0,
+                "is_stale": False,
+                "provider": "oura",
+                "validity_ratio": 0.92,
+                "source_kind": "ibi",
+                "derivation_method": "server",
+            },
+            "operator": None,
+        }
+
+        with patch.object(mod, "persist_metrics", mock_persist):
+            result = mod.process_segment(
+                MagicMock(),
+                self._make_payload(_audio_data=None, _physiological_context=physio_context),
+            )
+
+        assert result["_physiological_context"] is physio_context
+        dispatched_metrics = mock_persist.delay.call_args.args[0]
+        assert dispatched_metrics["_physiological_context"] is physio_context
 
 
 class TestPersistMetrics:

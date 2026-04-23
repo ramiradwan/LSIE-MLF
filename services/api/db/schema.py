@@ -107,6 +107,9 @@ CREATE TABLE IF NOT EXISTS context (
 );
 
 -- §4.E.2 / §7C — Per-segment physiological snapshot log
+-- SPEC-AMEND-009 keeps snapshot metadata additive for existing deployments:
+-- source_kind, derivation_method, window_s, validity_ratio, and is_valid
+-- are declared on CREATE TABLE and backfilled idempotently below.
 CREATE TABLE IF NOT EXISTS physiology_log (
     id                      BIGSERIAL PRIMARY KEY,
     session_id              UUID NOT NULL REFERENCES sessions(session_id),
@@ -117,14 +120,36 @@ CREATE TABLE IF NOT EXISTS physiology_log (
     freshness_s             DOUBLE PRECISION NOT NULL,
     is_stale                BOOLEAN NOT NULL,
     provider                TEXT NOT NULL,
+    source_kind             TEXT CHECK (source_kind IN ('ibi','session')),
+    derivation_method       TEXT,
+    window_s                INTEGER CHECK (window_s > 0),
+    validity_ratio          DOUBLE PRECISION CHECK (validity_ratio BETWEEN 0.0 AND 1.0),
+    is_valid                BOOLEAN,
     source_timestamp_utc    TIMESTAMPTZ NOT NULL,
     created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+ALTER TABLE physiology_log
+    ADD COLUMN IF NOT EXISTS source_kind TEXT CHECK (source_kind IN ('ibi','session'));
+
+ALTER TABLE physiology_log
+    ADD COLUMN IF NOT EXISTS derivation_method TEXT;
+
+ALTER TABLE physiology_log
+    ADD COLUMN IF NOT EXISTS window_s INTEGER CHECK (window_s > 0);
+
+ALTER TABLE physiology_log
+    ADD COLUMN IF NOT EXISTS validity_ratio DOUBLE PRECISION
+    CHECK (validity_ratio BETWEEN 0.0 AND 1.0);
+
+ALTER TABLE physiology_log
+    ADD COLUMN IF NOT EXISTS is_valid BOOLEAN;
 
 -- §7C — Co-modulation analytics log
 CREATE TABLE IF NOT EXISTS comodulation_log (
     id                      BIGSERIAL PRIMARY KEY,
     session_id              UUID NOT NULL REFERENCES sessions(session_id),
+    window_start_utc        TIMESTAMPTZ NOT NULL,
     window_end_utc          TIMESTAMPTZ NOT NULL,
     window_minutes          INTEGER NOT NULL,
     co_modulation_index     DOUBLE PRECISION,

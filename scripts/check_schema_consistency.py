@@ -185,10 +185,10 @@ DEFAULT_REGISTRY: tuple[EntityMapping, ...] = (
         ignore_fields=_AUTO_MANAGED_COLUMNS,
     ),
     EntityMapping(
-        name="PhysiologicalSampleEvent",
-        pydantic_class="packages.schemas.physiology:PhysiologicalSampleEvent",
+        name="PhysiologicalChunkEvent",
+        pydantic_class="packages.schemas.physiology:PhysiologicalChunkEvent",
         sql_table=None,  # transit-only, never persisted (§5)
-        json_schema_key="PhysiologicalSampleEvent",
+        json_schema_key="PhysiologicalChunkEvent",
         ignore_fields=frozenset(),
     ),
     EntityMapping(

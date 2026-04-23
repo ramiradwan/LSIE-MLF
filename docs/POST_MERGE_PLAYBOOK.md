@@ -13,7 +13,7 @@ The playbook is operator-facing: each chore should be runnable from a clean chec
 
 ### 1. Canonical Terminology Sweep
 
-**Purpose.** Enforce §0.3 of the spec: only the canonical identifiers listed in `CLAUDE.md` (IPC Pipe, Ephemeral Vault, InferenceHandoffPayload, ML Worker, API Server, Message Broker, Persistent Store, Capture Container, Physiological Sample Event, Physiological Context, Physiological State Buffer, subject_role, Co-Modulation Index) may appear in code and docstrings. Retired synonyms (Celery node, GPU worker, FIFO, named pipe, 24-hour vault, handoff schema, FastAPI server, etc.) erode shared vocabulary and confuse the ADO agent's refactor planner.
+**Purpose.** Enforce §0.3 of the spec: only the canonical identifiers listed in `CLAUDE.md` (IPC Pipe, Ephemeral Vault, InferenceHandoffPayload, ML Worker, API Server, Message Broker, Persistent Store, Capture Container, Physiological Chunk Event, Physiological Context, Physiological State Buffer, subject_role, Co-Modulation Index) may appear in code and docstrings. Retired synonyms (Celery node, GPU worker, FIFO, named pipe, 24-hour vault, handoff schema, FastAPI server, etc.) erode shared vocabulary and confuse the ADO agent's refactor planner.
 
 **Inputs.** The retired-synonym grep from `CLAUDE.md` and the longer extended list in `.claude/commands/audit.md` (item 15), run against `services/`, `packages/`, and `docker-compose.yml`.
 

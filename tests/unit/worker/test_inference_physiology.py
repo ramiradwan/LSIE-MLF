@@ -22,10 +22,21 @@ def _get_inference_module() -> Any:
 
 
 def test_persist_metrics_logs_physio_availability(caplog: Any) -> None:
-    """§4.D / §12 — persist_metrics logs physio_available and role availability."""
+    """§4.D / §12 — persist_metrics logs physio availability for enriched snapshots."""
     mod = _get_inference_module()
     mock_store = MagicMock()
-    streamer_snapshot = {"rmssd_ms": 41.2, "heart_rate_bpm": 72.0}
+    streamer_snapshot = {
+        "rmssd_ms": None,
+        "heart_rate_bpm": 72,
+        "source_timestamp_utc": "2026-03-13T11:59:30+00:00",
+        "freshness_s": 30.0,
+        "is_stale": False,
+        "provider": "oura",
+        "validity_ratio": 0.92,
+        "source_kind": "ibi",
+        "derivation_method": "server",
+        "window_length_s": 300,
+    }
     metrics = {
         "session_id": "test-session",
         "segment_id": "seg-001",
@@ -59,12 +70,13 @@ def test_persist_metrics_logs_physio_availability(caplog: Any) -> None:
 
 
 def test_persist_metrics_without_physio_context_does_not_error(caplog: Any) -> None:
-    """persist_metrics completes normally when _physiological_context is absent."""
+    """persist_metrics omits explicit null physiology and completes normally."""
     mod = _get_inference_module()
     mock_store = MagicMock()
     metrics = {
         "session_id": "test-session",
         "segment_id": "seg-002",
+        "_physiological_context": None,
     }
 
     with (
@@ -76,15 +88,17 @@ def test_persist_metrics_without_physio_context_does_not_error(caplog: Any) -> N
     assert not any(
         "Physiological context available:" in record.message for record in caplog.records
     )
-    mock_store.insert_metrics.assert_called_once_with(metrics)
+    persisted_metrics = mock_store.insert_metrics.call_args.args[0]
+    assert "_physiological_context" not in persisted_metrics
     mock_store.persist_physiology_snapshot.assert_not_called()
     mock_store.close.assert_called_once()
 
 
 def test_persist_metrics_keeps_reward_pipeline_unchanged() -> None:
-    """§4.D / §7B — Physiological context preserves reward and TS update calls."""
+    """§4.D / §7B — Physiology changes do not alter reward or TS update inputs."""
     mod = _get_inference_module()
     mock_store = MagicMock()
+    mock_store.compute_comodulation.return_value = None
     mock_engine = MagicMock()
 
     from services.worker.pipeline.reward import RewardResult, TimestampedAU12
@@ -98,9 +112,11 @@ def test_persist_metrics_keeps_reward_pipeline_unchanged() -> None:
         baseline_b_neutral=0.1,
         au12_window_series=[0.2, 0.5],
     )
-    streamer_snapshot = {"rmssd_ms": 41.2}
-    operator_snapshot = {"rmssd_ms": 35.7}
-    metrics = {
+    expected_series = [
+        TimestampedAU12(timestamp_s=100.5, intensity=0.2),
+        TimestampedAU12(timestamp_s=101.0, intensity=0.5),
+    ]
+    base_metrics = {
         "session_id": "test-session",
         "segment_id": "seg-003",
         "timestamp_utc": "2026-03-13T12:00:00+00:00",
@@ -116,15 +132,40 @@ def test_persist_metrics_keeps_reward_pipeline_unchanged() -> None:
         ],
         "_stimulus_time": 100.0,
         "_x_max": 0.9,
+    }
+    streamer_snapshot = {
+        "rmssd_ms": None,
+        "heart_rate_bpm": 71,
+        "source_timestamp_utc": "2026-03-13T11:59:30+00:00",
+        "freshness_s": 30.0,
+        "is_stale": False,
+        "provider": "oura",
+        "validity_ratio": 0.92,
+    }
+    operator_snapshot = {
+        "rmssd_ms": 35.7,
+        "heart_rate_bpm": 69,
+        "source_timestamp_utc": "2026-03-13T11:59:32+00:00",
+        "freshness_s": 28.0,
+        "is_stale": False,
+        "provider": "oura",
+        "validity_ratio": 0.88,
+    }
+    metrics_without_physio = dict(base_metrics)
+    metrics_with_physio = {
+        **base_metrics,
         "_physiological_context": {
             "streamer": streamer_snapshot,
             "operator": operator_snapshot,
         },
     }
-    expected_series = [
-        TimestampedAU12(timestamp_s=100.5, intensity=0.2),
-        TimestampedAU12(timestamp_s=101.0, intensity=0.5),
-    ]
+    expected_reward_call = call(
+        au12_series=expected_series,
+        stimulus_time_s=100.0,
+        is_match=True,
+        confidence_score=0.8,
+        x_max=0.9,
+    )
 
     with (
         patch("services.worker.pipeline.analytics.MetricsStore", return_value=mock_store),
@@ -138,19 +179,24 @@ def test_persist_metrics_keeps_reward_pipeline_unchanged() -> None:
         ) as mock_compute_reward,
         patch.object(mod, "_log_encounter", MagicMock()),
     ):
-        mod.persist_metrics(MagicMock(), metrics)
+        mod.persist_metrics(MagicMock(), metrics_without_physio)
+        mod.persist_metrics(MagicMock(), metrics_with_physio)
 
-    mock_compute_reward.assert_called_once_with(
-        au12_series=expected_series,
-        stimulus_time_s=100.0,
-        is_match=True,
-        confidence_score=0.8,
-        x_max=0.9,
+    assert mock_compute_reward.call_args_list == [expected_reward_call, expected_reward_call]
+    assert mock_engine.update.call_args_list == [
+        call("exp-1", "arm-a", 0.75),
+        call("exp-1", "arm-a", 0.75),
+    ]
+    for reward_call in mock_compute_reward.call_args_list:
+        assert "_physiological_context" not in reward_call.kwargs
+        assert "rmssd_ms" not in reward_call.kwargs
+    persisted_without_physio = mock_store.insert_metrics.call_args_list[0].args[0]
+    persisted_with_physio = mock_store.insert_metrics.call_args_list[1].args[0]
+    assert "_physiological_context" not in persisted_without_physio
+    assert (
+        persisted_with_physio["_physiological_context"]
+        is metrics_with_physio["_physiological_context"]
     )
-    mock_engine.update.assert_called_once_with("exp-1", "arm-a", 0.75)
-    mock_store.insert_metrics.assert_called_once_with(metrics)
-    persisted_metrics = mock_store.insert_metrics.call_args.args[0]
-    assert persisted_metrics["_physiological_context"] is metrics["_physiological_context"]
     mock_store.persist_physiology_snapshot.assert_has_calls(
         [
             call(
@@ -169,4 +215,4 @@ def test_persist_metrics_keeps_reward_pipeline_unchanged() -> None:
         any_order=False,
     )
     assert mock_store.persist_physiology_snapshot.call_count == 2
-    mock_store.close.assert_called_once()
+    assert mock_store.close.call_count == 2

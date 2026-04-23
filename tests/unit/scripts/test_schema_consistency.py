@@ -480,6 +480,74 @@ class TestCheckConsistencyEndToEnd:
         assert "json_schema" in missing[0].detail
         assert "pydantic" in missing[0].detail
 
+    def test_repo_sql_surfaces_include_enriched_physiology_metadata(self) -> None:
+        repo_root = Path(__file__).resolve().parents[3]
+        sql_file_tables = parse_sql_tables(
+            (repo_root / "data" / "sql" / "03-physiology.sql").read_text(encoding="utf-8")
+        )
+
+        from services.api.db.schema import SCHEMA_SQL
+
+        sql_string_tables = parse_sql_tables(SCHEMA_SQL)
+
+        expected_fields = {
+            "source_kind": FieldSpec("source_kind", "string", nullable=True),
+            "derivation_method": FieldSpec("derivation_method", "string", nullable=True),
+            "window_s": FieldSpec("window_s", "integer", nullable=True),
+            "validity_ratio": FieldSpec("validity_ratio", "number", nullable=True),
+            "is_valid": FieldSpec("is_valid", "boolean", nullable=True),
+        }
+
+        for field_name, expected in expected_fields.items():
+            assert sql_file_tables["physiology_log"].fields[field_name] == expected
+            assert sql_string_tables["physiology_log"].fields[field_name] == expected
+
+        sql_file_entity = EntitySpec(
+            name="physiology_log",
+            fields={
+                field_name: sql_file_tables["physiology_log"].fields[field_name]
+                for field_name in expected_fields
+            },
+        )
+        sql_string_entity = EntitySpec(
+            name="physiology_log",
+            fields={
+                field_name: sql_string_tables["physiology_log"].fields[field_name]
+                for field_name in expected_fields
+            },
+        )
+
+        assert (
+            compare_entity(
+                "PhysiologicalSnapshot",
+                {
+                    "pydantic": None,
+                    "sql_file": sql_file_entity,
+                    "sql_string": sql_string_entity,
+                    "json_schema": None,
+                },
+                _TEST_REGISTRY[0].ignore_fields,
+            )
+            == []
+        )
+
+    def test_repo_schema_sql_contains_additive_physiology_migration_statements(self) -> None:
+        from services.api.db.schema import SCHEMA_SQL
+
+        expected_fragments = (
+            "ALTER TABLE physiology_log\n    ADD COLUMN IF NOT EXISTS source_kind TEXT",
+            "ALTER TABLE physiology_log\n    ADD COLUMN IF NOT EXISTS derivation_method TEXT",
+            "ALTER TABLE physiology_log\n    ADD COLUMN IF NOT EXISTS window_s INTEGER",
+            (
+                "ALTER TABLE physiology_log\n"
+                "    ADD COLUMN IF NOT EXISTS validity_ratio DOUBLE PRECISION"
+            ),
+            "ALTER TABLE physiology_log\n    ADD COLUMN IF NOT EXISTS is_valid BOOLEAN",
+        )
+
+        for fragment in expected_fragments:
+            assert fragment in SCHEMA_SQL
+
 
 # =====================================================================
 # Reporting & main()

@@ -22,6 +22,7 @@ import time
 import uuid
 from collections import deque
 from datetime import UTC, datetime
+from math import sqrt
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -61,6 +62,9 @@ FFMPEG_RESTART_DELAY: float = 1.0  # seconds
 
 # §4.C.4 — Physiological State Buffer configuration
 PHYSIO_QUEUE_KEY: str = "physio:events"
+PHYSIO_BUFFER_RETENTION_S: int = 900
+PHYSIO_DERIVE_WINDOW_S: int = 300
+PHYSIO_VALIDITY_MIN: float = 0.80
 PHYSIO_STALENESS_THRESHOLD_S: float = 600.0  # 10 minutes
 MAX_PHYSIO_DRAIN_PER_CYCLE: int = 100  # Bounded drain to prevent stall
 
@@ -233,7 +237,7 @@ class AudioResampler:
             except (subprocess.TimeoutExpired, OSError):
                 self._process.kill()
             finally:
-                self._process = None
+                self._process = None  # type: ignore[assignment]
             logger.info("FFmpeg resampler stopped")
 
 
@@ -296,10 +300,12 @@ class Orchestrator:
         # Set by record_stimulus_injection(). None until operator sends greeting.
         self._stimulus_time: float | None = None
 
-        # [v3.1] Physiological State Buffer — §4.C.4
-        # Keyed by subject_role ("streamer" | "operator").
-        # Updated by _drain_physio_events(), read by assemble_segment().
-        self._physio_state: dict[str, dict[str, Any]] = {}
+        # [v3.2] Physiological rolling buffers — §4.C.4.
+        # Keep time-ordered chunk events per subject_role for trailing-window derivation.
+        self._physio_buffer: dict[str, deque[dict[str, Any]]] = {
+            "streamer": deque(),
+            "operator": deque(),
+        }
 
         # [v3.1] Redis client for non-blocking physiological drains.
         # Client creation is best-effort; actual I/O happens on LPOP.
@@ -426,6 +432,115 @@ class Orchestrator:
             # the main loop; subsequent frames will retry.
             logger.debug("AU12 frame processing skipped: %s", e)
 
+    def _prune_physio_buffer(self, role: str, now_wall: float | None = None) -> None:
+        """Drop retained physiological chunks older than the retention horizon."""
+        buffer = self._physio_buffer[role]
+        if not buffer:
+            return
+
+        wall_now = time.time() if now_wall is None else now_wall
+        cutoff = wall_now - PHYSIO_BUFFER_RETENTION_S
+        while buffer and buffer[0]["window_end_ts"] < cutoff:
+            buffer.popleft()
+
+    def _derive_physio_snapshot(
+        self,
+        role: str,
+        now_wall: float | None = None,
+    ) -> dict[str, Any] | None:
+        """Derive a scalar physiological snapshot over the trailing derivation window."""
+        buffer = self._physio_buffer[role]
+        if not buffer:
+            return None
+
+        wall_now = time.time() if now_wall is None else now_wall
+        self._prune_physio_buffer(role, now_wall=wall_now)
+        if not buffer:
+            return None
+
+        window_start_ts = wall_now - PHYSIO_DERIVE_WINDOW_S
+        overlapping = [chunk for chunk in buffer if chunk["window_end_ts"] >= window_start_ts]
+        if not overlapping:
+            latest_chunk = buffer[-1]
+            freshness_s = max(0.0, wall_now - latest_chunk["window_end_ts"])
+            return {
+                "rmssd_ms": None,
+                "heart_rate_bpm": None,
+                "source_timestamp_utc": latest_chunk["window_end_utc"],
+                "freshness_s": round(freshness_s, 1),
+                "is_stale": freshness_s > PHYSIO_STALENESS_THRESHOLD_S,
+                "provider": latest_chunk["provider"],
+                "source_kind": latest_chunk["source_kind"],
+                "derivation_method": latest_chunk["payload_derivation_method"],
+                "window_s": PHYSIO_DERIVE_WINDOW_S,
+                "validity_ratio": 0.0,
+                "is_valid": False,
+            }
+
+        ibi_chunks = [chunk for chunk in overlapping if chunk["source_kind"] == "ibi"]
+        session_chunks = [chunk for chunk in overlapping if chunk["source_kind"] == "session"]
+        contributing = ibi_chunks or session_chunks
+        if not contributing:
+            return None
+
+        source_kind = "ibi" if ibi_chunks else "session"
+        latest_chunk = max(contributing, key=lambda chunk: chunk["window_end_ts"])
+        heart_rate_values = [
+            hr
+            for chunk in contributing
+            for hr in chunk["payload"].get("heart_rate_items_bpm") or []
+        ]
+        valid_total = sum(
+            int(chunk["payload"].get("valid_sample_count", 0)) for chunk in contributing
+        )
+        expected_total = sum(
+            int(chunk["payload"].get("expected_sample_count", 0)) for chunk in contributing
+        )
+        validity_ratio = valid_total / max(expected_total, 1)
+        is_valid = validity_ratio >= PHYSIO_VALIDITY_MIN
+
+        rmssd_ms: float | None = None
+        derivation_method = latest_chunk["payload_derivation_method"]
+        if source_kind == "ibi":
+            ibi_values = [
+                ibi for chunk in contributing for ibi in chunk["payload"].get("ibi_ms_items") or []
+            ]
+            if len(ibi_values) >= 2:
+                squared_diffs = [
+                    (ibi_values[index + 1] - ibi_values[index]) ** 2
+                    for index in range(len(ibi_values) - 1)
+                ]
+                rmssd_ms = round(sqrt(sum(squared_diffs) / len(squared_diffs)), 3)
+                derivation_method = "server"
+        else:
+            session_rmssd = [
+                value
+                for chunk in contributing
+                for value in chunk["payload"].get("rmssd_items_ms") or []
+            ]
+            if session_rmssd:
+                rmssd_ms = round(sum(session_rmssd) / len(session_rmssd), 3)
+
+        if not is_valid:
+            rmssd_ms = None
+
+        freshness_s = max(0.0, wall_now - latest_chunk["window_end_ts"])
+        return {
+            "rmssd_ms": rmssd_ms,
+            "heart_rate_bpm": round(sum(heart_rate_values) / len(heart_rate_values))
+            if heart_rate_values
+            else None,
+            "source_timestamp_utc": latest_chunk["window_end_utc"],
+            "freshness_s": round(freshness_s, 1),
+            "is_stale": freshness_s > PHYSIO_STALENESS_THRESHOLD_S,
+            "provider": latest_chunk["provider"],
+            "source_kind": source_kind,
+            "derivation_method": derivation_method,
+            "window_s": PHYSIO_DERIVE_WINDOW_S,
+            "validity_ratio": validity_ratio,
+            "is_valid": is_valid,
+        }
+
     def _drain_physio_events(self) -> None:
         """
         §4.C.4 — Drain pending physiological events from Redis.
@@ -434,14 +549,14 @@ class Orchestrator:
         uses LPOP (not BLPOP) and processes at most
         MAX_PHYSIO_DRAIN_PER_CYCLE events to avoid stalling dispatch.
 
-        Each valid event updates self._physio_state[subject_role] with
-        the latest measurement. Invalid or malformed events are logged
-        and discarded per §12.
+        Valid chunk events are appended to the per-role rolling buffer and
+        old retained chunks are pruned by retention horizon.
         """
         if self._redis is None:
             return
 
         drained = 0
+        wall_now = time.time()
         while drained < MAX_PHYSIO_DRAIN_PER_CYCLE:
             try:
                 raw = self._redis.lpop(PHYSIO_QUEUE_KEY)
@@ -454,20 +569,30 @@ class Orchestrator:
             drained += 1
 
             try:
-                from packages.schemas.physiology import PhysiologicalSampleEvent
+                from packages.schemas.physiology import PhysiologicalChunkEvent
 
-                event = PhysiologicalSampleEvent.model_validate_json(raw)
-                self._physio_state[event.subject_role] = {
-                    "rmssd_ms": event.payload.rmssd_ms,
-                    "heart_rate_bpm": event.payload.heart_rate_bpm,
-                    "source_timestamp_utc": event.source_timestamp_utc.isoformat(),
+                event = PhysiologicalChunkEvent.model_validate_json(raw)
+                chunk_record = {
                     "provider": event.provider,
+                    "subject_role": event.subject_role,
+                    "source_kind": event.source_kind,
+                    "window_start_utc": event.window_start_utc.isoformat(),
+                    "window_end_utc": event.window_end_utc.isoformat(),
+                    "window_start_ts": event.window_start_utc.timestamp(),
+                    "window_end_ts": event.window_end_utc.timestamp(),
+                    "payload_derivation_method": event.payload.derivation_method,
+                    "payload": event.payload.model_dump(mode="json"),
                 }
+                self._physio_buffer[event.subject_role].append(chunk_record)
+                self._prune_physio_buffer(event.subject_role, now_wall=wall_now)
             except Exception:
                 logger.warning("Malformed physiological event discarded", exc_info=True)
 
         if drained > 0:
             logger.debug("Drained %d physiological events from Redis", drained)
+
+        for role in ("streamer", "operator"):
+            self._prune_physio_buffer(role, now_wall=wall_now)
 
     def assemble_segment(
         self,
@@ -522,20 +647,14 @@ class Orchestrator:
             try:
                 frame = self.video_capture.get_latest_frame()
                 if frame is not None:
-                    # Convert to numpy array (same hasattr guard as _process_video_frame —
-                    # handles both PyAV VideoFrame and pre-converted ndarray from buffer)
                     frame_array = (
                         frame.to_ndarray(format="bgr24") if hasattr(frame, "to_ndarray") else frame
                     )
                     frame_data = frame_array.tobytes()
-                    # Feed the true frame dimensions into the strict schema field
-                    resolution = [frame_array.shape[1], frame_array.shape[0]]  # [width, height]
+                    resolution = [frame_array.shape[1], frame_array.shape[0]]
             except Exception:
-                # §12 Worker crash — frame extraction failure is non-fatal;
-                # segment dispatches with frame_data=None (audio-only).
                 logger.warning("Assemble segment frame extraction failed", exc_info=True)
 
-        # §6.1 — Construct and validate via Pydantic
         payload = InferenceHandoffPayload(
             session_id=uuid.UUID(self._session_id),
             timestamp_utc=timestamp,
@@ -547,63 +666,30 @@ class Orchestrator:
             segments=[segment_data],
         )
 
-        # Return as dict for serialization to Module D
         result: dict[str, Any] = payload.model_dump(mode="json")
         result["_audio_data"] = audio_data
         result["_segment_id"] = segment_id
         result["_frame_data"] = frame_data
 
-        # [Stage 2] §4.E.1 — Inject experiment arm for downstream evaluation
         result["_active_arm"] = self._active_arm
         result["_experiment_id"] = self._experiment_id
         result["_expected_greeting"] = self._expected_greeting
 
-        # [v3.0] Attach AU12 time series accumulated since last segment.
-        # The reward pipeline (reward.py) uses this to compute the P90
-        # within the stimulus-locked window [+0.5s, +5.0s].
-        # Drain the accumulator so each segment gets exactly its frames.
         result["_au12_series"] = list(self._au12_series)
         self._au12_series.clear()
 
-        # [v3.0] Attach stimulus injection timestamp for window alignment.
-        # None if operator hasn't injected the greeting yet — persist_metrics
-        # will skip the Thompson Sampling update for this segment.
         result["_stimulus_time"] = self._stimulus_time
 
-        # [v3.1] §4.C.4 — Attach physiological context if available.
-        # Freshness uses wall clock time, not DriftCorrector.
-        if self._physio_state:
-            now_wall = time.time()
-            context: dict[str, Any] = {}
-
-            for role in ("streamer", "operator"):
-                snapshot = self._physio_state.get(role)
-                if snapshot is None:
-                    context[role] = None
-                    continue
-
-                source_ts = datetime.fromisoformat(
-                    str(snapshot["source_timestamp_utc"]).replace("Z", "+00:00")
-                )
-                freshness_s = max(0.0, now_wall - source_ts.timestamp())
-                context[role] = {
-                    "rmssd_ms": snapshot["rmssd_ms"],
-                    "heart_rate_bpm": snapshot["heart_rate_bpm"],
-                    "source_timestamp_utc": snapshot["source_timestamp_utc"],
-                    "freshness_s": round(freshness_s, 1),
-                    "is_stale": freshness_s > PHYSIO_STALENESS_THRESHOLD_S,
-                    "provider": snapshot["provider"],
-                }
-
+        now_wall = time.time()
+        if any(self._physio_buffer[role] for role in ("streamer", "operator")):
+            context = {
+                "streamer": self._derive_physio_snapshot("streamer", now_wall=now_wall),
+                "operator": self._derive_physio_snapshot("operator", now_wall=now_wall),
+            }
             result["_physiological_context"] = context
 
-        # [v3.0] Per-subject maximum response capability (future calibration).
-        # Currently None; will be populated when explicit calibration gesture
-        # (e.g., "please smile broadly") is implemented in the operator UI.
         result["_x_max"] = None
 
-        # Gap 2 — Base64-encode binary fields for Celery JSON transport.
-        # Decoded in process_segment() via decode_bytes_fields().
         from services.worker.pipeline.serialization import encode_bytes_fields
 
         result = encode_bytes_fields(result, ["_audio_data", "_frame_data"])

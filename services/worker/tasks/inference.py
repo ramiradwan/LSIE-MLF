@@ -233,6 +233,12 @@ def process_segment(self: Task, payload: dict[str, Any]) -> dict[str, Any]:
         "shimmer": shimmer,
     }
 
+    physio_context: dict[str, Any] | None = payload.get("_physiological_context")
+    if physio_context is not None:
+        # Preserve the orchestrator-provided dict exactly as received, but
+        # keep the Task 4 omission rule when physiology is unavailable.
+        result["_physiological_context"] = physio_context
+
     # --- Gap 1 fix: Forward orchestrator experiment and telemetry fields ---
     # These underscore-prefixed fields are not part of the §2 step 6 spec payload
     # but are required by persist_metrics v3.0 for the Thompson Sampling reward
@@ -367,6 +373,10 @@ def persist_metrics(self: Task, metrics: dict[str, Any]) -> None:
             # injected dict exactly as received when handing the payload to
             # Module E persistence methods.
             persistable_metrics["_physiological_context"] = physio_context
+        else:
+            # Keep the optional handoff omitted when upstream sends no usable
+            # physiological context instead of forwarding an explicit null.
+            persistable_metrics.pop("_physiological_context", None)
 
         store.insert_metrics(persistable_metrics)
         logger.info(

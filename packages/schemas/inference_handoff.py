@@ -13,6 +13,12 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator
 
+from packages.schemas.physiology import PhysiologicalChunkEvent
+
+# §6 compatibility export: preserve the historical field name while carrying
+# the canonical PhysiologicalChunkEvent schema definition.
+physiological_sample_event_schema: dict[str, Any] = PhysiologicalChunkEvent.model_json_schema()
+
 
 class MediaSource(BaseModel):
     """Media source metadata attached to each InferenceHandoffPayload."""

@@ -1,21 +1,21 @@
 """
-Physiological Webhook Ingestion — §4.B.2, §2 (v3.1 API→Orchestrator transition)
+Physiological Webhook Ingress — §4.B.2, §2.8 (v3.2 notification-only ingress)
 
-FastAPI POST route for authenticated Oura Ring v2 webhook payloads.
-Normalizes incoming JSON into PhysiologicalSampleEvent and enqueues
-it to Redis for the Orchestrator Container to drain.
+FastAPI POST route for authenticated Oura Ring v2 webhook notifications.
+Authenticates incoming JSON, deduplicates deliveries, and enqueues minimal
+hydration metadata to Redis for a later provider-fetch stage.
 
 Design constraints:
   - Lives in services/api/routes/ (API Server container, python:3.11-slim)
   - MUST NOT import anything from packages/ml_core/ (§3.2 image separation)
   - Uses HMAC-SHA256 signature verification against OURA_WEBHOOK_SECRET
   - Idempotency via Redis SETNX with 1-hour TTL
-  - Enqueue via RPUSH to physio:events Redis list
+  - Enqueue via RPUSH to physio:hydrate Redis list
   - Returns 200 on success, 401 bad sig, 422 bad payload, 503 Redis failure
 
 Spec references:
   §4.B.2  — Physiological Ingestion Adapter
-  §2      — API Server → Orchestrator Container transition
+  §2.8    — API Server → Orchestrator Container transition
   §5      — Raw payloads are Transient Sensitive Data
   §12     — Failure matrix: invalid sig, duplicate, enqueue failure
 """
@@ -33,9 +33,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import APIRouter, Header, HTTPException, Query, Request
-from pydantic import ValidationError
 
-from packages.schemas.physiology import PhysiologicalPayload, PhysiologicalSampleEvent
 from services.api.db.connection import get_connection, put_connection
 
 logger = logging.getLogger(__name__)
@@ -49,8 +47,8 @@ OURA_WEBHOOK_SECRET: str = os.environ.get("OURA_WEBHOOK_SECRET", "")
 _IDEMPOTENCY_PREFIX = "physio:seen:"
 _IDEMPOTENCY_TTL_S = 3600  # 1 hour
 
-# Redis list key for inter-container transport.
-_PHYSIO_QUEUE_KEY = "physio:events"
+# Redis list key for hydration notifications.
+_PHYSIO_HYDRATE_QUEUE = "physio:hydrate"
 
 
 def _get_webhook_secret() -> str:
@@ -108,48 +106,6 @@ def _derive_event_uuid(raw: dict[str, Any], body: bytes) -> uuid.UUID:
     return uuid.uuid5(uuid.NAMESPACE_URL, f"oura:{digest}")
 
 
-def _normalize_event(raw: dict[str, Any], body: bytes) -> PhysiologicalSampleEvent:
-    """Normalize an Oura webhook payload into PhysiologicalSampleEvent."""
-    subject_role = raw.get("subject_role")
-    if subject_role not in ("streamer", "operator"):
-        raise HTTPException(
-            status_code=422,
-            detail=f"Invalid or missing subject_role: {subject_role}",
-        )
-
-    hrv_data = raw.get("data")
-    if not isinstance(hrv_data, dict):
-        raise HTTPException(status_code=422, detail="Payload parsing error: data must be an object")
-
-    source_ts_str = hrv_data.get("timestamp")
-    if source_ts_str is None:
-        raise HTTPException(status_code=422, detail="Missing timestamp in payload")
-
-    try:
-        source_ts = datetime.fromisoformat(str(source_ts_str).replace("Z", "+00:00"))
-        event = PhysiologicalSampleEvent(
-            unique_id=_derive_event_uuid(raw, body),
-            event_type="physiological_sample",
-            provider="oura",
-            subject_role=subject_role,
-            source_timestamp_utc=source_ts,
-            ingest_timestamp_utc=datetime.now(UTC),
-            payload=PhysiologicalPayload(
-                rmssd_ms=float(hrv_data["rmssd"]) if hrv_data.get("rmssd") is not None else None,
-                heart_rate_bpm=(
-                    int(hrv_data["heart_rate"]) if hrv_data.get("heart_rate") is not None else None
-                ),
-                sample_window_s=300,
-            ),
-        )
-    except HTTPException:
-        raise
-    except (TypeError, ValueError, ValidationError) as exc:
-        raise HTTPException(status_code=422, detail=f"Payload parsing error: {exc}") from exc
-
-    return event
-
-
 @router.post("/ingest/oura/webhook")
 async def oura_webhook(
     request: Request,
@@ -157,9 +113,8 @@ async def oura_webhook(
 ) -> dict[str, str]:
     """§4.B.2 — Oura Ring v2 webhook receiver.
 
-    Accepts physiological telemetry, verifies authenticity, normalizes it
-    into PhysiologicalSampleEvent, and enqueues it to Redis for the
-    Orchestrator Container.
+    Accepts change notifications, verifies authenticity, validates the minimal
+    routing metadata, and enqueues hydration work for downstream processing.
 
     §12 failure matrix:
       - Invalid signature → 401
@@ -181,18 +136,50 @@ async def oura_webhook(
     if not isinstance(raw, dict):
         raise HTTPException(status_code=422, detail="Malformed JSON")
 
-    event = _normalize_event(raw, body)
-    idem_key = f"{_IDEMPOTENCY_PREFIX}{event.unique_id}"
+    subject_role = raw.get("subject_role")
+    if subject_role not in ("streamer", "operator"):
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid or missing subject_role: {subject_role}",
+        )
+
+    event_type = raw.get("event_type")
+    if not isinstance(event_type, str) or not event_type.strip():
+        raise HTTPException(status_code=422, detail="Invalid or missing event_type")
+
+    data_type = raw.get("data_type")
+    if not isinstance(data_type, str) or not data_type.strip():
+        raise HTTPException(status_code=422, detail="Invalid or missing data_type")
+
+    start_datetime = raw.get("start_datetime")
+    if not isinstance(start_datetime, str) or not start_datetime.strip():
+        raise HTTPException(status_code=422, detail="Invalid or missing start_datetime")
+
+    end_datetime = raw.get("end_datetime")
+    if not isinstance(end_datetime, str) or not end_datetime.strip():
+        raise HTTPException(status_code=422, detail="Invalid or missing end_datetime")
+
+    event_uuid = _derive_event_uuid(raw, body)
+    hydration_payload = {
+        "unique_id": str(event_uuid),
+        "subject_role": subject_role,
+        "event_type": event_type,
+        "data_type": data_type,
+        "start_datetime": start_datetime,
+        "end_datetime": end_datetime,
+        "notification_received_utc": datetime.now(UTC).isoformat(),
+    }
+    idem_key = f"{_IDEMPOTENCY_PREFIX}{event_uuid}"
 
     redis_client = None
     try:
         redis_client = _get_redis()
         if not redis_client.set(idem_key, "1", nx=True, ex=_IDEMPOTENCY_TTL_S):
-            logger.info("Duplicate physiological webhook: %s", event.unique_id)
-            return {"status": "duplicate", "event_id": str(event.unique_id)}
+            logger.info("Duplicate physiological webhook: event_id=%s", event_uuid)
+            return {"status": "duplicate", "event_id": str(event_uuid)}
 
         try:
-            redis_client.rpush(_PHYSIO_QUEUE_KEY, event.model_dump_json())
+            redis_client.rpush(_PHYSIO_HYDRATE_QUEUE, json.dumps(hydration_payload))
         except Exception:
             with suppress(Exception):
                 redis_client.delete(idem_key)
@@ -201,9 +188,9 @@ async def oura_webhook(
         raise
     except Exception as exc:
         logger.error(
-            "Redis enqueue failed for physiological event: subject=%s event_id=%s",
-            event.subject_role,
-            event.unique_id,
+            "Redis enqueue failed for physiological hydration notification: subject=%s event_id=%s",
+            subject_role,
+            event_uuid,
             exc_info=True,
         )
         raise HTTPException(status_code=503, detail="Service temporarily unavailable") from exc
@@ -213,12 +200,11 @@ async def oura_webhook(
                 redis_client.close()
 
     logger.info(
-        "Physiological event enqueued: subject=%s rmssd=%s hr=%s",
-        event.subject_role,
-        event.payload.rmssd_ms,
-        event.payload.heart_rate_bpm,
+        "Physiological hydration notification enqueued: subject=%s event_id=%s",
+        subject_role,
+        event_uuid,
     )
-    return {"status": "accepted", "event_id": str(event.unique_id)}
+    return {"status": "accepted", "event_id": str(event_uuid)}
 
 
 # §4.E.2 / §7C — Per-segment physiological snapshot readback (latest per subject_role).
