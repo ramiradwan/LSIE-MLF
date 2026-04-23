@@ -32,6 +32,7 @@ from uuid import UUID, uuid4
 from PySide6.QtCore import Slot
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
+    QApplication,
     QButtonGroup,
     QFrame,
     QHBoxLayout,
@@ -427,12 +428,23 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802 — Qt override
-        """Stop polling and join worker threads before letting Qt close.
+        """Hide immediately, then stop polling and join worker threads.
 
-        `coordinator.stop()` quits every polling thread and waits up to
-        2s for each; anything beyond that is a bug that would have leaked
-        a thread anyway, so we accept the close after it returns.
+        Hiding before `coordinator.stop()` makes the X button feel
+        instant: the operator sees the window disappear right away
+        while the orphaned polling threads drain in the background.
+        `processEvents()` forces the native hide to flush before we
+        enter the blocking drain — otherwise the window can appear
+        to freeze on screen for the full shutdown window. Anything
+        still running past `_drain_orphan_jobs`'s short wait is
+        force-terminated; the process is exiting and we'd rather
+        ship the operator a snappy close than wait out a 2-3s
+        urlopen on a refused TCP connection.
         """
+        self.hide()
+        app = QApplication.instance()
+        if app is not None:
+            app.processEvents()
         self._coordinator.stop()
         # Legacy scaffold pages exposed `shutdown()` — still call it on
         # any current page that implements it (belt and braces for

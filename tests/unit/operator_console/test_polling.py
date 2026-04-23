@@ -8,6 +8,11 @@ so we exercise the routing logic without the transport layer.
 Stimulus fan-out is exercised by replacing `run_one_shot` with an
 in-process `FakeOneShot` that fires `succeeded` / `failed` immediately
 on the test thread.
+
+`TestNonBlockingTeardown` is the one section that spins up real
+QThread workers — those tests guard the regression where route-change
+teardown blocked the UI on `thread.wait(2000)` and emitted Qt's
+"Timers cannot be stopped from another thread" warning.
 """
 
 from __future__ import annotations
@@ -20,7 +25,7 @@ from unittest.mock import patch
 from uuid import UUID, uuid4
 
 import pytest
-from PySide6.QtCore import QCoreApplication
+from PySide6.QtCore import QCoreApplication, Qt
 
 from packages.schemas.operator_console import (
     EncounterState,
@@ -472,3 +477,189 @@ class TestSessionDispatch:
         )
         coord._handle_job_data(JOB_LIVE_SESSION, summary)
         assert store.live_session() is summary
+
+
+# ----------------------------------------------------------------------
+# Non-blocking teardown — regression for the route-change UI freeze
+# ----------------------------------------------------------------------
+
+
+@dataclass
+class _StubThread:
+    """Just-enough QThread stand-in for the orphan-list bookkeeping.
+
+    Avoids spinning a real worker thread (flaky on Windows under
+    pytest's GC-during-teardown). The real `QThread.terminate()` /
+    `wait()` semantics are exercised in the standalone smoke test in
+    docs/artifacts/operator_console_checklist.md.
+    """
+
+    running: bool = True
+    quit_called: int = 0
+    wait_calls: list[int] = field(default_factory=list)
+    terminate_called: int = 0
+
+    def isRunning(self) -> bool:  # noqa: N802 — Qt API mimic
+        return self.running
+
+    def quit(self) -> None:
+        self.quit_called += 1
+
+    def wait(self, ms: int) -> bool:
+        self.wait_calls.append(ms)
+        # Default behaviour: nothing actually finishes during the
+        # graceful wait — tests can flip `running` themselves to
+        # simulate a clean exit.
+        return not self.running
+
+    def terminate(self) -> None:
+        self.terminate_called += 1
+        self.running = False  # post-terminate the thread is dead
+
+
+class _StubWorker:
+    """Stand-in worker exposing only what `_stop_job` / `refresh_now`
+    poke at via QMetaObject.invokeMethod (which is patched out)."""
+
+    def __init__(self) -> None:
+        self.refresh_calls = 0
+        self.stop_calls = 0
+
+    def refresh_now(self) -> None:
+        self.refresh_calls += 1
+
+    def stop(self) -> None:
+        self.stop_calls += 1
+
+
+def _install_orphan_handle(
+    coord: PollingCoordinator,
+    job_name: str,
+    *,
+    running: bool = True,
+) -> tuple[_StubWorker, _StubThread]:
+    """Drop a stub job into `_jobs` so `_stop_job` can park it."""
+    spec = coord._specs[job_name]
+    worker = _StubWorker()
+    thread = _StubThread(running=running)
+    coord._jobs[job_name] = _JobHandle(spec, worker, thread)  # type: ignore[arg-type]
+    return worker, thread
+
+
+# Late import so the dataclass type is in scope for the helper above.
+from services.operator_console.polling import _JobHandle  # noqa: E402
+
+
+class TestNonBlockingTeardown:
+    """Route-change teardown must not freeze the UI thread."""
+
+    def test_stop_job_queues_worker_stop_and_does_not_quit_thread(
+        self, cfg: OperatorConsoleConfig, client: ApiClient
+    ) -> None:
+        # The previous implementation called `handle.thread.quit()`
+        # synchronously from the main thread, which raced the queued
+        # stop slot. Verify we no longer do that — `quit` only fires
+        # via the `worker.stopped → thread.quit` connection wired in
+        # `_start_job`.
+        coord = PollingCoordinator(cfg, client, OperatorStore())
+        worker, thread = _install_orphan_handle(coord, JOB_OVERVIEW)
+
+        invocations: list[tuple[object, str, Qt.ConnectionType]] = []
+
+        def fake_invoke(obj: object, method: str, conn: Qt.ConnectionType) -> bool:
+            invocations.append((obj, method, conn))
+            return True
+
+        with patch(
+            "services.operator_console.polling.QMetaObject.invokeMethod",
+            side_effect=fake_invoke,
+        ):
+            coord._stop_job(JOB_OVERVIEW)
+
+        assert worker.stop_calls == 0, "stop must be queued, not called inline"
+        assert thread.quit_called == 0, "thread.quit must come from the signal chain"
+        assert invocations == [
+            (worker, "stop", Qt.ConnectionType.QueuedConnection),
+        ]
+        assert JOB_OVERVIEW not in coord._jobs
+        # Still-running thread parks on the orphan list for shutdown drain.
+        assert len(coord._orphan_jobs) == 1
+        assert coord._orphan_jobs[0].thread is thread
+
+    def test_stop_job_drops_already_finished_orphans(
+        self, cfg: OperatorConsoleConfig, client: ApiClient
+    ) -> None:
+        # The orphan list must not grow unbounded across many route
+        # changes — finished threads are pruned every time.
+        coord = PollingCoordinator(cfg, client, OperatorStore())
+
+        # Seed with a finished orphan from a previous route change.
+        finished_worker = _StubWorker()
+        finished_thread = _StubThread(running=False)
+        coord._orphan_jobs.append(
+            _JobHandle(coord._specs[JOB_HEALTH], finished_worker, finished_thread)  # type: ignore[arg-type]
+        )
+
+        _install_orphan_handle(coord, JOB_OVERVIEW)
+        with patch("services.operator_console.polling.QMetaObject.invokeMethod"):
+            coord._stop_job(JOB_OVERVIEW)
+
+        assert finished_thread not in [h.thread for h in coord._orphan_jobs]
+
+    def test_drain_orphan_jobs_terminates_stuck_threads(
+        self, cfg: OperatorConsoleConfig, client: ApiClient
+    ) -> None:
+        # On shutdown the drain gives each worker a short wait; if the
+        # thread is still in a urlopen after that, terminate() is the
+        # only lever — the process is exiting and the OS reclaims the
+        # socket either way.
+        coord = PollingCoordinator(cfg, client, OperatorStore())
+
+        stuck = _StubThread(running=True)  # `wait` keeps returning False
+        coord._orphan_jobs.append(
+            _JobHandle(coord._specs[JOB_OVERVIEW], _StubWorker(), stuck)  # type: ignore[arg-type]
+        )
+
+        coord._drain_orphan_jobs()
+
+        assert stuck.wait_calls, "graceful wait must run before terminate"
+        assert stuck.terminate_called == 1
+        assert coord._orphan_jobs == []
+
+    def test_drain_orphan_jobs_skips_terminate_for_clean_exits(
+        self, cfg: OperatorConsoleConfig, client: ApiClient
+    ) -> None:
+        coord = PollingCoordinator(cfg, client, OperatorStore())
+
+        clean = _StubThread(running=False)  # already done
+        coord._orphan_jobs.append(
+            _JobHandle(coord._specs[JOB_OVERVIEW], _StubWorker(), clean)  # type: ignore[arg-type]
+        )
+
+        coord._drain_orphan_jobs()
+
+        assert clean.terminate_called == 0
+        assert coord._orphan_jobs == []
+
+    def test_refresh_now_uses_queued_invocation(
+        self, cfg: OperatorConsoleConfig, client: ApiClient
+    ) -> None:
+        coord = PollingCoordinator(cfg, client, OperatorStore())
+        worker, _thread = _install_orphan_handle(coord, JOB_OVERVIEW)
+
+        invocations: list[tuple[object, str, Qt.ConnectionType]] = []
+
+        def fake_invoke(obj: object, method: str, conn: Qt.ConnectionType) -> bool:
+            invocations.append((obj, method, conn))
+            return True
+
+        with patch(
+            "services.operator_console.polling.QMetaObject.invokeMethod",
+            side_effect=fake_invoke,
+        ):
+            coord.refresh_now(JOB_OVERVIEW)
+
+        assert worker.refresh_calls == 0, "refresh_now must not call the worker inline"
+        assert invocations == [
+            (worker, "refresh_now", Qt.ConnectionType.QueuedConnection),
+        ]

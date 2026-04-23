@@ -94,10 +94,17 @@ class PollingWorker(QObject):
 
     @Slot()
     def stop(self) -> None:
+        # Stop the QTimer on its owning thread (this slot is invoked
+        # via QueuedConnection from the coordinator, so we are on the
+        # worker thread). Drop our Python ref but leave Qt's parent-
+        # child ownership in place — the timer is destroyed when the
+        # worker itself is destroyed via the `stopped → deleteLater`
+        # connection wired in `PollingCoordinator._start_job`. That
+        # delete also runs on the worker thread, which is the only
+        # way to avoid the cross-thread `killTimer` warning.
         if self._timer is None:
             return
         self._timer.stop()
-        self._timer.deleteLater()
         self._timer = None
         self.stopped.emit(self._job_name)
 

@@ -196,7 +196,9 @@ QPushButton#ActionBarSubmit:disabled {{
 }}
 QLabel#ActionBarCountdown {{
     color: {p.status_warn};
-    font-variant-numeric: tabular-nums;
+    /* QSS does not implement `font-variant-numeric`; pin a monospace
+       family so the digits stay column-aligned as they tick down. */
+    font-family: "Cascadia Mono", "Consolas", "Menlo", "DejaVu Sans Mono", monospace;
 }}
 QLabel#ActionBarMessage {{
     color: {p.text_muted};

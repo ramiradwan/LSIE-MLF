@@ -113,7 +113,11 @@ def load_config(environ: Mapping[str, str] | None = None) -> OperatorConsoleConf
 
     config = OperatorConsoleConfig(
         api_base_url=api_base,
-        api_timeout_seconds=_float_env(env, "LSIE_API_TIMEOUT_S", 10.0),
+        # 3s default — the operator console is interactive, and a
+        # urlopen that hangs longer than that turns into perceptible
+        # UI lag whenever the polling coordinator drains a worker on
+        # route change. Override via env for slow staging targets.
+        api_timeout_seconds=_float_env(env, "LSIE_API_TIMEOUT_S", 3.0),
         environment_label=env.get("LSIE_ENV_LABEL", "local"),
         overview_poll_ms=_int_env(env, "LSIE_OVERVIEW_POLL_MS", 3000),
         session_header_poll_ms=_int_env(env, "LSIE_SESSION_HEADER_POLL_MS", 3000),

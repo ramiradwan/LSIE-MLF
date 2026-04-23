@@ -37,10 +37,11 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from time import monotonic
 from typing import Any
 from uuid import UUID
 
-from PySide6.QtCore import QObject, QThread, Signal, Slot
+from PySide6.QtCore import QMetaObject, QObject, Qt, QThread, Signal, Slot
 
 from packages.schemas.operator_console import (
     AlertEvent,
@@ -126,6 +127,11 @@ class PollingCoordinator(QObject):
         self._store = store
         self._specs: dict[str, PollJobSpec] = self._register_jobs()
         self._jobs: dict[str, _JobHandle] = {}
+        # Jobs that have been told to stop but whose worker thread may
+        # still be draining a slow urlopen. They drain on their own time
+        # so route-change teardown does not block the UI; final shutdown
+        # joins anything still alive.
+        self._orphan_jobs: list[_JobHandle] = []
         self._inflight_stimulus: dict[str, OneShotSignals] = {}
         self._started = False
 
@@ -146,12 +152,19 @@ class PollingCoordinator(QObject):
 
     def stop(self) -> None:
         """Stop every job and join its thread. Safe to call from
-        `MainWindow.closeEvent`."""
+        `MainWindow.closeEvent`.
+
+        Route-change teardown leaves orphans behind (their workers may
+        still be in a slow urlopen); final shutdown is the one place we
+        actually block waiting for those threads to finish so the
+        process can exit cleanly.
+        """
         if not self._started:
             return
         self._started = False
         for name in list(self._jobs):
             self._stop_job(name)
+        self._drain_orphan_jobs()
 
     # ------------------------------------------------------------------
     # Route / selection callbacks
@@ -184,11 +197,22 @@ class PollingCoordinator(QObject):
     # ------------------------------------------------------------------
 
     def refresh_now(self, job_name: str) -> None:
-        """Trigger an off-cadence fetch for a running job."""
+        """Trigger an off-cadence fetch for a running job.
+
+        The worker lives on its own QThread; calling `refresh_now`
+        directly would run the network fetch on the UI thread (and
+        violate Qt's "QObject lives on its thread" contract). Queue
+        the slot so it executes on the worker thread.
+        """
         handle = self._jobs.get(job_name)
         if handle is None:
             return
-        handle.worker.refresh_now()
+        # PySide6's runtime invokeMethod takes the slot name as `str`;
+        # the bundled type stubs incorrectly require `bytes`, so the
+        # ignore is for mypy strict mode only.
+        QMetaObject.invokeMethod(  # type: ignore[call-overload]
+            handle.worker, "refresh_now", Qt.ConnectionType.QueuedConnection
+        )
 
     # ------------------------------------------------------------------
     # Stimulus (single write path)
@@ -307,19 +331,94 @@ class PollingCoordinator(QObject):
         worker.moveToThread(thread)
         worker.data_ready.connect(self._handle_job_data)
         worker.error.connect(self._handle_job_error)
+        # Tear-down chain (canonical Qt pattern). When the worker emits
+        # `stopped` from inside its own `stop()` slot, two cleanups
+        # fire in order:
+        #   1. `worker.deleteLater` — same-thread direct connection,
+        #      which posts a DeferredDelete event to the worker thread
+        #      so the worker (and its child QTimer) are destroyed on
+        #      the right thread. Without this, Python GC eventually
+        #      runs the worker's destructor on the main thread and Qt
+        #      raises "Timers cannot be stopped from another thread".
+        #   2. `thread.quit` — `QThread.quit()` is thread-safe, so we
+        #      pin DirectConnection. The default AutoConnection would
+        #      queue it back to the main thread, which deadlocks the
+        #      shutdown drain (`_drain_orphan_jobs` blocks main on
+        #      `thread.wait()`, so a queued slot on main never runs).
+        worker.stopped.connect(worker.deleteLater)
+        worker.stopped.connect(thread.quit, Qt.ConnectionType.DirectConnection)
         thread.started.connect(worker.run)
         thread.start()
         self._jobs[spec.name] = _JobHandle(spec, worker, thread)
 
     def _stop_job(self, job_name: str) -> None:
+        """Tear down a job without blocking the UI.
+
+        The worker's QTimer was created on the worker thread, so
+        `stop()` must run on that thread — invoking it from the UI
+        thread emits Qt's "Timers cannot be stopped from another
+        thread" warning and leaks the timer. We queue the slot and
+        park the handle on `_orphan_jobs`; the `stopped → deleteLater
+        → thread.quit` chain wired in `_start_job` does the rest. The
+        UI never blocks waiting because route changes need to feel
+        instant even when the API is unreachable and the worker is
+        mid-urlopen. Final shutdown drains the orphan list with a
+        real wait.
+        """
         handle = self._jobs.pop(job_name, None)
         if handle is None:
             return
-        # `stop` is a slot — invoking directly is fine because the
-        # worker's thread drains the timer via deleteLater().
-        handle.worker.stop()
-        handle.thread.quit()
-        handle.thread.wait(2000)
+        QMetaObject.invokeMethod(  # type: ignore[call-overload]
+            handle.worker, "stop", Qt.ConnectionType.QueuedConnection
+        )
+        # Note: do NOT call `handle.thread.quit()` here. The connect
+        # in `_start_job` quits the thread once the worker has
+        # finished its stop slot; quitting first races the queued
+        # stop slot and can exit the event loop before the worker is
+        # safely deleted on its own thread.
+        # Opportunistically prune orphans whose threads have already
+        # finished so the list does not grow without bound across
+        # many route changes.
+        self._orphan_jobs = [h for h in self._orphan_jobs if h.thread.isRunning()]
+        if handle.thread.isRunning():
+            self._orphan_jobs.append(handle)
+
+    def _drain_orphan_jobs(self) -> None:
+        """Wait briefly for orphaned worker threads to finish.
+
+        Called from `stop()` only. Both wait windows are *shared*
+        across all orphans rather than budgeted per-thread — with
+        several orphans accumulated from rapid route changes, a per-
+        thread wait of even a few hundred ms multiplies out into a
+        perceptible freeze on the close button. Anything still
+        running past the shared grace is forcibly terminated; the
+        process is exiting, so a forceful kill is acceptable — the
+        OS reclaims the socket and `terminate()` is the only lever
+        Qt gives us against a Python thread blocked in C-level
+        network I/O.
+        """
+        # Phase 1: shared graceful window. Enough for an idle worker
+        # to process its queued stop slot and exit on its own.
+        graceful_deadline = monotonic() + 0.5
+        for handle in self._orphan_jobs:
+            remaining_ms = int(max(0.0, graceful_deadline - monotonic()) * 1000)
+            if remaining_ms > 0:
+                handle.thread.wait(remaining_ms)
+        # Phase 2: fire terminate on every still-running thread in a
+        # single batch so they die concurrently. `terminate()` is
+        # async on Windows, so don't pair each one with its own wait.
+        stuck = [h for h in self._orphan_jobs if h.thread.isRunning()]
+        for handle in stuck:
+            handle.thread.terminate()
+        # Phase 3: shared short wait for the terminated threads to
+        # actually clear. ~300ms total is plenty for a TerminateThread
+        # call to settle.
+        terminate_deadline = monotonic() + 0.3
+        for handle in stuck:
+            remaining_ms = int(max(0.0, terminate_deadline - monotonic()) * 1000)
+            if remaining_ms > 0:
+                handle.thread.wait(remaining_ms)
+        self._orphan_jobs.clear()
 
     # ------------------------------------------------------------------
     # Slot endpoints
