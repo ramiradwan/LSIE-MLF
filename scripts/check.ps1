@@ -59,7 +59,10 @@ $paths = @(
     "packages\**\*.py","packages\**\*.yml","packages\**\*.yaml","packages\**\*.sh","packages\**\*.txt",
     "docker-compose.yml"
 )
-$retiredHits = Select-String -Path $paths -Pattern $pattern -ErrorAction SilentlyContinue
+# -CaseSensitive mirrors `grep -E` semantics used by check.sh and ci.yml.
+# Without it, PowerShell's default insensitive match flags `mkfifo` (vs
+# "FIFO") and "Named Pipes" (vs "named pipe") as false positives.
+$retiredHits = Select-String -Path $paths -Pattern $pattern -CaseSensitive -ErrorAction SilentlyContinue
 if ($null -eq $retiredHits) { Pass "No retired synonyms found" } else { Fail "Retired synonyms found:"; $retiredHits | ForEach-Object { Write-Host "    $_" } }
 Write-Host ""
 
@@ -69,10 +72,16 @@ docker compose config --quiet 2>$null
 if ($LASTEXITCODE -eq 0) { Pass "Docker compose config" } else { Warn "Docker compose config failed (Docker may not be running)" }
 Write-Host ""
 
-# 7. Dependency pin check
+# 7. Schema consistency check (Pydantic vs SQL files vs Python DDL string vs content.json)
+Write-Host "-- Schema consistency check --"
+python scripts/check_schema_consistency.py
+if ($LASTEXITCODE -eq 0) { Pass "Schema consistency check" } else { Fail "Schema consistency check" }
+Write-Host ""
+
+# 8. Dependency pin check
 Write-Host "-- Dependency pin check --"
 $unpinned = $false
-foreach ($f in @("requirements\base.txt", "requirements\api.txt", "requirements\worker.txt")) {
+foreach ($f in @("requirements\base.txt", "requirements\api.txt", "requirements\worker.txt", "requirements\cli.txt")) {
     $bad = Get-Content $f | Where-Object { $_ -match "^[a-zA-Z]" -and $_ -notmatch "==|>=|~=|\*" -and $_ -notmatch "^-r" -and $_ -notmatch "^#" }
     if ($bad) { Fail "Unpinned dependency in $f"; $unpinned = $true }
 }

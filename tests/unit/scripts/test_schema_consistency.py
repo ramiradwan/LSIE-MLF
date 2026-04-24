@@ -480,7 +480,11 @@ class TestCheckConsistencyEndToEnd:
         assert "json_schema" in missing[0].detail
         assert "pydantic" in missing[0].detail
 
-    def test_repo_sql_surfaces_include_enriched_physiology_metadata(self) -> None:
+    def test_repo_sql_surfaces_require_physiology_metadata(self) -> None:
+        # The five SPEC-AMEND-009 fields must be NOT NULL on both DDL
+        # surfaces — the Pydantic PhysiologicalSnapshot writer contract
+        # (§4.C.4) guarantees they are always populated, and matching
+        # the storage contract keeps check_schema_consistency.py clean.
         repo_root = Path(__file__).resolve().parents[3]
         sql_file_tables = parse_sql_tables(
             (repo_root / "data" / "sql" / "03-physiology.sql").read_text(encoding="utf-8")
@@ -491,11 +495,11 @@ class TestCheckConsistencyEndToEnd:
         sql_string_tables = parse_sql_tables(SCHEMA_SQL)
 
         expected_fields = {
-            "source_kind": FieldSpec("source_kind", "string", nullable=True),
-            "derivation_method": FieldSpec("derivation_method", "string", nullable=True),
-            "window_s": FieldSpec("window_s", "integer", nullable=True),
-            "validity_ratio": FieldSpec("validity_ratio", "number", nullable=True),
-            "is_valid": FieldSpec("is_valid", "boolean", nullable=True),
+            "source_kind": FieldSpec("source_kind", "string", nullable=False),
+            "derivation_method": FieldSpec("derivation_method", "string", nullable=False),
+            "window_s": FieldSpec("window_s", "integer", nullable=False),
+            "validity_ratio": FieldSpec("validity_ratio", "number", nullable=False),
+            "is_valid": FieldSpec("is_valid", "boolean", nullable=False),
         }
 
         for field_name, expected in expected_fields.items():
@@ -531,22 +535,20 @@ class TestCheckConsistencyEndToEnd:
             == []
         )
 
-    def test_repo_schema_sql_contains_additive_physiology_migration_statements(self) -> None:
+    def test_repo_schema_sql_has_no_physiology_backfill_block(self) -> None:
+        # SPEC-AMEND-009 originally shipped the NOT NULL columns as an
+        # additive `ALTER TABLE ADD COLUMN IF NOT EXISTS` block so that
+        # pre-amendment deployments could upgrade in place. The
+        # production DB has never persisted pre-amendment rows, so the
+        # backfill block was retired and the NOT NULL constraints moved
+        # onto `CREATE TABLE`. Guard against accidental re-introduction.
         from services.api.db.schema import SCHEMA_SQL
 
-        expected_fragments = (
-            "ALTER TABLE physiology_log\n    ADD COLUMN IF NOT EXISTS source_kind TEXT",
-            "ALTER TABLE physiology_log\n    ADD COLUMN IF NOT EXISTS derivation_method TEXT",
-            "ALTER TABLE physiology_log\n    ADD COLUMN IF NOT EXISTS window_s INTEGER",
-            (
-                "ALTER TABLE physiology_log\n"
-                "    ADD COLUMN IF NOT EXISTS validity_ratio DOUBLE PRECISION"
-            ),
-            "ALTER TABLE physiology_log\n    ADD COLUMN IF NOT EXISTS is_valid BOOLEAN",
-        )
-
-        for fragment in expected_fragments:
-            assert fragment in SCHEMA_SQL
+        assert "ADD COLUMN IF NOT EXISTS source_kind" not in SCHEMA_SQL
+        assert "ADD COLUMN IF NOT EXISTS derivation_method" not in SCHEMA_SQL
+        assert "ADD COLUMN IF NOT EXISTS window_s" not in SCHEMA_SQL
+        assert "ADD COLUMN IF NOT EXISTS validity_ratio" not in SCHEMA_SQL
+        assert "ADD COLUMN IF NOT EXISTS is_valid" not in SCHEMA_SQL
 
 
 # =====================================================================

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import stat
+import sys
 import tempfile
 import urllib.error
 from datetime import UTC, datetime, timedelta
@@ -241,6 +242,15 @@ def test_gives_up_after_bounded_retries_on_5xx() -> None:
     assert sleep_calls == [0.5, 1.0]
 
 
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason=(
+        "POSIX 0o600 semantics are unreachable on Windows — os.chmod only "
+        "toggles the read-only bit, so stat.S_IMODE returns 0o666 regardless "
+        "of the requested mode. The Windows fail-safe behavior is exercised "
+        "by test_file_token_store_refuses_write_on_windows below."
+    ),
+)
 def test_file_token_store_enforces_0600_permissions() -> None:
     now = datetime(2026, 4, 20, 12, 0, tzinfo=UTC)
     with tempfile.TemporaryDirectory() as tmp_dir:
@@ -254,6 +264,27 @@ def test_file_token_store_enforces_0600_permissions() -> None:
         os.chmod(path, 0o644)
         with pytest.raises(OuraTokenStoreError, match="Unsafe Oura token file permissions"):
             store.load_tokens()
+
+
+@pytest.mark.skipif(
+    sys.platform != "win32",
+    reason="Exercises the Windows-only fail-safe branch of save_tokens.",
+)
+def test_file_token_store_refuses_write_on_windows() -> None:
+    # On Windows the store must refuse to persist tokens rather than
+    # silently write a file that _validate_permissions has no way to
+    # enforce. `os.chmod(path, 0o600)` only toggles the read-only bit
+    # on NTFS, leaving `stat.S_IMODE` at 0o666, so the post-chmod
+    # validation inside save_tokens raises. This regression-guards
+    # against a future change that loosens _validate_permissions
+    # without first routing the Windows path through an ACL-based
+    # equivalent.
+    now = datetime(2026, 4, 20, 12, 0, tzinfo=UTC)
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        path = Path(tmp_dir) / "oura_tokens.json"
+        store = FileOuraTokenStore(path)
+        with pytest.raises(OuraTokenStoreError, match="Unsafe Oura token file permissions"):
+            store.save_tokens(_token_set(expires_at=now + timedelta(hours=1)))
 
 
 def test_missing_config_returns_none_factory_for_hydration_layer() -> None:

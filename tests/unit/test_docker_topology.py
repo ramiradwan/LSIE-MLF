@@ -226,6 +226,7 @@ class TestComposeEnvExample:
         docker = shutil.which("docker")
         if docker is None:
             pytest.skip("docker CLI is not available in this test environment")
+        assert docker is not None  # narrow for mypy when pytest stubs are unavailable
 
         with TemporaryDirectory() as tmpdir:
             temp_root = Path(tmpdir)

@@ -10,6 +10,13 @@ markers = [
     "integration: Tests requiring PostgreSQL or Redis",
     "gpu: Tests requiring CUDA GPU access",
 ]
+filterwarnings = [
+    # spacy 3.7.x imports a click internal path that click 8.3 deprecated
+    # for click 9.0. We pin spacy==3.7.x per §10.2 and cannot upgrade
+    # until a spec amendment. Scope the filter to the spacy module so
+    # real DeprecationWarnings elsewhere still surface.
+    "ignore:Importing 'parser.split_arg_string' is deprecated:DeprecationWarning:spacy",
+]
 
 [tool.mypy]
 python_version = "3.11"

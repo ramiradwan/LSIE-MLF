@@ -584,7 +584,7 @@ class TestNonBlockingTeardown:
         assert JOB_OVERVIEW not in coord._jobs
         # Still-running thread parks on the orphan list for shutdown drain.
         assert len(coord._orphan_jobs) == 1
-        assert coord._orphan_jobs[0].thread is thread
+        assert coord._orphan_jobs[0].thread is thread  # type: ignore[comparison-overlap]
 
     def test_stop_job_drops_already_finished_orphans(
         self, cfg: OperatorConsoleConfig, client: ApiClient
@@ -604,7 +604,7 @@ class TestNonBlockingTeardown:
         with patch("services.operator_console.polling.QMetaObject.invokeMethod"):
             coord._stop_job(JOB_OVERVIEW)
 
-        assert finished_thread not in [h.thread for h in coord._orphan_jobs]
+        assert finished_thread not in [h.thread for h in coord._orphan_jobs]  # type: ignore[comparison-overlap]
 
     def test_drain_orphan_jobs_terminates_stuck_threads(
         self, cfg: OperatorConsoleConfig, client: ApiClient
