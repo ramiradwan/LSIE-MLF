@@ -16,6 +16,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from packages.ml_core.acoustic import AcousticMetrics
 from packages.schemas import inference_handoff as inference_handoff_schema
 from packages.schemas.inference_handoff import InferenceHandoffPayload
 from packages.schemas.physiology import PhysiologicalChunkEvent
@@ -33,6 +34,58 @@ PCM_AUDIO = b"\x00\x01" * 64
 STIMULUS_TIME_S = 100.0
 STREAMER_RMSSD_SERIES = [30.0, 40.0, 50.0, 60.0]
 OPERATOR_RMSSD_SERIES = [15.0, 20.0, 25.0, 30.0]
+
+
+def _assert_canonical_acoustic_payload(payload: dict[str, Any]) -> None:
+    """Assert the canonical §7D acoustic payload at the Module D → E boundary."""
+    assert payload["f0_valid_measure"] is True
+    assert payload["f0_valid_baseline"] is True
+    assert payload["perturbation_valid_measure"] is True
+    assert payload["perturbation_valid_baseline"] is True
+    assert payload["voiced_coverage_measure_s"] == pytest.approx(2.5)
+    assert payload["voiced_coverage_baseline_s"] == pytest.approx(2.0)
+    assert payload["f0_mean_measure_hz"] == pytest.approx(220.0)
+    assert payload["f0_mean_baseline_hz"] == pytest.approx(180.0)
+    assert payload["f0_delta_semitones"] == pytest.approx(12.0 * math.log2(220.0 / 180.0))
+    assert payload["jitter_mean_measure"] == pytest.approx(0.010)
+    assert payload["jitter_mean_baseline"] == pytest.approx(0.008)
+    assert payload["jitter_delta"] == pytest.approx(0.002)
+    assert payload["shimmer_mean_measure"] == pytest.approx(0.020)
+    assert payload["shimmer_mean_baseline"] == pytest.approx(0.018)
+    assert payload["shimmer_delta"] == pytest.approx(0.002)
+
+    # Legacy scalar dual-write remains optional/deprecated.
+    if payload.get("pitch_f0") is not None:
+        assert payload["pitch_f0"] == pytest.approx(220.0)
+    if payload.get("jitter") is not None:
+        assert payload["jitter"] == pytest.approx(0.010)
+    if payload.get("shimmer") is not None:
+        assert payload["shimmer"] == pytest.approx(0.020)
+
+
+def _assert_null_canonical_acoustic_payload(payload: dict[str, Any]) -> None:
+    """Assert deterministic false/null §7D outputs for null or locally failed acoustics."""
+    assert payload["f0_valid_measure"] is False
+    assert payload["f0_valid_baseline"] is False
+    assert payload["perturbation_valid_measure"] is False
+    assert payload["perturbation_valid_baseline"] is False
+    assert payload["voiced_coverage_measure_s"] == pytest.approx(0.0)
+    assert payload["voiced_coverage_baseline_s"] == pytest.approx(0.0)
+    assert payload["f0_mean_measure_hz"] is None
+    assert payload["f0_mean_baseline_hz"] is None
+    assert payload["f0_delta_semitones"] is None
+    assert payload["jitter_mean_measure"] is None
+    assert payload["jitter_mean_baseline"] is None
+    assert payload["jitter_delta"] is None
+    assert payload["shimmer_mean_measure"] is None
+    assert payload["shimmer_mean_baseline"] is None
+    assert payload["shimmer_delta"] is None
+    if "pitch_f0" in payload:
+        assert payload["pitch_f0"] is None
+    if "jitter" in payload:
+        assert payload["jitter"] is None
+    if "shimmer" in payload:
+        assert payload["shimmer"] is None
 
 
 class _FakeRequest:
@@ -306,7 +359,10 @@ def _rolling_ibi_rmssd(chunk_rmssd_values: list[float]) -> float:
     return round(math.sqrt(numerator / denominator), 3)
 
 
-def _fake_ml_modules() -> dict[str, ModuleType]:
+def _fake_ml_modules(
+    *,
+    acoustic_analyzer_cls: type[Any] | None = None,
+) -> dict[str, ModuleType]:
     transcription: Any = ModuleType("packages.ml_core.transcription")
 
     class TranscriptionEngine:
@@ -318,12 +374,45 @@ def _fake_ml_modules() -> dict[str, ModuleType]:
 
     acoustic: Any = ModuleType("packages.ml_core.acoustic")
 
-    class AcousticAnalyzer:
-        def analyze(self, audio_data: bytes) -> Any:
-            assert audio_data
-            return SimpleNamespace(pitch_f0=220.0, jitter=0.01, shimmer=0.02)
+    if acoustic_analyzer_cls is None:
 
-    acoustic.AcousticAnalyzer = AcousticAnalyzer
+        class AcousticAnalyzer:
+            def analyze(
+                self,
+                audio_data: bytes,
+                sample_rate: int = 16000,
+                *,
+                stimulus_time_s: float | None = None,
+                segment_start_time_s: float | None = None,
+            ) -> Any:
+                assert audio_data
+                assert sample_rate == 16000
+                assert stimulus_time_s is not None
+                assert segment_start_time_s is not None
+                return AcousticMetrics(
+                    pitch_f0=220.0,
+                    jitter=0.01,
+                    shimmer=0.02,
+                    f0_valid_measure=True,
+                    f0_valid_baseline=True,
+                    perturbation_valid_measure=True,
+                    perturbation_valid_baseline=True,
+                    voiced_coverage_measure_s=2.5,
+                    voiced_coverage_baseline_s=2.0,
+                    f0_mean_measure_hz=220.0,
+                    f0_mean_baseline_hz=180.0,
+                    f0_delta_semitones=12.0 * math.log2(220.0 / 180.0),
+                    jitter_mean_measure=0.01,
+                    jitter_mean_baseline=0.008,
+                    jitter_delta=0.002,
+                    shimmer_mean_measure=0.02,
+                    shimmer_mean_baseline=0.018,
+                    shimmer_delta=0.002,
+                )
+
+        acoustic_analyzer_cls = AcousticAnalyzer
+
+    acoustic.AcousticAnalyzer = acoustic_analyzer_cls
 
     preprocessing: Any = ModuleType("packages.ml_core.preprocessing")
 
@@ -374,6 +463,8 @@ def _load_inference_module() -> Any:
 def _exercise_module_d_to_e(
     payload: dict[str, Any],
     store: _RecordingMetricsStore,
+    *,
+    acoustic_analyzer_cls: type[Any] | None = None,
 ) -> dict[str, Any]:
     inference_mod = _load_inference_module()
     persist_metrics_fn = inference_mod.persist_metrics
@@ -386,7 +477,11 @@ def _exercise_module_d_to_e(
     )
 
     with (
-        patch.dict(sys.modules, _fake_ml_modules(), clear=False),
+        patch.dict(
+            sys.modules,
+            _fake_ml_modules(acoustic_analyzer_cls=acoustic_analyzer_cls),
+            clear=False,
+        ),
         patch("subprocess.run", side_effect=_fake_ffmpeg_run),
         patch("services.worker.pipeline.analytics.MetricsStore", return_value=store),
         patch("services.worker.pipeline.analytics._import_psycopg2", return_value=fake_psycopg2),
@@ -574,8 +669,10 @@ def test_notification_hydration_chunk_derivation_and_scalar_persistence_end_to_e
         assert result["semantic"]["is_match"] is True
         assert result["transcription"] == "hello welcome to the stream"
         assert result["_physiological_context"] == context
+        _assert_canonical_acoustic_payload(result)
 
         assert len(store.metrics_rows) == index + 1
+        _assert_canonical_acoustic_payload(store.metrics_rows[-1])
         assert len(store.physiology_rows) == (index + 1) * 2
         assert len(store.comodulation_rows) == index + 1
         assert len(store.arm_updates) == index + 1
@@ -651,7 +748,9 @@ def test_notification_hydration_chunk_derivation_and_scalar_persistence_end_to_e
 
     stale_result = _exercise_module_d_to_e(stale_payload, store)
     assert stale_result["_physiological_context"] == stale_context
+    _assert_canonical_acoustic_payload(stale_result)
     assert len(store.metrics_rows) == 5
+    _assert_canonical_acoustic_payload(store.metrics_rows[-1])
     assert len(store.physiology_rows) == 10
     assert len(store.comodulation_rows) == pre_stale_comod_count
     assert store.physiology_rows[-1]["is_stale"] is True
@@ -694,6 +793,10 @@ def test_reward_pipeline_is_invariant_with_optional_physiology_context() -> None
 
     result_without_physio = _exercise_module_d_to_e(payload_without_physio, plain_store)
     result_with_physio = _exercise_module_d_to_e(payload_with_physio, physio_store)
+    _assert_canonical_acoustic_payload(result_without_physio)
+    _assert_canonical_acoustic_payload(result_with_physio)
+    _assert_canonical_acoustic_payload(plain_store.metrics_rows[0])
+    _assert_canonical_acoustic_payload(physio_store.metrics_rows[0])
 
     expected_reward = compute_reward(
         au12_series=[TimestampedAU12(**point) for point in _reward_telemetry()],
@@ -734,6 +837,139 @@ def test_reward_pipeline_is_invariant_with_optional_physiology_context() -> None
     )
     assert len(plain_store.physiology_rows) == 0
     assert len(physio_store.physiology_rows) == 2
+
+
+def test_acoustic_invalidity_is_local_and_reward_is_preserved_end_to_end() -> None:
+    """Local acoustic invalidity degrades only §7D outputs; reward math remains unchanged."""
+    session_id = "00000000-0000-4000-8000-000000000654"
+    orchestrator = Orchestrator(session_id=session_id, experiment_id="exp-1")
+    orchestrator._active_arm = "arm-a"
+    orchestrator._expected_greeting = "hello welcome to the stream"
+    orchestrator._au12_series = _reward_telemetry()
+    orchestrator._stimulus_time = STIMULUS_TIME_S
+    payload = orchestrator.assemble_segment(PCM_AUDIO, [])
+    expected_reward = compute_reward(
+        au12_series=[TimestampedAU12(**point) for point in _reward_telemetry()],
+        stimulus_time_s=STIMULUS_TIME_S,
+        is_match=True,
+        confidence_score=0.91,
+        x_max=None,
+    )
+
+    class SilentAcousticAnalyzer:
+        def analyze(
+            self,
+            audio_data: bytes,
+            sample_rate: int = 16000,
+            *,
+            stimulus_time_s: float | None = None,
+            segment_start_time_s: float | None = None,
+        ) -> Any:
+            assert audio_data
+            assert sample_rate == 16000
+            assert stimulus_time_s == STIMULUS_TIME_S
+            assert segment_start_time_s is not None
+            return AcousticMetrics()
+
+    class PerturbationInvalidAcousticAnalyzer:
+        def analyze(
+            self,
+            audio_data: bytes,
+            sample_rate: int = 16000,
+            *,
+            stimulus_time_s: float | None = None,
+            segment_start_time_s: float | None = None,
+        ) -> Any:
+            assert audio_data
+            assert sample_rate == 16000
+            assert stimulus_time_s == STIMULUS_TIME_S
+            assert segment_start_time_s is not None
+            return AcousticMetrics(
+                pitch_f0=210.0,
+                jitter=0.010,
+                shimmer=0.020,
+                f0_valid_measure=True,
+                f0_valid_baseline=True,
+                voiced_coverage_measure_s=2.4,
+                voiced_coverage_baseline_s=2.0,
+                f0_mean_measure_hz=220.0,
+                f0_mean_baseline_hz=180.0,
+                f0_delta_semitones=12.0 * math.log2(220.0 / 180.0),
+            )
+
+    class FailingAcousticAnalyzer:
+        def analyze(
+            self,
+            audio_data: bytes,
+            sample_rate: int = 16000,
+            *,
+            stimulus_time_s: float | None = None,
+            segment_start_time_s: float | None = None,
+        ) -> Any:
+            assert audio_data
+            assert sample_rate == 16000
+            assert stimulus_time_s == STIMULUS_TIME_S
+            assert segment_start_time_s is not None
+            raise RuntimeError("Praat returned undefined perturbation values")
+
+    cases = [
+        ("silence", SilentAcousticAnalyzer),
+        ("perturbation_invalidity", PerturbationInvalidAcousticAnalyzer),
+        ("exception", FailingAcousticAnalyzer),
+    ]
+
+    for label, acoustic_analyzer_cls in cases:
+        store = _RecordingMetricsStore()
+        result = _exercise_module_d_to_e(
+            payload,
+            store,
+            acoustic_analyzer_cls=acoustic_analyzer_cls,
+        )
+
+        assert result["semantic"]["is_match"] is True
+        assert result["transcription"] == "hello welcome to the stream"
+        assert len(store.metrics_rows) == 1
+        assert len(store.arm_updates) == 1
+        assert len(store.encounter_rows) == 1
+
+        if label == "perturbation_invalidity":
+            assert result["f0_valid_measure"] is True
+            assert result["f0_valid_baseline"] is True
+            assert result["perturbation_valid_measure"] is False
+            assert result["perturbation_valid_baseline"] is False
+            assert result["voiced_coverage_measure_s"] == pytest.approx(2.4)
+            assert result["voiced_coverage_baseline_s"] == pytest.approx(2.0)
+            assert result["f0_mean_measure_hz"] == pytest.approx(220.0)
+            assert result["f0_mean_baseline_hz"] == pytest.approx(180.0)
+            assert result["f0_delta_semitones"] == pytest.approx(12.0 * math.log2(220.0 / 180.0))
+            assert result["jitter_mean_measure"] is None
+            assert result["jitter_mean_baseline"] is None
+            assert result["jitter_delta"] is None
+            assert result["shimmer_mean_measure"] is None
+            assert result["shimmer_mean_baseline"] is None
+            assert result["shimmer_delta"] is None
+            assert result["pitch_f0"] == pytest.approx(210.0)
+            assert result["jitter"] == pytest.approx(0.010)
+            assert result["shimmer"] == pytest.approx(0.020)
+            assert store.metrics_rows[0]["perturbation_valid_measure"] is False
+            assert store.metrics_rows[0]["jitter_mean_measure"] is None
+            assert store.metrics_rows[0]["shimmer_mean_measure"] is None
+        else:
+            _assert_null_canonical_acoustic_payload(result)
+            _assert_null_canonical_acoustic_payload(store.metrics_rows[0])
+
+        assert store.arm_updates == [
+            {
+                "experiment_id": "exp-1",
+                "arm": "arm-a",
+                "alpha": pytest.approx(1.0 + expected_reward.gated_reward),
+                "beta": pytest.approx(2.0 - expected_reward.gated_reward),
+            }
+        ]
+        assert store.encounter_rows[0]["gated_reward"] == pytest.approx(
+            expected_reward.gated_reward
+        )
+        assert len(store.physiology_rows) == 0
 
 
 def _frozen_analytics_datetime(frozen_now: datetime) -> type[datetime]:

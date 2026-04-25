@@ -15,7 +15,10 @@ JSON-serialized Celery payload back to bytes.
 from __future__ import annotations
 
 import logging
+import math
 import tempfile
+from dataclasses import asdict
+from datetime import UTC, datetime
 from typing import Any
 
 from celery import Task
@@ -41,6 +44,9 @@ _FORWARD_FIELDS: tuple[str, ...] = (
 # See services/worker/pipeline/serialization.py for the encode/decode helpers.
 _BINARY_FIELDS: list[str] = ["_audio_data", "_frame_data"]
 
+# Raw Module C → D audio is mono PCM s16le at 16 kHz.
+_PCM_SAMPLE_WIDTH_BYTES: int = 2
+
 # §2.7 — Parameterized INSERT for encounter audit trail persistence.
 _INSERT_ENCOUNTER_LOG_SQL: str = """
     INSERT INTO encounter_log (
@@ -53,6 +59,123 @@ _INSERT_ENCOUNTER_LOG_SQL: str = """
         %(n_frames)s, %(baseline_neutral)s, %(stimulus_time)s
     )
 """
+
+_CANONICAL_NULLABLE_ACOUSTIC_FLOAT_FIELDS: tuple[str, ...] = (
+    "f0_mean_measure_hz",
+    "f0_mean_baseline_hz",
+    "f0_delta_semitones",
+    "jitter_mean_measure",
+    "jitter_mean_baseline",
+    "jitter_delta",
+    "shimmer_mean_measure",
+    "shimmer_mean_baseline",
+    "shimmer_delta",
+    "pitch_f0",
+    "jitter",
+    "shimmer",
+)
+
+_CANONICAL_COVERAGE_ACOUSTIC_FLOAT_FIELDS: tuple[str, ...] = (
+    "voiced_coverage_measure_s",
+    "voiced_coverage_baseline_s",
+)
+
+
+def _default_acoustic_payload() -> dict[str, Any]:
+    """Deterministic null-stimulus / no-audio acoustic payload defaults."""
+    return {
+        "f0_valid_measure": False,
+        "f0_valid_baseline": False,
+        "perturbation_valid_measure": False,
+        "perturbation_valid_baseline": False,
+        "voiced_coverage_measure_s": 0.0,
+        "voiced_coverage_baseline_s": 0.0,
+        "f0_mean_measure_hz": None,
+        "f0_mean_baseline_hz": None,
+        "f0_delta_semitones": None,
+        "jitter_mean_measure": None,
+        "jitter_mean_baseline": None,
+        "jitter_delta": None,
+        "shimmer_mean_measure": None,
+        "shimmer_mean_baseline": None,
+        "shimmer_delta": None,
+        "pitch_f0": None,
+        "jitter": None,
+        "shimmer": None,
+    }
+
+
+def _finite_float_or_none(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def _finite_nonnegative_float_or_default(value: Any, *, default: float = 0.0) -> float:
+    number = _finite_float_or_none(value)
+    if number is None or number < 0.0:
+        return default
+    return number
+
+
+def _timestamp_to_epoch_s(value: Any) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        timestamp = value
+    elif isinstance(value, str):
+        try:
+            timestamp = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    else:
+        return _finite_float_or_none(value)
+
+    if timestamp.tzinfo is None:
+        timestamp = timestamp.replace(tzinfo=UTC)
+
+    try:
+        return _finite_float_or_none(timestamp.timestamp())
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
+def _derive_segment_start_time_s(
+    *,
+    timestamp_utc: Any,
+    audio_data: bytes | None,
+    sample_rate: int = 16000,
+) -> float | None:
+    """Derive the absolute segment start epoch for stimulus-locked §7D analysis."""
+    if not audio_data or sample_rate <= 0:
+        return None
+
+    segment_end_time_s = _timestamp_to_epoch_s(timestamp_utc)
+    if segment_end_time_s is None:
+        return None
+
+    segment_duration_s = len(audio_data) / float(sample_rate * _PCM_SAMPLE_WIDTH_BYTES)
+    if not math.isfinite(segment_duration_s) or segment_duration_s < 0.0:
+        return None
+
+    return segment_end_time_s - segment_duration_s
+
+
+def _serialize_acoustic_metrics(metrics: Any) -> dict[str, Any]:
+    """Serialize ``AcousticMetrics`` into a JSON-safe Module D → E payload."""
+    acoustic_payload = _default_acoustic_payload()
+    acoustic_payload.update(asdict(metrics))
+
+    for field in _CANONICAL_NULLABLE_ACOUSTIC_FLOAT_FIELDS:
+        acoustic_payload[field] = _finite_float_or_none(acoustic_payload.get(field))
+    for field in _CANONICAL_COVERAGE_ACOUSTIC_FLOAT_FIELDS:
+        acoustic_payload[field] = _finite_nonnegative_float_or_default(acoustic_payload.get(field))
+
+    return acoustic_payload
 
 
 @celery_app.task(  # type: ignore[untyped-decorator]
@@ -80,10 +203,12 @@ def process_segment(self: Task, payload: dict[str, Any]) -> dict[str, Any]:
 
     Returns:
         Dict with session_id, segment_id, AU12 intensity, transcription,
-        semantic match, pitch, jitter, shimmer (§2 step 6).
+        semantic match, and the canonical observational acoustic payload
+        (plus optional legacy pitch/jitter/shimmer compatibility fields)
+        required by §2 step 6 / §4.D.3.
     """
     # --- Gap 2 fix: decode base64-encoded binary fields from JSON transport ---
-    from services.worker.pipeline.serialization import decode_bytes_fields
+    from services.worker.pipeline.serialization import decode_bytes_fields, sanitize_json_payload
 
     payload = decode_bytes_fields(payload, _BINARY_FIELDS)
 
@@ -177,21 +302,45 @@ def process_segment(self: Task, payload: dict[str, Any]) -> dict[str, Any]:
             logger.warning("AU12 extraction failed for %s", segment_id, exc_info=True)
 
     # --- §4.D.3 — Acoustic Analysis ---
-    pitch_f0: float | None = None
-    jitter: float | None = None
-    shimmer: float | None = None
-    if audio_data:
+    acoustic_payload: dict[str, Any]
+    stimulus_time: float | None = payload.get("_stimulus_time")
+    if stimulus_time is None:
+        # §7D.5 / §4.D.contract — null stimulus time must emit the
+        # deterministic default acoustic payload even when audio bytes exist.
+        acoustic_payload = _default_acoustic_payload()
+    elif audio_data:
         try:
             from packages.ml_core.acoustic import AcousticAnalyzer
 
-            analyzer = AcousticAnalyzer()
-            metrics = analyzer.analyze(audio_data)
-            pitch_f0 = metrics.pitch_f0
-            jitter = metrics.jitter
-            shimmer = metrics.shimmer
+            segment_start_time_s = _derive_segment_start_time_s(
+                timestamp_utc=timestamp_utc,
+                audio_data=audio_data,
+                sample_rate=16000,
+            )
+            if segment_start_time_s is None:
+                logger.warning(
+                    "Acoustic timing derivation failed for %s; emitting default payload",
+                    segment_id,
+                )
+                acoustic_payload = _default_acoustic_payload()
+            else:
+                analyzer = AcousticAnalyzer()
+                acoustic_payload = _serialize_acoustic_metrics(
+                    analyzer.analyze(
+                        audio_data,
+                        sample_rate=16000,
+                        stimulus_time_s=stimulus_time,
+                        segment_start_time_s=segment_start_time_s,
+                    )
+                )
         except Exception:
-            # §12 Network disconnect D — retry once then null
+            # §4.D.contract / §12.4 — acoustic invalidity and local extraction
+            # failures are data-quality outcomes; emit deterministic false/null
+            # outputs instead of retrying or failing the worker.
             logger.warning("Acoustic analysis failed for %s", segment_id, exc_info=True)
+            acoustic_payload = _default_acoustic_payload()
+    else:
+        acoustic_payload = _default_acoustic_payload()
 
     # --- §4.D.4 — Text Preprocessing ---
     preprocessed_text: str = transcription
@@ -228,9 +377,7 @@ def process_segment(self: Task, payload: dict[str, Any]) -> dict[str, Any]:
         "au12_intensity": au12_intensity,
         "transcription": transcription,
         "semantic": semantic,
-        "pitch_f0": pitch_f0,
-        "jitter": jitter,
-        "shimmer": shimmer,
+        **acoustic_payload,
     }
 
     physio_context: dict[str, Any] | None = payload.get("_physiological_context")
@@ -247,6 +394,8 @@ def process_segment(self: Task, payload: dict[str, Any]) -> dict[str, Any]:
     for key in _FORWARD_FIELDS:
         if key in payload:
             result[key] = payload[key]
+
+    result = sanitize_json_payload(result)
 
     # §2 step 6 → §2 step 7 — Dispatch to Module E via Celery
     try:
@@ -352,6 +501,7 @@ def persist_metrics(self: Task, metrics: dict[str, Any]) -> None:
                  and is stored in encounter_log.stimulus_time as DOUBLE PRECISION.
     """
     from services.worker.pipeline.analytics import MetricsStore, ThompsonSamplingEngine
+    from services.worker.pipeline.serialization import sanitize_json_payload
 
     store = MetricsStore()
 
@@ -378,6 +528,8 @@ def persist_metrics(self: Task, metrics: dict[str, Any]) -> None:
             # physiological context instead of forwarding an explicit null.
             persistable_metrics.pop("_physiological_context", None)
 
+        persistable_metrics = sanitize_json_payload(persistable_metrics)
+        metrics = persistable_metrics
         store.insert_metrics(persistable_metrics)
         logger.info(
             "Metrics persisted for %s/%s",

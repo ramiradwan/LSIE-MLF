@@ -10,7 +10,11 @@ from __future__ import annotations
 import base64
 from typing import Any
 
-from services.worker.pipeline.serialization import decode_bytes_fields, encode_bytes_fields
+from services.worker.pipeline.serialization import (
+    decode_bytes_fields,
+    encode_bytes_fields,
+    sanitize_json_payload,
+)
 
 
 class TestEncodeByteFields:
@@ -118,6 +122,28 @@ class TestDecodeByteFields:
         payload: dict[str, Any] = {"_audio_data": b64}
         result = decode_bytes_fields(payload, ["_audio_data"])
         assert result is payload
+
+
+class TestSanitizeJsonPayload:
+    """JSON sanitization keeps nulls and strips non-finite float placeholders."""
+
+    def test_non_finite_floats_become_none_recursively(self) -> None:
+        payload: dict[str, Any] = {
+            "value": float("nan"),
+            "nested": [float("inf"), {"other": float("-inf"), "null": None}],
+            "ok": 1.25,
+        }
+        result = sanitize_json_payload(payload)
+        assert result is payload
+        assert payload["value"] is None
+        assert payload["nested"][0] is None
+        assert payload["nested"][1]["other"] is None
+        assert payload["nested"][1]["null"] is None
+        assert payload["ok"] == 1.25
+
+    def test_tuple_payload_rebuilt_with_json_safe_values(self) -> None:
+        result = sanitize_json_payload((float("nan"), 1.0, None))
+        assert result == (None, 1.0, None)
 
 
 class TestRoundTrip:

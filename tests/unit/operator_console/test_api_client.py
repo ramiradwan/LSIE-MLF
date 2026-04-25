@@ -406,3 +406,66 @@ class TestEncounterValidation:
         assert e.state is EncounterState.REJECTED_GATE_CLOSED
         assert e.semantic_gate == 0
         assert e.gated_reward == 0.0
+
+    def test_completed_encounter_round_trips_nested_acoustic_null_contract(self) -> None:
+        transport = FakeTransport()
+        session_id = uuid4()
+        transport.enqueue_json(
+            [
+                {
+                    "encounter_id": "e-acoustic-null",
+                    "session_id": str(session_id),
+                    "segment_timestamp_utc": _utc(2026, 4, 17, 12, 2).isoformat(),
+                    "state": EncounterState.COMPLETED.value,
+                    "active_arm": "arm_a",
+                    "semantic_gate": 1,
+                    "p90_intensity": 0.55,
+                    "gated_reward": 0.55,
+                    "n_frames_in_window": 120,
+                    "physiology_attached": False,
+                    "notes": [],
+                    "acoustic": {
+                        "f0_valid_measure": False,
+                        "f0_valid_baseline": False,
+                        "perturbation_valid_measure": False,
+                        "perturbation_valid_baseline": False,
+                        "voiced_coverage_measure_s": 0.0,
+                        "voiced_coverage_baseline_s": 0.0,
+                        "f0_mean_measure_hz": None,
+                        "f0_mean_baseline_hz": None,
+                        "f0_delta_semitones": None,
+                        "jitter_mean_measure": None,
+                        "jitter_mean_baseline": None,
+                        "jitter_delta": None,
+                        "shimmer_mean_measure": None,
+                        "shimmer_mean_baseline": None,
+                        "shimmer_delta": None,
+                    },
+                }
+            ]
+        )
+        client = ApiClient("http://api.test", transport=transport)
+        [encounter] = client.list_session_encounters(session_id)
+
+        assert encounter.state is EncounterState.COMPLETED
+        assert encounter.acoustic is not None
+        acoustic = encounter.acoustic
+        assert acoustic.f0_valid_measure is False
+        assert isinstance(acoustic.f0_valid_measure, bool)
+        assert acoustic.f0_valid_baseline is False
+        assert isinstance(acoustic.f0_valid_baseline, bool)
+        assert acoustic.perturbation_valid_measure is False
+        assert isinstance(acoustic.perturbation_valid_measure, bool)
+        assert acoustic.perturbation_valid_baseline is False
+        assert isinstance(acoustic.perturbation_valid_baseline, bool)
+        assert acoustic.voiced_coverage_measure_s == 0.0
+        assert acoustic.voiced_coverage_baseline_s == 0.0
+        assert acoustic.f0_mean_measure_hz is None
+        assert acoustic.f0_mean_baseline_hz is None
+        assert acoustic.f0_delta_semitones is None
+        assert acoustic.jitter_mean_measure is None
+        assert acoustic.jitter_mean_baseline is None
+        assert acoustic.jitter_delta is None
+        assert acoustic.shimmer_mean_measure is None
+        assert acoustic.shimmer_mean_baseline is None
+        assert acoustic.shimmer_delta is None

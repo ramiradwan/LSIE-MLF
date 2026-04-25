@@ -59,6 +59,33 @@ class TestInferenceHandoffPayload:
                 resolution=[0, 1080],
             )
 
+    def test_module_c_to_d_contract_excludes_module_d_acoustic_outputs(self) -> None:
+        """Module C → D stays on the stable InferenceHandoffPayload contract."""
+        schema = InferenceHandoffPayload.model_json_schema()
+        properties = schema["properties"]
+
+        for field in (
+            "f0_valid_measure",
+            "f0_valid_baseline",
+            "perturbation_valid_measure",
+            "perturbation_valid_baseline",
+            "voiced_coverage_measure_s",
+            "voiced_coverage_baseline_s",
+            "f0_mean_measure_hz",
+            "f0_mean_baseline_hz",
+            "f0_delta_semitones",
+            "jitter_mean_measure",
+            "jitter_mean_baseline",
+            "jitter_delta",
+            "shimmer_mean_measure",
+            "shimmer_mean_baseline",
+            "shimmer_delta",
+            "pitch_f0",
+            "jitter",
+            "shimmer",
+        ):
+            assert field not in properties
+
 
 class TestSemanticEvaluationResult:
     """§8.2 — additionalProperties: false enforcement."""

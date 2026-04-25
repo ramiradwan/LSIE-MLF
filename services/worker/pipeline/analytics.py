@@ -11,6 +11,7 @@ and runs adaptive experimentation via Thompson Sampling.
 from __future__ import annotations
 
 import csv
+import json
 import logging
 import os
 import time
@@ -28,13 +29,96 @@ DB_BUFFER_MAX: int = 1000
 DB_RETRY_INTERVAL: int = 5  # seconds
 CSV_FALLBACK_DIR: str = "/data/processed/failed_tasks/"
 
+# §2.7 / §11.4 — metrics table write order must match the canonical
+# observational acoustic schema order in Persistent Store.
+_METRICS_REQUIRED_FIELDS: tuple[str, ...] = (
+    "session_id",
+    "segment_id",
+    "timestamp_utc",
+)
+
+_METRICS_OPTIONAL_FIELDS: tuple[str, ...] = (
+    "au12_intensity",
+    "pitch_f0",
+    "jitter",
+    "shimmer",
+    "f0_valid_measure",
+    "f0_valid_baseline",
+    "perturbation_valid_measure",
+    "perturbation_valid_baseline",
+    "voiced_coverage_measure_s",
+    "voiced_coverage_baseline_s",
+    "f0_mean_measure_hz",
+    "f0_mean_baseline_hz",
+    "f0_delta_semitones",
+    "jitter_mean_measure",
+    "jitter_mean_baseline",
+    "jitter_delta",
+    "shimmer_mean_measure",
+    "shimmer_mean_baseline",
+    "shimmer_delta",
+)
+
+_METRICS_DB_FIELDS: tuple[str, ...] = _METRICS_REQUIRED_FIELDS + _METRICS_OPTIONAL_FIELDS
+
+_METRICS_OVERFLOW_CORE_FIELDS: tuple[str, ...] = (
+    *_METRICS_DB_FIELDS,
+    "transcription",
+    "semantic",
+)
+
 # §2 step 7 — Parameterized INSERT for metrics table
 _INSERT_METRICS_SQL: str = """
-    INSERT INTO metrics (session_id, segment_id, timestamp_utc,
-                         au12_intensity, pitch_f0, jitter, shimmer)
-    VALUES (%(session_id)s, %(segment_id)s, %(timestamp_utc)s,
-            %(au12_intensity)s, %(pitch_f0)s, %(jitter)s, %(shimmer)s)
+    INSERT INTO metrics (
+        session_id, segment_id, timestamp_utc,
+        au12_intensity, pitch_f0, jitter, shimmer,
+        f0_valid_measure, f0_valid_baseline,
+        perturbation_valid_measure, perturbation_valid_baseline,
+        voiced_coverage_measure_s, voiced_coverage_baseline_s,
+        f0_mean_measure_hz, f0_mean_baseline_hz, f0_delta_semitones,
+        jitter_mean_measure, jitter_mean_baseline, jitter_delta,
+        shimmer_mean_measure, shimmer_mean_baseline, shimmer_delta
+    )
+    VALUES (
+        %(session_id)s, %(segment_id)s, %(timestamp_utc)s,
+        %(au12_intensity)s, %(pitch_f0)s, %(jitter)s, %(shimmer)s,
+        %(f0_valid_measure)s, %(f0_valid_baseline)s,
+        %(perturbation_valid_measure)s, %(perturbation_valid_baseline)s,
+        %(voiced_coverage_measure_s)s, %(voiced_coverage_baseline_s)s,
+        %(f0_mean_measure_hz)s, %(f0_mean_baseline_hz)s, %(f0_delta_semitones)s,
+        %(jitter_mean_measure)s, %(jitter_mean_baseline)s, %(jitter_delta)s,
+        %(shimmer_mean_measure)s, %(shimmer_mean_baseline)s, %(shimmer_delta)s
+    )
 """
+
+
+def _metrics_insert_params(metrics: dict[str, Any]) -> dict[str, Any]:
+    """Build the metrics INSERT parameter mapping without coercing null/bool values."""
+    params = {field: metrics[field] for field in _METRICS_REQUIRED_FIELDS}
+    params.update({field: metrics.get(field) for field in _METRICS_OPTIONAL_FIELDS})
+    return params
+
+
+def _overflow_fieldnames(_records: list[dict[str, Any]]) -> list[str]:
+    """Return the fixed approved CSV headers for overflow persistence."""
+    return list(_METRICS_OVERFLOW_CORE_FIELDS)
+
+
+def _csv_serialize_value(value: Any) -> Any:
+    """Serialize overflow values without collapsing None to empty strings."""
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if value is None or isinstance(value, bool):
+        return json.dumps(value)
+    if isinstance(value, (dict, list, tuple)):
+        return json.dumps(value, ensure_ascii=False)
+    return value
+
+
+def _overflow_record(record: dict[str, Any], fieldnames: list[str]) -> dict[str, Any]:
+    """Materialize a CSV row while preserving every requested field."""
+    return {field: _csv_serialize_value(record.get(field)) for field in fieldnames}
+
 
 # §2 step 7 — Parameterized INSERT for transcripts table
 _INSERT_TRANSCRIPT_SQL: str = """
@@ -217,18 +301,7 @@ class MetricsStore:
         try:
             conn.set_isolation_level(psycopg2.extensions.ISOLATION_LEVEL_READ_COMMITTED)
             with conn.cursor() as cur:
-                cur.execute(
-                    _INSERT_METRICS_SQL,
-                    {
-                        "session_id": metrics["session_id"],
-                        "segment_id": metrics["segment_id"],
-                        "timestamp_utc": metrics["timestamp_utc"],
-                        "au12_intensity": metrics.get("au12_intensity"),
-                        "pitch_f0": metrics.get("pitch_f0"),
-                        "jitter": metrics.get("jitter"),
-                        "shimmer": metrics.get("shimmer"),
-                    },
-                )
+                cur.execute(_INSERT_METRICS_SQL, _metrics_insert_params(metrics))
 
                 if metrics.get("transcription"):
                     cur.execute(
@@ -310,20 +383,11 @@ class MetricsStore:
         timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S")
         csv_path = fallback_dir / f"overflow_{timestamp}.csv"
 
-        fieldnames = [
-            "session_id",
-            "segment_id",
-            "timestamp_utc",
-            "au12_intensity",
-            "pitch_f0",
-            "jitter",
-            "shimmer",
-            "transcription",
-        ]
+        fieldnames = _overflow_fieldnames(records)
         with open(csv_path, "w", newline="", encoding="utf-8") as f:
-            writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
             writer.writeheader()
-            writer.writerows(records)
+            writer.writerows(_overflow_record(record, fieldnames) for record in records)
 
         logger.error("Overflow: wrote %d records to %s", len(records), csv_path)
 

@@ -59,6 +59,22 @@ db_query() {
     docker compose exec -T postgres psql -U "$DB_USER" -d "$DB_NAME" -t -A -c "$1" 2>/dev/null
 }
 
+apply_schema_sql_directly() {
+    local sql_file
+    local ordered_schema_files=(
+        "/docker-entrypoint-initdb.d/01-schema.sql"
+        "/docker-entrypoint-initdb.d/03-encounter-log.sql"
+        "/docker-entrypoint-initdb.d/03-physiology.sql"
+        "/docker-entrypoint-initdb.d/04-metrics-observational-acoustics.sql"
+    )
+
+    for sql_file in "${ordered_schema_files[@]}"; do
+        echo -e "       ${DIM}Applying $(basename "$sql_file")...${NC}"
+        docker compose exec -T postgres psql -U "$DB_USER" -d "$DB_NAME" \
+            -f "$sql_file" 2>&1 | sed 's/^/       /'
+    done
+}
+
 echo -e "\n${BOLD}LSIE-MLF E2E Debugger${NC}"
 echo -e "${DIM}Walking the data flow path to find the first broken link...${NC}"
 
@@ -124,11 +140,23 @@ else
     detail "(Warning: -v deletes all data including pg-data volume)"
 
     if [ "$AUTO_FIX" = true ]; then
-        echo -e "       ${YELLOW}AUTO-FIX:${NC} Executing schema SQL directly..."
-        docker compose exec -T postgres psql -U "$DB_USER" -d "$DB_NAME" \
-            -f /docker-entrypoint-initdb.d/01-schema.sql 2>&1 | sed 's/^/       /'
-        docker compose exec -T postgres psql -U "$DB_USER" -d "$DB_NAME" \
-            -f /docker-entrypoint-initdb.d/02-seed-experiments.sql 2>&1 | sed 's/^/       /'
+        echo -e "       ${YELLOW}AUTO-FIX:${NC} Executing ordered schema SQL directly..."
+        apply_schema_sql_directly
+    fi
+fi
+
+ACOUSTIC_COLUMN_COUNT=$(db_query "SELECT COUNT(*) FROM information_schema.columns WHERE table_schema='public' AND table_name='metrics' AND column_name IN ('f0_valid_measure','f0_valid_baseline','perturbation_valid_measure','perturbation_valid_baseline','voiced_coverage_measure_s','voiced_coverage_baseline_s','f0_mean_measure_hz','f0_mean_baseline_hz','f0_delta_semitones','jitter_mean_measure','jitter_mean_baseline','jitter_delta','shimmer_mean_measure','shimmer_mean_baseline','shimmer_delta');" || echo "0")
+if [ "${ACOUSTIC_COLUMN_COUNT:-0}" -eq 15 ]; then
+    ok "Observational acoustic metrics migration present (15/15 columns)"
+else
+    broken "Observational acoustic metrics migration missing ($ACOUSTIC_COLUMN_COUNT of 15 columns)"
+    hint "Existing databases must apply ordered schema files before writer services resume:"
+    hint "  01-schema.sql → 03-encounter-log.sql → 03-physiology.sql → 04-metrics-observational-acoustics.sql"
+    hint "Then restart worker, orchestrator, and api so new writes see the upgraded schema"
+
+    if [ "$AUTO_FIX" = true ]; then
+        echo -e "       ${YELLOW}AUTO-FIX:${NC} Applying ordered schema SQL for existing database..."
+        apply_schema_sql_directly
     fi
 fi
 
@@ -137,7 +165,7 @@ if [ "${ARM_COUNT:-0}" -ge 4 ]; then
     ok "Experiment arms seeded ($ARM_COUNT arms)"
 else
     broken "Experiment arms missing ($ARM_COUNT of 4)"
-    hint "Seed manually: docker compose exec -T postgres psql -U $DB_USER -d $DB_NAME \\"
+    hint "Seed manually: docker compose exec -T postgres psql -U $DB_USER -d $DB_NAME \\\"
     hint "  -f /docker-entrypoint-initdb.d/02-seed-experiments.sql"
 
     if [ "$AUTO_FIX" = true ]; then

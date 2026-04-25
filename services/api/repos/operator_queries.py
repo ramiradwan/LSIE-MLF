@@ -29,6 +29,38 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
+_ACOUSTIC_METRICS_COLUMNS: tuple[str, ...] = (
+    "pitch_f0",
+    "jitter",
+    "shimmer",
+    "f0_valid_measure",
+    "f0_valid_baseline",
+    "perturbation_valid_measure",
+    "perturbation_valid_baseline",
+    "voiced_coverage_measure_s",
+    "voiced_coverage_baseline_s",
+    "f0_mean_measure_hz",
+    "f0_mean_baseline_hz",
+    "f0_delta_semitones",
+    "jitter_mean_measure",
+    "jitter_mean_baseline",
+    "jitter_delta",
+    "shimmer_mean_measure",
+    "shimmer_mean_baseline",
+    "shimmer_delta",
+)
+
+_ACOUSTIC_METRICS_SELECT_SQL: str = ",\n        ".join(
+    ["acoustic.metrics_row_id", *[f"acoustic.{column}" for column in _ACOUSTIC_METRICS_COLUMNS]]
+)
+
+_ACOUSTIC_METRICS_LATERAL_SQL: str = ",\n            ".join(
+    [
+        "m.id AS metrics_row_id",
+        *[f"m.{column}" for column in _ACOUSTIC_METRICS_COLUMNS],
+    ]
+)
+
 # ----------------------------------------------------------------------
 # Sessions
 # ----------------------------------------------------------------------
@@ -118,13 +150,23 @@ _GET_ACTIVE_SESSION_SQL: str = """
 
 # Full reward-explanation columns per §7B — `p90_intensity`, `semantic_gate`,
 # `gated_reward`, `n_frames`, `baseline_neutral`, `stimulus_time`.
-_SESSION_ENCOUNTERS_SQL: str = """
+_SESSION_ENCOUNTERS_SQL: str = f"""
     SELECT
         e.id, e.session_id, e.segment_id, e.experiment_id,
         e.arm, e.timestamp_utc, e.gated_reward, e.p90_intensity,
         e.semantic_gate, e.is_valid, e.n_frames,
-        e.baseline_neutral, e.stimulus_time, e.created_at
+        e.baseline_neutral, e.stimulus_time, e.created_at,
+        {_ACOUSTIC_METRICS_SELECT_SQL}
     FROM encounter_log e
+    LEFT JOIN LATERAL (
+        SELECT
+            {_ACOUSTIC_METRICS_LATERAL_SQL}
+        FROM metrics m
+        WHERE m.session_id = e.session_id
+          AND m.segment_id = e.segment_id
+        ORDER BY m.created_at DESC, m.id DESC
+        LIMIT 1
+    ) acoustic ON TRUE
     WHERE e.session_id = %(session_id)s
       AND (%(before_utc)s::timestamptz IS NULL OR e.timestamp_utc < %(before_utc)s)
     ORDER BY e.timestamp_utc DESC
@@ -132,13 +174,23 @@ _SESSION_ENCOUNTERS_SQL: str = """
 """
 
 # Latest encounter for a session (used on Overview).
-_LATEST_ENCOUNTER_SQL: str = """
+_LATEST_ENCOUNTER_SQL: str = f"""
     SELECT
         e.id, e.session_id, e.segment_id, e.experiment_id,
         e.arm, e.timestamp_utc, e.gated_reward, e.p90_intensity,
         e.semantic_gate, e.is_valid, e.n_frames,
-        e.baseline_neutral, e.stimulus_time, e.created_at
+        e.baseline_neutral, e.stimulus_time, e.created_at,
+        {_ACOUSTIC_METRICS_SELECT_SQL}
     FROM encounter_log e
+    LEFT JOIN LATERAL (
+        SELECT
+            {_ACOUSTIC_METRICS_LATERAL_SQL}
+        FROM metrics m
+        WHERE m.session_id = e.session_id
+          AND m.segment_id = e.segment_id
+        ORDER BY m.created_at DESC, m.id DESC
+        LIMIT 1
+    ) acoustic ON TRUE
     WHERE e.session_id = %(session_id)s
     ORDER BY e.timestamp_utc DESC
     LIMIT 1

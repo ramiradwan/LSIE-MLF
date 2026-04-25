@@ -38,6 +38,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from packages.schemas.operator_console import (
+    AcousticObservationalMetrics,
     AlertEvent,
     AlertKind,
     AlertSeverity,
@@ -269,6 +270,7 @@ class OperatorReadService:
             gated_reward=_as_float(row.get("gated_reward")),
             n_frames_in_window=_as_int(row.get("n_frames")),
             baseline_b_neutral=_as_float(row.get("baseline_neutral")),
+            acoustic=self._build_acoustic_observational_metrics(row),
             physiology_attached=False,
             physiology_stale=None,
             notes=notes,
@@ -292,6 +294,62 @@ class OperatorReadService:
             p90_intensity=_as_float(row.get("p90_intensity")),
             gated_reward=_as_float(row.get("gated_reward")),
             n_frames_in_window=_as_int(row.get("n_frames")),
+            acoustic=self._build_acoustic_observational_metrics(row),
+        )
+
+    def _build_acoustic_observational_metrics(
+        self, row: dict[str, Any]
+    ) -> AcousticObservationalMetrics | None:
+        acoustic_fields = (
+            "pitch_f0",
+            "jitter",
+            "shimmer",
+            "f0_valid_measure",
+            "f0_valid_baseline",
+            "perturbation_valid_measure",
+            "perturbation_valid_baseline",
+            "voiced_coverage_measure_s",
+            "voiced_coverage_baseline_s",
+            "f0_mean_measure_hz",
+            "f0_mean_baseline_hz",
+            "f0_delta_semitones",
+            "jitter_mean_measure",
+            "jitter_mean_baseline",
+            "jitter_delta",
+            "shimmer_mean_measure",
+            "shimmer_mean_baseline",
+            "shimmer_delta",
+        )
+        has_metrics_row = row.get("metrics_row_id") is not None
+        has_inline_acoustic_values = any(row.get(field) is not None for field in acoustic_fields)
+        if not has_metrics_row and not has_inline_acoustic_values:
+            return None
+
+        voiced_coverage_measure = _as_float(row.get("voiced_coverage_measure_s"))
+        voiced_coverage_baseline = _as_float(row.get("voiced_coverage_baseline_s"))
+        return AcousticObservationalMetrics(
+            pitch_f0=_as_float(row.get("pitch_f0")),
+            jitter=_as_float(row.get("jitter")),
+            shimmer=_as_float(row.get("shimmer")),
+            f0_valid_measure=_as_bool(row.get("f0_valid_measure")),
+            f0_valid_baseline=_as_bool(row.get("f0_valid_baseline")),
+            perturbation_valid_measure=_as_bool(row.get("perturbation_valid_measure")),
+            perturbation_valid_baseline=_as_bool(row.get("perturbation_valid_baseline")),
+            voiced_coverage_measure_s=(
+                voiced_coverage_measure if voiced_coverage_measure is not None else 0.0
+            ),
+            voiced_coverage_baseline_s=(
+                voiced_coverage_baseline if voiced_coverage_baseline is not None else 0.0
+            ),
+            f0_mean_measure_hz=_as_float(row.get("f0_mean_measure_hz")),
+            f0_mean_baseline_hz=_as_float(row.get("f0_mean_baseline_hz")),
+            f0_delta_semitones=_as_float(row.get("f0_delta_semitones")),
+            jitter_mean_measure=_as_float(row.get("jitter_mean_measure")),
+            jitter_mean_baseline=_as_float(row.get("jitter_mean_baseline")),
+            jitter_delta=_as_float(row.get("jitter_delta")),
+            shimmer_mean_measure=_as_float(row.get("shimmer_mean_measure")),
+            shimmer_mean_baseline=_as_float(row.get("shimmer_mean_baseline")),
+            shimmer_delta=_as_float(row.get("shimmer_delta")),
         )
 
     def _build_arm_summary(self, row: dict[str, Any]) -> ArmSummary:
@@ -617,6 +675,12 @@ def _as_str(value: Any) -> str | None:
     if value is None:
         return None
     return str(value)
+
+
+def _as_bool(value: Any, *, default: bool = False) -> bool:
+    if value is None:
+        return default
+    return bool(value)
 
 
 def _latest_datetime(values: Any) -> datetime | None:

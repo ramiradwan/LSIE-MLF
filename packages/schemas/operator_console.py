@@ -49,12 +49,14 @@ Spec references:
 
 from __future__ import annotations
 
+import math
 from datetime import datetime
 from enum import StrEnum
 from typing import Literal
 from uuid import UUID
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel as PydanticBaseModel
+from pydantic import ConfigDict, Field, field_validator
 
 # ----------------------------------------------------------------------
 # Enums
@@ -166,11 +168,64 @@ def _require_utc(value: datetime | None) -> datetime | None:
 
 
 # ----------------------------------------------------------------------
+# Shared model config / validators
+# ----------------------------------------------------------------------
+
+
+class OperatorConsoleModel(PydanticBaseModel):
+    """Shared DTO base class.
+
+    `None` must survive as JSON `null`, while NaN/Infinity placeholders are
+    explicitly rejected so the operator-facing contracts never emit lossy or
+    non-standard numeric sentinels.
+    """
+
+    model_config = ConfigDict(allow_inf_nan=False, ser_json_inf_nan="null")
+
+    @field_validator("*", mode="after")
+    @classmethod
+    def _finite_floats_only(cls, value: object) -> object:
+        if isinstance(value, float) and not math.isfinite(value):
+            raise ValueError("non-finite floats are not permitted; use None for null values")
+        return value
+
+
+# ----------------------------------------------------------------------
 # Session-level DTOs
 # ----------------------------------------------------------------------
 
 
-class SessionSummary(BaseModel):
+class AcousticObservationalMetrics(OperatorConsoleModel):
+    """Canonical §7D observational acoustic summary for operator/API payloads.
+
+    The deterministic null-stimulus contract is represented directly on this
+    model: validity flags false, voiced coverage `0.0`, and nullable summary
+    statistics serialized as JSON `null`. Legacy scalar pitch/jitter/shimmer
+    are retained as optional deprecated compatibility fields for one rollout
+    window while downstream readers migrate to the canonical windowed fields.
+    """
+
+    pitch_f0: float | None = Field(default=None, deprecated=True)
+    jitter: float | None = Field(default=None, deprecated=True)
+    shimmer: float | None = Field(default=None, deprecated=True)
+    f0_valid_measure: bool = False
+    f0_valid_baseline: bool = False
+    perturbation_valid_measure: bool = False
+    perturbation_valid_baseline: bool = False
+    voiced_coverage_measure_s: float = Field(default=0.0, ge=0.0)
+    voiced_coverage_baseline_s: float = Field(default=0.0, ge=0.0)
+    f0_mean_measure_hz: float | None = Field(default=None, ge=0.0)
+    f0_mean_baseline_hz: float | None = Field(default=None, ge=0.0)
+    f0_delta_semitones: float | None = None
+    jitter_mean_measure: float | None = Field(default=None, ge=0.0)
+    jitter_mean_baseline: float | None = Field(default=None, ge=0.0)
+    jitter_delta: float | None = None
+    shimmer_mean_measure: float | None = Field(default=None, ge=0.0)
+    shimmer_mean_baseline: float | None = Field(default=None, ge=0.0)
+    shimmer_delta: float | None = None
+
+
+class SessionSummary(OperatorConsoleModel):
     """Lightweight session card for overview/history surfaces.
 
     Fields mirror §4.E.1 operator concerns: identity, status, duration,
@@ -200,7 +255,7 @@ class SessionSummary(BaseModel):
         return _require_utc(value)
 
 
-class EncounterSummary(BaseModel):
+class EncounterSummary(OperatorConsoleModel):
     """Per-segment encounter row with full §7B reward explanation.
 
     The reward-explanation fields (`p90_intensity`, `semantic_gate`,
@@ -222,6 +277,7 @@ class EncounterSummary(BaseModel):
     gated_reward: float | None = None
     n_frames_in_window: int | None = Field(default=None, ge=0)
     baseline_b_neutral: float | None = None
+    acoustic: AcousticObservationalMetrics | None = None
     physiology_attached: bool = False
     physiology_stale: bool | None = None
     notes: list[str] = Field(default_factory=list)
@@ -232,7 +288,7 @@ class EncounterSummary(BaseModel):
         return _require_utc(value)
 
 
-class LatestEncounterSummary(BaseModel):
+class LatestEncounterSummary(OperatorConsoleModel):
     """Trimmed encounter card shown on the Overview page.
 
     A strict subset of `EncounterSummary` — the overview renders the
@@ -250,6 +306,7 @@ class LatestEncounterSummary(BaseModel):
     p90_intensity: float | None = None
     gated_reward: float | None = None
     n_frames_in_window: int | None = Field(default=None, ge=0)
+    acoustic: AcousticObservationalMetrics | None = None
 
     @field_validator("segment_timestamp_utc", "stimulus_time_utc")
     @classmethod
@@ -262,7 +319,7 @@ class LatestEncounterSummary(BaseModel):
 # ----------------------------------------------------------------------
 
 
-class ArmSummary(BaseModel):
+class ArmSummary(OperatorConsoleModel):
     """One arm of a Thompson-sampled experiment.
 
     Posterior parameters (`posterior_alpha`, `posterior_beta`) and
@@ -280,7 +337,7 @@ class ArmSummary(BaseModel):
     recent_semantic_pass_rate: float | None = Field(default=None, ge=0.0, le=1.0)
 
 
-class ExperimentSummary(BaseModel):
+class ExperimentSummary(OperatorConsoleModel):
     """Compact experiment card for Overview / session header."""
 
     experiment_id: str
@@ -296,7 +353,7 @@ class ExperimentSummary(BaseModel):
         return _require_utc(value)
 
 
-class ExperimentDetail(BaseModel):
+class ExperimentDetail(OperatorConsoleModel):
     """Full experiment readback for the Experiments page.
 
     `last_update_summary` is a pre-formatted human-readable line — the
@@ -322,7 +379,7 @@ class ExperimentDetail(BaseModel):
 # ----------------------------------------------------------------------
 
 
-class PhysiologyCurrentSnapshot(BaseModel):
+class PhysiologyCurrentSnapshot(OperatorConsoleModel):
     """Per-`subject_role` latest physiology readback.
 
     Mirrors the fields Module E persists in `physiology_log` plus the
@@ -344,7 +401,7 @@ class PhysiologyCurrentSnapshot(BaseModel):
         return _require_utc(value)
 
 
-class CoModulationSummary(BaseModel):
+class CoModulationSummary(OperatorConsoleModel):
     """§7C rolling Co-Modulation Index summary.
 
     `co_modulation_index=None` + `null_reason` set is the documented
@@ -369,7 +426,7 @@ class CoModulationSummary(BaseModel):
         return _require_utc(value)
 
 
-class SessionPhysiologySnapshot(BaseModel):
+class SessionPhysiologySnapshot(OperatorConsoleModel):
     """Composed physiology payload returned from the operator physiology
     route: per-role current snapshots plus the latest co-modulation row.
     """
@@ -393,7 +450,7 @@ class SessionPhysiologySnapshot(BaseModel):
 # ----------------------------------------------------------------------
 
 
-class HealthSubsystemStatus(BaseModel):
+class HealthSubsystemStatus(OperatorConsoleModel):
     """Per-subsystem health row.
 
     `recovery_mode` and `operator_action_hint` exist specifically for
@@ -416,7 +473,7 @@ class HealthSubsystemStatus(BaseModel):
         return _require_utc(value)
 
 
-class HealthSnapshot(BaseModel):
+class HealthSnapshot(OperatorConsoleModel):
     """Overall health rollup + per-subsystem rows."""
 
     generated_at_utc: datetime
@@ -439,7 +496,7 @@ class HealthSnapshot(BaseModel):
 # ----------------------------------------------------------------------
 
 
-class AlertEvent(BaseModel):
+class AlertEvent(OperatorConsoleModel):
     """One row on the operator attention queue."""
 
     alert_id: str
@@ -464,7 +521,7 @@ class AlertEvent(BaseModel):
 # ----------------------------------------------------------------------
 
 
-class OverviewSnapshot(BaseModel):
+class OverviewSnapshot(OperatorConsoleModel):
     """Top-level payload for `GET /api/v1/operator/overview`.
 
     A composed view that the Overview page renders as its six cards.
@@ -493,7 +550,7 @@ class OverviewSnapshot(BaseModel):
 # ----------------------------------------------------------------------
 
 
-class StimulusRequest(BaseModel):
+class StimulusRequest(OperatorConsoleModel):
     """Operator-issued stimulus request.
 
     `client_action_id` is the idempotency key the API Server uses to
@@ -506,7 +563,7 @@ class StimulusRequest(BaseModel):
     client_action_id: UUID
 
 
-class StimulusAccepted(BaseModel):
+class StimulusAccepted(OperatorConsoleModel):
     """API Server acknowledgment of a stimulus submission.
 
     `received_at_utc` is the API Server's receive time for audit only;

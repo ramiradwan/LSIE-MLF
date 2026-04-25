@@ -166,6 +166,27 @@ def test_persist_metrics_keeps_reward_pipeline_unchanged() -> None:
         confidence_score=0.8,
         x_max=0.9,
     )
+    call_order: list[str] = []
+
+    def _record_insert_metrics(_metrics: dict[str, Any]) -> None:
+        call_order.append("insert_metrics")
+
+    def _record_compute_reward(**kwargs: Any) -> RewardResult:
+        del kwargs
+        call_order.append("compute_reward")
+        return reward_result
+
+    def _record_update(*args: Any, **kwargs: Any) -> None:
+        del args, kwargs
+        call_order.append("update")
+
+    def _record_log_encounter(*args: Any, **kwargs: Any) -> None:
+        del args, kwargs
+        call_order.append("log_encounter")
+
+    mock_store.insert_metrics.side_effect = _record_insert_metrics
+    mock_engine.update.side_effect = _record_update
+    mock_log_encounter = MagicMock(side_effect=_record_log_encounter)
 
     with (
         patch("services.worker.pipeline.analytics.MetricsStore", return_value=mock_store),
@@ -175,14 +196,24 @@ def test_persist_metrics_keeps_reward_pipeline_unchanged() -> None:
         ),
         patch(
             "services.worker.pipeline.reward.compute_reward",
-            return_value=reward_result,
+            side_effect=_record_compute_reward,
         ) as mock_compute_reward,
-        patch.object(mod, "_log_encounter", MagicMock()),
+        patch.object(mod, "_log_encounter", mock_log_encounter),
     ):
         mod.persist_metrics(MagicMock(), metrics_without_physio)
         mod.persist_metrics(MagicMock(), metrics_with_physio)
 
     assert mock_compute_reward.call_args_list == [expected_reward_call, expected_reward_call]
+    assert call_order == [
+        "insert_metrics",
+        "compute_reward",
+        "update",
+        "log_encounter",
+        "insert_metrics",
+        "compute_reward",
+        "update",
+        "log_encounter",
+    ]
     assert mock_engine.update.call_args_list == [
         call("exp-1", "arm-a", 0.75),
         call("exp-1", "arm-a", 0.75),

@@ -40,6 +40,28 @@ def _make_payload(**overrides: Any) -> dict[str, Any]:
     return base
 
 
+def _assert_null_acoustic_contract(payload: dict[str, Any]) -> None:
+    """Assert the deterministic v3.3 null acoustic payload at the D→E boundary."""
+    assert payload["f0_valid_measure"] is False
+    assert payload["f0_valid_baseline"] is False
+    assert payload["perturbation_valid_measure"] is False
+    assert payload["perturbation_valid_baseline"] is False
+    assert payload["voiced_coverage_measure_s"] == 0.0
+    assert payload["voiced_coverage_baseline_s"] == 0.0
+    assert payload["f0_mean_measure_hz"] is None
+    assert payload["f0_mean_baseline_hz"] is None
+    assert payload["f0_delta_semitones"] is None
+    assert payload["jitter_mean_measure"] is None
+    assert payload["jitter_mean_baseline"] is None
+    assert payload["jitter_delta"] is None
+    assert payload["shimmer_mean_measure"] is None
+    assert payload["shimmer_mean_baseline"] is None
+    assert payload["shimmer_delta"] is None
+    assert payload.get("pitch_f0") is None
+    assert payload.get("jitter") is None
+    assert payload.get("shimmer") is None
+
+
 class TestForwardFields:
     """Gap 1 fix: _FORWARD_FIELDS forwarding from input to persist_metrics dispatch."""
 
@@ -64,12 +86,14 @@ class TestForwardFields:
         for key in mod._FORWARD_FIELDS:
             assert key in result, f"Missing forward field: {key}"
             assert result[key] == forward_data[key]
+        _assert_null_acoustic_contract(result)
 
         # Verify persist_metrics receives them
         mock_persist.delay.assert_called_once()
         dispatched = mock_persist.delay.call_args[0][0]
         for key in mod._FORWARD_FIELDS:
             assert key in dispatched, f"Missing in persist dispatch: {key}"
+        _assert_null_acoustic_contract(dispatched)
 
     def test_missing_forward_fields_not_added(self) -> None:
         """Fields not present in input are NOT added to output."""
@@ -87,6 +111,7 @@ class TestForwardFields:
         assert "_au12_series" not in result
         assert "_stimulus_time" not in result
         assert "_x_max" not in result
+        _assert_null_acoustic_contract(result)
 
     def test_partial_forward_fields(self) -> None:
         """Only present forward fields are forwarded, others absent."""
@@ -107,6 +132,7 @@ class TestForwardFields:
         assert "_expected_greeting" not in result
         assert "_au12_series" not in result
         assert "_x_max" not in result
+        _assert_null_acoustic_contract(result)
 
 
 class TestBase64Decode:
@@ -154,6 +180,7 @@ class TestBase64Decode:
 
         # No transcription without audio
         assert result["transcription"] == ""
+        _assert_null_acoustic_contract(result)
 
     def test_raw_bytes_audio_passes_through(self) -> None:
         """bytes _audio_data (already decoded) passes through unchanged."""

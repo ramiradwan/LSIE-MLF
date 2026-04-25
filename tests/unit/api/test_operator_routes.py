@@ -21,6 +21,9 @@ from unittest.mock import MagicMock
 import pytest
 
 from packages.schemas.operator_console import (
+    AcousticObservationalMetrics,
+    EncounterState,
+    EncounterSummary,
     ExperimentDetail,
     HealthSnapshot,
     HealthState,
@@ -158,6 +161,55 @@ class TestOperatorReadRoutes:
             asyncio.run(get_overview(service=svc))
         exc: Any = exc_info.value
         assert exc.status_code == 503
+
+    def test_list_encounters_returns_acoustic_dto_payload(self) -> None:
+        sid = uuid.uuid4()
+        encounter = EncounterSummary(
+            encounter_id="enc-acoustic-1",
+            session_id=sid,
+            segment_timestamp_utc=_now(),
+            state=EncounterState.COMPLETED,
+            active_arm="warm_welcome",
+            semantic_gate=1,
+            p90_intensity=0.71,
+            gated_reward=0.71,
+            n_frames_in_window=128,
+            acoustic=AcousticObservationalMetrics(
+                f0_valid_measure=False,
+                f0_valid_baseline=False,
+                perturbation_valid_measure=False,
+                perturbation_valid_baseline=False,
+                voiced_coverage_measure_s=0.0,
+                voiced_coverage_baseline_s=0.0,
+                f0_mean_measure_hz=None,
+                f0_mean_baseline_hz=None,
+                f0_delta_semitones=None,
+                jitter_mean_measure=None,
+                jitter_mean_baseline=None,
+                jitter_delta=None,
+                shimmer_mean_measure=None,
+                shimmer_mean_baseline=None,
+                shimmer_delta=None,
+            ),
+        )
+        svc = MagicMock()
+        svc.list_encounters.return_value = [encounter]
+
+        result = asyncio.run(
+            list_session_encounters(
+                session_id=sid,
+                limit=25,
+                before_utc=None,
+                service=svc,
+            )
+        )
+
+        assert result == [encounter]
+        assert result[0].acoustic is not None
+        assert result[0].acoustic.f0_valid_measure is False
+        assert isinstance(result[0].acoustic.f0_valid_measure, bool)
+        assert result[0].acoustic.voiced_coverage_measure_s == 0.0
+        assert result[0].acoustic.f0_mean_measure_hz is None
 
 
 # ----------------------------------------------------------------------

@@ -23,6 +23,7 @@ Usage:
 from __future__ import annotations
 
 import base64
+import math
 from typing import Any
 
 
@@ -71,4 +72,29 @@ def decode_bytes_fields(
         value = payload.get(key)
         if isinstance(value, str):
             payload[key] = base64.b64decode(value)
+    return payload
+
+
+def sanitize_json_payload(payload: Any) -> Any:
+    """Recursively coerce JSON-unsafe non-finite floats to ``None``.
+
+    This keeps Python ``None`` intact so downstream JSON serializers emit
+    canonical ``null`` values, and prevents ``NaN`` / ``Infinity`` tokens
+    from leaking into Celery JSON payloads or operator-facing responses.
+
+    Dicts and lists are mutated in place and returned for convenience.
+    Tuples are rebuilt because they are immutable.
+    """
+    if isinstance(payload, float):
+        return payload if math.isfinite(payload) else None
+    if isinstance(payload, dict):
+        for key, value in payload.items():
+            payload[key] = sanitize_json_payload(value)
+        return payload
+    if isinstance(payload, list):
+        for idx, value in enumerate(payload):
+            payload[idx] = sanitize_json_payload(value)
+        return payload
+    if isinstance(payload, tuple):
+        return tuple(sanitize_json_payload(value) for value in payload)
     return payload

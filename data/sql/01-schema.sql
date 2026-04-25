@@ -17,17 +17,36 @@ CREATE TABLE IF NOT EXISTS sessions (
     ended_at        TIMESTAMPTZ
 );
 
--- §11 — AU12 Intensity Score, Vocal Pitch, Jitter, Shimmer
+-- §11 — AU12 intensity, legacy scalar acoustics, and canonical §7D observational acoustics
+-- Fresh installs create the full canonical §7D field set directly here.
+-- Existing deployments are upgraded by 04-metrics-observational-acoustics.sql.
+-- legacy pitch_f0/jitter/shimmer remain temporarily for compatibility while
+-- downstream readers migrate to the §7D windowed fields.
 CREATE TABLE IF NOT EXISTS metrics (
-    id              BIGSERIAL PRIMARY KEY,
-    session_id      UUID NOT NULL REFERENCES sessions(session_id),
-    segment_id      TEXT NOT NULL,
-    timestamp_utc   TIMESTAMPTZ NOT NULL,
-    au12_intensity  DOUBLE PRECISION,
-    pitch_f0        DOUBLE PRECISION,
-    jitter          DOUBLE PRECISION,
-    shimmer         DOUBLE PRECISION,
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    id                              BIGSERIAL PRIMARY KEY,
+    session_id                      UUID NOT NULL REFERENCES sessions(session_id),
+    segment_id                      TEXT NOT NULL,
+    timestamp_utc                   TIMESTAMPTZ NOT NULL,
+    au12_intensity                  DOUBLE PRECISION,
+    pitch_f0                        DOUBLE PRECISION,
+    jitter                          DOUBLE PRECISION,
+    shimmer                         DOUBLE PRECISION,
+    f0_valid_measure                BOOLEAN,
+    f0_valid_baseline               BOOLEAN,
+    perturbation_valid_measure      BOOLEAN,
+    perturbation_valid_baseline     BOOLEAN,
+    voiced_coverage_measure_s       DOUBLE PRECISION,
+    voiced_coverage_baseline_s      DOUBLE PRECISION,
+    f0_mean_measure_hz              DOUBLE PRECISION,
+    f0_mean_baseline_hz             DOUBLE PRECISION,
+    f0_delta_semitones              DOUBLE PRECISION,
+    jitter_mean_measure             DOUBLE PRECISION,
+    jitter_mean_baseline            DOUBLE PRECISION,
+    jitter_delta                    DOUBLE PRECISION,
+    shimmer_mean_measure            DOUBLE PRECISION,
+    shimmer_mean_baseline           DOUBLE PRECISION,
+    shimmer_delta                   DOUBLE PRECISION,
+    created_at                      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 -- §11 — ASR Transcription

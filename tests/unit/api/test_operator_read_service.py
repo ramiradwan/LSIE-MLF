@@ -321,6 +321,30 @@ _ENC_COLS = [
     "created_at",
 ]
 
+_ACOUSTIC_COLS = [
+    "metrics_row_id",
+    "pitch_f0",
+    "jitter",
+    "shimmer",
+    "f0_valid_measure",
+    "f0_valid_baseline",
+    "perturbation_valid_measure",
+    "perturbation_valid_baseline",
+    "voiced_coverage_measure_s",
+    "voiced_coverage_baseline_s",
+    "f0_mean_measure_hz",
+    "f0_mean_baseline_hz",
+    "f0_delta_semitones",
+    "jitter_mean_measure",
+    "jitter_mean_baseline",
+    "jitter_delta",
+    "shimmer_mean_measure",
+    "shimmer_mean_baseline",
+    "shimmer_delta",
+]
+
+_ENC_WITH_ACOUSTIC_COLS = [*_ENC_COLS, *_ACOUSTIC_COLS]
+
 
 class TestEncounterExplanation:
     def test_completed_encounter_carries_all_reward_fields(self) -> None:
@@ -368,6 +392,145 @@ class TestEncounterExplanation:
         assert enc.stimulus_time_utc is not None
         assert enc.stimulus_time_utc.tzinfo is UTC
         assert enc.notes == []
+
+    def test_completed_encounter_attaches_canonical_acoustic_metrics(self) -> None:
+        session_id = "34343434-3434-3434-3434-343434343434"
+        ts = datetime(2026, 4, 17, 11, 45, tzinfo=UTC)
+        stim_epoch = ts.timestamp()
+        cursor = _cursor(
+            [
+                (
+                    _ENC_WITH_ACOUSTIC_COLS,
+                    [
+                        (
+                            45,
+                            session_id,
+                            "seg-acoustic",
+                            "greeting_line_v1",
+                            "warm_welcome",
+                            ts,
+                            0.91,
+                            0.91,
+                            1,
+                            True,
+                            150,
+                            0.05,
+                            stim_epoch,
+                            ts,
+                            101,
+                            215.5,
+                            0.018,
+                            0.027,
+                            True,
+                            False,
+                            True,
+                            False,
+                            2.4,
+                            0.0,
+                            215.5,
+                            None,
+                            None,
+                            0.018,
+                            None,
+                            None,
+                            0.027,
+                            None,
+                            None,
+                        )
+                    ],
+                )
+            ]
+        )
+        svc = _service(cursor)
+        import uuid
+
+        [enc] = svc.list_encounters(uuid.UUID(session_id), limit=10)
+        assert enc.acoustic is not None
+        acoustic = enc.acoustic
+        assert acoustic.pitch_f0 == 215.5
+        assert acoustic.jitter == 0.018
+        assert acoustic.shimmer == 0.027
+        assert acoustic.f0_valid_measure is True
+        assert isinstance(acoustic.f0_valid_measure, bool)
+        assert acoustic.f0_valid_baseline is False
+        assert isinstance(acoustic.f0_valid_baseline, bool)
+        assert acoustic.perturbation_valid_measure is True
+        assert acoustic.perturbation_valid_baseline is False
+        assert acoustic.voiced_coverage_measure_s == 2.4
+        assert acoustic.voiced_coverage_baseline_s == 0.0
+        assert acoustic.f0_mean_measure_hz == 215.5
+        assert acoustic.f0_mean_baseline_hz is None
+        assert acoustic.f0_delta_semitones is None
+        assert acoustic.jitter_mean_measure == 0.018
+        assert acoustic.jitter_mean_baseline is None
+        assert acoustic.jitter_delta is None
+        assert acoustic.shimmer_mean_measure == 0.027
+        assert acoustic.shimmer_mean_baseline is None
+        assert acoustic.shimmer_delta is None
+
+    def test_latest_encounter_projection_preserves_acoustic_bool_and_null_defaults(self) -> None:
+        svc = _service(_cursor([]))
+        ts = datetime(2026, 4, 17, 11, 50, tzinfo=UTC)
+        latest = svc._build_latest_encounter_summary(
+            {
+                "id": 46,
+                "session_id": "35353535-3535-3535-3535-353535353535",
+                "segment_id": "seg-null-acoustic",
+                "experiment_id": "greeting_line_v1",
+                "arm": "warm_welcome",
+                "timestamp_utc": ts,
+                "gated_reward": 0.0,
+                "p90_intensity": 0.0,
+                "semantic_gate": 0,
+                "is_valid": False,
+                "n_frames": 0,
+                "baseline_neutral": None,
+                "stimulus_time": None,
+                "created_at": ts,
+                "metrics_row_id": 202,
+                "pitch_f0": None,
+                "jitter": None,
+                "shimmer": None,
+                "f0_valid_measure": None,
+                "f0_valid_baseline": None,
+                "perturbation_valid_measure": None,
+                "perturbation_valid_baseline": None,
+                "voiced_coverage_measure_s": None,
+                "voiced_coverage_baseline_s": None,
+                "f0_mean_measure_hz": None,
+                "f0_mean_baseline_hz": None,
+                "f0_delta_semitones": None,
+                "jitter_mean_measure": None,
+                "jitter_mean_baseline": None,
+                "jitter_delta": None,
+                "shimmer_mean_measure": None,
+                "shimmer_mean_baseline": None,
+                "shimmer_delta": None,
+            }
+        )
+        assert latest is not None
+        assert latest.acoustic is not None
+        acoustic = latest.acoustic
+        assert acoustic.pitch_f0 is None
+        assert acoustic.jitter is None
+        assert acoustic.shimmer is None
+        assert acoustic.f0_valid_measure is False
+        assert isinstance(acoustic.f0_valid_measure, bool)
+        assert acoustic.f0_valid_baseline is False
+        assert isinstance(acoustic.f0_valid_baseline, bool)
+        assert acoustic.perturbation_valid_measure is False
+        assert acoustic.perturbation_valid_baseline is False
+        assert acoustic.voiced_coverage_measure_s == 0.0
+        assert acoustic.voiced_coverage_baseline_s == 0.0
+        assert acoustic.f0_mean_measure_hz is None
+        assert acoustic.f0_mean_baseline_hz is None
+        assert acoustic.f0_delta_semitones is None
+        assert acoustic.jitter_mean_measure is None
+        assert acoustic.jitter_mean_baseline is None
+        assert acoustic.jitter_delta is None
+        assert acoustic.shimmer_mean_measure is None
+        assert acoustic.shimmer_mean_baseline is None
+        assert acoustic.shimmer_delta is None
 
     def test_gate_closed_encounter_rejection(self) -> None:
         session_id = "44444444-4444-4444-4444-444444444444"
@@ -441,6 +604,67 @@ class TestEncounterExplanation:
         assert enc.state is EncounterState.REJECTED_NO_FRAMES
         assert enc.n_frames_in_window == 0
         assert any("no valid frames" in n for n in enc.notes)
+
+    def test_latest_encounter_projection_keeps_inline_false_zero_acoustic_without_metrics_row(
+        self,
+    ) -> None:
+        svc = _service(_cursor([]))
+        ts = datetime(2026, 4, 17, 11, 55, tzinfo=UTC)
+        latest = svc._build_latest_encounter_summary(
+            {
+                "id": 47,
+                "session_id": "36363636-3636-3636-3636-363636363636",
+                "segment_id": "seg-inline-acoustic",
+                "experiment_id": "greeting_line_v1",
+                "arm": "warm_welcome",
+                "timestamp_utc": ts,
+                "gated_reward": 0.0,
+                "p90_intensity": 0.0,
+                "semantic_gate": 0,
+                "is_valid": False,
+                "n_frames": 0,
+                "baseline_neutral": None,
+                "stimulus_time": None,
+                "created_at": ts,
+                "pitch_f0": None,
+                "jitter": None,
+                "shimmer": None,
+                "f0_valid_measure": False,
+                "f0_valid_baseline": False,
+                "perturbation_valid_measure": False,
+                "perturbation_valid_baseline": False,
+                "voiced_coverage_measure_s": 0.0,
+                "voiced_coverage_baseline_s": 0.0,
+                "f0_mean_measure_hz": None,
+                "f0_mean_baseline_hz": None,
+                "f0_delta_semitones": None,
+                "jitter_mean_measure": None,
+                "jitter_mean_baseline": None,
+                "jitter_delta": None,
+                "shimmer_mean_measure": None,
+                "shimmer_mean_baseline": None,
+                "shimmer_delta": None,
+            }
+        )
+
+        assert latest is not None
+        assert latest.acoustic is not None
+        acoustic = latest.acoustic
+        assert acoustic.f0_valid_measure is False
+        assert isinstance(acoustic.f0_valid_measure, bool)
+        assert acoustic.f0_valid_baseline is False
+        assert isinstance(acoustic.f0_valid_baseline, bool)
+        assert acoustic.perturbation_valid_measure is False
+        assert isinstance(acoustic.perturbation_valid_measure, bool)
+        assert acoustic.perturbation_valid_baseline is False
+        assert isinstance(acoustic.perturbation_valid_baseline, bool)
+        assert acoustic.voiced_coverage_measure_s == 0.0
+        assert acoustic.voiced_coverage_baseline_s == 0.0
+        assert acoustic.f0_mean_measure_hz is None
+        assert acoustic.f0_mean_baseline_hz is None
+        assert acoustic.f0_delta_semitones is None
+        assert acoustic.jitter_mean_measure is None
+        assert acoustic.shimmer_delta is None
 
 
 # ----------------------------------------------------------------------
