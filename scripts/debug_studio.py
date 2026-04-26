@@ -218,9 +218,27 @@ SELECT json_build_object(
   'metrics_history',
   COALESCE(
     (SELECT json_agg(row_to_json(mh)) FROM (
-      SELECT pitch_f0, jitter, shimmer
-      FROM recent_metrics
-      ORDER BY timestamp_utc DESC
+      SELECT
+        to_jsonb(rm) -> 'pitch_f0' AS pitch_f0,
+        to_jsonb(rm) -> 'jitter' AS jitter,
+        to_jsonb(rm) -> 'shimmer' AS shimmer,
+        to_jsonb(rm) -> 'f0_valid_measure' AS f0_valid_measure,
+        to_jsonb(rm) -> 'f0_valid_baseline' AS f0_valid_baseline,
+        to_jsonb(rm) -> 'perturbation_valid_measure' AS perturbation_valid_measure,
+        to_jsonb(rm) -> 'perturbation_valid_baseline' AS perturbation_valid_baseline,
+        to_jsonb(rm) -> 'voiced_coverage_measure_s' AS voiced_coverage_measure_s,
+        to_jsonb(rm) -> 'voiced_coverage_baseline_s' AS voiced_coverage_baseline_s,
+        to_jsonb(rm) -> 'f0_mean_measure_hz' AS f0_mean_measure_hz,
+        to_jsonb(rm) -> 'f0_mean_baseline_hz' AS f0_mean_baseline_hz,
+        to_jsonb(rm) -> 'f0_delta_semitones' AS f0_delta_semitones,
+        to_jsonb(rm) -> 'jitter_mean_measure' AS jitter_mean_measure,
+        to_jsonb(rm) -> 'jitter_mean_baseline' AS jitter_mean_baseline,
+        to_jsonb(rm) -> 'jitter_delta' AS jitter_delta,
+        to_jsonb(rm) -> 'shimmer_mean_measure' AS shimmer_mean_measure,
+        to_jsonb(rm) -> 'shimmer_mean_baseline' AS shimmer_mean_baseline,
+        to_jsonb(rm) -> 'shimmer_delta' AS shimmer_delta
+      FROM recent_metrics rm
+      ORDER BY rm.timestamp_utc DESC
     ) mh),
     '[]'::json
   ),
@@ -664,6 +682,60 @@ def format_optional_float(value: Any, precision: int, default: str = "--") -> st
     if not math.isfinite(number):  
         return default  
     return f"{number:.{precision}f}"  
+  
+  
+def is_missing_value(value: Any) -> bool:
+    return value is None or value == "" or value == "--"
+
+
+def first_present(mapping: dict[str, Any], *keys: str, default: Any = None) -> Any:
+    if not isinstance(mapping, dict):
+        return default
+    for key in keys:
+        value = mapping.get(key)
+        if not is_missing_value(value):
+            return value
+    return default
+
+
+def format_delta_line(value: Any, precision: int, suffix: str = "") -> str:
+    if is_missing_value(value):
+        return ""
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return ""
+    if not math.isfinite(number):
+        return ""
+    sign = "+" if number > 0 else ""
+    return f"Δ {sign}{number:.{precision}f}{suffix}"
+
+
+def format_validity_flag(value: Any) -> str:
+    if is_missing_value(value):
+        return "--"
+    if isinstance(value, bool):
+        return "YES" if value else "NO"
+
+    text = str(value).strip()
+    lowered = text.lower()
+    if lowered in {"true", "t", "1", "yes", "y"}:
+        return "YES"
+    if lowered in {"false", "f", "0", "no", "n"}:
+        return "NO"
+    return text or "--"
+
+
+def format_validity_pair(
+    mapping: dict[str, Any], measure_key: str, baseline_key: str
+) -> str:
+    if not isinstance(mapping, dict):
+        return "--"
+    measure = mapping.get(measure_key)
+    baseline = mapping.get(baseline_key)
+    if is_missing_value(measure) and is_missing_value(baseline):
+        return "--"
+    return f"M {format_validity_flag(measure)} · B {format_validity_flag(baseline)}"
   
   
 def format_numeric_or_text(value: Any, precision: int, default: str = "--") -> str:  
@@ -2439,10 +2511,21 @@ class MainWindow(QMainWindow):
         side_layout.addWidget(reward_panel)  
   
         acoustic_panel = PanelCard("Acoustic Metrics")  
+        self.stat_f0_validity = InlineStat("F0 Validity", "--", compact=True)
+        self.stat_perturbation_validity = InlineStat(
+            "Perturbation Validity", "--", compact=True
+        )
         self.card_pitch = InlineSparkline("Pitch F0", "--", "Hz", "#8B5CF6")  
         self.card_jitter = InlineSparkline("Jitter", "--", "", "#06B6D4")  
         self.card_shimmer = InlineSparkline("Shimmer", "--", "", "#10B981")  
+
+        acoustic_validity_row = QHBoxLayout()
+        acoustic_validity_row.setContentsMargins(0, 0, 0, 0)
+        acoustic_validity_row.setSpacing(12)
+        acoustic_validity_row.addWidget(self.stat_f0_validity)
+        acoustic_validity_row.addWidget(self.stat_perturbation_validity)
   
+        acoustic_panel.body_layout.addLayout(acoustic_validity_row)
         acoustic_panel.body_layout.addWidget(self.card_pitch)  
   
         acoustic_bottom_grid = QGridLayout()  
@@ -2806,39 +2889,58 @@ class MainWindow(QMainWindow):
         )  
         set_plaintext_if_changed(self.transcript_output, transcript_text)  
   
-        pitch_value = pick(metrics, "pitch_f0", default=None)  
-        jitter_value = pick(metrics, "jitter", default=None)  
-        shimmer_value = pick(metrics, "shimmer", default=None)  
+        self.stat_f0_validity.set_value(
+            format_validity_pair(metrics, "f0_valid_measure", "f0_valid_baseline")
+        )
+        self.stat_perturbation_validity.set_value(
+            format_validity_pair(
+                metrics,
+                "perturbation_valid_measure",
+                "perturbation_valid_baseline",
+            )
+        )
+
+        pitch_value = first_present(metrics, "f0_mean_measure_hz", "pitch_f0")
+        jitter_value = first_present(metrics, "jitter_mean_measure", "jitter")
+        shimmer_value = first_present(metrics, "shimmer_mean_measure", "shimmer")
+
+        f0_delta_hint = format_delta_line(
+            first_present(metrics, "f0_delta_semitones"), 2, " st"
+        )
+        jitter_delta_hint = format_delta_line(first_present(metrics, "jitter_delta"), 4)
+        shimmer_delta_hint = format_delta_line(first_present(metrics, "shimmer_delta"), 4)
+
+        self.card_pitch.set_value(format_optional_float(pitch_value, 2))
+        self.card_pitch.set_hint(f"Hz · {f0_delta_hint}" if f0_delta_hint else "Hz")
+        self.card_jitter.set_value(format_optional_float(jitter_value, 4))
+        self.card_jitter.set_hint(jitter_delta_hint)
+        self.card_shimmer.set_value(format_optional_float(shimmer_value, 4))
+        self.card_shimmer.set_hint(shimmer_delta_hint)
+
+        ordered_history = list(reversed(history if isinstance(history, list) else []))
+        pitches: list[float] = []
+        jitters: list[float] = []
+        shimmers: list[float] = []
+
+        for row in ordered_history:
+            if not isinstance(row, dict):
+                continue
+            for target, keys in (
+                (pitches, ("f0_mean_measure_hz", "pitch_f0")),
+                (jitters, ("jitter_mean_measure", "jitter")),
+                (shimmers, ("shimmer_mean_measure", "shimmer")),
+            ):
+                try:
+                    number = float(first_present(row, *keys))
+                except (TypeError, ValueError):
+                    continue
+                if math.isfinite(number):
+                    target.append(number)
+
+        self.card_pitch.set_values(pitches)
+        self.card_jitter.set_values(jitters)
+        self.card_shimmer.set_values(shimmers)
   
-        self.card_pitch.set_value(format_optional_float(pitch_value, 2))  
-        self.card_jitter.set_value(format_optional_float(jitter_value, 4))  
-        self.card_shimmer.set_value(format_optional_float(shimmer_value, 4))  
-  
-        ordered_history = list(reversed(history))  
-        pitches: list[float] = []  
-        jitters: list[float] = []  
-        shimmers: list[float] = []  
-  
-        for row in ordered_history:  
-            try:  
-                if row.get("pitch_f0") is not None:  
-                    pitches.append(float(row["pitch_f0"]))  
-            except (TypeError, ValueError):  
-                pass  
-            try:  
-                if row.get("jitter") is not None:  
-                    jitters.append(float(row["jitter"]))  
-            except (TypeError, ValueError):  
-                pass  
-            try:  
-                if row.get("shimmer") is not None:  
-                    shimmers.append(float(row["shimmer"]))  
-            except (TypeError, ValueError):  
-                pass  
-  
-        self.card_pitch.set_values(pitches)  
-        self.card_jitter.set_values(jitters)  
-        self.card_shimmer.set_values(shimmers)  
   
         is_match = pick(evaluation, "is_match", default=None)  
         if isinstance(is_match, bool):  

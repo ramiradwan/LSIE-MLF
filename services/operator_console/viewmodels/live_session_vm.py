@@ -44,11 +44,16 @@ from PySide6.QtCore import QObject, Signal
 from packages.schemas.operator_console import (
     EncounterState,
     EncounterSummary,
+    ObservationalAcousticSummary,
     SessionSummary,
     StimulusAccepted,
     StimulusActionState,
 )
-from services.operator_console.formatters import build_reward_explanation
+from services.operator_console.formatters import (
+    AcousticDetailDisplay,
+    build_acoustic_detail_display,
+    build_reward_explanation,
+)
 from services.operator_console.state import OperatorStore, StimulusUiContext
 from services.operator_console.table_models.encounters_table_model import (
     EncountersTableModel,
@@ -107,6 +112,26 @@ class LiveSessionViewModel(ViewModelBase):
         if self._selected_encounter_id is None:
             return None
         return self._encounters_model.encounter_by_id(self._selected_encounter_id)
+
+    def selected_acoustic(self) -> ObservationalAcousticSummary | None:
+        """Canonical §7D acoustic summary for the selected encounter, if any."""
+        encounter = self.selected_encounter()
+        return encounter.observational_acoustic if encounter is not None else None
+
+    def acoustic_detail_for_encounter(
+        self,
+        encounter: EncounterSummary | None,
+    ) -> AcousticDetailDisplay:
+        """Preformatted §7D detail payload for exactly one encounter."""
+        summary = encounter.observational_acoustic if encounter is not None else None
+        return build_acoustic_detail_display(summary)
+
+    def acoustic_detail(self) -> AcousticDetailDisplay:
+        """Preformatted §7D detail payload for the VM's default encounter."""
+        encounter = self.selected_encounter()
+        if encounter is None:
+            encounter = _latest_completed_encounter(self._store.encounters())
+        return self.acoustic_detail_for_encounter(encounter)
 
     def select_encounter(self, encounter_id: str | None) -> None:
         if encounter_id == self._selected_encounter_id:
@@ -251,14 +276,25 @@ class LiveSessionViewModel(ViewModelBase):
     # Reward explanation
     # ------------------------------------------------------------------
 
+    def reward_explanation_for_encounter(
+        self,
+        encounter: EncounterSummary | None,
+    ) -> str:
+        """Formatted §7B reward text for exactly one detail-pane encounter."""
+        if encounter is None:
+            return "No completed encounter yet."
+        return build_reward_explanation(encounter)
+
     def reward_explanation(self) -> str:
         """Formatted §7B reward text for the selected (or latest) encounter."""
         encounter = self.selected_encounter()
         if encounter is None:
             encounter = _latest_completed_encounter(self._store.encounters())
-        if encounter is None:
-            return "No completed encounter yet."
-        return build_reward_explanation(encounter)
+        return self.reward_explanation_for_encounter(encounter)
+
+    def acoustic_explanation(self) -> str:
+        """Formatted §7D acoustic text for the selected (or latest) encounter."""
+        return self.acoustic_detail().explanation
 
     # ------------------------------------------------------------------
     # Slots

@@ -27,6 +27,7 @@ from packages.schemas.operator_console import (
     EncounterSummary,
     HealthSnapshot,
     HealthState,
+    ObservationalAcousticSummary,
     OverviewSnapshot,
     SessionSummary,
     StimulusActionState,
@@ -84,6 +85,13 @@ def _encounter(session_id: UUID) -> EncounterSummary:
         session_id=session_id,
         segment_timestamp_utc=_utc(2026, 4, 18, 10, 5),
         state=EncounterState.COMPLETED,
+        observational_acoustic=ObservationalAcousticSummary(
+            f0_valid_measure=True,
+            f0_valid_baseline=True,
+            voiced_coverage_measure_s=2.0,
+            voiced_coverage_baseline_s=2.5,
+            f0_delta_semitones=1.25,
+        ),
     )
 
 
@@ -185,7 +193,15 @@ class TestDataReplacements:
         store.encounters_changed.connect(spy)
         store.set_encounters(rows)
         assert len(spy.emissions) == 1
-        assert store.encounters()[0].encounter_id == "e1"
+        (emitted,) = spy.emissions[0]
+        assert isinstance(emitted[0], EncounterSummary)
+        assert emitted[0].observational_acoustic is not None
+        assert emitted[0].observational_acoustic.f0_delta_semitones == 1.25
+        stored = store.encounters()
+        assert isinstance(stored[0], EncounterSummary)
+        assert stored[0].encounter_id == "e1"
+        assert stored[0].observational_acoustic is not None
+        assert stored[0].observational_acoustic.f0_valid_measure is True
 
     def test_alerts_replacement(self) -> None:
         store = OperatorStore()

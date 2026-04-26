@@ -27,6 +27,7 @@ from packages.schemas.operator_console import (
     ExperimentDetail,
     HealthSnapshot,
     HealthState,
+    ObservationalAcousticSummary,
     OverviewSnapshot,
     SessionPhysiologySnapshot,
     SessionSummary,
@@ -191,6 +192,23 @@ class TestOperatorReadRoutes:
                 shimmer_mean_baseline=None,
                 shimmer_delta=None,
             ),
+            observational_acoustic=ObservationalAcousticSummary(
+                f0_valid_measure=True,
+                f0_valid_baseline=False,
+                perturbation_valid_measure=True,
+                perturbation_valid_baseline=False,
+                voiced_coverage_measure_s=2.4,
+                voiced_coverage_baseline_s=0.0,
+                f0_mean_measure_hz=215.5,
+                f0_mean_baseline_hz=None,
+                f0_delta_semitones=None,
+                jitter_mean_measure=0.018,
+                jitter_mean_baseline=None,
+                jitter_delta=None,
+                shimmer_mean_measure=0.027,
+                shimmer_mean_baseline=None,
+                shimmer_delta=None,
+            ),
         )
         svc = MagicMock()
         svc.list_encounters.return_value = [encounter]
@@ -210,6 +228,17 @@ class TestOperatorReadRoutes:
         assert isinstance(result[0].acoustic.f0_valid_measure, bool)
         assert result[0].acoustic.voiced_coverage_measure_s == 0.0
         assert result[0].acoustic.f0_mean_measure_hz is None
+        assert result[0].observational_acoustic is not None
+        assert result[0].observational_acoustic.f0_valid_measure is True
+        assert isinstance(result[0].observational_acoustic.f0_valid_measure, bool)
+        assert result[0].observational_acoustic.f0_valid_baseline is False
+        assert result[0].observational_acoustic.voiced_coverage_measure_s == 2.4
+        assert result[0].observational_acoustic.f0_mean_measure_hz == 215.5
+        assert result[0].observational_acoustic.f0_mean_baseline_hz is None
+        assert result[0].observational_acoustic.jitter_mean_measure == 0.018
+        assert result[0].observational_acoustic.jitter_mean_baseline is None
+        assert result[0].observational_acoustic.shimmer_mean_measure == 0.027
+        assert result[0].observational_acoustic.shimmer_delta is None
 
 
 # ----------------------------------------------------------------------

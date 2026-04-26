@@ -29,10 +29,15 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-_ACOUSTIC_METRICS_COLUMNS: tuple[str, ...] = (
+# Preserve the legacy scalar acoustics additively while surfacing the full
+# canonical §7D observational-acoustic projection on operator encounter rows.
+_LEGACY_ACOUSTIC_METRICS_COLUMNS: tuple[str, ...] = (
     "pitch_f0",
     "jitter",
     "shimmer",
+)
+
+_CANONICAL_OBSERVATIONAL_ACOUSTIC_COLUMNS: tuple[str, ...] = (
     "f0_valid_measure",
     "f0_valid_baseline",
     "perturbation_valid_measure",
@@ -48,6 +53,11 @@ _ACOUSTIC_METRICS_COLUMNS: tuple[str, ...] = (
     "shimmer_mean_measure",
     "shimmer_mean_baseline",
     "shimmer_delta",
+)
+
+_ACOUSTIC_METRICS_COLUMNS: tuple[str, ...] = (
+    *_LEGACY_ACOUSTIC_METRICS_COLUMNS,
+    *_CANONICAL_OBSERVATIONAL_ACOUSTIC_COLUMNS,
 )
 
 _ACOUSTIC_METRICS_SELECT_SQL: str = ",\n        ".join(

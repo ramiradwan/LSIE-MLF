@@ -52,6 +52,7 @@ from packages.schemas.operator_console import (
     HealthState,
     HealthSubsystemStatus,
     LatestEncounterSummary,
+    ObservationalAcousticSummary,
     OverviewSnapshot,
     PhysiologyCurrentSnapshot,
     SessionPhysiologySnapshot,
@@ -256,6 +257,8 @@ class OperatorReadService:
             notes.append("gate-closed: reward zero per §7B")
         if (row.get("n_frames") or 0) == 0:
             notes.append("no valid frames in measurement window")
+        acoustic = self._build_acoustic_observational_metrics(row)
+        observational_acoustic = self._build_observational_acoustic_summary(row)
         return EncounterSummary(
             encounter_id=str(row["id"]),
             session_id=_as_uuid(row["session_id"]),
@@ -270,7 +273,8 @@ class OperatorReadService:
             gated_reward=_as_float(row.get("gated_reward")),
             n_frames_in_window=_as_int(row.get("n_frames")),
             baseline_b_neutral=_as_float(row.get("baseline_neutral")),
-            acoustic=self._build_acoustic_observational_metrics(row),
+            acoustic=acoustic,
+            observational_acoustic=observational_acoustic,
             physiology_attached=False,
             physiology_stale=None,
             notes=notes,
@@ -282,6 +286,8 @@ class OperatorReadService:
         if row is None:
             return None
         state = _encounter_state_for(row)
+        acoustic = self._build_acoustic_observational_metrics(row)
+        observational_acoustic = self._build_observational_acoustic_summary(row)
         return LatestEncounterSummary(
             encounter_id=str(row["id"]),
             session_id=_as_uuid(row["session_id"]),
@@ -294,7 +300,8 @@ class OperatorReadService:
             p90_intensity=_as_float(row.get("p90_intensity")),
             gated_reward=_as_float(row.get("gated_reward")),
             n_frames_in_window=_as_int(row.get("n_frames")),
-            acoustic=self._build_acoustic_observational_metrics(row),
+            acoustic=acoustic,
+            observational_acoustic=observational_acoustic,
         )
 
     def _build_acoustic_observational_metrics(
@@ -350,6 +357,75 @@ class OperatorReadService:
             shimmer_mean_measure=_as_float(row.get("shimmer_mean_measure")),
             shimmer_mean_baseline=_as_float(row.get("shimmer_mean_baseline")),
             shimmer_delta=_as_float(row.get("shimmer_delta")),
+        )
+
+    def _build_observational_acoustic_summary(
+        self, row: dict[str, Any]
+    ) -> ObservationalAcousticSummary | None:
+        """Hydrate canonical §7D acoustic analytics, preserving SQL NULLs."""
+        f0_valid_measure_raw = row.get("f0_valid_measure")
+        f0_valid_baseline_raw = row.get("f0_valid_baseline")
+        perturbation_valid_measure_raw = row.get("perturbation_valid_measure")
+        perturbation_valid_baseline_raw = row.get("perturbation_valid_baseline")
+
+        f0_valid_measure = None if f0_valid_measure_raw is None else bool(f0_valid_measure_raw)
+        f0_valid_baseline = None if f0_valid_baseline_raw is None else bool(f0_valid_baseline_raw)
+        perturbation_valid_measure = (
+            None if perturbation_valid_measure_raw is None else bool(perturbation_valid_measure_raw)
+        )
+        perturbation_valid_baseline = (
+            None
+            if perturbation_valid_baseline_raw is None
+            else bool(perturbation_valid_baseline_raw)
+        )
+        voiced_coverage_measure_s = _as_float(row.get("voiced_coverage_measure_s"))
+        voiced_coverage_baseline_s = _as_float(row.get("voiced_coverage_baseline_s"))
+        f0_mean_measure_hz = _as_float(row.get("f0_mean_measure_hz"))
+        f0_mean_baseline_hz = _as_float(row.get("f0_mean_baseline_hz"))
+        f0_delta_semitones = _as_float(row.get("f0_delta_semitones"))
+        jitter_mean_measure = _as_float(row.get("jitter_mean_measure"))
+        jitter_mean_baseline = _as_float(row.get("jitter_mean_baseline"))
+        jitter_delta = _as_float(row.get("jitter_delta"))
+        shimmer_mean_measure = _as_float(row.get("shimmer_mean_measure"))
+        shimmer_mean_baseline = _as_float(row.get("shimmer_mean_baseline"))
+        shimmer_delta = _as_float(row.get("shimmer_delta"))
+
+        acoustic_values: tuple[bool | float | None, ...] = (
+            f0_valid_measure,
+            f0_valid_baseline,
+            perturbation_valid_measure,
+            perturbation_valid_baseline,
+            voiced_coverage_measure_s,
+            voiced_coverage_baseline_s,
+            f0_mean_measure_hz,
+            f0_mean_baseline_hz,
+            f0_delta_semitones,
+            jitter_mean_measure,
+            jitter_mean_baseline,
+            jitter_delta,
+            shimmer_mean_measure,
+            shimmer_mean_baseline,
+            shimmer_delta,
+        )
+        if all(value is None for value in acoustic_values):
+            return None
+
+        return ObservationalAcousticSummary(
+            f0_valid_measure=f0_valid_measure,
+            f0_valid_baseline=f0_valid_baseline,
+            perturbation_valid_measure=perturbation_valid_measure,
+            perturbation_valid_baseline=perturbation_valid_baseline,
+            voiced_coverage_measure_s=voiced_coverage_measure_s,
+            voiced_coverage_baseline_s=voiced_coverage_baseline_s,
+            f0_mean_measure_hz=f0_mean_measure_hz,
+            f0_mean_baseline_hz=f0_mean_baseline_hz,
+            f0_delta_semitones=f0_delta_semitones,
+            jitter_mean_measure=jitter_mean_measure,
+            jitter_mean_baseline=jitter_mean_baseline,
+            jitter_delta=jitter_delta,
+            shimmer_mean_measure=shimmer_mean_measure,
+            shimmer_mean_baseline=shimmer_mean_baseline,
+            shimmer_delta=shimmer_delta,
         )
 
     def _build_arm_summary(self, row: dict[str, Any]) -> ArmSummary:

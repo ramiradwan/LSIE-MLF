@@ -8,6 +8,7 @@ wording, §7C co-modulation null-reason, and the §12 health mapping.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import Any
 from uuid import UUID
 
 from packages.schemas.operator_console import (
@@ -16,22 +17,33 @@ from packages.schemas.operator_console import (
     EncounterSummary,
     HealthState,
     HealthSubsystemStatus,
+    ObservationalAcousticSummary,
     PhysiologyCurrentSnapshot,
     SessionPhysiologySnapshot,
     UiStatusKind,
 )
 from services.operator_console.formatters import (
+    build_acoustic_detail_display,
+    build_acoustic_explanation,
     build_health_detail,
     build_physiology_explanation,
     build_reward_explanation,
+    format_acoustic_ratio,
+    format_acoustic_seconds,
+    format_acoustic_validity,
+    format_acoustic_validity_pill,
+    format_acoustic_voiced_coverage,
     format_comodulation_index,
     format_duration,
+    format_f0_hz,
     format_freshness,
     format_health_state,
     format_percentage,
+    format_perturbation_delta,
     format_reward,
     format_semantic_confidence,
     format_semantic_gate,
+    format_semitone_delta,
     format_timestamp,
     truncate_expected_greeting,
     ui_status_for_health,
@@ -163,6 +175,161 @@ class TestCoModulationRendering:
             coverage_ratio=0.0,
         )
         assert format_comodulation_index(summary) == "insufficient data"
+
+
+# ----------------------------------------------------------------------
+# §7D observational acoustic rendering
+# ----------------------------------------------------------------------
+
+
+def _acoustic_summary(**overrides: Any) -> ObservationalAcousticSummary:
+    values: dict[str, Any] = {
+        "f0_valid_measure": True,
+        "f0_valid_baseline": True,
+        "perturbation_valid_measure": True,
+        "perturbation_valid_baseline": True,
+        "voiced_coverage_measure_s": 2.2,
+        "voiced_coverage_baseline_s": 2.1,
+        "f0_mean_measure_hz": 220.0,
+        "f0_mean_baseline_hz": 200.0,
+        "f0_delta_semitones": 1.65,
+        "jitter_mean_measure": 0.0112,
+        "jitter_mean_baseline": 0.0091,
+        "jitter_delta": 0.0021,
+        "shimmer_mean_measure": 0.031,
+        "shimmer_mean_baseline": 0.034,
+        "shimmer_delta": -0.003,
+    }
+    values.update(overrides)
+    return ObservationalAcousticSummary(**values)
+
+
+class TestAcousticRendering:
+    def test_validity_labels_distinguish_true_false_and_none(self) -> None:
+        assert format_acoustic_validity(True) == "valid"
+        assert format_acoustic_validity(False) == "invalid"
+        assert format_acoustic_validity(None) == "—"
+
+    def test_numeric_formatters_return_em_dash_for_absent_values(self) -> None:
+        assert format_f0_hz(None) == "—"
+        assert format_f0_hz(float("nan")) == "—"
+        assert format_semitone_delta(None) == "—"
+        assert format_semitone_delta(float("inf")) == "—"
+        assert format_perturbation_delta(None) == "—"
+        assert format_perturbation_delta(float("-inf")) == "—"
+
+    def test_numeric_formatters_render_zero_values(self) -> None:
+        assert format_f0_hz(0.0) == "0.0 Hz"
+        assert format_semitone_delta(0.0) == "+0.00 st"
+        assert format_perturbation_delta(0.0) == "+0.0000"
+
+    def test_numeric_formatters_render_measured_values(self) -> None:
+        assert format_f0_hz(203.456) == "203.5 Hz"
+        assert format_semitone_delta(1.234) == "+1.23 st"
+        assert format_semitone_delta(-0.456) == "-0.46 st"
+        assert format_perturbation_delta(0.003456) == "+0.0035"
+        assert format_perturbation_delta(-0.00234) == "-0.0023"
+
+    def test_detail_display_formats_cards_validity_and_coverage(self) -> None:
+        summary = _acoustic_summary()
+        display = build_acoustic_detail_display(summary)
+        assert display.has_summary is True
+        assert display.f0_validity.status is UiStatusKind.OK
+        assert display.f0_validity.text == "F0 valid"
+        assert display.perturbation_validity.status is UiStatusKind.OK
+        assert display.f0_mean.primary == "measure 220.0 Hz"
+        assert display.f0_mean.secondary == "baseline 200.0 Hz · Δ +1.65 st"
+        assert display.jitter_mean.primary == "measure 0.0112"
+        assert display.jitter_mean.secondary == "baseline 0.0091 · Δ +0.0021"
+        assert display.voiced_coverage_text == format_acoustic_voiced_coverage(2.2, 2.1)
+        assert display.voiced_coverage_text == "Voiced coverage: measure 2.20s · baseline 2.10s"
+
+    def test_validity_pill_display_distinguishes_invalid_and_absent(self) -> None:
+        invalid = format_acoustic_validity_pill("F0", False, True)
+        absent = format_acoustic_validity_pill("Perturbation", None, None)
+        assert invalid.status is UiStatusKind.INFO
+        assert invalid.text == "F0 not measured: measure F0 window invalid"
+        assert absent.status is UiStatusKind.NEUTRAL
+        assert "absent" in absent.text
+
+    def test_voiced_coverage_and_ratio_helpers_are_formatter_owned(self) -> None:
+        assert format_acoustic_seconds(1.234) == "1.23s"
+        assert format_acoustic_seconds(None) == "—"
+        assert format_acoustic_ratio(0.01234) == "0.0123"
+        assert format_acoustic_ratio(0.0) == "0.0000"
+        assert format_acoustic_voiced_coverage(None, 2.0) == (
+            "Voiced coverage: measure — · baseline 2.00s"
+        )
+
+    def test_absent_acoustic_summary_message(self) -> None:
+        assert build_acoustic_explanation(None) == "No acoustic data for this encounter."
+
+    def test_explanation_renders_zero_acoustic_values_as_measured(self) -> None:
+        summary = _acoustic_summary(
+            f0_mean_measure_hz=0.0,
+            f0_mean_baseline_hz=0.0,
+            f0_delta_semitones=0.0,
+            jitter_mean_measure=0.0,
+            jitter_mean_baseline=0.0,
+            jitter_delta=0.0,
+            shimmer_mean_measure=0.0,
+            shimmer_mean_baseline=0.0,
+            shimmer_delta=0.0,
+        )
+        text = build_acoustic_explanation(summary)
+        display = build_acoustic_detail_display(summary)
+        assert "F0 means: measure 0.0 Hz, baseline 0.0 Hz" in text
+        assert "F0 Δ +0.00 st" in text
+        assert "Jitter Δ +0.0000" in text
+        assert "Shimmer Δ +0.0000" in text
+        assert "not measured" not in text
+        assert display.f0_mean.primary == "measure 0.0 Hz"
+        assert display.f0_mean.secondary == "baseline 0.0 Hz · Δ +0.00 st"
+        assert display.jitter_mean.primary == "measure 0.0000"
+        assert display.jitter_mean.secondary == "baseline 0.0000 · Δ +0.0000"
+        assert display.shimmer_mean.primary == "measure 0.0000"
+        assert display.shimmer_mean.secondary == "baseline 0.0000 · Δ +0.0000"
+
+    def test_explanation_keeps_invalid_f0_separate_from_valid_perturbation(self) -> None:
+        summary = _acoustic_summary(
+            f0_valid_measure=False,
+            f0_mean_measure_hz=None,
+            f0_delta_semitones=None,
+            jitter_delta=0.00234,
+            shimmer_delta=-0.00123,
+        )
+        text = build_acoustic_explanation(summary)
+        assert "F0 windows: measure invalid, baseline valid" in text
+        assert "F0 Δ not measured (measure F0 window invalid)" in text
+        assert "Perturbation windows: measure valid, baseline valid" in text
+        assert "Jitter Δ +0.0023" in text
+        assert "Shimmer Δ -0.0012" in text
+
+    def test_explanation_keeps_invalid_perturbation_separate_from_f0_delta(self) -> None:
+        summary = _acoustic_summary(
+            f0_delta_semitones=2.5,
+            perturbation_valid_baseline=False,
+            jitter_mean_baseline=None,
+            jitter_delta=None,
+            shimmer_mean_baseline=None,
+            shimmer_delta=None,
+        )
+        text = build_acoustic_explanation(summary)
+        assert "F0 windows: measure valid, baseline valid" in text
+        assert "F0 Δ +2.50 st" in text
+        assert "Perturbation windows: measure valid, baseline invalid" in text
+        assert "Jitter Δ not measured (baseline perturbation window invalid)" in text
+        assert "Shimmer Δ not measured (baseline perturbation window invalid)" in text
+
+    def test_explanation_distinguishes_missing_baseline_mean_from_invalid_window(self) -> None:
+        summary = _acoustic_summary(
+            f0_mean_baseline_hz=None,
+            f0_delta_semitones=None,
+        )
+        text = build_acoustic_explanation(summary)
+        assert "F0 means: measure 220.0 Hz, baseline —" in text
+        assert "F0 Δ not measured (baseline F0 mean absent)" in text
+        assert "F0 window invalid" not in text
 
 
 # ----------------------------------------------------------------------

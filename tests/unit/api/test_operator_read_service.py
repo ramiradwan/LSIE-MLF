@@ -344,6 +344,7 @@ _ACOUSTIC_COLS = [
 ]
 
 _ENC_WITH_ACOUSTIC_COLS = [*_ENC_COLS, *_ACOUSTIC_COLS]
+_ALL_NULL_ACOUSTIC_VALUES = (None,) * len(_ACOUSTIC_COLS)
 
 
 class TestEncounterExplanation:
@@ -354,7 +355,7 @@ class TestEncounterExplanation:
         cursor = _cursor(
             [
                 (
-                    _ENC_COLS,
+                    _ENC_WITH_ACOUSTIC_COLS,
                     [
                         (
                             42,
@@ -371,6 +372,7 @@ class TestEncounterExplanation:
                             0.1,
                             stim_epoch,
                             ts,
+                            *_ALL_NULL_ACOUSTIC_VALUES,
                         )
                     ],
                 )
@@ -391,6 +393,8 @@ class TestEncounterExplanation:
         assert enc.active_arm == "warm_welcome"
         assert enc.stimulus_time_utc is not None
         assert enc.stimulus_time_utc.tzinfo is UTC
+        assert enc.acoustic is None
+        assert enc.observational_acoustic is None
         assert enc.notes == []
 
     def test_completed_encounter_attaches_canonical_acoustic_metrics(self) -> None:
@@ -467,6 +471,22 @@ class TestEncounterExplanation:
         assert acoustic.shimmer_mean_measure == 0.027
         assert acoustic.shimmer_mean_baseline is None
         assert acoustic.shimmer_delta is None
+        assert enc.observational_acoustic is not None
+        assert enc.observational_acoustic.f0_valid_measure is True
+        assert enc.observational_acoustic.f0_valid_baseline is False
+        assert enc.observational_acoustic.perturbation_valid_measure is True
+        assert enc.observational_acoustic.perturbation_valid_baseline is False
+        assert enc.observational_acoustic.voiced_coverage_measure_s == 2.4
+        assert enc.observational_acoustic.voiced_coverage_baseline_s == 0.0
+        assert enc.observational_acoustic.f0_mean_measure_hz == 215.5
+        assert enc.observational_acoustic.f0_mean_baseline_hz is None
+        assert enc.observational_acoustic.f0_delta_semitones is None
+        assert enc.observational_acoustic.jitter_mean_measure == 0.018
+        assert enc.observational_acoustic.jitter_mean_baseline is None
+        assert enc.observational_acoustic.jitter_delta is None
+        assert enc.observational_acoustic.shimmer_mean_measure == 0.027
+        assert enc.observational_acoustic.shimmer_mean_baseline is None
+        assert enc.observational_acoustic.shimmer_delta is None
 
     def test_latest_encounter_projection_preserves_acoustic_bool_and_null_defaults(self) -> None:
         svc = _service(_cursor([]))
@@ -531,6 +551,7 @@ class TestEncounterExplanation:
         assert acoustic.shimmer_mean_measure is None
         assert acoustic.shimmer_mean_baseline is None
         assert acoustic.shimmer_delta is None
+        assert latest.observational_acoustic is None
 
     def test_gate_closed_encounter_rejection(self) -> None:
         session_id = "44444444-4444-4444-4444-444444444444"
@@ -538,7 +559,7 @@ class TestEncounterExplanation:
         cursor = _cursor(
             [
                 (
-                    _ENC_COLS,
+                    _ENC_WITH_ACOUSTIC_COLS,
                     [
                         (
                             43,
@@ -555,6 +576,7 @@ class TestEncounterExplanation:
                             0.1,
                             None,
                             ts,
+                            *_ALL_NULL_ACOUSTIC_VALUES,
                         )
                     ],
                 )
@@ -575,7 +597,7 @@ class TestEncounterExplanation:
         cursor = _cursor(
             [
                 (
-                    _ENC_COLS,
+                    _ENC_WITH_ACOUSTIC_COLS,
                     [
                         (
                             44,
@@ -592,6 +614,7 @@ class TestEncounterExplanation:
                             None,
                             None,
                             ts,
+                            *_ALL_NULL_ACOUSTIC_VALUES,
                         )
                     ],
                 )
@@ -665,6 +688,15 @@ class TestEncounterExplanation:
         assert acoustic.f0_delta_semitones is None
         assert acoustic.jitter_mean_measure is None
         assert acoustic.shimmer_delta is None
+        assert latest.observational_acoustic is not None
+        assert latest.observational_acoustic.f0_valid_measure is False
+        assert latest.observational_acoustic.f0_valid_baseline is False
+        assert latest.observational_acoustic.perturbation_valid_measure is False
+        assert latest.observational_acoustic.perturbation_valid_baseline is False
+        assert latest.observational_acoustic.voiced_coverage_measure_s == 0.0
+        assert latest.observational_acoustic.voiced_coverage_baseline_s == 0.0
+        assert latest.observational_acoustic.f0_mean_measure_hz is None
+        assert latest.observational_acoustic.shimmer_delta is None
 
 
 # ----------------------------------------------------------------------

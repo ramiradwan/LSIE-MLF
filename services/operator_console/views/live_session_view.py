@@ -49,6 +49,9 @@ from packages.schemas.operator_console import (
     UiStatusKind,
 )
 from services.operator_console.formatters import (
+    AcousticDetailDisplay,
+    AcousticMetricCardDisplay,
+    acoustic_section_labels,
     format_reward,
     format_semantic_confidence,
     format_semantic_gate,
@@ -207,16 +210,17 @@ class LiveSessionView(QWidget):
 
         selected = self._vm.selected_encounter()
         if selected is None:
-            # When no row is selected, fall back to the latest encounter
-            # so the detail pane never goes blank while data exists.
-            selected = _latest_encounter(self._vm.encounters_model().rowCount())
-            if selected is None:
-                rows = self._vm.encounters_model()
-                if rows.rowCount() > 0:
-                    last = rows.row_at(rows.rowCount() - 1)
-                    if last is not None:
-                        selected = last
-        self._detail_panel.set_encounter(selected, self._vm.reward_explanation())
+            # When no row is selected, fall back to the same encounter row
+            # for subtitle, reward explanation, and §7D acoustic details so
+            # the detail pane never mixes identities while data exists.
+            rows = self._vm.encounters_model()
+            if rows.rowCount() > 0:
+                selected = rows.row_at(rows.rowCount() - 1)
+        self._detail_panel.set_encounter(
+            selected,
+            self._vm.reward_explanation_for_encounter(selected),
+            self._vm.acoustic_detail_for_encounter(selected),
+        )
         self._sync_countdown_timer()
 
     def _sync_countdown_timer(self) -> None:
@@ -372,12 +376,11 @@ class _SessionHeaderPanel(QFrame):
 
 
 class _EncounterDetailPanel(QFrame):
-    """Reward-explanation detail pane for the selected encounter.
+    """Reward and §7D acoustic detail pane for the selected encounter.
 
-    Grid of §7B inputs (P90, Gate, Gated reward, Frames, Baseline) +
-    a human-readable explanation line. Physiology freshness for the
-    segment sits at the bottom so the operator can tie physiology to
-    the reward they are reading above.
+    The existing §7B grid remains the first trust surface. The appended
+    §7D section is observational only: validity, windowed means, deltas,
+    and voiced coverage are displayed without coupling them to reward.
     """
 
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -420,6 +423,52 @@ class _EncounterDetailPanel(QFrame):
         self._explanation.setObjectName("MetricCardSecondary")
         self._explanation.setWordWrap(True)
 
+        acoustic_labels = acoustic_section_labels()
+        self._acoustic_title = QLabel(acoustic_labels.section_title, self)
+        self._acoustic_title.setObjectName("PanelTitle")
+        self._acoustic_empty = QLabel(acoustic_labels.empty_text, self)
+        self._acoustic_empty.setObjectName("MetricCardSecondary")
+        self._acoustic_empty.setWordWrap(True)
+
+        self._f0_validity_pill = StatusPill(self)
+        self._perturbation_validity_pill = StatusPill(self)
+        validity_row = QHBoxLayout()
+        validity_row.setContentsMargins(0, 0, 0, 0)
+        validity_row.setSpacing(16)
+        validity_row.addWidget(self._f0_validity_pill)
+        validity_row.addWidget(self._perturbation_validity_pill)
+        validity_row.addStretch(1)
+
+        self._f0_mean_card = MetricCard(acoustic_labels.f0_metric_title, self)
+        self._jitter_mean_card = MetricCard(acoustic_labels.jitter_metric_title, self)
+        self._shimmer_mean_card = MetricCard(acoustic_labels.shimmer_metric_title, self)
+        acoustic_grid = QGridLayout()
+        acoustic_grid.setContentsMargins(0, 0, 0, 0)
+        acoustic_grid.setHorizontalSpacing(10)
+        acoustic_grid.setVerticalSpacing(10)
+        for idx, card in enumerate(
+            [self._f0_mean_card, self._jitter_mean_card, self._shimmer_mean_card]
+        ):
+            acoustic_grid.addWidget(card, 0, idx)
+        for col in range(3):
+            acoustic_grid.setColumnStretch(col, 1)
+
+        self._voiced_coverage_label = QLabel("", self)
+        self._voiced_coverage_label.setObjectName("MetricCardSecondary")
+        self._voiced_coverage_label.setWordWrap(True)
+        self._acoustic_explanation = QLabel("", self)
+        self._acoustic_explanation.setObjectName("MetricCardSecondary")
+        self._acoustic_explanation.setWordWrap(True)
+
+        self._acoustic_metrics_container = QWidget(self)
+        acoustic_layout = QVBoxLayout(self._acoustic_metrics_container)
+        acoustic_layout.setContentsMargins(0, 0, 0, 0)
+        acoustic_layout.setSpacing(8)
+        acoustic_layout.addLayout(validity_row)
+        acoustic_layout.addLayout(acoustic_grid)
+        acoustic_layout.addWidget(self._voiced_coverage_label)
+        acoustic_layout.addWidget(self._acoustic_explanation)
+
         self._countdown_label = QLabel("", self)
         self._countdown_label.setObjectName("ActionBarCountdown")
         self._countdown_label.setVisible(False)
@@ -431,12 +480,16 @@ class _EncounterDetailPanel(QFrame):
         layout.addWidget(self._subtitle)
         layout.addLayout(grid)
         layout.addWidget(self._explanation)
+        layout.addWidget(self._acoustic_title)
+        layout.addWidget(self._acoustic_empty)
+        layout.addWidget(self._acoustic_metrics_container)
         layout.addWidget(self._countdown_label)
 
     def set_encounter(
         self,
         encounter: EncounterSummary | None,
         explanation: str,
+        acoustic_detail: AcousticDetailDisplay,
     ) -> None:
         if encounter is None:
             self._subtitle.setText("No encounter selected.")
@@ -452,6 +505,7 @@ class _EncounterDetailPanel(QFrame):
                 card.set_secondary_text("")
                 card.set_status(UiStatusKind.NEUTRAL, None)
             self._explanation.setText(explanation)
+            self._set_acoustic(acoustic_detail)
             return
 
         ts_text = format_timestamp(encounter.segment_timestamp_utc)
@@ -509,6 +563,32 @@ class _EncounterDetailPanel(QFrame):
             self._physiology_card.set_status(UiStatusKind.NEUTRAL, "absent")
 
         self._explanation.setText(explanation)
+        self._set_acoustic(acoustic_detail)
+
+    def _set_acoustic(self, detail: AcousticDetailDisplay) -> None:
+        self._acoustic_title.setText(detail.section_title)
+        self._acoustic_empty.setText(detail.empty_text)
+        self._f0_validity_pill.set_kind(detail.f0_validity.status)
+        self._f0_validity_pill.set_text(detail.f0_validity.text)
+        self._perturbation_validity_pill.set_kind(detail.perturbation_validity.status)
+        self._perturbation_validity_pill.set_text(detail.perturbation_validity.text)
+        self._set_acoustic_card(self._f0_mean_card, detail.f0_mean)
+        self._set_acoustic_card(self._jitter_mean_card, detail.jitter_mean)
+        self._set_acoustic_card(self._shimmer_mean_card, detail.shimmer_mean)
+        self._voiced_coverage_label.setText(detail.voiced_coverage_text)
+        self._acoustic_explanation.setText(detail.explanation)
+
+        self._acoustic_empty.setVisible(not detail.has_summary)
+        self._acoustic_metrics_container.setVisible(detail.has_summary)
+
+    def _set_acoustic_card(
+        self,
+        card: MetricCard,
+        display: AcousticMetricCardDisplay,
+    ) -> None:
+        card.set_primary_text(display.primary)
+        card.set_secondary_text(display.secondary)
+        card.set_status(display.status, display.status_text)
 
     def set_countdown(self, seconds: float | None) -> None:
         if seconds is None:
@@ -519,14 +599,3 @@ class _EncounterDetailPanel(QFrame):
         minutes, secs = divmod(total, 60)
         self._countdown_label.setText(f"Measurement window: {minutes:02d}:{secs:02d} remaining")
         self._countdown_label.setVisible(True)
-
-
-def _latest_encounter(_row_count: int) -> EncounterSummary | None:
-    """Placeholder so `_refresh` can fall back without re-walking rows.
-
-    Kept as a deliberate no-op hook — the fallback in `_refresh` reads
-    the last row directly off the model because the VM's `row_at` is
-    the authoritative accessor and we would otherwise duplicate the
-    bounds check here.
-    """
-    return None

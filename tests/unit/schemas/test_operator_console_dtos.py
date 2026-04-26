@@ -34,6 +34,7 @@ from packages.schemas.operator_console import (
     HealthState,
     HealthSubsystemStatus,
     LatestEncounterSummary,
+    ObservationalAcousticSummary,
     OverviewSnapshot,
     PhysiologyCurrentSnapshot,
     SessionPhysiologySnapshot,
@@ -178,6 +179,104 @@ class TestCoModulationNullValid:
 # ----------------------------------------------------------------------
 # §7D observational acoustic payload
 # ----------------------------------------------------------------------
+
+
+class TestObservationalAcousticSummary:
+    def test_defaults_follow_optional_null_contract(self) -> None:
+        summary = ObservationalAcousticSummary()
+        dumped = json.loads(summary.model_dump_json())
+        assert dumped == {
+            "f0_valid_measure": None,
+            "f0_valid_baseline": None,
+            "perturbation_valid_measure": None,
+            "perturbation_valid_baseline": None,
+            "voiced_coverage_measure_s": None,
+            "voiced_coverage_baseline_s": None,
+            "f0_mean_measure_hz": None,
+            "f0_mean_baseline_hz": None,
+            "f0_delta_semitones": None,
+            "jitter_mean_measure": None,
+            "jitter_mean_baseline": None,
+            "jitter_delta": None,
+            "shimmer_mean_measure": None,
+            "shimmer_mean_baseline": None,
+            "shimmer_delta": None,
+        }
+
+    def test_field_names_match_canonical_section_7d_schema(self) -> None:
+        assert tuple(ObservationalAcousticSummary.model_fields.keys()) == (
+            "f0_valid_measure",
+            "f0_valid_baseline",
+            "perturbation_valid_measure",
+            "perturbation_valid_baseline",
+            "voiced_coverage_measure_s",
+            "voiced_coverage_baseline_s",
+            "f0_mean_measure_hz",
+            "f0_mean_baseline_hz",
+            "f0_delta_semitones",
+            "jitter_mean_measure",
+            "jitter_mean_baseline",
+            "jitter_delta",
+            "shimmer_mean_measure",
+            "shimmer_mean_baseline",
+            "shimmer_delta",
+        )
+
+    def test_non_finite_floats_are_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            ObservationalAcousticSummary(f0_mean_measure_hz=float("nan"))
+
+    def test_negative_non_negative_fields_are_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            ObservationalAcousticSummary(voiced_coverage_measure_s=-0.1)
+
+    def test_encounter_summaries_default_observational_acoustic_to_none(self) -> None:
+        encounter = EncounterSummary(
+            encounter_id="e-no-acoustic",
+            session_id=uuid.uuid4(),
+            segment_timestamp_utc=_utc(),
+            state=EncounterState.COMPLETED,
+        )
+        latest = LatestEncounterSummary(
+            encounter_id="e-latest-no-acoustic",
+            session_id=uuid.uuid4(),
+            segment_timestamp_utc=_utc(),
+            state=EncounterState.COMPLETED,
+        )
+        assert encounter.observational_acoustic is None
+        assert latest.observational_acoustic is None
+
+    def test_encounter_summary_roundtrips_nested_observational_acoustic(self) -> None:
+        summary = EncounterSummary(
+            encounter_id="e-observational-acoustic-1",
+            session_id=uuid.uuid4(),
+            segment_timestamp_utc=_utc(),
+            state=EncounterState.COMPLETED,
+            semantic_gate=1,
+            p90_intensity=0.91,
+            gated_reward=0.91,
+            observational_acoustic=ObservationalAcousticSummary(
+                f0_valid_measure=True,
+                f0_valid_baseline=True,
+                perturbation_valid_measure=True,
+                perturbation_valid_baseline=True,
+                voiced_coverage_measure_s=2.5,
+                voiced_coverage_baseline_s=2.0,
+                f0_mean_measure_hz=210.0,
+                f0_mean_baseline_hz=180.0,
+                f0_delta_semitones=2.667,
+                jitter_mean_measure=0.012,
+                jitter_mean_baseline=0.009,
+                jitter_delta=0.003,
+                shimmer_mean_measure=0.034,
+                shimmer_mean_baseline=0.03,
+                shimmer_delta=0.004,
+            ),
+        )
+        restored = EncounterSummary.model_validate_json(summary.model_dump_json())
+        assert restored.observational_acoustic is not None
+        assert restored.observational_acoustic.f0_valid_measure is True
+        assert restored.observational_acoustic.f0_mean_measure_hz == pytest.approx(210.0)
 
 
 class TestAcousticObservationalMetrics:

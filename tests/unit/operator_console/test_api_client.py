@@ -35,6 +35,7 @@ from packages.schemas.operator_console import (
     EncounterState,
     HealthSnapshot,
     HealthState,
+    ObservationalAcousticSummary,
     OverviewSnapshot,
     SessionSummary,
     StimulusAccepted,
@@ -407,13 +408,73 @@ class TestEncounterValidation:
         assert e.semantic_gate == 0
         assert e.gated_reward == 0.0
 
-    def test_completed_encounter_round_trips_nested_acoustic_null_contract(self) -> None:
+    def test_completed_encounter_round_trips_observational_acoustic(self) -> None:
         transport = FakeTransport()
         session_id = uuid4()
         transport.enqueue_json(
             [
                 {
-                    "encounter_id": "e-acoustic-null",
+                    "encounter_id": "e-observational-acoustic",
+                    "session_id": str(session_id),
+                    "segment_timestamp_utc": _utc(2026, 4, 17, 12, 2).isoformat(),
+                    "state": EncounterState.COMPLETED.value,
+                    "active_arm": "arm_a",
+                    "semantic_gate": 1,
+                    "p90_intensity": 0.61,
+                    "gated_reward": 0.61,
+                    "n_frames_in_window": 120,
+                    "physiology_attached": True,
+                    "notes": [],
+                    "observational_acoustic": {
+                        "f0_valid_measure": True,
+                        "f0_valid_baseline": True,
+                        "perturbation_valid_measure": True,
+                        "perturbation_valid_baseline": True,
+                        "voiced_coverage_measure_s": 3.2,
+                        "voiced_coverage_baseline_s": 2.7,
+                        "f0_mean_measure_hz": 210.0,
+                        "f0_mean_baseline_hz": 190.0,
+                        "f0_delta_semitones": 1.73,
+                        "jitter_mean_measure": 0.012,
+                        "jitter_mean_baseline": 0.010,
+                        "jitter_delta": 0.002,
+                        "shimmer_mean_measure": 0.021,
+                        "shimmer_mean_baseline": 0.019,
+                        "shimmer_delta": 0.002,
+                    },
+                }
+            ]
+        )
+        client = ApiClient("http://api.test", transport=transport)
+        [encounter] = client.list_session_encounters(session_id)
+
+        assert encounter.state is EncounterState.COMPLETED
+        observational_acoustic = encounter.observational_acoustic
+        assert isinstance(observational_acoustic, ObservationalAcousticSummary)
+        assert observational_acoustic.f0_valid_measure is True
+        assert isinstance(observational_acoustic.f0_valid_measure, bool)
+        assert observational_acoustic.f0_valid_baseline is True
+        assert observational_acoustic.perturbation_valid_measure is True
+        assert observational_acoustic.perturbation_valid_baseline is True
+        assert observational_acoustic.voiced_coverage_measure_s == pytest.approx(3.2)
+        assert observational_acoustic.voiced_coverage_baseline_s == pytest.approx(2.7)
+        assert observational_acoustic.f0_mean_measure_hz == pytest.approx(210.0)
+        assert observational_acoustic.f0_mean_baseline_hz == pytest.approx(190.0)
+        assert observational_acoustic.f0_delta_semitones == pytest.approx(1.73)
+        assert observational_acoustic.jitter_mean_measure == pytest.approx(0.012)
+        assert observational_acoustic.jitter_mean_baseline == pytest.approx(0.010)
+        assert observational_acoustic.jitter_delta == pytest.approx(0.002)
+        assert observational_acoustic.shimmer_mean_measure == pytest.approx(0.021)
+        assert observational_acoustic.shimmer_mean_baseline == pytest.approx(0.019)
+        assert observational_acoustic.shimmer_delta == pytest.approx(0.002)
+
+    def test_completed_encounter_round_trips_observational_acoustic_null_contract(self) -> None:
+        transport = FakeTransport()
+        session_id = uuid4()
+        transport.enqueue_json(
+            [
+                {
+                    "encounter_id": "e-observational-acoustic-null",
                     "session_id": str(session_id),
                     "segment_timestamp_utc": _utc(2026, 4, 17, 12, 2).isoformat(),
                     "state": EncounterState.COMPLETED.value,
@@ -424,7 +485,7 @@ class TestEncounterValidation:
                     "n_frames_in_window": 120,
                     "physiology_attached": False,
                     "notes": [],
-                    "acoustic": {
+                    "observational_acoustic": {
                         "f0_valid_measure": False,
                         "f0_valid_baseline": False,
                         "perturbation_valid_measure": False,
@@ -448,24 +509,24 @@ class TestEncounterValidation:
         [encounter] = client.list_session_encounters(session_id)
 
         assert encounter.state is EncounterState.COMPLETED
-        assert encounter.acoustic is not None
-        acoustic = encounter.acoustic
-        assert acoustic.f0_valid_measure is False
-        assert isinstance(acoustic.f0_valid_measure, bool)
-        assert acoustic.f0_valid_baseline is False
-        assert isinstance(acoustic.f0_valid_baseline, bool)
-        assert acoustic.perturbation_valid_measure is False
-        assert isinstance(acoustic.perturbation_valid_measure, bool)
-        assert acoustic.perturbation_valid_baseline is False
-        assert isinstance(acoustic.perturbation_valid_baseline, bool)
-        assert acoustic.voiced_coverage_measure_s == 0.0
-        assert acoustic.voiced_coverage_baseline_s == 0.0
-        assert acoustic.f0_mean_measure_hz is None
-        assert acoustic.f0_mean_baseline_hz is None
-        assert acoustic.f0_delta_semitones is None
-        assert acoustic.jitter_mean_measure is None
-        assert acoustic.jitter_mean_baseline is None
-        assert acoustic.jitter_delta is None
-        assert acoustic.shimmer_mean_measure is None
-        assert acoustic.shimmer_mean_baseline is None
-        assert acoustic.shimmer_delta is None
+        assert encounter.observational_acoustic is not None
+        observational_acoustic = encounter.observational_acoustic
+        assert observational_acoustic.f0_valid_measure is False
+        assert isinstance(observational_acoustic.f0_valid_measure, bool)
+        assert observational_acoustic.f0_valid_baseline is False
+        assert isinstance(observational_acoustic.f0_valid_baseline, bool)
+        assert observational_acoustic.perturbation_valid_measure is False
+        assert isinstance(observational_acoustic.perturbation_valid_measure, bool)
+        assert observational_acoustic.perturbation_valid_baseline is False
+        assert isinstance(observational_acoustic.perturbation_valid_baseline, bool)
+        assert observational_acoustic.voiced_coverage_measure_s == 0.0
+        assert observational_acoustic.voiced_coverage_baseline_s == 0.0
+        assert observational_acoustic.f0_mean_measure_hz is None
+        assert observational_acoustic.f0_mean_baseline_hz is None
+        assert observational_acoustic.f0_delta_semitones is None
+        assert observational_acoustic.jitter_mean_measure is None
+        assert observational_acoustic.jitter_mean_baseline is None
+        assert observational_acoustic.jitter_delta is None
+        assert observational_acoustic.shimmer_mean_measure is None
+        assert observational_acoustic.shimmer_mean_baseline is None
+        assert observational_acoustic.shimmer_delta is None

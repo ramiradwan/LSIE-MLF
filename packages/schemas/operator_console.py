@@ -195,15 +195,34 @@ class OperatorConsoleModel(PydanticBaseModel):
 # ----------------------------------------------------------------------
 
 
-class AcousticObservationalMetrics(OperatorConsoleModel):
+class ObservationalAcousticSummary(OperatorConsoleModel):
     """Canonical §7D observational acoustic summary for operator/API payloads.
 
     The deterministic null-stimulus contract is represented directly on this
-    model: validity flags false, voiced coverage `0.0`, and nullable summary
-    statistics serialized as JSON `null`. Legacy scalar pitch/jitter/shimmer
-    are retained as optional deprecated compatibility fields for one rollout
-    window while downstream readers migrate to the canonical windowed fields.
+    model: validity flags and nullable summary statistics are preserved as
+    JSON `null` when omitted, while coverage and non-negative mean fields are
+    range-checked at the schema boundary.
     """
+
+    f0_valid_measure: bool | None = None
+    f0_valid_baseline: bool | None = None
+    perturbation_valid_measure: bool | None = None
+    perturbation_valid_baseline: bool | None = None
+    voiced_coverage_measure_s: float | None = Field(default=None, ge=0.0)
+    voiced_coverage_baseline_s: float | None = Field(default=None, ge=0.0)
+    f0_mean_measure_hz: float | None = Field(default=None, ge=0.0)
+    f0_mean_baseline_hz: float | None = Field(default=None, ge=0.0)
+    f0_delta_semitones: float | None = None
+    jitter_mean_measure: float | None = Field(default=None, ge=0.0)
+    jitter_mean_baseline: float | None = Field(default=None, ge=0.0)
+    jitter_delta: float | None = None
+    shimmer_mean_measure: float | None = Field(default=None, ge=0.0)
+    shimmer_mean_baseline: float | None = Field(default=None, ge=0.0)
+    shimmer_delta: float | None = None
+
+
+class AcousticObservationalMetrics(OperatorConsoleModel):
+    """Deprecated compatibility DTO for the legacy operator acoustic field."""
 
     pitch_f0: float | None = Field(default=None, deprecated=True)
     jitter: float | None = Field(default=None, deprecated=True)
@@ -278,6 +297,7 @@ class EncounterSummary(OperatorConsoleModel):
     n_frames_in_window: int | None = Field(default=None, ge=0)
     baseline_b_neutral: float | None = None
     acoustic: AcousticObservationalMetrics | None = None
+    observational_acoustic: ObservationalAcousticSummary | None = None
     physiology_attached: bool = False
     physiology_stale: bool | None = None
     notes: list[str] = Field(default_factory=list)
@@ -307,6 +327,7 @@ class LatestEncounterSummary(OperatorConsoleModel):
     gated_reward: float | None = None
     n_frames_in_window: int | None = Field(default=None, ge=0)
     acoustic: AcousticObservationalMetrics | None = None
+    observational_acoustic: ObservationalAcousticSummary | None = None
 
     @field_validator("segment_timestamp_utc", "stimulus_time_utc")
     @classmethod

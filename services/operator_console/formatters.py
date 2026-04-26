@@ -23,11 +23,15 @@ Spec references:
   §7C        — co-modulation null-valid; we render the `null_reason`
                verbatim so "not enough aligned pairs yet" reads as a
                legitimate outcome, not a bug
+  §7D        — observational acoustic validity, means, and deltas render
+               as measured values or explicit not-measured outcomes
   §12        — degraded-but-recovering vocabulary for health rows
 """
 
 from __future__ import annotations
 
+import math
+from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from packages.schemas.operator_console import (
@@ -35,13 +39,61 @@ from packages.schemas.operator_console import (
     EncounterSummary,
     HealthState,
     HealthSubsystemStatus,
+    ObservationalAcousticSummary,
     PhysiologyCurrentSnapshot,
     SessionPhysiologySnapshot,
     UiStatusKind,
 )
 
 _EM_DASH = "—"
+_ACOUSTIC_SECTION_TITLE = "Observational Acoustics (§7D)"
+_ACOUSTIC_EMPTY_TEXT = "No acoustic analytics for this segment"
 _DEGREE_OF_FRESHNESS_STALE_S = 60.0  # §4.C.4 default — UI-side fallback
+
+
+@dataclass(frozen=True)
+class AcousticSectionLabels:
+    """Static §7D labels supplied to the Live Session acoustic layout."""
+
+    section_title: str
+    empty_text: str
+    f0_metric_title: str
+    jitter_metric_title: str
+    shimmer_metric_title: str
+
+
+@dataclass(frozen=True)
+class AcousticValidityPillDisplay:
+    """Text and visual status for an acoustic validity pill."""
+
+    status: UiStatusKind
+    text: str
+
+
+@dataclass(frozen=True)
+class AcousticMetricCardDisplay:
+    """Preformatted text/status payload for an acoustic MetricCard."""
+
+    primary: str
+    secondary: str
+    status: UiStatusKind = UiStatusKind.NEUTRAL
+    status_text: str | None = None
+
+
+@dataclass(frozen=True)
+class AcousticDetailDisplay:
+    """Complete formatter/viewmodel contract for the §7D detail section."""
+
+    section_title: str
+    empty_text: str
+    has_summary: bool
+    f0_validity: AcousticValidityPillDisplay
+    perturbation_validity: AcousticValidityPillDisplay
+    f0_mean: AcousticMetricCardDisplay
+    jitter_mean: AcousticMetricCardDisplay
+    shimmer_mean: AcousticMetricCardDisplay
+    voiced_coverage_text: str
+    explanation: str
 
 
 # ----------------------------------------------------------------------
@@ -87,6 +139,196 @@ def format_reward(value: float | None, *, digits: int = 3) -> str:
     if value is None:
         return _EM_DASH
     return f"{value:.{digits}f}"
+
+
+def _acoustic_number_or_none(value: float | None) -> float | None:
+    """Return measured §7D acoustic numerics; null/non-finite stay absent."""
+    if value is None or not math.isfinite(value):
+        return None
+    return value
+
+
+def _has_acoustic_number(value: float | None) -> bool:
+    return _acoustic_number_or_none(value) is not None
+
+
+def format_acoustic_validity(flag: bool | None) -> str:
+    """Operator label for §7D acoustic window validity flags."""
+    if flag is None:
+        return _EM_DASH
+    return "valid" if flag else "invalid"
+
+
+def format_f0_hz(value: float | None) -> str:
+    """Render measured F0 means; absent placeholders stay explicit."""
+    measured = _acoustic_number_or_none(value)
+    if measured is None:
+        return _EM_DASH
+    return f"{measured:.1f} Hz"
+
+
+def format_semitone_delta(value: float | None) -> str:
+    """Render §7D F0 deltas with sign and semitone unit."""
+    measured = _acoustic_number_or_none(value)
+    if measured is None:
+        return _EM_DASH
+    return f"{measured:+.2f} st"
+
+
+def format_perturbation_delta(value: float | None) -> str:
+    """Render additive jitter/shimmer deltas as signed raw ratios."""
+    measured = _acoustic_number_or_none(value)
+    if measured is None:
+        return _EM_DASH
+    return f"{measured:+.4f}"
+
+
+def acoustic_section_labels() -> AcousticSectionLabels:
+    """Operator-facing static labels for the Live Session §7D section."""
+
+    return AcousticSectionLabels(
+        section_title=_ACOUSTIC_SECTION_TITLE,
+        empty_text=_ACOUSTIC_EMPTY_TEXT,
+        f0_metric_title="F0 mean",
+        jitter_metric_title="Jitter mean",
+        shimmer_metric_title="Shimmer mean",
+    )
+
+
+def format_acoustic_seconds(value: float | None) -> str:
+    """Render voiced-coverage seconds; null coverage remains explicit."""
+
+    if value is None or not math.isfinite(value):
+        return _EM_DASH
+    return f"{value:.2f}s"
+
+
+def format_acoustic_ratio(value: float | None) -> str:
+    """Render jitter/shimmer ratios with acoustic null placeholders respected."""
+
+    measured = _acoustic_number_or_none(value)
+    if measured is None:
+        return _EM_DASH
+    return f"{measured:.4f}"
+
+
+def format_acoustic_voiced_coverage(
+    measure_s: float | None,
+    baseline_s: float | None,
+) -> str:
+    """Render the paired §7D voiced-coverage windows for operator detail panes."""
+
+    return (
+        "Voiced coverage: "
+        f"measure {format_acoustic_seconds(measure_s)} · "
+        f"baseline {format_acoustic_seconds(baseline_s)}"
+    )
+
+
+def format_acoustic_validity_pill(
+    family_label: str,
+    measure_valid: bool | None,
+    baseline_valid: bool | None,
+) -> AcousticValidityPillDisplay:
+    """Render validity/nullness copy and visual status for one acoustic family."""
+
+    if measure_valid is True and baseline_valid is True:
+        return AcousticValidityPillDisplay(UiStatusKind.OK, f"{family_label} valid")
+
+    reason_label = "F0" if family_label == "F0" else family_label.lower()
+    invalid_windows: list[str] = []
+    if measure_valid is False:
+        invalid_windows.append("measure")
+    if baseline_valid is False:
+        invalid_windows.append("baseline")
+    if invalid_windows:
+        window_text = " and ".join(invalid_windows)
+        noun = "windows" if len(invalid_windows) > 1 else "window"
+        return AcousticValidityPillDisplay(
+            UiStatusKind.INFO,
+            f"{family_label} not measured: {window_text} {reason_label} {noun} invalid",
+        )
+
+    absent_windows: list[str] = []
+    if measure_valid is None:
+        absent_windows.append("measure")
+    if baseline_valid is None:
+        absent_windows.append("baseline")
+    if absent_windows:
+        window_text = " and ".join(absent_windows)
+        noun = "statuses" if len(absent_windows) > 1 else "status"
+        return AcousticValidityPillDisplay(
+            UiStatusKind.NEUTRAL,
+            f"{family_label} absent: {window_text} {reason_label} window {noun} missing",
+        )
+
+    return AcousticValidityPillDisplay(UiStatusKind.NEUTRAL, f"{family_label} absent")
+
+
+def build_acoustic_detail_display(
+    summary: ObservationalAcousticSummary | None,
+) -> AcousticDetailDisplay:
+    """Build the complete §7D detail-pane display payload from one summary."""
+
+    labels = acoustic_section_labels()
+    if summary is None:
+        return AcousticDetailDisplay(
+            section_title=labels.section_title,
+            empty_text=labels.empty_text,
+            has_summary=False,
+            f0_validity=AcousticValidityPillDisplay(UiStatusKind.NEUTRAL, "F0 absent"),
+            perturbation_validity=AcousticValidityPillDisplay(
+                UiStatusKind.NEUTRAL,
+                "Perturbation absent",
+            ),
+            f0_mean=AcousticMetricCardDisplay(_EM_DASH, ""),
+            jitter_mean=AcousticMetricCardDisplay(_EM_DASH, ""),
+            shimmer_mean=AcousticMetricCardDisplay(_EM_DASH, ""),
+            voiced_coverage_text="",
+            explanation=build_acoustic_explanation(None),
+        )
+
+    return AcousticDetailDisplay(
+        section_title=labels.section_title,
+        empty_text=labels.empty_text,
+        has_summary=True,
+        f0_validity=format_acoustic_validity_pill(
+            "F0",
+            summary.f0_valid_measure,
+            summary.f0_valid_baseline,
+        ),
+        perturbation_validity=format_acoustic_validity_pill(
+            "Perturbation",
+            summary.perturbation_valid_measure,
+            summary.perturbation_valid_baseline,
+        ),
+        f0_mean=AcousticMetricCardDisplay(
+            primary=f"measure {format_f0_hz(summary.f0_mean_measure_hz)}",
+            secondary=(
+                f"baseline {format_f0_hz(summary.f0_mean_baseline_hz)} · "
+                f"Δ {format_semitone_delta(summary.f0_delta_semitones)}"
+            ),
+        ),
+        jitter_mean=AcousticMetricCardDisplay(
+            primary=f"measure {format_acoustic_ratio(summary.jitter_mean_measure)}",
+            secondary=(
+                f"baseline {format_acoustic_ratio(summary.jitter_mean_baseline)} · "
+                f"Δ {format_perturbation_delta(summary.jitter_delta)}"
+            ),
+        ),
+        shimmer_mean=AcousticMetricCardDisplay(
+            primary=f"measure {format_acoustic_ratio(summary.shimmer_mean_measure)}",
+            secondary=(
+                f"baseline {format_acoustic_ratio(summary.shimmer_mean_baseline)} · "
+                f"Δ {format_perturbation_delta(summary.shimmer_delta)}"
+            ),
+        ),
+        voiced_coverage_text=format_acoustic_voiced_coverage(
+            summary.voiced_coverage_measure_s,
+            summary.voiced_coverage_baseline_s,
+        ),
+        explanation=build_acoustic_explanation(summary),
+    )
 
 
 def format_semantic_gate(gate: int | None) -> str:
@@ -218,6 +460,126 @@ def build_reward_explanation(encounter: EncounterSummary) -> str:
             "Physiology attached " + ("(stale snapshot)." if stale else "(fresh snapshot).")
         )
     return " ".join(parts)
+
+
+def build_acoustic_explanation(summary: ObservationalAcousticSummary | None) -> str:
+    """One-line §7D observational-acoustic summary for operator panes.
+
+    Validity is shown separately for F0 and perturbation windows so an
+    invalid F0 baseline never hides a valid perturbation measurement (or
+    vice versa). Null dependent deltas read as "not measured" with the
+    nearest available reason instead of zero or a raw null marker.
+    """
+    if summary is None:
+        return "No acoustic data for this encounter."
+
+    parts: list[str] = []
+    parts.append(
+        "F0 windows: "
+        f"measure {format_acoustic_validity(summary.f0_valid_measure)}, "
+        f"baseline {format_acoustic_validity(summary.f0_valid_baseline)}"
+    )
+    parts.append(
+        "F0 means: "
+        f"measure {format_f0_hz(summary.f0_mean_measure_hz)}, "
+        f"baseline {format_f0_hz(summary.f0_mean_baseline_hz)}"
+    )
+    parts.append(_f0_delta_line(summary))
+    parts.append(
+        "Perturbation windows: "
+        f"measure {format_acoustic_validity(summary.perturbation_valid_measure)}, "
+        f"baseline {format_acoustic_validity(summary.perturbation_valid_baseline)}"
+    )
+    parts.append(
+        _perturbation_delta_line(
+            "Jitter",
+            summary.jitter_delta,
+            summary.perturbation_valid_measure,
+            summary.perturbation_valid_baseline,
+            summary.jitter_mean_measure,
+            summary.jitter_mean_baseline,
+        )
+    )
+    parts.append(
+        _perturbation_delta_line(
+            "Shimmer",
+            summary.shimmer_delta,
+            summary.perturbation_valid_measure,
+            summary.perturbation_valid_baseline,
+            summary.shimmer_mean_measure,
+            summary.shimmer_mean_baseline,
+        )
+    )
+    return " • ".join(parts)
+
+
+def _f0_delta_line(summary: ObservationalAcousticSummary) -> str:
+    if _has_acoustic_number(summary.f0_delta_semitones):
+        return f"F0 Δ {format_semitone_delta(summary.f0_delta_semitones)}"
+
+    invalid_reason = _window_invalid_reason(
+        summary.f0_valid_measure,
+        summary.f0_valid_baseline,
+        "F0",
+    )
+    if invalid_reason:
+        return f"F0 Δ not measured ({invalid_reason})"
+
+    missing_reasons: list[str] = []
+    if not _has_acoustic_number(summary.f0_mean_measure_hz):
+        missing_reasons.append("measure F0 mean absent")
+    if not _has_acoustic_number(summary.f0_mean_baseline_hz):
+        missing_reasons.append("baseline F0 mean absent")
+    if missing_reasons:
+        return f"F0 Δ not measured ({'; '.join(missing_reasons)})"
+    return "F0 Δ not measured (semitone delta unavailable)"
+
+
+def _perturbation_delta_line(
+    label: str,
+    value: float | None,
+    measure_valid: bool | None,
+    baseline_valid: bool | None,
+    measure_mean: float | None,
+    baseline_mean: float | None,
+) -> str:
+    if _has_acoustic_number(value):
+        return f"{label} Δ {format_perturbation_delta(value)}"
+
+    invalid_reason = _window_invalid_reason(
+        measure_valid,
+        baseline_valid,
+        "perturbation",
+    )
+    if invalid_reason:
+        return f"{label} Δ not measured ({invalid_reason})"
+
+    mean_label = label.lower()
+    missing_reasons: list[str] = []
+    if not _has_acoustic_number(measure_mean):
+        missing_reasons.append(f"measure {mean_label} mean absent")
+    if not _has_acoustic_number(baseline_mean):
+        missing_reasons.append(f"baseline {mean_label} mean absent")
+    if missing_reasons:
+        return f"{label} Δ not measured ({'; '.join(missing_reasons)})"
+    return f"{label} Δ not measured"
+
+
+def _window_invalid_reason(
+    measure_valid: bool | None,
+    baseline_valid: bool | None,
+    family_label: str,
+) -> str | None:
+    invalid_windows: list[str] = []
+    if measure_valid is False:
+        invalid_windows.append("measure")
+    if baseline_valid is False:
+        invalid_windows.append("baseline")
+    if not invalid_windows:
+        return None
+    window_text = " and ".join(invalid_windows)
+    noun = "windows" if len(invalid_windows) > 1 else "window"
+    return f"{window_text} {family_label} {noun} invalid"
 
 
 def build_physiology_explanation(snapshot: SessionPhysiologySnapshot | None) -> str:

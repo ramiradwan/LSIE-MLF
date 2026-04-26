@@ -30,6 +30,7 @@ import pytest
 from packages.schemas.operator_console import (
     EncounterState,
     EncounterSummary,
+    ObservationalAcousticSummary,
     SessionSummary,
     StimulusActionState,
 )
@@ -40,6 +41,7 @@ from services.operator_console.table_models.encounters_table_model import (
 from services.operator_console.viewmodels.live_session_vm import LiveSessionViewModel
 from services.operator_console.views.live_session_view import LiveSessionView
 from services.operator_console.widgets.action_bar import ActionBar
+from services.operator_console.widgets.metric_card import MetricCard
 
 pytestmark = pytest.mark.usefixtures("qt_app")
 
@@ -104,6 +106,17 @@ def test_live_session_view_encounter_selection_updates_detail_pane() -> None:
         gated_reward=0.55,
         n_frames_in_window=150,
         baseline_b_neutral=0.12,
+        observational_acoustic=ObservationalAcousticSummary(
+            f0_valid_measure=True,
+            f0_valid_baseline=True,
+            perturbation_valid_measure=False,
+            perturbation_valid_baseline=True,
+            voiced_coverage_measure_s=3.1,
+            voiced_coverage_baseline_s=2.4,
+            f0_mean_measure_hz=221.0,
+            f0_mean_baseline_hz=221.0,
+            f0_delta_semitones=0.0,
+        ),
     )
     store.set_encounters([encounter])
 
@@ -118,3 +131,14 @@ def test_live_session_view_encounter_selection_updates_detail_pane() -> None:
     assert "gate" in detail_text.lower()
     # And the reward card reads a numeric value (the §7B gated reward).
     assert view._detail_panel._reward_card._primary.text() != "—"  # type: ignore[attr-defined]
+    # The detail pane now has the original six reward/physiology cards plus
+    # three additive §7D acoustic MetricCards; the reward assertions above
+    # remain untouched.
+    assert len(view._detail_panel.findChildren(MetricCard)) == 9  # type: ignore[attr-defined]
+    acoustic_text = view._detail_panel._acoustic_explanation.text()  # type: ignore[attr-defined]
+    perturbation_text = (  # type: ignore[attr-defined]
+        view._detail_panel._perturbation_validity_pill.text()
+    )
+    assert "F0 Δ +0.00 st" in acoustic_text
+    assert "Jitter Δ not measured" in acoustic_text
+    assert "measure perturbation window invalid" in perturbation_text

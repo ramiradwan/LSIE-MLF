@@ -144,7 +144,10 @@ async def list_session_encounters(
     before_utc: datetime | None = _BeforeUtcQuery,
     service: OperatorReadService = _ReadDep,
 ) -> list[EncounterSummary]:
-    """§7B — per-segment encounter rows with reward explanation."""
+    """§7B + §7D — per-segment encounter rows with reward explanation.
+
+    EncounterSummary also carries the optional observational acoustic summary.
+    """
     try:
         return service.list_encounters(session_id, limit=limit, before_utc=before_utc)
     except RuntimeError as exc:
