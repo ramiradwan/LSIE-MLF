@@ -27,12 +27,25 @@ from uuid import UUID, uuid4
 import pytest
 from PySide6.QtCore import QCoreApplication, Qt
 
+from packages.schemas.experiments import (
+    ExperimentAdminResponse,
+    ExperimentArmAdminResponse,
+    ExperimentArmDeleteResponse,
+    ExperimentArmPatchRequest,
+    ExperimentArmSeedRequest,
+    ExperimentCreateRequest,
+)
 from packages.schemas.operator_console import (
+    ArmSummary,
     EncounterState,
     EncounterSummary,
+    ExperimentDetail,
     HealthSnapshot,
     HealthState,
     OverviewSnapshot,
+    SessionCreateRequest,
+    SessionEndRequest,
+    SessionLifecycleAccepted,
     SessionSummary,
     StimulusAccepted,
     StimulusRequest,
@@ -42,10 +55,13 @@ from services.operator_console.config import OperatorConsoleConfig, load_config
 from services.operator_console.polling import (
     JOB_ALERTS,
     JOB_ENCOUNTERS,
+    JOB_EXPERIMENT,
     JOB_HEALTH,
     JOB_LIVE_SESSION,
     JOB_OVERVIEW,
     JOB_PHYSIOLOGY,
+    JOB_SESSION_END,
+    JOB_SESSION_START,
     JOB_SESSIONS,
     JOB_STIMULUS,
     PollingCoordinator,
@@ -399,8 +415,303 @@ class TestStimulusOneShot:
 
 
 # ----------------------------------------------------------------------
+# Experiment management one-shots — success updates store and refreshes
+# ----------------------------------------------------------------------
+
+
+class TestExperimentManagementOneShot:
+    def _patch_one_shot(self, mode: str) -> tuple[Any, list[_FakeOneShot]]:
+        registry: list[_FakeOneShot] = []
+
+        def fake_run_one_shot(job_name: str, fn: Callable[[], object]) -> OneShotSignals:
+            inst = _FakeOneShot(job_name, fn, mode)
+            registry.append(inst)
+            return inst.signals
+
+        return fake_run_one_shot, registry
+
+    def test_create_experiment_updates_store_and_refreshes(
+        self, harness: _CoordinatorHarness
+    ) -> None:
+        coord = harness.coordinator
+        fake, registry = self._patch_one_shot("success")
+
+        def fake_create(request: ExperimentCreateRequest) -> ExperimentAdminResponse:
+            assert request.experiment_id == "exp-new"
+            return ExperimentAdminResponse(
+                experiment_id="exp-new",
+                label="Greeting v2",
+                arms=[
+                    ExperimentArmAdminResponse(
+                        experiment_id="exp-new",
+                        label="Greeting v2",
+                        arm="arm-a",
+                        greeting_text="Hei",
+                        alpha_param=1.0,
+                        beta_param=1.0,
+                        enabled=True,
+                    )
+                ],
+            )
+
+        coord._client.create_experiment = fake_create  # type: ignore[assignment,method-assign]
+        request = ExperimentCreateRequest(
+            experiment_id="exp-new",
+            label="Greeting v2",
+            arms=[ExperimentArmSeedRequest(arm="arm-a", greeting_text="Hei")],
+        )
+        with patch("services.operator_console.polling.run_one_shot", fake, create=False):
+            coord.create_experiment(request)
+            registry[0].fire()
+
+        detail = coord._store.experiment()
+        assert detail is not None
+        assert detail.experiment_id == "exp-new"
+        assert detail.arms[0].posterior_alpha == 1.0
+        assert coord._store.managed_experiment_id() == "exp-new"
+        assert JOB_EXPERIMENT in harness.refresh_calls
+
+    def test_rename_arm_updates_store_readback(self, harness: _CoordinatorHarness) -> None:
+        coord = harness.coordinator
+        coord._store.set_experiment(
+            ExperimentDetail(
+                experiment_id="exp1",
+                arms=[
+                    ArmSummary(
+                        arm_id="a1",
+                        greeting_text="old",
+                        posterior_alpha=2.0,
+                        posterior_beta=3.0,
+                        selection_count=9,
+                    )
+                ],
+            )
+        )
+        fake, registry = self._patch_one_shot("success")
+
+        def fake_patch(
+            experiment_id: str,
+            arm_id: str,
+            request: ExperimentArmPatchRequest,
+        ) -> ExperimentArmAdminResponse:
+            assert (experiment_id, arm_id) == ("exp1", "a1")
+            assert request.greeting_text == "new"
+            assert request.enabled is None
+            return ExperimentArmAdminResponse(
+                experiment_id="exp1",
+                label="exp1",
+                arm="a1",
+                greeting_text="new",
+                alpha_param=2.0,
+                beta_param=3.0,
+                enabled=True,
+            )
+
+        coord._client.patch_experiment_arm = fake_patch  # type: ignore[assignment,method-assign]
+        with patch("services.operator_console.polling.run_one_shot", fake, create=False):
+            coord.rename_experiment_arm("exp1", "a1", "new")
+            registry[0].fire()
+
+        detail = coord._store.experiment()
+        assert detail is not None
+        assert detail.arms[0].greeting_text == "new"
+        assert detail.arms[0].selection_count == 9
+
+    def test_disable_arm_uses_allowed_enabled_false_patch(
+        self, harness: _CoordinatorHarness
+    ) -> None:
+        coord = harness.coordinator
+        coord._store.set_experiment(
+            ExperimentDetail(
+                experiment_id="exp1",
+                arms=[
+                    ArmSummary(
+                        arm_id="a1",
+                        greeting_text="old",
+                        posterior_alpha=2.0,
+                        posterior_beta=3.0,
+                    )
+                ],
+            )
+        )
+        fake, registry = self._patch_one_shot("success")
+
+        def fake_patch(
+            experiment_id: str,
+            arm_id: str,
+            request: ExperimentArmPatchRequest,
+        ) -> ExperimentArmAdminResponse:
+            assert (experiment_id, arm_id) == ("exp1", "a1")
+            assert request.enabled is False
+            assert request.greeting_text is None
+            return ExperimentArmAdminResponse(
+                experiment_id="exp1",
+                label="exp1",
+                arm="a1",
+                greeting_text="old",
+                alpha_param=2.0,
+                beta_param=3.0,
+                enabled=False,
+            )
+
+        coord._client.patch_experiment_arm = fake_patch  # type: ignore[assignment,method-assign]
+        with patch("services.operator_console.polling.run_one_shot", fake, create=False):
+            coord.disable_experiment_arm("exp1", "a1")
+            registry[0].fire()
+
+        detail = coord._store.experiment()
+        assert detail is not None
+        assert detail.arms[0].enabled is False
+
+    def test_delete_arm_removes_unused_arm_and_pins_managed_experiment(
+        self, harness: _CoordinatorHarness
+    ) -> None:
+        coord = harness.coordinator
+        coord._store.set_experiment(
+            ExperimentDetail(
+                experiment_id="exp-non-default",
+                arms=[
+                    ArmSummary(
+                        arm_id="unused",
+                        greeting_text="old",
+                        posterior_alpha=1.0,
+                        posterior_beta=1.0,
+                    ),
+                    ArmSummary(
+                        arm_id="kept",
+                        greeting_text="hi",
+                        posterior_alpha=2.0,
+                        posterior_beta=3.0,
+                    ),
+                ],
+            )
+        )
+        fake, registry = self._patch_one_shot("success")
+
+        def fake_delete(experiment_id: str, arm_id: str) -> ExperimentArmDeleteResponse:
+            assert (experiment_id, arm_id) == ("exp-non-default", "unused")
+            return ExperimentArmDeleteResponse(
+                experiment_id="exp-non-default",
+                arm="unused",
+                deleted=True,
+                posterior_preserved=False,
+                reason="unused arm hard-deleted",
+            )
+
+        coord._client.delete_experiment_arm = fake_delete  # type: ignore[assignment,method-assign]
+        with patch("services.operator_console.polling.run_one_shot", fake, create=False):
+            coord.delete_experiment_arm("exp-non-default", "unused")
+            registry[0].fire()
+
+        detail = coord._store.experiment()
+        assert detail is not None
+        assert detail.experiment_id == "exp-non-default"
+        assert [arm.arm_id for arm in detail.arms] == ["kept"]
+        assert coord._store.managed_experiment_id() == "exp-non-default"
+        assert JOB_EXPERIMENT in harness.refresh_calls
+
+
+# ----------------------------------------------------------------------
 # Fetch factories — make sure they bind the right ApiClient method
 # ----------------------------------------------------------------------
+
+
+class TestSessionLifecycleOneShot:
+    def _patch_one_shot(self, mode: str) -> tuple[Any, list[_FakeOneShot]]:
+        registry: list[_FakeOneShot] = []
+
+        def fake_run_one_shot(job_name: str, fn: Callable[[], object]) -> OneShotSignals:
+            inst = _FakeOneShot(job_name, fn, mode)
+            registry.append(inst)
+            return inst.signals
+
+        return fake_run_one_shot, registry
+
+    def test_session_start_success_refreshes_non_session_scoped_surfaces(
+        self,
+        harness: _CoordinatorHarness,
+    ) -> None:
+        coord = harness.coordinator
+        fake, registry = self._patch_one_shot("success")
+
+        def fake_post(request: SessionCreateRequest) -> SessionLifecycleAccepted:
+            return SessionLifecycleAccepted(
+                action="start",
+                session_id=uuid4(),
+                client_action_id=request.client_action_id,
+                accepted=True,
+                received_at_utc=_utc(2026, 4, 18, 10, 3),
+            )
+
+        coord._client.post_session_start = fake_post  # type: ignore[assignment,method-assign]
+
+        with patch("services.operator_console.polling.run_one_shot", fake, create=False):
+            req = SessionCreateRequest(
+                stream_url="rtmp://example/live",
+                experiment_id="greeting_line_v1",
+                client_action_id=uuid4(),
+            )
+            coord.request_session_start(req)
+            registry[0].fire()
+
+        assert JOB_OVERVIEW in harness.refresh_calls
+        assert JOB_SESSIONS in harness.refresh_calls
+        assert JOB_ALERTS in harness.refresh_calls
+        assert JOB_LIVE_SESSION not in harness.refresh_calls
+        assert JOB_ENCOUNTERS not in harness.refresh_calls
+        assert coord._store.error(JOB_SESSION_START) is None
+
+    def test_session_end_success_refreshes_live_session_surfaces(
+        self,
+        harness: _CoordinatorHarness,
+    ) -> None:
+        coord = harness.coordinator
+        fake, registry = self._patch_one_shot("success")
+        session_id = uuid4()
+
+        def fake_post(_session_id: UUID, request: SessionEndRequest) -> SessionLifecycleAccepted:
+            return SessionLifecycleAccepted(
+                action="end",
+                session_id=_session_id,
+                client_action_id=request.client_action_id,
+                accepted=True,
+                received_at_utc=_utc(2026, 4, 18, 10, 4),
+            )
+
+        coord._client.post_session_end = fake_post  # type: ignore[assignment,method-assign]
+
+        with patch("services.operator_console.polling.run_one_shot", fake, create=False):
+            req = SessionEndRequest(client_action_id=uuid4())
+            coord.request_session_end(session_id, req)
+            registry[0].fire()
+
+        assert JOB_OVERVIEW in harness.refresh_calls
+        assert JOB_SESSIONS in harness.refresh_calls
+        assert JOB_LIVE_SESSION in harness.refresh_calls
+        assert JOB_ENCOUNTERS in harness.refresh_calls
+        assert JOB_ALERTS in harness.refresh_calls
+        assert coord._store.error(JOB_SESSION_END) is None
+
+    def test_session_lifecycle_failure_surfaces_scoped_error(
+        self,
+        harness: _CoordinatorHarness,
+    ) -> None:
+        coord = harness.coordinator
+        fake, registry = self._patch_one_shot("failure")
+        emissions: list[tuple[str, str]] = []
+        coord.job_failed.connect(lambda *args: emissions.append(tuple(args)))
+
+        with patch("services.operator_console.polling.run_one_shot", fake, create=False):
+            req = SessionCreateRequest(
+                stream_url="rtmp://example/live",
+                experiment_id="greeting_line_v1",
+                client_action_id=uuid4(),
+            )
+            coord.request_session_start(req)
+            registry[0].fire()
+
+        assert coord._store.error(JOB_SESSION_START) == "boom"
+        assert (JOB_SESSION_START, "boom") in emissions
 
 
 class TestFetchFactories:
@@ -445,7 +756,9 @@ class TestFetchFactories:
         with pytest.raises(RuntimeError, match="selected session"):
             coord._make_fetch_encounters()
 
-    def test_experiment_fetch_uses_config_default(self, cfg: OperatorConsoleConfig) -> None:
+    def test_experiment_fetch_uses_config_default_without_managed_id(
+        self, cfg: OperatorConsoleConfig
+    ) -> None:
         calls: list[str] = []
 
         class _SpyClient:
@@ -457,6 +770,22 @@ class TestFetchFactories:
         fetch = coord._make_fetch_experiment()
         fetch()
         assert calls == [cfg.default_experiment_id]
+
+    def test_experiment_fetch_reads_current_store_managed_id(
+        self, cfg: OperatorConsoleConfig
+    ) -> None:
+        calls: list[str] = []
+
+        class _SpyClient:
+            def get_experiment_detail(self, eid: str) -> Any:
+                calls.append(eid)
+
+        store = OperatorStore()
+        coord = PollingCoordinator(cfg, _SpyClient(), store)  # type: ignore[arg-type]
+        fetch = coord._make_fetch_experiment()
+        store.set_managed_experiment_id("exp-non-default")
+        fetch()
+        assert calls == ["exp-non-default"]
 
 
 # ----------------------------------------------------------------------

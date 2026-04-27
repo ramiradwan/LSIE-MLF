@@ -20,11 +20,19 @@ from __future__ import annotations
 
 from PySide6.QtCore import QObject
 
-from packages.schemas.operator_console import HealthSnapshot
+from packages.schemas.operator_console import HealthSnapshot, HealthSubsystemProbe
 from services.operator_console.state import OperatorStore
 from services.operator_console.table_models.alerts_table_model import AlertsTableModel
 from services.operator_console.table_models.health_table_model import HealthTableModel
 from services.operator_console.viewmodels.base import ViewModelBase
+
+_PROBE_ORDER: tuple[str, ...] = (
+    "postgres",
+    "redis",
+    "azure_openai",
+    "whisper_worker",
+    "orchestrator",
+)
 
 
 class HealthViewModel(ViewModelBase):
@@ -60,6 +68,15 @@ class HealthViewModel(ViewModelBase):
 
     def alerts_model(self) -> AlertsTableModel:
         return self._alerts_model
+
+    def subsystem_probes(self) -> list[HealthSubsystemProbe]:
+        snap = self._store.health()
+        if snap is None:
+            return []
+        probes = snap.subsystem_probes
+        ordered = [probes[key] for key in _PROBE_ORDER if key in probes]
+        ordered.extend(probe for key, probe in sorted(probes.items()) if key not in _PROBE_ORDER)
+        return ordered
 
     def degraded_count(self) -> int:
         """Count of subsystems currently DEGRADED or RECOVERING.

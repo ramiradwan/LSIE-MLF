@@ -11,7 +11,9 @@ Verifies DriftCorrector, AudioResampler, and Orchestrator against:
 
 from __future__ import annotations
 
+import asyncio
 import base64
+import json
 import subprocess
 import time
 import uuid
@@ -25,6 +27,8 @@ from services.worker.pipeline.orchestrator import (
     DRIFT_FREEZE_AFTER_FAILURES,
     DRIFT_RESET_TIMEOUT,
     FFMPEG_RESAMPLE_CMD,
+    LIVE_SESSION_CALIBRATION_FRAMES_REQUIRED,
+    LIVE_SESSION_STATE_TTL_S,
     MAX_PHYSIO_DRAIN_PER_CYCLE,
     PHYSIO_BUFFER_RETENTION_S,
     PHYSIO_DERIVE_WINDOW_S,
@@ -300,6 +304,127 @@ class TestOrchestrator:
             isinstance(buffer, deque) and len(buffer) == 0
             for buffer in orch._physio_buffer.values()
         )
+
+    def test_publish_live_session_state_writes_calibration_progress(self) -> None:
+        orch = Orchestrator(session_id="11111111-1111-4111-8111-111111111111")
+        mock_redis = MagicMock()
+        orch._redis = mock_redis
+        orch._active_arm = "arm-a"
+        orch._expected_greeting = "hello there"
+        orch._au12_normalizer = type("_Norm", (), {"calibration_buffer": [0.1] * 12})()
+
+        orch._publish_live_session_state()
+
+        key, raw_payload = mock_redis.set.call_args.args[:2]
+        assert key == "operator:live_session:11111111-1111-4111-8111-111111111111"
+        assert mock_redis.set.call_args.kwargs["ex"] == LIVE_SESSION_STATE_TTL_S
+        payload = json.loads(raw_payload)
+        assert payload["active_arm"] == "arm-a"
+        assert payload["expected_greeting"] == "hello there"
+        assert payload["is_calibrating"] is True
+        assert payload["calibration_frames_accumulated"] == 12
+        assert payload["calibration_frames_required"] == LIVE_SESSION_CALIBRATION_FRAMES_REQUIRED
+
+    def test_publish_live_session_state_keeps_calibrating_until_stimulus(self) -> None:
+        orch = Orchestrator(session_id="22222222-2222-4222-8222-222222222222")
+        mock_redis = MagicMock()
+        orch._redis = mock_redis
+        orch._au12_normalizer = type(
+            "_Norm",
+            (),
+            {"calibration_buffer": [0.1] * LIVE_SESSION_CALIBRATION_FRAMES_REQUIRED},
+        )()
+
+        orch._publish_live_session_state()
+
+        payload = json.loads(mock_redis.set.call_args.args[1])
+        assert payload["is_calibrating"] is True
+        assert payload["calibration_frames_accumulated"] == LIVE_SESSION_CALIBRATION_FRAMES_REQUIRED
+
+        orch._is_calibrating = False
+        orch._publish_live_session_state()
+
+        payload = json.loads(mock_redis.set.call_args.args[1])
+        assert payload["is_calibrating"] is False
+
+    def test_begin_session_republishes_blank_calibration_for_new_session(self) -> None:
+        orch = Orchestrator(session_id="33333333-3333-4333-8333-333333333333")
+        mock_redis = MagicMock()
+        orch._redis = mock_redis
+        orch._register_session = MagicMock()  # type: ignore[method-assign]
+
+        def select_arm() -> None:
+            orch._active_arm = "arm-new"
+            orch._expected_greeting = "hello new session"
+
+        orch._select_experiment_arm = MagicMock(side_effect=select_arm)  # type: ignore[method-assign]
+        old_reset_payload = {
+            "active_arm": None,
+            "expected_greeting": None,
+            "is_calibrating": True,
+            "calibration_frames_accumulated": 0,
+            "calibration_frames_required": LIVE_SESSION_CALIBRATION_FRAMES_REQUIRED,
+        }
+        # Simulate the exact JSON having been published for the prior session;
+        # lifecycle start must still write it to the new session-scoped key.
+        orch._last_live_session_state_payload = json.dumps(old_reset_payload, sort_keys=True)
+        orch._active_arm = "arm-old"
+        orch._expected_greeting = "old greeting"
+        orch._is_calibrating = False
+        orch._au12_normalizer = type("_Norm", (), {"calibration_buffer": [0.1] * 99})()
+
+        new_session_id = "44444444-4444-4444-8444-444444444444"
+        orch._begin_session(
+            session_id=new_session_id,
+            stream_url="rtmp://example/new",
+            experiment_id="exp-new",
+        )
+
+        # FILTER OUT BACKGROUND HEARTBEATS
+        session_calls = [
+            call
+            for call in mock_redis.set.call_args_list
+            if str(call.args[0]).startswith("operator:live_session:")
+        ]
+
+        # The orchestrator publishes the finalized state with the new arm and reset calibration.
+        assert len(session_calls) >= 1
+
+        last_key, last_raw = session_calls[-1].args[:2]
+        assert last_key == f"operator:live_session:{new_session_id}"
+
+        last_payload = json.loads(last_raw)
+        assert last_payload["active_arm"] == "arm-new"
+        assert last_payload["expected_greeting"] == "hello new session"
+        assert last_payload["is_calibrating"] is True
+        assert last_payload["calibration_frames_accumulated"] == 0
+
+    def test_run_boot_path_begins_session_from_constructor_stream_and_experiment(self) -> None:
+        session_id = "55555555-5555-4555-8555-555555555555"
+        orch = Orchestrator(
+            stream_url="rtmp://example/boot",
+            session_id=session_id,
+            experiment_id="exp-boot",
+        )
+        orch._using_replay_capture = True
+        orch._start_session_lifecycle_listener = MagicMock()  # type: ignore[method-assign]
+        orch._begin_session = MagicMock()  # type: ignore[method-assign]
+        orch.audio_resampler = MagicMock()
+        orch.audio_resampler.read_chunk.return_value = b""
+
+        async def stop_after_one_tick(_delay: float) -> None:
+            orch._running = False
+
+        with patch("services.worker.pipeline.orchestrator.asyncio.sleep", stop_after_one_tick):
+            asyncio.run(orch.run())
+
+        orch._start_session_lifecycle_listener.assert_called_once()
+        orch._begin_session.assert_called_once_with(
+            session_id=session_id,
+            stream_url="rtmp://example/boot",
+            experiment_id="exp-boot",
+        )
+        orch.audio_resampler.start.assert_called_once()
 
     def test_drain_physio_events_appends_chunk_and_prunes_retention(self) -> None:
         orch = Orchestrator()
@@ -645,6 +770,114 @@ class TestOrchestrator:
         assert payload["_au12_series"] == [{"timestamp_s": 1.23, "intensity": 0.8}]
         assert payload["_stimulus_time"] == 456.7
         assert orch._au12_series == []
+
+    def test_flush_inflight_segment_dispatches_partial_payload(self) -> None:
+        orch = Orchestrator()
+        orch._audio_buffer = bytearray(b"partial-audio")
+        orch.event_buffer.append({"event_type": "gift", "uniqueId": "u1"})
+        orch.assemble_segment = MagicMock(return_value={"payload": "ok"})  # type: ignore[method-assign]
+        orch._dispatch_payload = MagicMock()  # type: ignore[method-assign]
+        orch._drain_physio_events = MagicMock()  # type: ignore[method-assign]
+
+        orch._flush_inflight_segment()
+
+        orch._drain_physio_events.assert_called_once()
+        orch.assemble_segment.assert_called_once_with(
+            b"partial-audio",
+            [{"event_type": "gift", "uniqueId": "u1"}],
+        )
+        orch._dispatch_payload.assert_called_once_with({"payload": "ok"})
+        assert orch._audio_buffer == bytearray()
+        assert list(orch.event_buffer) == []
+
+    def test_start_intent_rotates_active_session(self) -> None:
+        original_session_id = str(uuid.uuid4())
+        orch = Orchestrator(
+            stream_url="https://example.com/original",
+            session_id=original_session_id,
+            experiment_id="exp-original",
+        )
+        orch._session_active = True
+        orch._segment_counter = 8
+        orch._audio_buffer = bytearray(b"old")
+        orch.event_buffer.append({"event_type": "comment"})
+        orch._au12_series = [{"timestamp_s": 1.0, "intensity": 0.5}]
+        orch._flush_inflight_segment = MagicMock()  # type: ignore[method-assign]
+        orch._mark_session_ended = MagicMock()  # type: ignore[method-assign]
+        orch._register_session = MagicMock()  # type: ignore[method-assign]
+        orch._select_experiment_arm = MagicMock()  # type: ignore[method-assign]
+
+        new_session_id = str(uuid.uuid4())
+        orch._handle_session_lifecycle_intent(
+            {
+                "action": "start",
+                "session_id": new_session_id,
+                "stream_url": "https://example.com/new",
+                "experiment_id": "exp-new",
+            }
+        )
+
+        orch._flush_inflight_segment.assert_called_once()
+        orch._mark_session_ended.assert_called_once_with(original_session_id)
+        orch._register_session.assert_called_once()
+        orch._select_experiment_arm.assert_called_once()
+        assert orch._session_active is True
+        assert orch._session_id == new_session_id
+        assert orch._stream_url == "https://example.com/new"
+        assert orch._experiment_id == "exp-new"
+        assert orch._segment_counter == 0
+        assert orch._au12_series == []
+        assert list(orch.event_buffer) == []
+
+    def test_end_intent_flushes_and_marks_session_ended(self) -> None:
+        session_id = str(uuid.uuid4())
+        orch = Orchestrator(
+            stream_url="https://example.com/live",
+            session_id=session_id,
+            experiment_id="exp-1",
+        )
+        orch._session_active = True
+        orch._flush_inflight_segment = MagicMock()  # type: ignore[method-assign]
+        orch._mark_session_ended = MagicMock()  # type: ignore[method-assign]
+
+        orch._handle_session_lifecycle_intent(
+            {
+                "action": "end",
+                "session_id": session_id,
+                "stream_url": "https://example.com/live",
+                "experiment_id": "exp-1",
+            }
+        )
+
+        orch._flush_inflight_segment.assert_called_once()
+        orch._mark_session_ended.assert_called_once_with(session_id)
+        assert orch._session_active is False
+        assert orch._segment_counter == 0
+        assert orch._au12_series == []
+
+    def test_end_intent_for_non_active_session_is_ignored(self) -> None:
+        active_session_id = str(uuid.uuid4())
+        orch = Orchestrator(
+            stream_url="https://example.com/live",
+            session_id=active_session_id,
+            experiment_id="exp-1",
+        )
+        orch._session_active = True
+        orch._flush_inflight_segment = MagicMock()  # type: ignore[method-assign]
+        orch._mark_session_ended = MagicMock()  # type: ignore[method-assign]
+
+        orch._handle_session_lifecycle_intent(
+            {
+                "action": "end",
+                "session_id": str(uuid.uuid4()),
+                "stream_url": "https://example.com/live",
+                "experiment_id": "exp-1",
+            }
+        )
+
+        orch._flush_inflight_segment.assert_not_called()
+        orch._mark_session_ended.assert_not_called()
+        assert orch._session_active is True
 
     def test_stop_cleans_up(self) -> None:
         orch = Orchestrator()

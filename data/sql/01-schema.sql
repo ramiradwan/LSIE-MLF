@@ -87,11 +87,27 @@ CREATE TABLE IF NOT EXISTS events (
 CREATE TABLE IF NOT EXISTS experiments (
     id              BIGSERIAL PRIMARY KEY,
     experiment_id   TEXT NOT NULL,
+    label           TEXT,
     arm             TEXT NOT NULL,
+    greeting_text   TEXT,
     alpha_param     DOUBLE PRECISION NOT NULL DEFAULT 1.0,
     beta_param      DOUBLE PRECISION NOT NULL DEFAULT 1.0,
+    enabled         BOOLEAN NOT NULL DEFAULT TRUE,
+    end_dated_at    TIMESTAMPTZ DEFAULT NULL,
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- Rollout-safe additive experiment-admin columns for existing deployments.
+ALTER TABLE experiments ADD COLUMN IF NOT EXISTS label TEXT;
+ALTER TABLE experiments ADD COLUMN IF NOT EXISTS greeting_text TEXT;
+ALTER TABLE experiments ADD COLUMN IF NOT EXISTS enabled BOOLEAN;
+ALTER TABLE experiments ADD COLUMN IF NOT EXISTS end_dated_at TIMESTAMPTZ;
+UPDATE experiments SET label = experiment_id WHERE label IS NULL;
+UPDATE experiments SET greeting_text = arm WHERE greeting_text IS NULL;
+UPDATE experiments SET enabled = TRUE WHERE enabled IS NULL;
+ALTER TABLE experiments ALTER COLUMN enabled SET DEFAULT TRUE;
+ALTER TABLE experiments ALTER COLUMN enabled SET NOT NULL;
+ALTER TABLE experiments ALTER COLUMN end_dated_at SET DEFAULT NULL;
 
 -- §4.E.1 / §11 — Encounter Audit Log (reward computation trace)
 CREATE TABLE IF NOT EXISTS encounter_log (

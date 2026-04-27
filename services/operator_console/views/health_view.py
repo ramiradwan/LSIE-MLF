@@ -25,6 +25,7 @@ from PySide6.QtCore import QModelIndex, Qt, Slot
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -35,13 +36,18 @@ from PySide6.QtWidgets import (
 
 from packages.schemas.operator_console import (
     AlertSeverity,
+    HealthProbeState,
     HealthSnapshot,
     HealthState,
+    HealthSubsystemProbe,
     UiStatusKind,
 )
 from services.operator_console.formatters import (
     build_health_detail,
+    build_health_probe_detail,
+    format_health_probe_state,
     format_health_state,
+    format_latency_ms,
     format_timestamp,
 )
 from services.operator_console.viewmodels.health_vm import HealthViewModel
@@ -50,6 +56,7 @@ from services.operator_console.widgets.empty_state import EmptyStateWidget
 from services.operator_console.widgets.event_timeline import EventTimelineWidget
 from services.operator_console.widgets.metric_card import MetricCard
 from services.operator_console.widgets.section_header import SectionHeader
+from services.operator_console.widgets.status_pill import StatusPill
 
 # §12 subsystem state → overview card pill kind. Recovering renders as
 # `PROGRESS` (self-healing in flight) so it reads distinct from both
@@ -60,6 +67,14 @@ _HEALTH_STATUS: dict[HealthState, UiStatusKind] = {
     HealthState.RECOVERING: UiStatusKind.PROGRESS,
     HealthState.ERROR: UiStatusKind.ERROR,
     HealthState.UNKNOWN: UiStatusKind.NEUTRAL,
+}
+
+_PROBE_STATUS: dict[HealthProbeState, UiStatusKind] = {
+    HealthProbeState.OK: UiStatusKind.OK,
+    HealthProbeState.ERROR: UiStatusKind.ERROR,
+    HealthProbeState.TIMEOUT: UiStatusKind.ERROR,
+    HealthProbeState.NOT_CONFIGURED: UiStatusKind.NEUTRAL,
+    HealthProbeState.UNKNOWN: UiStatusKind.NEUTRAL,
 }
 
 
@@ -100,10 +115,17 @@ class HealthView(QWidget):
         cards.addWidget(self._recovering_card, 1)
         cards.addWidget(self._error_card, 1)
 
+        self._probe_matrix = _ProbeMatrix(self)
         self._subsystem_table = self._build_subsystem_table()
         self._alerts_timeline = EventTimelineWidget(self)
         self._alerts_timeline.set_model(self._vm.alerts_model())
 
+        self._probe_panel = _TablePanel(
+            "Subsystem probes",
+            "Bounded read-only diagnostics; not configured is distinct from error.",
+            self._probe_matrix,
+            self,
+        )
         self._subsystem_panel = _TablePanel(
             "Subsystems",
             "Recovery mode and operator hints stay distinct from the detail column.",
@@ -121,6 +143,7 @@ class HealthView(QWidget):
         body.setContentsMargins(0, 0, 0, 0)
         body.setSpacing(14)
         body.addLayout(cards)
+        body.addWidget(self._probe_panel, 1)
         body.addWidget(self._subsystem_panel, 2)
         body.addWidget(self._alerts_panel, 2)
 
@@ -190,6 +213,7 @@ class HealthView(QWidget):
 
         self._render_overall(snapshot)
         self._render_counts(snapshot)
+        self._probe_matrix.set_probes(self._vm.subsystem_probes())
 
     def _render_overall(self, snapshot: HealthSnapshot) -> None:
         kind = _HEALTH_STATUS[snapshot.overall_state]
@@ -253,6 +277,72 @@ class HealthView(QWidget):
 # ----------------------------------------------------------------------
 # Panels
 # ----------------------------------------------------------------------
+
+
+class _ProbeMatrix(QFrame):
+    """Compact three-column matrix for bounded subsystem probes."""
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("HealthProbeMatrix")
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        self._grid = QGridLayout(self)
+        self._grid.setContentsMargins(0, 0, 0, 0)
+        self._grid.setHorizontalSpacing(18)
+        self._grid.setVerticalSpacing(8)
+        self._state_pills: list[StatusPill] = []
+        self._latency_labels: list[QLabel] = []
+        self._empty_label = QLabel("No bounded probes reported", self)
+        self._empty_label.setObjectName("PanelSubtitle")
+        self._render_headers()
+        self._show_empty()
+
+    def set_probes(self, probes: list[HealthSubsystemProbe]) -> None:
+        self._clear_rows()
+        if not probes:
+            self._show_empty()
+            return
+        self._empty_label.setVisible(False)
+        for row_index, probe in enumerate(probes, start=1):
+            name = QLabel(probe.label or probe.subsystem_key, self)
+            name.setObjectName("MetricCardSecondary")
+            name.setToolTip(build_health_probe_detail(probe))
+
+            pill = StatusPill(self)
+            pill.set_kind(_PROBE_STATUS[probe.state])
+            pill.set_text(format_health_probe_state(probe.state))
+            pill.setToolTip(build_health_probe_detail(probe))
+
+            latency = QLabel(format_latency_ms(probe.latency_ms), self)
+            latency.setObjectName("MetricCardSecondary")
+            latency.setToolTip(build_health_probe_detail(probe))
+
+            self._grid.addWidget(name, row_index, 0)
+            self._grid.addWidget(pill, row_index, 1)
+            self._grid.addWidget(latency, row_index, 2)
+            self._state_pills.append(pill)
+            self._latency_labels.append(latency)
+
+    def _render_headers(self) -> None:
+        for column, title in enumerate(("Subsystem", "State", "Latency")):
+            label = QLabel(title, self)
+            label.setObjectName("PanelSubtitle")
+            self._grid.addWidget(label, 0, column)
+
+    def _show_empty(self) -> None:
+        self._empty_label.setVisible(True)
+        self._grid.addWidget(self._empty_label, 1, 0, 1, 3)
+
+    def _clear_rows(self) -> None:
+        self._state_pills.clear()
+        self._latency_labels.clear()
+        while self._grid.count() > 3:
+            item = self._grid.takeAt(3)
+            widget = item.widget() if item is not None else None
+            if widget is self._empty_label:
+                widget.setVisible(False)
+            elif widget is not None:
+                widget.deleteLater()
 
 
 class _TablePanel(QFrame):

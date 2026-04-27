@@ -32,8 +32,10 @@ Spec references:
 
 from __future__ import annotations
 
+import inspect
 import logging
 from datetime import datetime
+from typing import Any, cast
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -55,7 +57,10 @@ from services.api.services.operator_action_service import (
     SessionNotFoundError,
     StimulusPublishError,
 )
-from services.api.services.operator_read_service import OperatorReadService
+from services.api.services.operator_read_service import (
+    OperatorReadService,
+    _default_redis_factory,
+)
 
 router = APIRouter(prefix="/operator", tags=["operator"])
 logger = logging.getLogger(__name__)
@@ -67,7 +72,7 @@ logger = logging.getLogger(__name__)
 
 
 def get_read_service() -> OperatorReadService:
-    return OperatorReadService()
+    return OperatorReadService(redis_factory=_default_redis_factory)
 
 
 def get_action_service() -> OperatorActionService:
@@ -198,7 +203,10 @@ async def get_health(
 ) -> HealthSnapshot:
     """§12 — subsystem rollup with degraded/recovering/error distinction."""
     try:
-        return service.get_health()
+        result: Any = service.get_health()
+        if inspect.isawaitable(result):
+            return cast(HealthSnapshot, await result)
+        return cast(HealthSnapshot, result)
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001

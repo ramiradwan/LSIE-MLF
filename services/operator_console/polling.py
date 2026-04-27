@@ -19,15 +19,14 @@ Design notes:
   - Session-scoped jobs (live-session header, encounters, physiology)
     tear down and re-start when the selected session id changes so
     the fetch callable captures the current id.
-  - Stimulus submission is a one-shot via `run_one_shot`; on success
-    the coordinator immediately refreshes overview, live-session, and
-    alerts so the UI reflects the new lifecycle state without waiting
-    for the next tick.
+  - Stimulus and experiment-management submissions are one-shots via
+    `run_one_shot`; on success the coordinator updates the store and
+    queues the relevant refreshes so the UI does not wait for the next
+    polling interval.
 
 Spec references:
-  §4.C           — stimulus is the only write surface; idempotency
-                   lives in the API Server, not here
-  §4.E.1         — operator-facing aggregate endpoints
+  §4.C           — stimulus idempotency lives in the API Server, not here
+  §4.E.1         — operator-facing aggregate and experiment admin endpoints
   §12            — retryable vs non-retryable errors flow through the
                    store's per-scope error signal
   SPEC-AMEND-008 — PySide6 Operator Console
@@ -37,18 +36,30 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime
 from time import monotonic
 from typing import Any
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from PySide6.QtCore import QMetaObject, QObject, Qt, QThread, Signal, Slot
 
+from packages.schemas.experiments import (
+    ExperimentAdminResponse,
+    ExperimentArmAdminResponse,
+    ExperimentArmCreateRequest,
+    ExperimentArmDeleteResponse,
+    ExperimentArmPatchRequest,
+    ExperimentCreateRequest,
+)
 from packages.schemas.operator_console import (
     AlertEvent,
+    ArmSummary,
     EncounterSummary,
     ExperimentDetail,
     HealthSnapshot,
     OverviewSnapshot,
+    SessionCreateRequest,
+    SessionEndRequest,
     SessionPhysiologySnapshot,
     SessionSummary,
     StimulusRequest,
@@ -76,6 +87,8 @@ JOB_PHYSIOLOGY = "physiology"
 JOB_HEALTH = "health"
 JOB_ALERTS = "alerts"
 JOB_STIMULUS = "stimulus"
+JOB_SESSION_START = "session_start"
+JOB_SESSION_END = "session_end"
 
 
 @dataclass(frozen=True)
@@ -105,7 +118,7 @@ class _JobHandle:
 
 
 class PollingCoordinator(QObject):
-    """Orchestrates every poll job plus the single write path (stimulus).
+    """Orchestrates poll jobs plus one-shot operator/admin write paths.
 
     Emits `job_failed(scope, message)` as a convenience for tests and
     for any listener that wants a flattened error feed; the primary
@@ -133,6 +146,8 @@ class PollingCoordinator(QObject):
         # joins anything still alive.
         self._orphan_jobs: list[_JobHandle] = []
         self._inflight_stimulus: dict[str, OneShotSignals] = {}
+        self._inflight_session_lifecycle: dict[str, OneShotSignals] = {}
+        self._inflight_experiment_mutations: dict[str, OneShotSignals] = {}
         self._started = False
 
         # Wire store-driven job lifecycle
@@ -215,7 +230,7 @@ class PollingCoordinator(QObject):
         )
 
     # ------------------------------------------------------------------
-    # Stimulus (single write path)
+    # Stimulus (one-shot write path)
     # ------------------------------------------------------------------
 
     def submit_stimulus(self, session_id: UUID, request: StimulusRequest) -> OneShotSignals:
@@ -256,6 +271,177 @@ class PollingCoordinator(QObject):
         signals.failed.connect(on_failed)
         signals.finished.connect(on_finished)
         return signals
+
+    def request_session_start(self, request: SessionCreateRequest) -> OneShotSignals:
+        """Dispatch `POST /api/v1/sessions` via the one-shot write path."""
+
+        def fn() -> object:
+            return self._client.post_session_start(request)
+
+        signals = run_one_shot(JOB_SESSION_START, fn)
+        handle_key = str(request.client_action_id)
+        self._inflight_session_lifecycle[handle_key] = signals
+
+        def on_succeeded(_job: str, _payload: object) -> None:
+            self._store.clear_error(JOB_SESSION_START)
+            # Starting a new session selects a different session id in the
+            # VM after acceptance, which restarts the session-scoped jobs.
+            # Refresh only the non-session-scoped surfaces here.
+            for target in (JOB_OVERVIEW, JOB_SESSIONS, JOB_ALERTS):
+                self.refresh_now(target)
+
+        def on_failed(_job: str, error: object) -> None:
+            message = str(error) if not isinstance(error, ApiError) else error.message
+            self._store.set_error(JOB_SESSION_START, message)
+            self.job_failed.emit(JOB_SESSION_START, message)
+
+        def on_finished(_job: str) -> None:
+            self._inflight_session_lifecycle.pop(handle_key, None)
+
+        signals.succeeded.connect(on_succeeded)
+        signals.failed.connect(on_failed)
+        signals.finished.connect(on_finished)
+        return signals
+
+    def request_session_end(
+        self,
+        session_id: UUID,
+        request: SessionEndRequest,
+    ) -> OneShotSignals:
+        """Dispatch `POST /api/v1/sessions/{id}/end` via the one-shot path."""
+
+        def fn() -> object:
+            return self._client.post_session_end(session_id, request)
+
+        signals = run_one_shot(JOB_SESSION_END, fn)
+        handle_key = str(request.client_action_id)
+        self._inflight_session_lifecycle[handle_key] = signals
+
+        def on_succeeded(_job: str, _payload: object) -> None:
+            self._store.clear_error(JOB_SESSION_END)
+            for target in (
+                JOB_OVERVIEW,
+                JOB_SESSIONS,
+                JOB_LIVE_SESSION,
+                JOB_ENCOUNTERS,
+                JOB_ALERTS,
+            ):
+                self.refresh_now(target)
+
+        def on_failed(_job: str, error: object) -> None:
+            message = str(error) if not isinstance(error, ApiError) else error.message
+            self._store.set_error(JOB_SESSION_END, message)
+            self.job_failed.emit(JOB_SESSION_END, message)
+
+        def on_finished(_job: str) -> None:
+            self._inflight_session_lifecycle.pop(handle_key, None)
+
+        signals.succeeded.connect(on_succeeded)
+        signals.failed.connect(on_failed)
+        signals.finished.connect(on_finished)
+        return signals
+
+    # ------------------------------------------------------------------
+    # Experiment management writes (one-shot admin API calls)
+    # ------------------------------------------------------------------
+
+    def create_experiment(self, request: ExperimentCreateRequest) -> OneShotSignals:
+        """Dispatch `POST /api/v1/experiments` via the one-shot pattern."""
+
+        def fn() -> object:
+            return self._client.create_experiment(request)
+
+        return self._run_experiment_mutation(fn)
+
+    def add_experiment_arm(
+        self,
+        experiment_id: str,
+        request: ExperimentArmCreateRequest,
+    ) -> OneShotSignals:
+        """Dispatch `POST /api/v1/experiments/{id}/arms` as a one-shot."""
+
+        def fn() -> object:
+            return self._client.add_experiment_arm(experiment_id, request)
+
+        return self._run_experiment_mutation(fn)
+
+    def patch_experiment_arm(
+        self,
+        experiment_id: str,
+        arm_id: str,
+        request: ExperimentArmPatchRequest,
+    ) -> OneShotSignals:
+        """Dispatch a supported arm patch as a one-shot admin write."""
+
+        def fn() -> object:
+            return self._client.patch_experiment_arm(experiment_id, arm_id, request)
+
+        return self._run_experiment_mutation(fn)
+
+    def rename_experiment_arm(
+        self,
+        experiment_id: str,
+        arm_id: str,
+        greeting_text: str,
+    ) -> OneShotSignals:
+        """Rename arm greeting text; posterior-owned fields are not writable."""
+        return self.patch_experiment_arm(
+            experiment_id,
+            arm_id,
+            ExperimentArmPatchRequest(greeting_text=greeting_text),
+        )
+
+    def disable_experiment_arm(self, experiment_id: str, arm_id: str) -> OneShotSignals:
+        """Disable an arm using the only supported enabled-state mutation."""
+        return self.patch_experiment_arm(
+            experiment_id,
+            arm_id,
+            ExperimentArmPatchRequest(enabled=False),
+        )
+
+    def delete_experiment_arm(self, experiment_id: str, arm_id: str) -> OneShotSignals:
+        """Dispatch guarded arm DELETE as a one-shot admin write."""
+
+        def fn() -> object:
+            return self._client.delete_experiment_arm(experiment_id, arm_id)
+
+        return self._run_experiment_mutation(fn)
+
+    def _run_experiment_mutation(self, fn: Callable[[], object]) -> OneShotSignals:
+        signals = run_one_shot(JOB_EXPERIMENT, fn)
+        handle_key = str(uuid4())
+        self._inflight_experiment_mutations[handle_key] = signals
+
+        def on_succeeded(_job: str, payload: object) -> None:
+            self._store.clear_error(JOB_EXPERIMENT)
+            self._apply_experiment_mutation_payload(payload)
+            self.refresh_now(JOB_EXPERIMENT)
+
+        def on_failed(_job: str, error: object) -> None:
+            message = str(error) if not isinstance(error, ApiError) else error.message
+            self._store.set_error(JOB_EXPERIMENT, message)
+            self.job_failed.emit(JOB_EXPERIMENT, message)
+
+        def on_finished(_job: str) -> None:
+            self._inflight_experiment_mutations.pop(handle_key, None)
+
+        signals.succeeded.connect(on_succeeded)
+        signals.failed.connect(on_failed)
+        signals.finished.connect(on_finished)
+        return signals
+
+    def _apply_experiment_mutation_payload(self, payload: object) -> None:
+        current = self._store.experiment()
+        if isinstance(payload, ExperimentAdminResponse):
+            self._store.set_experiment(_detail_from_admin_response(payload, current))
+        elif isinstance(payload, ExperimentArmAdminResponse):
+            self._store.set_experiment(_detail_with_admin_arm(payload, current))
+        elif isinstance(payload, ExperimentArmDeleteResponse):
+            self._store.set_managed_experiment_id(payload.experiment_id)
+            if payload.deleted:
+                self._store.set_experiment(_detail_without_admin_arm(payload, current))
+            elif payload.arm_state is not None:
+                self._store.set_experiment(_detail_with_admin_arm(payload.arm_state, current))
 
     # ------------------------------------------------------------------
     # Spec registration — one place that maps jobs to cadences.
@@ -545,9 +731,11 @@ class PollingCoordinator(QObject):
 
     def _make_fetch_experiment(self) -> Callable[[], ExperimentDetail]:
         client = self._client
-        experiment_id = self._config.default_experiment_id
+        store = self._store
+        default_experiment_id = self._config.default_experiment_id
 
         def fetch() -> ExperimentDetail:
+            experiment_id = store.managed_experiment_id() or default_experiment_id
             return client.get_experiment_detail(experiment_id)
 
         return fetch
@@ -579,6 +767,120 @@ class PollingCoordinator(QObject):
             return client.list_alerts()
 
         return fetch
+
+
+def _detail_from_admin_response(
+    payload: ExperimentAdminResponse,
+    current: ExperimentDetail | None,
+) -> ExperimentDetail:
+    current_detail = (
+        current if current is not None and current.experiment_id == payload.experiment_id else None
+    )
+    return ExperimentDetail(
+        experiment_id=payload.experiment_id,
+        label=payload.label,
+        active_arm_id=current_detail.active_arm_id if current_detail is not None else None,
+        arms=[_arm_from_admin_response(arm, None) for arm in payload.arms],
+        last_update_summary=(
+            current_detail.last_update_summary if current_detail is not None else None
+        ),
+        last_updated_utc=_latest_admin_timestamp(payload.arms),
+    )
+
+
+def _detail_with_admin_arm(
+    payload: ExperimentArmAdminResponse,
+    current: ExperimentDetail | None,
+) -> ExperimentDetail:
+    current_detail = (
+        current if current is not None and current.experiment_id == payload.experiment_id else None
+    )
+    existing_arms = list(current_detail.arms) if current_detail is not None else []
+    merged: list[ArmSummary] = []
+    matched = False
+    for existing in existing_arms:
+        if existing.arm_id == payload.arm:
+            merged.append(_arm_from_admin_response(payload, existing))
+            matched = True
+        else:
+            merged.append(existing)
+    if not matched:
+        merged.append(_arm_from_admin_response(payload, None))
+    return ExperimentDetail(
+        experiment_id=payload.experiment_id,
+        label=payload.label
+        if payload.label
+        else (current_detail.label if current_detail is not None else None),
+        active_arm_id=current_detail.active_arm_id if current_detail is not None else None,
+        arms=merged,
+        last_update_summary=(
+            current_detail.last_update_summary if current_detail is not None else None
+        ),
+        last_updated_utc=payload.updated_at
+        if payload.updated_at is not None
+        else (current_detail.last_updated_utc if current_detail is not None else None),
+    )
+
+
+def _detail_without_admin_arm(
+    payload: ExperimentArmDeleteResponse,
+    current: ExperimentDetail | None,
+) -> ExperimentDetail:
+    current_detail = (
+        current if current is not None and current.experiment_id == payload.experiment_id else None
+    )
+    remaining_arms = (
+        [arm for arm in current_detail.arms if arm.arm_id != payload.arm]
+        if current_detail is not None
+        else []
+    )
+    return ExperimentDetail(
+        experiment_id=payload.experiment_id,
+        label=current_detail.label if current_detail is not None else None,
+        active_arm_id=current_detail.active_arm_id if current_detail is not None else None,
+        arms=remaining_arms,
+        last_update_summary=(
+            current_detail.last_update_summary if current_detail is not None else None
+        ),
+        last_updated_utc=(current_detail.last_updated_utc if current_detail is not None else None),
+    )
+
+
+def _arm_from_admin_response(
+    payload: ExperimentArmAdminResponse,
+    existing: ArmSummary | None,
+) -> ArmSummary:
+    total = payload.alpha_param + payload.beta_param
+    variance = (
+        (payload.alpha_param * payload.beta_param) / (total * total * (total + 1.0))
+        if total > 0
+        else None
+    )
+    return ArmSummary(
+        arm_id=payload.arm,
+        greeting_text=payload.greeting_text,
+        posterior_alpha=payload.alpha_param,
+        posterior_beta=payload.beta_param,
+        evaluation_variance=variance,
+        selection_count=existing.selection_count if existing is not None else 0,
+        recent_reward_mean=existing.recent_reward_mean if existing is not None else None,
+        recent_semantic_pass_rate=(
+            existing.recent_semantic_pass_rate if existing is not None else None
+        ),
+        enabled=payload.enabled,
+        end_dated_at=payload.end_dated_at,
+    )
+
+
+def _latest_admin_timestamp(rows: list[ExperimentArmAdminResponse]) -> datetime | None:
+    latest: datetime | None = None
+    for row in rows:
+        updated = row.updated_at
+        if updated is None:
+            continue
+        if latest is None or updated > latest:
+            latest = updated
+    return latest
 
 
 def _as_list(payload: object, item_type: type[Any]) -> list[Any]:

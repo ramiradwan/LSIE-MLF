@@ -15,6 +15,7 @@ Focus:
 
 from __future__ import annotations
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import MagicMock
@@ -22,9 +23,11 @@ from unittest.mock import MagicMock
 from packages.schemas.operator_console import (
     AlertKind,
     EncounterState,
+    HealthProbeState,
     HealthState,
 )
 from services.api.services.operator_read_service import OperatorReadService
+from services.api.services.subsystem_probes import ProbeResult
 
 
 def _cursor(results: list[Any]) -> MagicMock:
@@ -54,14 +57,154 @@ def _cursor(results: list[Any]) -> MagicMock:
     return cursor
 
 
-def _service(cursor: MagicMock, now: datetime | None = None) -> OperatorReadService:
+def _service(
+    cursor: MagicMock,
+    now: datetime | None = None,
+    *,
+    redis_factory: Any | None = None,
+    subsystem_probe_runner: Any | None = None,
+) -> OperatorReadService:
     conn = MagicMock()
     conn.cursor.return_value = cursor
+    kwargs: dict[str, Any] = {}
+    if subsystem_probe_runner is not None:
+        kwargs["subsystem_probe_runner"] = subsystem_probe_runner
     return OperatorReadService(
         get_conn=lambda: conn,
         put_conn=lambda _c: None,
+        redis_factory=redis_factory,
         clock=lambda: now or datetime(2026, 4, 17, 12, 0, tzinfo=UTC),
+        **kwargs,
     )
+
+
+class _FakeRedis:
+    def __init__(self, payloads: dict[str, str]) -> None:
+        self._payloads = payloads
+        self.closed = False
+
+    def get(self, name: str) -> str | None:
+        return self._payloads.get(name)
+
+    def close(self) -> None:
+        self.closed = True
+
+
+# ----------------------------------------------------------------------
+# Live-session Redis overlay
+# ----------------------------------------------------------------------
+
+
+class TestLiveSessionOverlay:
+    def test_get_session_merges_orchestrator_calibration_state(self) -> None:
+        session_id = "33333333-3333-3333-3333-333333333333"
+        cursor = _cursor(
+            [
+                (
+                    [
+                        "session_id",
+                        "started_at",
+                        "ended_at",
+                        "duration_s",
+                        "experiment_id",
+                        "active_arm",
+                        "last_segment_completed_at_utc",
+                        "latest_reward",
+                        "latest_semantic_gate",
+                        "is_calibrating",
+                        "calibration_frames_accumulated",
+                        "calibration_frames_required",
+                    ],
+                    [
+                        (
+                            session_id,
+                            datetime(2026, 4, 17, 11, 0, tzinfo=UTC),
+                            None,
+                            300.0,
+                            None,
+                            None,
+                            None,
+                            None,
+                            None,
+                            None,
+                            None,
+                            None,
+                        )
+                    ],
+                )
+            ]
+        )
+        redis = _FakeRedis(
+            {
+                f"operator:live_session:{session_id}": (
+                    '{"active_arm":"warm_welcome","expected_greeting":"hei rakas",'
+                    '"is_calibrating":true,"calibration_frames_accumulated":12,'
+                    '"calibration_frames_required":45}'
+                )
+            }
+        )
+        svc = _service(cursor, redis_factory=lambda: redis)
+
+        import uuid
+
+        summary = svc.get_session(uuid.UUID(session_id))
+        assert summary is not None
+        assert summary.active_arm == "warm_welcome"
+        assert summary.expected_greeting == "hei rakas"
+        assert summary.is_calibrating is True
+        assert summary.calibration_frames_accumulated == 12
+        assert summary.calibration_frames_required == 45
+        assert redis.closed is True
+
+    def test_get_session_missing_live_state_leaves_calibration_fields_none(self) -> None:
+        session_id = "44444444-4444-4444-4444-444444444444"
+        cursor = _cursor(
+            [
+                (
+                    [
+                        "session_id",
+                        "started_at",
+                        "ended_at",
+                        "duration_s",
+                        "experiment_id",
+                        "active_arm",
+                        "last_segment_completed_at_utc",
+                        "latest_reward",
+                        "latest_semantic_gate",
+                        "is_calibrating",
+                        "calibration_frames_accumulated",
+                        "calibration_frames_required",
+                    ],
+                    [
+                        (
+                            session_id,
+                            datetime(2026, 4, 17, 11, 0, tzinfo=UTC),
+                            None,
+                            60.0,
+                            None,
+                            "warm_welcome",
+                            None,
+                            None,
+                            None,
+                            None,
+                            None,
+                            None,
+                        )
+                    ],
+                )
+            ]
+        )
+        redis = _FakeRedis({})
+        svc = _service(cursor, redis_factory=lambda: redis)
+
+        import uuid
+
+        summary = svc.get_session(uuid.UUID(session_id))
+        assert summary is not None
+        assert summary.active_arm == "warm_welcome"
+        assert summary.is_calibrating is None
+        assert summary.calibration_frames_accumulated is None
+        assert summary.calibration_frames_required is None
 
 
 # ----------------------------------------------------------------------
@@ -227,11 +370,49 @@ class TestHealthRecoveryFields:
             ]
         )
         svc = _service(cursor, now=now)
-        snapshot = svc.get_health()
+        snapshot = asyncio.run(svc.get_health())
         physio_row = next(row for row in snapshot.subsystems if row.subsystem_key == "physiology")
         assert physio_row.state is HealthState.RECOVERING
         assert physio_row.recovery_mode == "physio_adapter_retry"
         assert physio_row.operator_action_hint is not None
+
+    def test_health_snapshot_emits_keyed_probe_dict_without_changing_rollup(self) -> None:
+        now = datetime(2026, 4, 17, 12, 0, tzinfo=UTC)
+        ok = now - timedelta(seconds=5)
+        cursor = _cursor(
+            [
+                (
+                    [
+                        "last_metric_at",
+                        "last_physio_at",
+                        "last_comod_at",
+                        "last_encounter_at",
+                    ],
+                    [(ok, ok, ok, ok)],
+                ),
+            ]
+        )
+
+        async def _probe_runner(**_kwargs: Any) -> list[ProbeResult]:
+            return [
+                ProbeResult(
+                    subsystem_key="redis",
+                    label="Redis Broker",
+                    state=HealthProbeState.OK,
+                    latency_ms=2.0,
+                    detail="PING succeeded",
+                )
+            ]
+
+        svc = _service(cursor, now=now, subsystem_probe_runner=_probe_runner)
+        snapshot = asyncio.run(svc.get_health())
+
+        assert snapshot.overall_state is HealthState.OK
+        assert snapshot.degraded_count == 0
+        assert snapshot.recovering_count == 0
+        assert snapshot.error_count == 0
+        assert list(snapshot.subsystem_probes) == ["redis"]
+        assert snapshot.subsystem_probes["redis"].state is HealthProbeState.OK
 
     def test_recovery_fields_absent_for_ok_state(self) -> None:
         now = datetime(2026, 4, 17, 12, 0, tzinfo=UTC)
@@ -250,7 +431,7 @@ class TestHealthRecoveryFields:
             ]
         )
         svc = _service(cursor, now=now)
-        snapshot = svc.get_health()
+        snapshot = asyncio.run(svc.get_health())
         for row in snapshot.subsystems:
             assert row.state is HealthState.OK
             assert row.recovery_mode is None
@@ -273,7 +454,7 @@ class TestHealthRecoveryFields:
             ]
         )
         svc = _service(cursor, now=now)
-        snapshot = svc.get_health()
+        snapshot = asyncio.run(svc.get_health())
         assert snapshot.overall_state is HealthState.ERROR
         for row in snapshot.subsystems:
             assert row.state is HealthState.ERROR
@@ -295,7 +476,7 @@ class TestHealthRecoveryFields:
             ]
         )
         svc = _service(cursor, now=now)
-        snapshot = svc.get_health()
+        snapshot = asyncio.run(svc.get_health())
         assert snapshot.overall_state is HealthState.UNKNOWN
 
 
@@ -758,13 +939,22 @@ class TestExperimentDetail:
         updated = datetime(2026, 4, 17, 11, 50, tzinfo=UTC)
         cursor = _cursor(
             [
-                # fetch_experiment_arms
+                # fetch_experiment_arms -> management-column discovery
+                (
+                    ["column_name"],
+                    [("label",), ("greeting_text",), ("enabled",), ("end_dated_at",)],
+                ),
+                # fetch_experiment_arms -> arm rows
                 (
                     [
                         "experiment_id",
+                        "label",
                         "arm",
+                        "greeting_text",
                         "alpha_param",
                         "beta_param",
+                        "enabled",
+                        "end_dated_at",
                         "updated_at",
                         "selection_count",
                         "recent_reward_mean",
@@ -773,9 +963,13 @@ class TestExperimentDetail:
                     [
                         (
                             "greeting_line_v1",
+                            "Greeting v1",
                             "warm_welcome",
+                            "Hei lämmin",
                             4.0,
                             2.0,
+                            True,
+                            None,
                             updated,
                             15,
                             0.7,
@@ -783,9 +977,13 @@ class TestExperimentDetail:
                         ),
                         (
                             "greeting_line_v1",
+                            "Greeting v1",
                             "simple_hello",
+                            "Hei yksinkertainen",
                             3.0,
                             3.0,
+                            False,
+                            updated,
                             updated,
                             10,
                             0.5,
@@ -811,10 +1009,21 @@ class TestExperimentDetail:
         assert abs(warm.evaluation_variance - (8.0 / (36.0 * 7.0))) < 1e-9
         assert warm.posterior_alpha == 4.0
         assert warm.posterior_beta == 2.0
+        assert warm.greeting_text == "Hei lämmin"
+        assert warm.enabled is True
+        assert detail.label == "Greeting v1"
+        disabled = next(a for a in detail.arms if a.arm_id == "simple_hello")
+        assert disabled.enabled is False
+        assert disabled.end_dated_at == updated
 
     def test_empty_experiment_returns_none(self) -> None:
         cursor = _cursor(
             [
+                # fetch_experiment_arms -> management-column discovery
+                (
+                    ["column_name"],
+                    [("label",), ("greeting_text",), ("enabled",), ("end_dated_at",)],
+                ),
                 (
                     ["experiment_id"],
                     [],
@@ -823,3 +1032,61 @@ class TestExperimentDetail:
         )
         svc = _service(cursor)
         assert svc.get_experiment_detail("missing") is None
+
+    def test_legacy_schema_without_management_columns_still_reads(self) -> None:
+        updated = datetime(2026, 4, 17, 11, 50, tzinfo=UTC)
+        cursor = _cursor(
+            [
+                # fetch_experiment_arms -> management-column discovery sees legacy schema
+                (["column_name"], []),
+                # fetch_experiment_arms -> fallback projection provides defaulted fields
+                (
+                    [
+                        "experiment_id",
+                        "label",
+                        "arm",
+                        "greeting_text",
+                        "alpha_param",
+                        "beta_param",
+                        "enabled",
+                        "end_dated_at",
+                        "updated_at",
+                        "selection_count",
+                        "recent_reward_mean",
+                        "recent_semantic_pass_rate",
+                    ],
+                    [
+                        (
+                            "legacy_exp",
+                            "legacy_exp",
+                            "legacy_arm",
+                            "legacy_arm",
+                            1.0,
+                            1.0,
+                            True,
+                            None,
+                            updated,
+                            0,
+                            None,
+                            None,
+                        )
+                    ],
+                ),
+                # fetch_active_arm_for_experiment
+                (["arm", "timestamp_utc"], []),
+            ]
+        )
+        svc = _service(cursor)
+
+        detail = svc.get_experiment_detail("legacy_exp")
+
+        assert detail is not None
+        assert detail.label == "legacy_exp"
+        assert detail.arms[0].arm_id == "legacy_arm"
+        assert detail.arms[0].greeting_text == "legacy_arm"
+        assert detail.arms[0].enabled is True
+        arm_sql = cursor.execute.call_args_list[1].args[0]
+        assert "ex.label" not in arm_sql
+        assert "ex.greeting_text" not in arm_sql
+        assert "ex.enabled" not in arm_sql
+        assert "ex.end_dated_at" not in arm_sql

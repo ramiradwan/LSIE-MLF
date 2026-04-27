@@ -33,6 +33,7 @@ def _arm(
     recent_reward: float | None = 0.4,
     recent_pass: float | None = 0.6,
     selection_count: int = 5,
+    enabled: bool = True,
 ) -> ArmSummary:
     return ArmSummary(
         arm_id=arm_id,
@@ -43,6 +44,7 @@ def _arm(
         selection_count=selection_count,
         recent_reward_mean=recent_reward,
         recent_semantic_pass_rate=recent_pass,
+        enabled=enabled,
     )
 
 
@@ -60,7 +62,7 @@ def _detail(active_arm_id: str | None = "a1") -> ExperimentDetail:
 def _view() -> tuple[ExperimentsView, OperatorStore]:
     store = OperatorStore()
     model = ExperimentsTableModel()
-    vm = ExperimentsViewModel(store, model)
+    vm = ExperimentsViewModel(store, model, default_experiment_id="exp-42")
     return ExperimentsView(vm), store
 
 
@@ -108,3 +110,45 @@ def test_experiments_view_error_changed_shows_alert_banner() -> None:
     view, store = _view()
     store.set_error("experiment", "unreachable")
     assert view._error_banner.isHidden() is False  # type: ignore[attr-defined]
+
+
+def test_experiments_view_manage_create_visible_without_detail() -> None:
+    view, _store = _view()
+    panel = view._manage_panel  # type: ignore[attr-defined]
+    assert panel.isHidden() is False
+    assert panel._create_experiment_id.text() == "exp-42"  # type: ignore[attr-defined]
+    assert panel._add_button.isEnabled() is False  # type: ignore[attr-defined]
+
+
+def test_experiments_view_add_arm_button_follows_loaded_detail_and_inputs() -> None:
+    view, store = _view()
+    panel = view._manage_panel  # type: ignore[attr-defined]
+    store.set_experiment(_detail())
+    assert panel._add_button.isEnabled() is False  # type: ignore[attr-defined]
+    panel._add_arm_id.setText("a3")  # type: ignore[attr-defined]
+    panel._add_greeting.setText("Hei uusi")  # type: ignore[attr-defined]
+    assert panel._add_button.isEnabled() is True  # type: ignore[attr-defined]
+
+
+def test_experiments_view_reflects_rename_disable_create_readback() -> None:
+    view, store = _view()
+    store.set_experiment(
+        ExperimentDetail(
+            experiment_id="exp-created",
+            label="created label",
+            arms=[
+                _arm(
+                    "new",
+                    enabled=False,
+                    recent_reward=None,
+                    recent_pass=None,
+                    selection_count=0,
+                )
+            ],
+            last_updated_utc=_NOW,
+        )
+    )
+    model = view._vm.arms_model()  # type: ignore[attr-defined]
+    assert view._experiment_card._primary.text() == "created label"  # type: ignore[attr-defined]
+    assert model.data(model.index(0, 1)) == "Hei new"
+    assert model.data(model.index(0, 2)) == "disabled"

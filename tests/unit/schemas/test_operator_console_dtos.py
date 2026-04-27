@@ -30,13 +30,18 @@ from packages.schemas.operator_console import (
     EncounterSummary,
     ExperimentDetail,
     ExperimentSummary,
+    HealthProbeState,
     HealthSnapshot,
     HealthState,
+    HealthSubsystemProbe,
     HealthSubsystemStatus,
     LatestEncounterSummary,
     ObservationalAcousticSummary,
     OverviewSnapshot,
     PhysiologyCurrentSnapshot,
+    SessionCreateRequest,
+    SessionEndRequest,
+    SessionLifecycleAccepted,
     SessionPhysiologySnapshot,
     SessionSummary,
     StimulusAccepted,
@@ -394,6 +399,60 @@ class TestStimulusRequestDedupKey:
         assert request.operator_note is None
 
 
+class TestSessionLifecycleDtos:
+    def test_session_create_request_trims_and_roundtrips(self) -> None:
+        action_id = uuid.uuid4()
+        request = SessionCreateRequest(
+            stream_url="  https://example.com/live  ",
+            experiment_id="  exp-1  ",
+            client_action_id=action_id,
+        )
+        restored = SessionCreateRequest.model_validate_json(request.model_dump_json())
+        assert restored.stream_url == "https://example.com/live"
+        assert restored.experiment_id == "exp-1"
+        assert restored.client_action_id == action_id
+
+    def test_session_create_request_rejects_blank_values(self) -> None:
+        with pytest.raises(ValidationError):
+            SessionCreateRequest(
+                stream_url="   ",
+                experiment_id="exp-1",
+                client_action_id=uuid.uuid4(),
+            )
+        with pytest.raises(ValidationError):
+            SessionCreateRequest(
+                stream_url="https://example.com/live",
+                experiment_id="   ",
+                client_action_id=uuid.uuid4(),
+            )
+
+    def test_session_end_request_requires_client_action_id(self) -> None:
+        with pytest.raises(ValidationError):
+            SessionEndRequest()  # type: ignore[call-arg]
+
+    def test_session_lifecycle_accepted_requires_utc_received_at(self) -> None:
+        with pytest.raises(ValidationError):
+            SessionLifecycleAccepted(
+                action="start",
+                session_id=uuid.uuid4(),
+                client_action_id=uuid.uuid4(),
+                accepted=True,
+                received_at_utc=datetime(2026, 1, 1, 12, 0),
+            )
+
+    def test_session_lifecycle_accepted_roundtrips(self) -> None:
+        accepted = SessionLifecycleAccepted(
+            action="end",
+            session_id=uuid.uuid4(),
+            client_action_id=uuid.uuid4(),
+            accepted=True,
+            received_at_utc=_utc(),
+            message="duplicate submission suppressed",
+        )
+        restored = SessionLifecycleAccepted.model_validate_json(accepted.model_dump_json())
+        assert restored == accepted
+
+
 # ----------------------------------------------------------------------
 # Enum round-trip
 # ----------------------------------------------------------------------
@@ -570,6 +629,37 @@ class TestCompositeDtos:
         )
         assert row.recovery_mode == "ffmpeg_restart"
         assert row.operator_action_hint is not None
+
+    def test_health_snapshot_carries_probe_rows_without_changing_rollup_state(self) -> None:
+        probe = HealthSubsystemProbe(
+            subsystem_key="azure_openai",
+            label="Azure OpenAI",
+            state=HealthProbeState.NOT_CONFIGURED,
+            latency_ms=None,
+            detail="missing AZURE_OPENAI_ENDPOINT",
+            checked_at_utc=_utc(),
+        )
+        snap = HealthSnapshot(
+            generated_at_utc=_utc(),
+            overall_state=HealthState.OK,
+            subsystem_probes={probe.subsystem_key: probe},
+        )
+        assert snap.overall_state is HealthState.OK
+        assert snap.subsystem_probes == {probe.subsystem_key: probe}
+
+    def test_health_snapshot_rejects_probe_dict_key_mismatch(self) -> None:
+        probe = HealthSubsystemProbe(
+            subsystem_key="redis",
+            label="Redis Broker",
+            state=HealthProbeState.OK,
+            checked_at_utc=_utc(),
+        )
+        with pytest.raises(ValidationError):
+            HealthSnapshot(
+                generated_at_utc=_utc(),
+                overall_state=HealthState.OK,
+                subsystem_probes={"postgres": probe},
+            )
 
     def test_experiment_summary_rejects_negative_arm_count(self) -> None:
         with pytest.raises(ValidationError):

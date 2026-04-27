@@ -28,6 +28,15 @@ from uuid import UUID, uuid4
 
 import pytest
 
+from packages.schemas.experiments import (
+    ExperimentAdminResponse,
+    ExperimentArmAdminResponse,
+    ExperimentArmCreateRequest,
+    ExperimentArmDeleteResponse,
+    ExperimentArmPatchRequest,
+    ExperimentArmSeedRequest,
+    ExperimentCreateRequest,
+)
 from packages.schemas.operator_console import (
     AlertEvent,
     AlertKind,
@@ -37,6 +46,9 @@ from packages.schemas.operator_console import (
     HealthState,
     ObservationalAcousticSummary,
     OverviewSnapshot,
+    SessionCreateRequest,
+    SessionEndRequest,
+    SessionLifecycleAccepted,
     SessionSummary,
     StimulusAccepted,
     StimulusRequest,
@@ -243,6 +255,191 @@ class TestPostStimulus:
         assert body["operator_note"] == "hello"
 
 
+class TestSessionLifecyclePosts:
+    def test_post_session_start_serialises_body_and_validates_response(self) -> None:
+        transport = FakeTransport()
+        session_id = UUID("00000000-0000-0000-0000-000000000010")
+        action_id = UUID("22222222-2222-2222-2222-222222222222")
+        transport.enqueue_json(
+            {
+                "action": "start",
+                "session_id": str(session_id),
+                "client_action_id": str(action_id),
+                "accepted": True,
+                "received_at_utc": _utc(2026, 4, 17, 12, 6).isoformat(),
+            }
+        )
+        client = ApiClient("http://api.test", transport=transport)
+        request = SessionCreateRequest(
+            stream_url="rtmp://example/live",
+            experiment_id="greeting_line_v1",
+            client_action_id=action_id,
+        )
+        accepted = client.post_session_start(request)
+
+        assert isinstance(accepted, SessionLifecycleAccepted)
+        assert accepted.action == "start"
+        call = transport.calls[0]
+        assert call.method == "POST"
+        assert call.url.endswith("/api/v1/sessions")
+        assert call.body is not None
+        body = json.loads(call.body.decode("utf-8"))
+        assert body["stream_url"] == "rtmp://example/live"
+        assert body["experiment_id"] == "greeting_line_v1"
+        assert body["client_action_id"] == str(action_id)
+
+    def test_post_session_end_serialises_body_and_validates_response(self) -> None:
+        transport = FakeTransport()
+        session_id = UUID("00000000-0000-0000-0000-000000000011")
+        action_id = UUID("33333333-3333-3333-3333-333333333333")
+        transport.enqueue_json(
+            {
+                "action": "end",
+                "session_id": str(session_id),
+                "client_action_id": str(action_id),
+                "accepted": True,
+                "received_at_utc": _utc(2026, 4, 17, 12, 7).isoformat(),
+            }
+        )
+        client = ApiClient("http://api.test", transport=transport)
+        request = SessionEndRequest(client_action_id=action_id)
+        accepted = client.post_session_end(session_id, request)
+
+        assert isinstance(accepted, SessionLifecycleAccepted)
+        assert accepted.action == "end"
+        call = transport.calls[0]
+        assert call.method == "POST"
+        assert call.url.endswith(f"/api/v1/sessions/{session_id}/end")
+        assert call.body is not None
+        body = json.loads(call.body.decode("utf-8"))
+        assert body == {"client_action_id": str(action_id)}
+
+
+# ----------------------------------------------------------------------
+# Experiment admin writes
+# ----------------------------------------------------------------------
+
+
+class TestExperimentAdminWrites:
+    def test_create_experiment_posts_typed_body(self) -> None:
+        transport = FakeTransport()
+        transport.enqueue_json(
+            {
+                "experiment_id": "exp-new",
+                "label": "Greeting v2",
+                "arms": [
+                    {
+                        "experiment_id": "exp-new",
+                        "label": "Greeting v2",
+                        "arm": "arm-a",
+                        "greeting_text": "Hei",
+                        "alpha_param": 1.0,
+                        "beta_param": 1.0,
+                        "enabled": True,
+                    }
+                ],
+            }
+        )
+        client = ApiClient("http://api.test", transport=transport)
+        result = client.create_experiment(
+            ExperimentCreateRequest(
+                experiment_id="exp-new",
+                label="Greeting v2",
+                arms=[ExperimentArmSeedRequest(arm="arm-a", greeting_text="Hei")],
+            )
+        )
+        assert isinstance(result, ExperimentAdminResponse)
+        call = transport.calls[0]
+        assert call.method == "POST"
+        assert call.url.endswith("/api/v1/experiments")
+        assert call.body is not None
+        body = json.loads(call.body.decode("utf-8"))
+        assert body["arms"] == [{"arm": "arm-a", "greeting_text": "Hei"}]
+
+    def test_add_arm_posts_to_nested_endpoint(self) -> None:
+        transport = FakeTransport()
+        transport.enqueue_json(
+            {
+                "experiment_id": "exp-new",
+                "label": "Greeting v2",
+                "arm": "arm-b",
+                "greeting_text": "Moi",
+                "alpha_param": 1.0,
+                "beta_param": 1.0,
+                "enabled": True,
+            }
+        )
+        client = ApiClient("http://api.test", transport=transport)
+        result = client.add_experiment_arm(
+            "exp-new",
+            ExperimentArmCreateRequest(arm="arm-b", greeting_text="Moi"),
+        )
+        assert isinstance(result, ExperimentArmAdminResponse)
+        assert transport.calls[0].method == "POST"
+        assert transport.calls[0].url.endswith("/api/v1/experiments/exp-new/arms")
+
+    def test_patch_arm_uses_patch_and_never_requires_posterior_fields(self) -> None:
+        transport = FakeTransport()
+        transport.enqueue_json(
+            {
+                "experiment_id": "exp-new",
+                "label": "Greeting v2",
+                "arm": "arm-b",
+                "greeting_text": "Moi ystävä",
+                "alpha_param": 3.0,
+                "beta_param": 2.0,
+                "enabled": False,
+            }
+        )
+        client = ApiClient("http://api.test", transport=transport)
+        result = client.patch_experiment_arm(
+            "exp-new",
+            "arm-b",
+            ExperimentArmPatchRequest(greeting_text="Moi ystävä", enabled=False),
+        )
+        assert isinstance(result, ExperimentArmAdminResponse)
+        call = transport.calls[0]
+        assert call.method == "PATCH"
+        assert call.url.endswith("/api/v1/experiments/exp-new/arms/arm-b")
+        assert call.body is not None
+        body = json.loads(call.body.decode("utf-8"))
+        assert body == {"greeting_text": "Moi ystävä", "enabled": False}
+        assert "alpha_param" not in body
+        assert "beta_param" not in body
+
+    def test_delete_arm_uses_delete_and_validates_guard_response(self) -> None:
+        transport = FakeTransport()
+        transport.enqueue_json(
+            {
+                "experiment_id": "exp-new",
+                "arm": "arm-b",
+                "deleted": False,
+                "posterior_preserved": True,
+                "reason": "arm has posterior history; disabled instead of hard-deleting",
+                "arm_state": {
+                    "experiment_id": "exp-new",
+                    "label": "Greeting v2",
+                    "arm": "arm-b",
+                    "greeting_text": "Moi ystävä",
+                    "alpha_param": 3.0,
+                    "beta_param": 2.0,
+                    "enabled": False,
+                },
+            }
+        )
+        client = ApiClient("http://api.test", transport=transport)
+
+        result = client.delete_experiment_arm("exp-new", "arm-b")
+
+        assert isinstance(result, ExperimentArmDeleteResponse)
+        assert result.deleted is False
+        assert result.posterior_preserved is True
+        call = transport.calls[0]
+        assert call.method == "DELETE"
+        assert call.url.endswith("/api/v1/experiments/exp-new/arms/arm-b")
+        assert call.body is None
+
+
 # ----------------------------------------------------------------------
 # ApiError.retryable semantics via UrllibTransport
 # ----------------------------------------------------------------------
@@ -359,6 +556,14 @@ class TestHealthValidation:
                         "recovery_mode": "restart in progress",
                     }
                 ],
+                "subsystem_probes": {
+                    "whisper_worker": {
+                        "subsystem_key": "whisper_worker",
+                        "label": "Whisper Worker",
+                        "state": "ok",
+                        "checked_at_utc": _utc(2026, 4, 17, 12, 0).isoformat(),
+                    }
+                },
                 "degraded_count": 0,
                 "recovering_count": 1,
                 "error_count": 0,
@@ -370,6 +575,7 @@ class TestHealthValidation:
         assert health.overall_state is HealthState.DEGRADED
         assert health.subsystems[0].state is HealthState.RECOVERING
         assert health.subsystems[0].recovery_mode == "restart in progress"
+        assert "whisper_worker" in health.subsystem_probes
 
 
 # ----------------------------------------------------------------------

@@ -15,6 +15,8 @@ in `formatters.py` or the viewmodel layer.
 Design constraints:
   - Selected session id is held separately from route so switching
     between Overview and Live Session preserves the operator's context.
+  - Managed experiment id is held separately from the config default so
+    polling stays pinned to the experiment the operator loaded or mutated.
   - `error_changed` carries a scope (`"overview"`, `"alerts"`, …) so a
     transient failure on one surface does not overwrite another's
     error banner.
@@ -97,6 +99,7 @@ class OperatorStore(QObject):
     # fmt: off
     route_changed              = Signal(str)
     selected_session_changed   = Signal(object)
+    managed_experiment_changed = Signal(object)
     overview_changed           = Signal(object)
     sessions_changed           = Signal(object)
     live_session_changed       = Signal(object)
@@ -114,6 +117,7 @@ class OperatorStore(QObject):
         super().__init__(parent)
         self._route: AppRoute = AppRoute.OVERVIEW
         self._selected_session_id: UUID | None = None
+        self._managed_experiment_id: str | None = None
         self._overview: OverviewSnapshot | None = None
         self._sessions: list[SessionSummary] = []
         self._live_session: SessionSummary | None = None
@@ -147,6 +151,20 @@ class OperatorStore(QObject):
             return
         self._selected_session_id = session_id
         self.selected_session_changed.emit(session_id)
+
+    # ---- managed experiment -------------------------------------------
+
+    def managed_experiment_id(self) -> str | None:
+        return self._managed_experiment_id
+
+    def set_managed_experiment_id(self, experiment_id: str | None) -> None:
+        normalized = experiment_id.strip() if isinstance(experiment_id, str) else None
+        if normalized == "":
+            normalized = None
+        if normalized == self._managed_experiment_id:
+            return
+        self._managed_experiment_id = normalized
+        self.managed_experiment_changed.emit(normalized)
 
     # ---- overview ------------------------------------------------------
 
@@ -190,6 +208,8 @@ class OperatorStore(QObject):
         return self._experiment
 
     def set_experiment(self, detail: ExperimentDetail | None) -> None:
+        if detail is not None:
+            self.set_managed_experiment_id(detail.experiment_id)
         self._experiment = detail
         self.experiment_changed.emit(detail)
 

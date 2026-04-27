@@ -36,12 +36,23 @@ from uuid import UUID
 
 from pydantic import BaseModel, TypeAdapter, ValidationError
 
+from packages.schemas.experiments import (
+    ExperimentAdminResponse,
+    ExperimentArmAdminResponse,
+    ExperimentArmCreateRequest,
+    ExperimentArmDeleteResponse,
+    ExperimentArmPatchRequest,
+    ExperimentCreateRequest,
+)
 from packages.schemas.operator_console import (
     AlertEvent,
     EncounterSummary,
     ExperimentDetail,
     HealthSnapshot,
     OverviewSnapshot,
+    SessionCreateRequest,
+    SessionEndRequest,
+    SessionLifecycleAccepted,
     SessionPhysiologySnapshot,
     SessionSummary,
     StimulusAccepted,
@@ -183,11 +194,13 @@ _ALERT_LIST_ADAPTER: TypeAdapter[list[AlertEvent]] = TypeAdapter(list[AlertEvent
 
 
 class ApiClient:
-    """Thin typed wrapper over the API Server's `/api/v1/operator/*` surface.
+    """Thin typed wrapper over the API Server's operator/admin surfaces.
 
-    All read methods return Pydantic DTOs; the single write method
-    (`post_stimulus`) returns `StimulusAccepted`. A `Transport` can be
-    injected for tests; the default is `UrllibTransport`.
+    All read methods return Pydantic DTOs. Write methods stay narrow and
+    typed: operator stimulus requests go to `/api/v1/operator/*`, while
+    experiment/arm management uses the additive `/api/v1/experiments/*`
+    admin surface. A `Transport` can be injected for tests; the default
+    is `UrllibTransport`.
     """
 
     def __init__(
@@ -268,7 +281,7 @@ class ApiClient:
         path = f"/api/v1/operator/alerts?{urlencode(params)}"
         return self._get_list(path, _ALERT_LIST_ADAPTER)
 
-    # ---- write endpoint ------------------------------------------------
+    # ---- write endpoints ----------------------------------------------
 
     def post_stimulus(
         self,
@@ -286,6 +299,56 @@ class ApiClient:
         body = request.model_dump_json().encode("utf-8")
         return self._post_model(path, body, StimulusAccepted)
 
+    def post_session_start(self, request: SessionCreateRequest) -> SessionLifecycleAccepted:
+        """`POST /api/v1/sessions` — publish a session-start lifecycle intent."""
+        body = request.model_dump_json().encode("utf-8")
+        return self._post_model("/api/v1/sessions", body, SessionLifecycleAccepted)
+
+    def post_session_end(
+        self,
+        session_id: UUID | str,
+        request: SessionEndRequest,
+    ) -> SessionLifecycleAccepted:
+        """`POST /api/v1/sessions/{id}/end` — publish a session-end intent."""
+        path = f"/api/v1/sessions/{_path_segment(session_id)}/end"
+        body = request.model_dump_json().encode("utf-8")
+        return self._post_model(path, body, SessionLifecycleAccepted)
+
+    def create_experiment(self, request: ExperimentCreateRequest) -> ExperimentAdminResponse:
+        """`POST /api/v1/experiments` — create experiment with Beta(1,1) arms."""
+        body = request.model_dump_json().encode("utf-8")
+        return self._post_model("/api/v1/experiments", body, ExperimentAdminResponse)
+
+    def add_experiment_arm(
+        self,
+        experiment_id: str,
+        request: ExperimentArmCreateRequest,
+    ) -> ExperimentArmAdminResponse:
+        """`POST /api/v1/experiments/{id}/arms` — add one Beta(1,1) arm."""
+        path = f"/api/v1/experiments/{_path_segment(experiment_id)}/arms"
+        body = request.model_dump_json().encode("utf-8")
+        return self._post_model(path, body, ExperimentArmAdminResponse)
+
+    def patch_experiment_arm(
+        self,
+        experiment_id: str,
+        arm_id: str,
+        request: ExperimentArmPatchRequest,
+    ) -> ExperimentArmAdminResponse:
+        """`PATCH /api/v1/experiments/{id}/arms/{arm}` — metadata/disable only."""
+        path = f"/api/v1/experiments/{_path_segment(experiment_id)}/arms/{_path_segment(arm_id)}"
+        body = request.model_dump_json().encode("utf-8")
+        return self._patch_model(path, body, ExperimentArmAdminResponse)
+
+    def delete_experiment_arm(
+        self,
+        experiment_id: str,
+        arm_id: str,
+    ) -> ExperimentArmDeleteResponse:
+        """`DELETE /api/v1/experiments/{id}/arms/{arm}` — guarded arm removal."""
+        path = f"/api/v1/experiments/{_path_segment(experiment_id)}/arms/{_path_segment(arm_id)}"
+        return self._delete_model(path, ExperimentArmDeleteResponse)
+
     # ---- internal helpers ---------------------------------------------
 
     def _get_model(self, path: str, model: type[_ModelT]) -> _ModelT:
@@ -294,6 +357,14 @@ class ApiClient:
 
     def _post_model(self, path: str, body: bytes, model: type[_ModelT]) -> _ModelT:
         raw = self._request("POST", path, body=body)
+        return self._validate_model(path, raw, model)
+
+    def _patch_model(self, path: str, body: bytes, model: type[_ModelT]) -> _ModelT:
+        raw = self._request("PATCH", path, body=body)
+        return self._validate_model(path, raw, model)
+
+    def _delete_model(self, path: str, model: type[_ModelT]) -> _ModelT:
+        raw = self._request("DELETE", path, body=None)
         return self._validate_model(path, raw, model)
 
     def _get_list(self, path: str, adapter: TypeAdapter[list[_ListItemT]]) -> list[_ListItemT]:

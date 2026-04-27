@@ -43,4 +43,7 @@ RUN mkdir -p /data/raw /data/interim /data/processed
 # §9.3 — Verify CUDA runtime is accessible at build time
 RUN python3.11 -c "import ctypes; ctypes.CDLL('libcudart.so')" || echo "CUDA runtime check (build-time only)"
 
-CMD ["celery", "-A", "services.worker.celery_app", "worker", "--loglevel=info", "-I", "services.worker.tasks.inference"]
+# Internal worker-local health endpoint for API-side bounded probes.
+EXPOSE 8081
+
+CMD ["/bin/sh", "-c", "python3.11 -m services.worker.health & exec celery -A services.worker.celery_app worker --loglevel=info -I services.worker.tasks.inference"]

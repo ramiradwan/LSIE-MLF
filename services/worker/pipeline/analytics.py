@@ -181,10 +181,34 @@ _QUERY_RECENT_PHYSIOLOGY_SQL: str = """
     ORDER BY source_timestamp_utc ASC
 """
 
-# §4.E.1 — SELECT experiment arms for Thompson Sampling
+# §4.E.1 — SELECT experiment arms for Thompson Sampling scheduler input
+_SELECT_ACTIVE_ARMS_SQL: str = """
+    SELECT arm, alpha_param, beta_param FROM experiments
+    WHERE experiment_id = %(experiment_id)s
+      AND COALESCE(enabled, TRUE) = TRUE
+      AND end_dated_at IS NULL
+"""
+
+# Legacy fallback when rollout-safe arm-status columns are not present yet.
 _SELECT_ARMS_SQL: str = """
     SELECT arm, alpha_param, beta_param FROM experiments
     WHERE experiment_id = %(experiment_id)s
+"""
+
+# Historical-arm lookup for posterior updates. Intentionally unfiltered so a
+# reward that arrives after an arm is disabled still updates the row that was
+# active at selection time.
+_SELECT_ARM_SQL: str = """
+    SELECT arm, alpha_param, beta_param FROM experiments
+    WHERE experiment_id = %(experiment_id)s
+      AND arm = %(arm)s
+"""
+
+_EXPERIMENT_ARM_STATUS_COLUMNS_SQL: str = """
+    SELECT column_name
+    FROM information_schema.columns
+    WHERE table_name = 'experiments'
+      AND column_name IN ('enabled', 'end_dated_at')
 """
 
 # §4.E.1 — UPDATE experiment arm posterior (SERIALIZABLE isolation)
@@ -391,18 +415,51 @@ class MetricsStore:
 
         logger.error("Overflow: wrote %d records to %s", len(records), csv_path)
 
+    def _experiment_arm_status_columns_available(self, conn: Any) -> bool:
+        """Return True once `enabled` + `end_dated_at` exist on `experiments`."""
+        with conn.cursor() as cur:
+            cur.execute(_EXPERIMENT_ARM_STATUS_COLUMNS_SQL)
+            columns = {row[0] for row in cur.fetchall()}
+        return {"enabled", "end_dated_at"}.issubset(columns)
+
     def get_experiment_arms(self, experiment_id: str) -> list[dict[str, Any]]:
         """
-        Fetch all arms for an experiment from the Persistent Store.
+        Fetch scheduler-eligible arms for an experiment.
 
-        §4.E.1 — Returns list of {arm, alpha_param, beta_param}.
+        Disabled or end-dated arms are excluded once the additive arm-status
+        columns are present; older schemas transparently fall back to the
+        legacy unfiltered query so rollout order stays safe.
         """
         conn = self._get_conn()
         try:
+            sql = (
+                _SELECT_ACTIVE_ARMS_SQL
+                if self._experiment_arm_status_columns_available(conn)
+                else _SELECT_ARMS_SQL
+            )
             with conn.cursor() as cur:
-                cur.execute(_SELECT_ARMS_SQL, {"experiment_id": experiment_id})
+                cur.execute(sql, {"experiment_id": experiment_id})
                 rows = cur.fetchall()
             return [{"arm": row[0], "alpha_param": row[1], "beta_param": row[2]} for row in rows]
+        finally:
+            self._put_conn(conn)
+
+    def get_experiment_arm(self, experiment_id: str, arm: str) -> dict[str, Any] | None:
+        """Fetch one arm row without scheduler-status filtering."""
+        conn = self._get_conn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    _SELECT_ARM_SQL,
+                    {
+                        "experiment_id": experiment_id,
+                        "arm": arm,
+                    },
+                )
+                row = cur.fetchone()
+            if row is None:
+                return None
+            return {"arm": row[0], "alpha_param": row[1], "beta_param": row[2]}
         finally:
             self._put_conn(conn)
 
@@ -689,18 +746,15 @@ class ThompsonSamplingEngine:
                 "Ensure the reward pipeline produces bounded output."
             )
 
-        arms = self.store.get_experiment_arms(experiment_id)
+        arm_data = self.store.get_experiment_arm(experiment_id, arm)
+        if arm_data is None:
+            raise ValueError(f"Arm '{arm}' not found for experiment '{experiment_id}'")
 
-        for arm_data in arms:
-            if arm_data["arm"] == arm:
-                alpha: float = float(arm_data["alpha_param"])
-                beta_val: float = float(arm_data["beta_param"])
+        alpha: float = float(arm_data["alpha_param"])
+        beta_val: float = float(arm_data["beta_param"])
 
-                # Fractional Beta–Bernoulli pseudo-count update
-                alpha += reward
-                beta_val += 1.0 - reward
+        # Fractional Beta–Bernoulli pseudo-count update
+        alpha += reward
+        beta_val += 1.0 - reward
 
-                self.store.update_experiment_arm(experiment_id, arm, alpha, beta_val)
-                return
-
-        raise ValueError(f"Arm '{arm}' not found for experiment '{experiment_id}'")
+        self.store.update_experiment_arm(experiment_id, arm, alpha, beta_val)

@@ -21,11 +21,15 @@ v3.0 — Mathematical Recipe Alignment:
 
 from __future__ import annotations
 
+import logging
 import math
+import time
 from typing import Any
 
 import numpy as np
 import numpy.typing as npt
+
+logger = logging.getLogger(__name__)
 
 # §7A.5 — Epsilon guard to avoid division by zero when IOD approaches zero.
 EPSILON: float = 1e-6
@@ -194,22 +198,30 @@ class AU12Normalizer:
         Raises:
             ValueError: If baseline has not been calibrated before inference.
         """
-        geom = self._extract_geometry(landmarks)
-        if geom is None:
-            return 0.0
+        started_at = time.perf_counter()
+        try:
+            geom = self._extract_geometry(landmarks)
+            if geom is None:
+                return 0.0
 
-        iod, d_mouth = geom
-        ratio: float = d_mouth / iod
+            iod, d_mouth = geom
+            ratio: float = d_mouth / iod
 
-        if is_calibrating:
-            self._update_calibration(ratio)
-            return 0.0
+            if is_calibrating:
+                self._update_calibration(ratio)
+                return 0.0
 
-        if self.b_neutral is None:
-            raise ValueError("Baseline not calibrated")
+            if self.b_neutral is None:
+                raise ValueError("Baseline not calibrated")
 
-        # v3.0 — Baseline-subtracted deviation, floored at zero
-        deviation: float = max(0.0, ratio - self.b_neutral)
+            # v3.0 — Baseline-subtracted deviation, floored at zero
+            deviation: float = max(0.0, ratio - self.b_neutral)
 
-        # v3.0 — tanh soft-saturation: continuous gradient, maps to [0, 1)
-        return float(math.tanh(self.alpha * deviation))
+            # v3.0 — tanh soft-saturation: continuous gradient, maps to [0, 1)
+            return float(math.tanh(self.alpha * deviation))
+        finally:
+            logger.debug(
+                "BENCHMARK au12_bounded_ms=%.3f calibrating=%s",
+                (time.perf_counter() - started_at) * 1000.0,
+                is_calibrating,
+            )

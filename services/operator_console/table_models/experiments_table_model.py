@@ -5,6 +5,11 @@ exact Thompson Sampling readbacks an operator needs to reason about
 exploration vs exploitation: arm id, greeting text, posterior α/β,
 evaluation variance, selection count, and the recent reward mean.
 
+Only human-owned arm metadata is editable from this model. The greeting
+column emits a rename request, and the Enabled checkbox only emits the
+one-way disable request; posterior-owned numeric fields remain read-only
+and cannot be edited through the operator console.
+
 Semantic confidence is deliberately not a column here — §7B's reward is
 `p90_intensity × semantic_gate`, not a confidence-scaled quantity, so
 including it in the arm table would imply it moves the posterior. That
@@ -21,20 +26,33 @@ from __future__ import annotations
 
 from typing import Any, ClassVar
 
-from PySide6.QtCore import QAbstractTableModel, QModelIndex, QObject, QPersistentModelIndex, Qt
+from PySide6.QtCore import (
+    QAbstractTableModel,
+    QModelIndex,
+    QObject,
+    QPersistentModelIndex,
+    Qt,
+    Signal,
+)
 
 from packages.schemas.operator_console import ArmSummary
 from services.operator_console.formatters import format_percentage, format_reward
 
 _EM_DASH = "—"
+_ENABLED_COL = 2
+_GREETING_COL = 1
 
 
 class ExperimentsTableModel(QAbstractTableModel):
-    """Thompson Sampling arms table."""
+    """Thompson Sampling arms table plus safe arm-management intents."""
+
+    greeting_edit_requested = Signal(str, str)  # arm_id, greeting_text
+    disable_requested = Signal(str)  # arm_id
 
     COLUMNS: ClassVar[tuple[str, ...]] = (
         "Arm",
         "Greeting",
+        "Enabled",
         "Posterior α",
         "Posterior β",
         "Eval variance",
@@ -93,6 +111,22 @@ class ExperimentsTableModel(QAbstractTableModel):
             return None
         return section + 1
 
+    def flags(  # noqa: N802 — Qt override
+        self,
+        index: QModelIndex | QPersistentModelIndex,
+    ) -> Qt.ItemFlag:
+        if not index.isValid():
+            return Qt.ItemFlag.NoItemFlags
+        row = self.row_at(index.row())
+        if row is None:
+            return Qt.ItemFlag.NoItemFlags
+        flags = super().flags(index)
+        if index.column() == _GREETING_COL:
+            return flags | Qt.ItemFlag.ItemIsEditable
+        if index.column() == _ENABLED_COL and row.enabled:
+            return flags | Qt.ItemFlag.ItemIsUserCheckable
+        return flags
+
     def data(
         self,
         index: QModelIndex | QPersistentModelIndex,
@@ -106,13 +140,54 @@ class ExperimentsTableModel(QAbstractTableModel):
         col = index.column()
         if role == Qt.ItemDataRole.DisplayRole:
             return self._display(row, col)
+        if role == Qt.ItemDataRole.CheckStateRole and col == _ENABLED_COL:
+            return Qt.CheckState.Checked if row.enabled else Qt.CheckState.Unchecked
         if role == Qt.ItemDataRole.TextAlignmentRole:
-            if col in (2, 3, 4, 5, 6, 7):
+            if col == _ENABLED_COL:
+                return int(Qt.AlignmentFlag.AlignCenter)
+            if col in (3, 4, 5, 6, 7, 8):
                 return int(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             return int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        if role == Qt.ItemDataRole.ToolTipRole and col == 1:
-            return row.greeting_text
+        if role == Qt.ItemDataRole.ToolTipRole:
+            if col == _GREETING_COL:
+                return row.greeting_text
+            if col == _ENABLED_COL and row.enabled:
+                return "Uncheck to disable this arm. Disabled arms cannot be re-enabled here."
+            if col == _ENABLED_COL:
+                return "Arm disabled; re-enable is not supported by the operator flow."
         return None
+
+    def setData(  # noqa: N802 — Qt override
+        self,
+        index: QModelIndex | QPersistentModelIndex,
+        value: Any,
+        role: int = Qt.ItemDataRole.EditRole,
+    ) -> bool:
+        if not index.isValid():
+            return False
+        row = self.row_at(index.row())
+        if row is None:
+            return False
+        col = index.column()
+        if col == _GREETING_COL and role == Qt.ItemDataRole.EditRole:
+            greeting_text = str(value).strip()
+            if not greeting_text:
+                return False
+            if greeting_text == row.greeting_text:
+                return True
+            self.greeting_edit_requested.emit(row.arm_id, greeting_text)
+            return True
+        if col == _ENABLED_COL and role == Qt.ItemDataRole.CheckStateRole:
+            requested_state = _coerce_check_state(value)
+            if requested_state is None:
+                return False
+            # One-way disable only. A checked request would imply
+            # re-enabling, which the backend intentionally rejects.
+            if row.enabled and requested_state == Qt.CheckState.Unchecked:
+                self.disable_requested.emit(row.arm_id)
+                return True
+            return False
+        return False
 
     def _display(self, row: ArmSummary, col: int) -> str:
         if col == 0:
@@ -120,15 +195,26 @@ class ExperimentsTableModel(QAbstractTableModel):
         if col == 1:
             return row.greeting_text
         if col == 2:
-            return format_reward(row.posterior_alpha)
+            return "enabled" if row.enabled else "disabled"
         if col == 3:
-            return format_reward(row.posterior_beta)
+            return format_reward(row.posterior_alpha)
         if col == 4:
-            return format_reward(row.evaluation_variance)
+            return format_reward(row.posterior_beta)
         if col == 5:
-            return str(row.selection_count)
+            return format_reward(row.evaluation_variance)
         if col == 6:
-            return format_reward(row.recent_reward_mean)
+            return str(row.selection_count)
         if col == 7:
+            return format_reward(row.recent_reward_mean)
+        if col == 8:
             return format_percentage(row.recent_semantic_pass_rate, digits=0)
         return ""
+
+
+def _coerce_check_state(value: Any) -> Qt.CheckState | None:
+    if isinstance(value, Qt.CheckState):
+        return value
+    try:
+        return Qt.CheckState(int(value))
+    except (TypeError, ValueError):
+        return None

@@ -11,10 +11,50 @@
 -- ON CONFLICT DO NOTHING ensures idempotent re-runs.
 -- =============================================================================
 
-INSERT INTO experiments (experiment_id, arm, alpha_param, beta_param)
+INSERT INTO experiments (
+    experiment_id,
+    label,
+    arm,
+    greeting_text,
+    alpha_param,
+    beta_param,
+    enabled
+)
 VALUES
-    ('greeting_line_v1', 'warm_welcome',      1.0, 1.0),
-    ('greeting_line_v1', 'direct_question',   1.0, 1.0),
-    ('greeting_line_v1', 'compliment_content', 1.0, 1.0),
-    ('greeting_line_v1', 'simple_hello',      1.0, 1.0)
+    (
+        'greeting_line_v1',
+        'Greeting Line V1',
+        'warm_welcome',
+        'Hey! Thanks for streaming, you''re awesome!',
+        1.0,
+        1.0,
+        TRUE
+    ),
+    (
+        'greeting_line_v1',
+        'Greeting Line V1',
+        'direct_question',
+        'Hi! What''s the best advice you''ve gotten today?',
+        1.0,
+        1.0,
+        TRUE
+    ),
+    (
+        'greeting_line_v1',
+        'Greeting Line V1',
+        'compliment_content',
+        'Love the energy on this stream! How long have you been live?',
+        1.0,
+        1.0,
+        TRUE
+    ),
+    (
+        'greeting_line_v1',
+        'Greeting Line V1',
+        'simple_hello',
+        'Hello! Just joined, happy to be here!',
+        1.0,
+        1.0,
+        TRUE
+    )
 ON CONFLICT DO NOTHING;

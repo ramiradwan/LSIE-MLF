@@ -313,9 +313,11 @@ class TestFractionalUpdate:
         from services.worker.pipeline.analytics import MetricsStore, ThompsonSamplingEngine
 
         mock_store = MagicMock(spec=MetricsStore)
-        mock_store.get_experiment_arms.return_value = [
-            {"arm": "arm_a", "alpha_param": 5.0, "beta_param": 3.0},
-        ]
+        mock_store.get_experiment_arm.return_value = {
+            "arm": "arm_a",
+            "alpha_param": 5.0,
+            "beta_param": 3.0,
+        }
         engine = ThompsonSamplingEngine(mock_store)
         engine.update("exp-1", "arm_a", reward=0.85)
         mock_store.update_experiment_arm.assert_called_once_with("exp-1", "arm_a", 5.85, 3.15)
@@ -325,9 +327,11 @@ class TestFractionalUpdate:
         from services.worker.pipeline.analytics import MetricsStore, ThompsonSamplingEngine
 
         mock_store = MagicMock(spec=MetricsStore)
-        mock_store.get_experiment_arms.return_value = [
-            {"arm": "arm_a", "alpha_param": 5.0, "beta_param": 3.0},
-        ]
+        mock_store.get_experiment_arm.return_value = {
+            "arm": "arm_a",
+            "alpha_param": 5.0,
+            "beta_param": 3.0,
+        }
         engine = ThompsonSamplingEngine(mock_store)
         engine.update("exp-1", "arm_a", reward=0.2)
         mock_store.update_experiment_arm.assert_called_once_with("exp-1", "arm_a", 5.2, 3.8)
@@ -337,9 +341,11 @@ class TestFractionalUpdate:
         from services.worker.pipeline.analytics import MetricsStore, ThompsonSamplingEngine
 
         mock_store = MagicMock(spec=MetricsStore)
-        mock_store.get_experiment_arms.return_value = [
-            {"arm": "arm_a", "alpha_param": 1.0, "beta_param": 1.0},
-        ]
+        mock_store.get_experiment_arm.return_value = {
+            "arm": "arm_a",
+            "alpha_param": 1.0,
+            "beta_param": 1.0,
+        }
         engine = ThompsonSamplingEngine(mock_store)
         engine.update("exp-1", "arm_a", reward=0.0)
         mock_store.update_experiment_arm.assert_called_once_with("exp-1", "arm_a", 1.0, 2.0)
@@ -349,9 +355,11 @@ class TestFractionalUpdate:
         from services.worker.pipeline.analytics import MetricsStore, ThompsonSamplingEngine
 
         mock_store = MagicMock(spec=MetricsStore)
-        mock_store.get_experiment_arms.return_value = [
-            {"arm": "arm_a", "alpha_param": 1.0, "beta_param": 1.0},
-        ]
+        mock_store.get_experiment_arm.return_value = {
+            "arm": "arm_a",
+            "alpha_param": 1.0,
+            "beta_param": 1.0,
+        }
         engine = ThompsonSamplingEngine(mock_store)
         engine.update("exp-1", "arm_a", reward=1.0)
         mock_store.update_experiment_arm.assert_called_once_with("exp-1", "arm_a", 2.0, 1.0)
@@ -375,9 +383,11 @@ class TestFractionalUpdate:
         from services.worker.pipeline.analytics import MetricsStore, ThompsonSamplingEngine
 
         mock_store = MagicMock(spec=MetricsStore)
-        mock_store.get_experiment_arms.return_value = [
-            {"arm": "arm_a", "alpha_param": 1.0, "beta_param": 1.0},
-        ]
+        mock_store.get_experiment_arm.return_value = {
+            "arm": "arm_a",
+            "alpha_param": 1.0,
+            "beta_param": 1.0,
+        }
         engine = ThompsonSamplingEngine(mock_store)
         with pytest.raises(ValueError, match="must be in"):
             engine.update("exp-1", "arm_a", reward=1.5)

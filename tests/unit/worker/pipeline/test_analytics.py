@@ -526,21 +526,57 @@ class TestMetricsStore:
 class TestMetricsStoreExperiments:
     """§4.E.1 — Experiment arm read/write via MetricsStore."""
 
-    def test_get_experiment_arms(
+    def test_get_experiment_arms_filters_disabled_arms_when_status_columns_exist(
         self,
         store: MetricsStore,
         mock_conn: MagicMock,
     ) -> None:
-        """§4.E.1 — Fetches arms with alpha/beta params."""
+        """Scheduler input excludes disabled/end-dated arms."""
         cursor = mock_conn.cursor.return_value.__enter__.return_value
         cursor.fetchall.return_value = [
             ("arm_a", 5.0, 3.0),
             ("arm_b", 2.0, 8.0),
         ]
-        arms = store.get_experiment_arms("exp-1")
+
+        with patch.object(store, "_experiment_arm_status_columns_available", return_value=True):
+            arms = store.get_experiment_arms("exp-1")
+
         assert len(arms) == 2
         assert arms[0] == {"arm": "arm_a", "alpha_param": 5.0, "beta_param": 3.0}
         assert arms[1] == {"arm": "arm_b", "alpha_param": 2.0, "beta_param": 8.0}
+        sql = cursor.execute.call_args[0][0]
+        assert "COALESCE(enabled, TRUE) = TRUE" in sql
+        assert "end_dated_at IS NULL" in sql
+
+    def test_get_experiment_arms_falls_back_when_status_columns_missing(
+        self,
+        store: MetricsStore,
+        mock_conn: MagicMock,
+    ) -> None:
+        cursor = mock_conn.cursor.return_value.__enter__.return_value
+        cursor.fetchall.return_value = [("arm_a", 5.0, 3.0)]
+
+        with patch.object(store, "_experiment_arm_status_columns_available", return_value=False):
+            store.get_experiment_arms("exp-1")
+
+        sql = cursor.execute.call_args[0][0]
+        assert "COALESCE(enabled, TRUE) = TRUE" not in sql
+        assert "end_dated_at IS NULL" not in sql
+
+    def test_get_experiment_arm_fetches_single_row_without_status_filter(
+        self,
+        store: MetricsStore,
+        mock_conn: MagicMock,
+    ) -> None:
+        cursor = mock_conn.cursor.return_value.__enter__.return_value
+        cursor.fetchone.return_value = ("arm_a", 5.0, 3.0)
+
+        arm = store.get_experiment_arm("exp-1", "arm_a")
+
+        assert arm == {"arm": "arm_a", "alpha_param": 5.0, "beta_param": 3.0}
+        sql = cursor.execute.call_args[0][0]
+        assert "AND arm = %(arm)s" in sql
+        assert "end_dated_at IS NULL" not in sql
 
     def test_update_experiment_arm_serializable(
         self,
@@ -611,9 +647,11 @@ class TestThompsonSamplingEngine:
     def test_update_success_increments_alpha(self) -> None:
         """§4.E.1 — reward >= 0.5 increments alpha."""
         mock_store = MagicMock(spec=MetricsStore)
-        mock_store.get_experiment_arms.return_value = [
-            {"arm": "arm_a", "alpha_param": 5.0, "beta_param": 3.0},
-        ]
+        mock_store.get_experiment_arm.return_value = {
+            "arm": "arm_a",
+            "alpha_param": 5.0,
+            "beta_param": 3.0,
+        }
         engine = ThompsonSamplingEngine(mock_store)
         engine.update("exp-1", "arm_a", reward=0.8)
         mock_store.update_experiment_arm.assert_called_once_with("exp-1", "arm_a", 5.8, 3.2)
@@ -621,9 +659,11 @@ class TestThompsonSamplingEngine:
     def test_update_failure_increments_beta(self) -> None:
         """§4.E.1 — reward < 0.5 increments beta."""
         mock_store = MagicMock(spec=MetricsStore)
-        mock_store.get_experiment_arms.return_value = [
-            {"arm": "arm_a", "alpha_param": 5.0, "beta_param": 3.0},
-        ]
+        mock_store.get_experiment_arm.return_value = {
+            "arm": "arm_a",
+            "alpha_param": 5.0,
+            "beta_param": 3.0,
+        }
         engine = ThompsonSamplingEngine(mock_store)
         engine.update("exp-1", "arm_a", reward=0.2)
         mock_store.update_experiment_arm.assert_called_once_with("exp-1", "arm_a", 5.2, 3.8)
@@ -631,9 +671,7 @@ class TestThompsonSamplingEngine:
     def test_update_unknown_arm_raises(self) -> None:
         """update raises ValueError for unknown arm."""
         mock_store = MagicMock(spec=MetricsStore)
-        mock_store.get_experiment_arms.return_value = [
-            {"arm": "arm_a", "alpha_param": 1.0, "beta_param": 1.0},
-        ]
+        mock_store.get_experiment_arm.return_value = None
         engine = ThompsonSamplingEngine(mock_store)
         with pytest.raises(ValueError, match="not found"):
             engine.update("exp-1", "arm_x", reward=1.0)
@@ -641,9 +679,11 @@ class TestThompsonSamplingEngine:
     def test_update_boundary_reward(self) -> None:
         """§4.E.1 — reward == 0.5 results in equal fractional update."""
         mock_store = MagicMock(spec=MetricsStore)
-        mock_store.get_experiment_arms.return_value = [
-            {"arm": "arm_a", "alpha_param": 1.0, "beta_param": 1.0},
-        ]
+        mock_store.get_experiment_arm.return_value = {
+            "arm": "arm_a",
+            "alpha_param": 1.0,
+            "beta_param": 1.0,
+        }
         engine = ThompsonSamplingEngine(mock_store)
         engine.update("exp-1", "arm_a", reward=0.5)
         mock_store.update_experiment_arm.assert_called_once_with("exp-1", "arm_a", 1.5, 1.5)

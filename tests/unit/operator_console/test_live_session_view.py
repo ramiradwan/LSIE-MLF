@@ -13,6 +13,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
+from PySide6.QtWidgets import QDialog
 
 from packages.schemas.operator_console import (
     EncounterState,
@@ -28,7 +29,10 @@ from services.operator_console.table_models.encounters_table_model import (
     EncountersTableModel,
 )
 from services.operator_console.viewmodels.live_session_vm import LiveSessionViewModel
-from services.operator_console.views.live_session_view import LiveSessionView
+from services.operator_console.views.live_session_view import (
+    LiveSessionView,
+    _StartSessionDialog,
+)
 
 pytestmark = pytest.mark.usefixtures("qt_app")
 
@@ -36,13 +40,22 @@ pytestmark = pytest.mark.usefixtures("qt_app")
 _NOW = datetime(2026, 4, 17, 12, 0, 0, tzinfo=UTC)
 
 
-def _session(session_id: UUID | None = None) -> SessionSummary:
+def _session(
+    session_id: UUID | None = None,
+    *,
+    is_calibrating: bool | None = None,
+    calibration_frames_accumulated: int | None = None,
+    calibration_frames_required: int | None = None,
+) -> SessionSummary:
     return SessionSummary(
         session_id=session_id or uuid4(),
         status="active",
         started_at_utc=_NOW,
         active_arm="greeting_v7",
         expected_greeting="hei rakas",
+        is_calibrating=is_calibrating,
+        calibration_frames_accumulated=calibration_frames_accumulated,
+        calibration_frames_required=calibration_frames_required,
     )
 
 
@@ -122,6 +135,102 @@ def test_live_session_view_header_reads_from_live_session_dto() -> None:
     panel = view._session_panel
     assert "greeting_v7" in panel._arm_label.text()  # type: ignore[attr-defined]
     assert "hei rakas" in panel._greeting_label.text()  # type: ignore[attr-defined]
+    assert panel._calibration_pill.kind() == UiStatusKind.OK  # type: ignore[attr-defined]
+    assert panel._calibration_pill.text() == "Ready"  # type: ignore[attr-defined]
+
+
+def test_live_session_view_header_shows_calibration_progress() -> None:
+    view, store, _vm = _build_view()
+    store.set_live_session(
+        _session(
+            is_calibrating=True,
+            calibration_frames_accumulated=12,
+            calibration_frames_required=45,
+        )
+    )
+    panel = view._session_panel
+    assert panel._calibration_pill.kind() == UiStatusKind.PROGRESS  # type: ignore[attr-defined]
+    assert panel._calibration_pill.text() == "Calibrating · 12/45 frames"  # type: ignore[attr-defined]
+
+
+def test_live_session_view_header_ready_at_safe_submit_threshold() -> None:
+    view, store, _vm = _build_view()
+    store.set_live_session(
+        _session(
+            is_calibrating=True,
+            calibration_frames_accumulated=45,
+            calibration_frames_required=45,
+        )
+    )
+    panel = view._session_panel
+    assert panel._calibration_pill.kind() == UiStatusKind.OK  # type: ignore[attr-defined]
+    assert panel._calibration_pill.text() == "Ready"  # type: ignore[attr-defined]
+
+
+def test_start_session_dialog_validates_and_trims_fields() -> None:
+    _view, _store, vm = _build_view()
+    dialog = _StartSessionDialog(vm.validate_start_session_inputs)
+
+    assert dialog._start_button.isEnabled() is False  # type: ignore[attr-defined]
+    assert "stream url" in dialog._validation_label.text().lower()  # type: ignore[attr-defined]
+
+    dialog._stream_url_input.setText("  rtmp://example/live  ")  # type: ignore[attr-defined]
+    assert dialog._start_button.isEnabled() is False  # type: ignore[attr-defined]
+    assert "experiment id" in dialog._validation_label.text().lower()  # type: ignore[attr-defined]
+
+    dialog._experiment_id_input.setText("  greeting_line_v1  ")  # type: ignore[attr-defined]
+    assert dialog._start_button.isEnabled() is True  # type: ignore[attr-defined]
+    assert dialog.values() == ("rtmp://example/live", "greeting_line_v1")
+
+
+def test_live_session_view_start_button_dispatches_modal_values(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    view, _store, vm = _build_view()
+    captured: list[tuple[str, str]] = []
+
+    def fake_start(stream_url: str, experiment_id: str) -> None:
+        captured.append((stream_url, experiment_id))
+
+    monkeypatch.setattr(vm, "start_new_session", fake_start)
+
+    class _DialogStub:
+        def exec(self) -> int:
+            return int(QDialog.DialogCode.Accepted)
+
+        def values(self) -> tuple[str, str]:
+            return ("rtmp://example/live", "greeting_line_v1")
+
+    monkeypatch.setattr(view, "_create_start_session_dialog", lambda: _DialogStub())
+
+    view._session_panel._start_button.click()  # type: ignore[attr-defined]
+    assert captured == [("rtmp://example/live", "greeting_line_v1")]
+
+
+def test_live_session_view_end_button_only_shows_for_active_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    view, store, vm = _build_view()
+    assert view._session_panel._end_button.isHidden() is True  # type: ignore[attr-defined]
+
+    session = _session()
+    store.set_live_session(session)
+    assert view._session_panel._end_button.isHidden() is False  # type: ignore[attr-defined]
+    assert view._session_panel._end_button.isEnabled() is True  # type: ignore[attr-defined]
+
+    ended = session.model_copy(update={"status": "ended", "ended_at_utc": _NOW})
+    store.set_live_session(ended)
+    assert view._session_panel._end_button.isHidden() is True  # type: ignore[attr-defined]
+
+    calls: list[str] = []
+
+    def fake_end_current_session() -> None:
+        calls.append("end")
+
+    monkeypatch.setattr(vm, "end_current_session", fake_end_current_session)
+    store.set_live_session(session)
+    view._session_panel._end_button.click()  # type: ignore[attr-defined]
+    assert calls == ["end"]
 
 
 def test_live_session_view_detail_pane_shows_reward_explanation() -> None:

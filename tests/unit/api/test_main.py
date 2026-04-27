@@ -65,6 +65,8 @@ def test_main_app_registers_experiments_after_encounters(main_module: Any) -> No
 
     assert "/api/v1/experiments" in api_paths
     assert "/api/v1/experiments/{experiment_id}" in api_paths
+    assert "/api/v1/experiments/{experiment_id}/arms" in api_paths
+    assert "/api/v1/experiments/{experiment_id}/arms/{arm_id}" in api_paths
     assert api_paths.index("/api/v1/encounters") < api_paths.index("/api/v1/experiments")
 
 

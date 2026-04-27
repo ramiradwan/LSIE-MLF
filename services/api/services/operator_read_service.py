@@ -32,9 +32,13 @@ Spec references:
 
 from __future__ import annotations
 
-from collections.abc import Callable
+import json
+import logging
+import os
+from collections.abc import Awaitable, Callable, Iterator
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, Protocol
 from uuid import UUID, uuid4
 
 from packages.schemas.operator_console import (
@@ -50,6 +54,7 @@ from packages.schemas.operator_console import (
     ExperimentSummary,
     HealthSnapshot,
     HealthState,
+    HealthSubsystemProbe,
     HealthSubsystemStatus,
     LatestEncounterSummary,
     ObservationalAcousticSummary,
@@ -60,6 +65,29 @@ from packages.schemas.operator_console import (
 )
 from services.api.db.connection import get_connection, put_connection
 from services.api.repos import operator_queries as q
+from services.api.services.subsystem_probes import ProbeResult, collect_subsystem_probes
+
+logger = logging.getLogger(__name__)
+
+_LIVE_SESSION_STATE_KEY_PREFIX: str = "operator:live_session:"
+
+
+class RedisLiveStateClientLike(Protocol):
+    """Minimal Redis surface for operator-read live-session overlays."""
+
+    def get(self, name: str) -> Any: ...
+
+    def close(self) -> None: ...
+
+
+def _default_redis_factory() -> RedisLiveStateClientLike:
+    """Lazy import — read-side live-session state is optional in tests."""
+
+    import redis as redis_lib
+
+    url = os.environ.get("REDIS_URL", "redis://redis:6379/0")
+    return redis_lib.Redis.from_url(url, decode_responses=True)  # type: ignore[no-any-return,no-untyped-call]
+
 
 # Subsystem-freshness thresholds drive §12 degraded/recovering/error
 # classification. "Degraded" = a recent signal but older than expected;
@@ -83,11 +111,17 @@ class OperatorReadService:
         *,
         get_conn: Callable[[], Any] = get_connection,
         put_conn: Callable[[Any], None] = put_connection,
+        redis_factory: Callable[[], RedisLiveStateClientLike] | None = None,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+        subsystem_probe_runner: Callable[
+            ..., Awaitable[list[ProbeResult]]
+        ] = collect_subsystem_probes,
     ) -> None:
         self._get_conn = get_conn
         self._put_conn = put_conn
+        self._redis_factory = redis_factory
         self._clock = clock
+        self._subsystem_probe_runner = subsystem_probe_runner
 
     # ------------------------------------------------------------------
     # Public surface
@@ -96,10 +130,12 @@ class OperatorReadService:
     def get_overview(self) -> OverviewSnapshot:
         """§4.E.1 — composed Overview card set."""
         now = self._clock()
-        with self._cursor() as cur:
+        with self._cursor() as cur, self._live_state_client() as live_state_client:
             active_row = q.fetch_active_session(cur)
             active_session = (
-                self._build_session_summary(active_row) if active_row is not None else None
+                self._build_session_summary(active_row, live_state_client)
+                if active_row is not None
+                else None
             )
 
             latest_encounter: LatestEncounterSummary | None = None
@@ -134,16 +170,16 @@ class OperatorReadService:
         )
 
     def list_sessions(self, *, limit: int = 50) -> list[SessionSummary]:
-        with self._cursor() as cur:
+        with self._cursor() as cur, self._live_state_client() as live_state_client:
             rows = q.fetch_recent_sessions(cur, limit=limit)
-        return [self._build_session_summary(row) for row in rows]
+            return [self._build_session_summary(row, live_state_client) for row in rows]
 
     def get_session(self, session_id: UUID) -> SessionSummary | None:
-        with self._cursor() as cur:
+        with self._cursor() as cur, self._live_state_client() as live_state_client:
             row = q.fetch_session_by_id(cur, session_id)
-        if row is None:
-            return None
-        return self._build_session_summary(row)
+            if row is None:
+                return None
+            return self._build_session_summary(row, live_state_client)
 
     def list_encounters(
         self,
@@ -166,9 +202,10 @@ class OperatorReadService:
         arms = [self._build_arm_summary(row) for row in arm_rows]
         active_arm_id = (active_arm_row or {}).get("arm") if active_arm_row is not None else None
         last_updated = _latest_datetime(row.get("updated_at") for row in arm_rows)
+        label = _experiment_label_from_rows(experiment_id, arm_rows)
         return ExperimentDetail(
             experiment_id=experiment_id,
-            label=None,
+            label=label,
             active_arm_id=active_arm_id if isinstance(active_arm_id, str) else None,
             arms=arms,
             last_update_summary=None,
@@ -183,10 +220,20 @@ class OperatorReadService:
                 return None
             return self._build_session_physiology(cur, session_id, now)
 
-    def get_health(self) -> HealthSnapshot:
+    async def get_health(self) -> HealthSnapshot:
         now = self._clock()
         with self._cursor() as cur:
-            return self._build_health_snapshot(cur, now)
+            snapshot = self._build_health_snapshot(cur, now)
+        probes = await self._collect_probe_rows(now)
+        return HealthSnapshot(
+            generated_at_utc=snapshot.generated_at_utc,
+            overall_state=snapshot.overall_state,
+            subsystems=snapshot.subsystems,
+            subsystem_probes=probes,
+            degraded_count=snapshot.degraded_count,
+            recovering_count=snapshot.recovering_count,
+            error_count=snapshot.error_count,
+        )
 
     def list_alerts(
         self, *, limit: int = 50, since_utc: datetime | None = None
@@ -226,28 +273,88 @@ class OperatorReadService:
     def _cursor(self) -> _CursorContext:
         return self._CursorContext(self._get_conn, self._put_conn)
 
+    @contextmanager
+    def _live_state_client(self) -> Iterator[RedisLiveStateClientLike | None]:
+        if self._redis_factory is None:
+            yield None
+            return
+        client = self._redis_factory()
+        try:
+            yield client
+        finally:
+            try:
+                client.close()
+            except Exception:  # noqa: BLE001
+                logger.debug("operator live-session Redis client close failed", exc_info=True)
+
     # ------------------------------------------------------------------
     # Builders — DB row dict → Phase-1 DTO
     # ------------------------------------------------------------------
 
-    def _build_session_summary(self, row: dict[str, Any]) -> SessionSummary:
+    def _build_session_summary(
+        self,
+        row: dict[str, Any],
+        live_state_client: RedisLiveStateClientLike | None = None,
+    ) -> SessionSummary:
         """§4.E.1 — lightweight session card."""
+        session_id = _as_uuid(row["session_id"])
         status = "active" if row.get("ended_at") is None else "ended"
         experiment_id = row.get("experiment_id")
-        active_arm = row.get("active_arm")
+        live_state = self._fetch_live_session_state(live_state_client, session_id)
+        active_arm = _as_str((live_state or {}).get("active_arm")) or _as_str(row.get("active_arm"))
+        expected_greeting = _as_str((live_state or {}).get("expected_greeting"))
         return SessionSummary(
-            session_id=_as_uuid(row["session_id"]),
+            session_id=session_id,
             status=status,
             started_at_utc=_ensure_utc_strict(row["started_at"]),
             ended_at_utc=_ensure_utc(row.get("ended_at")),
             duration_s=_as_float(row.get("duration_s")),
             experiment_id=experiment_id if isinstance(experiment_id, str) else None,
-            active_arm=active_arm if isinstance(active_arm, str) else None,
-            expected_greeting=None,  # orchestrator-owned; not persisted.
+            active_arm=active_arm,
+            expected_greeting=expected_greeting,
+            is_calibrating=_as_optional_bool(
+                (live_state or {}).get("is_calibrating", row.get("is_calibrating"))
+            ),
+            calibration_frames_accumulated=_as_int(
+                (live_state or {}).get(
+                    "calibration_frames_accumulated",
+                    row.get("calibration_frames_accumulated"),
+                )
+            ),
+            calibration_frames_required=_as_int(
+                (live_state or {}).get(
+                    "calibration_frames_required",
+                    row.get("calibration_frames_required"),
+                )
+            ),
             last_segment_completed_at_utc=_ensure_utc(row.get("last_segment_completed_at_utc")),
             latest_reward=_as_float(row.get("latest_reward")),
             latest_semantic_gate=_as_int(row.get("latest_semantic_gate")),
         )
+
+    def _fetch_live_session_state(
+        self,
+        client: RedisLiveStateClientLike | None,
+        session_id: UUID,
+    ) -> dict[str, Any] | None:
+        if client is None:
+            return None
+        try:
+            raw = client.get(_live_session_state_key(session_id))
+        except Exception:  # noqa: BLE001
+            logger.debug("operator live-session state read unavailable", exc_info=True)
+            return None
+        if raw is None:
+            return None
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError:
+            logger.warning("Malformed live-session state ignored for %s", session_id)
+            return None
+        if not isinstance(payload, dict):
+            logger.warning("Unexpected live-session state payload ignored for %s", session_id)
+            return None
+        return payload
 
     def _build_encounter_summary(self, row: dict[str, Any]) -> EncounterSummary:
         """§7B — full reward-explanation row. Notes flag physiology staleness."""
@@ -437,13 +544,15 @@ class OperatorReadService:
         variance = (alpha * beta) / (total * total * (total + 1.0)) if total > 0 else None
         return ArmSummary(
             arm_id=str(row["arm"]),
-            greeting_text=str(row["arm"]),  # canonical label until greeting map exposed.
+            greeting_text=str(row.get("greeting_text") or row["arm"]),
             posterior_alpha=alpha,
             posterior_beta=beta,
             evaluation_variance=variance,
             selection_count=_as_int(row.get("selection_count")) or 0,
             recent_reward_mean=_as_float(row.get("recent_reward_mean")),
             recent_semantic_pass_rate=_as_float(row.get("recent_semantic_pass_rate")),
+            enabled=_as_bool(row.get("enabled"), default=True),
+            end_dated_at=_ensure_utc(row.get("end_dated_at")),
         )
 
     def _build_experiment_summary(
@@ -460,7 +569,7 @@ class OperatorReadService:
             latest_reward = _as_float(latest_encounter_row.get("gated_reward"))
         return ExperimentSummary(
             experiment_id=experiment_id,
-            label=None,
+            label=_experiment_label_from_rows(experiment_id, arm_rows),
             active_arm_id=active_arm_id if isinstance(active_arm_id, str) else None,
             arm_count=len(arm_rows),
             last_updated_utc=_ensure_utc(last_updated),
@@ -549,8 +658,27 @@ class OperatorReadService:
         )
 
     # ------------------------------------------------------------------
-    # Health synthesis (§12)
+    # Health probes + synthesis (§12)
     # ------------------------------------------------------------------
+
+    async def _collect_probe_rows(self, checked_at: datetime) -> dict[str, HealthSubsystemProbe]:
+        results = await self._subsystem_probe_runner(
+            get_conn=self._get_conn,
+            put_conn=self._put_conn,
+            redis_factory=self._redis_factory,
+            clock=self._clock,
+        )
+        rows: dict[str, HealthSubsystemProbe] = {}
+        for result in results:
+            rows[result.subsystem_key] = HealthSubsystemProbe(
+                subsystem_key=result.subsystem_key,
+                label=result.label,
+                state=result.state,
+                latency_ms=result.latency_ms,
+                detail=result.detail,
+                checked_at_utc=checked_at,
+            )
+        return rows
 
     def _build_health_rows(
         self, pulse: dict[str, Any], now: datetime
@@ -759,6 +887,29 @@ def _as_bool(value: Any, *, default: bool = False) -> bool:
     return bool(value)
 
 
+def _experiment_label_from_rows(experiment_id: str, rows: list[dict[str, Any]]) -> str | None:
+    """Return the first non-empty label from experiment arm rows."""
+    for row in rows:
+        label = row.get("label")
+        if isinstance(label, str) and label:
+            return label
+    return experiment_id if experiment_id else None
+
+
+def _as_optional_bool(value: Any) -> bool | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "t", "yes", "y", "on"}:
+            return True
+        if normalized in {"0", "false", "f", "no", "n", "off"}:
+            return False
+    return bool(value)
+
+
 def _latest_datetime(values: Any) -> datetime | None:
     """Return the most recent UTC-normalized datetime in a sequence."""
     latest: datetime | None = None
@@ -796,6 +947,10 @@ def _stimulus_epoch_to_utc(value: Any) -> datetime | None:
     if epoch <= 0.0:
         return None
     return datetime.fromtimestamp(epoch, tz=UTC)
+
+
+def _live_session_state_key(session_id: UUID | str) -> str:
+    return f"{_LIVE_SESSION_STATE_KEY_PREFIX}{session_id}"
 
 
 # Stable unique identifier for synthesized alerts that need it (currently

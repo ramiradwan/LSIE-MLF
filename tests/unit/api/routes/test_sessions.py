@@ -1,26 +1,38 @@
 """
-Tests for services/api/routes/sessions.py — Phase 6.3 validation.
+Tests for services/api/routes/sessions.py.
 
-Verifies session endpoints against:
-  §2 step 7 — Parameterized queries
-  §11 — Summary metric aggregation
+Validates the legacy read handlers plus the lifecycle POST routes that now
+publish authoritative start/end intent for the orchestrator.
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
+import uuid
+from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+from packages.schemas.operator_console import (
+    SessionCreateRequest,
+    SessionEndRequest,
+    SessionLifecycleAccepted,
+)
 from services.api.routes.sessions import (
     _row_to_dict,
     _rows_to_dicts,
     _serialize,
+    create_session,
+    end_session,
     get_session,
     list_sessions,
+)
+from services.api.services.session_lifecycle_service import (
+    SessionLifecycleConflictError,
+    SessionLifecyclePublishError,
 )
 
 
@@ -45,8 +57,6 @@ class TestSerialize:
 
     def test_datetime_serialized(self) -> None:
         """Datetime objects converted to ISO format."""
-        from datetime import UTC, datetime
-
         dt = datetime(2026, 3, 13, 12, 0, 0, tzinfo=UTC)
         assert _serialize(dt) == "2026-03-13T12:00:00+00:00"
 
@@ -151,7 +161,6 @@ class TestGetSession:
             nonlocal call_count
             call_count += 1
             if call_count == 1:
-                # Session query
                 session_cursor.description = [
                     ("session_id",),
                     ("stream_url",),
@@ -165,7 +174,6 @@ class TestGetSession:
                     None,
                 )
             else:
-                # Summary query
                 session_cursor.description = [
                     ("total_segments",),
                     ("avg_au12",),
@@ -259,3 +267,84 @@ class TestGetSession:
             asyncio.run(get_session("nonexistent"))
 
         mock_put.assert_called_once_with(mock_conn)
+
+
+class TestCreateSessionLifecycleRoute:
+    def test_returns_acceptance_from_service(self) -> None:
+        service = MagicMock()
+        request = SessionCreateRequest(
+            stream_url="https://example.com/live",
+            experiment_id="exp-1",
+            client_action_id=uuid.uuid4(),
+        )
+        accepted = SessionLifecycleAccepted(
+            action="start",
+            session_id=uuid.uuid4(),
+            client_action_id=request.client_action_id,
+            accepted=True,
+            received_at_utc=datetime(2026, 4, 18, 12, 0, tzinfo=UTC),
+        )
+        service.request_session_start.return_value = accepted
+
+        result = asyncio.run(create_session(request, service=service))
+
+        assert result == accepted
+        service.request_session_start.assert_called_once_with(request)
+
+    def test_publish_error_surfaces_as_503(self) -> None:
+        service = MagicMock()
+        service.request_session_start.side_effect = SessionLifecyclePublishError("broker down")
+        request = SessionCreateRequest(
+            stream_url="https://example.com/live",
+            experiment_id="exp-1",
+            client_action_id=uuid.uuid4(),
+        )
+
+        with pytest.raises(Exception) as exc_info:
+            asyncio.run(create_session(request, service=service))
+
+        assert exc_info.value.status_code == 503  # type: ignore[attr-defined]
+
+
+class TestEndSessionLifecycleRoute:
+    def test_returns_acceptance_from_service(self) -> None:
+        service = MagicMock()
+        session_id = uuid.uuid4()
+        request = SessionEndRequest(client_action_id=uuid.uuid4())
+        accepted = SessionLifecycleAccepted(
+            action="end",
+            session_id=session_id,
+            client_action_id=request.client_action_id,
+            accepted=True,
+            received_at_utc=datetime(2026, 4, 18, 12, 0, tzinfo=UTC),
+        )
+        service.request_session_end.return_value = accepted
+
+        result = asyncio.run(end_session(session_id, request, service=service))
+
+        assert result == accepted
+        service.request_session_end.assert_called_once_with(session_id, request)
+
+    def test_conflict_surfaces_as_409(self) -> None:
+        service = MagicMock()
+        session_id = uuid.uuid4()
+        service.request_session_end.side_effect = SessionLifecycleConflictError(
+            f"session {session_id} is not active; end not accepted"
+        )
+        request = SessionEndRequest(client_action_id=uuid.uuid4())
+
+        with pytest.raises(Exception) as exc_info:
+            asyncio.run(end_session(session_id, request, service=service))
+
+        assert exc_info.value.status_code == 409  # type: ignore[attr-defined]
+
+    def test_publish_error_surfaces_as_503(self) -> None:
+        service = MagicMock()
+        session_id = uuid.uuid4()
+        service.request_session_end.side_effect = SessionLifecyclePublishError("broker down")
+        request = SessionEndRequest(client_action_id=uuid.uuid4())
+
+        with pytest.raises(Exception) as exc_info:
+            asyncio.run(end_session(session_id, request, service=service))
+
+        assert exc_info.value.status_code == 503  # type: ignore[attr-defined]

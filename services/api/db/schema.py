@@ -72,9 +72,13 @@ CREATE TABLE IF NOT EXISTS events (
 CREATE TABLE IF NOT EXISTS experiments (
     id              BIGSERIAL PRIMARY KEY,
     experiment_id   TEXT NOT NULL,
+    label           TEXT,
     arm             TEXT NOT NULL,
+    greeting_text   TEXT,
     alpha_param     DOUBLE PRECISION NOT NULL DEFAULT 1.0,
     beta_param      DOUBLE PRECISION NOT NULL DEFAULT 1.0,
+    enabled         BOOLEAN NOT NULL DEFAULT TRUE,
+    end_dated_at    TIMESTAMPTZ DEFAULT NULL,
     updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 

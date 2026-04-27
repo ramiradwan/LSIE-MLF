@@ -146,6 +146,21 @@ class HealthState(StrEnum):
     UNKNOWN = "unknown"
 
 
+class HealthProbeState(StrEnum):
+    """Read-only subsystem probe states.
+
+    Probe diagnostics are intentionally separate from §12 rollup states:
+    they must not feed the alert pipeline, and missing deployment
+    configuration must render as `NOT_CONFIGURED` instead of `ERROR`.
+    """
+
+    OK = "ok"
+    ERROR = "error"
+    TIMEOUT = "timeout"
+    NOT_CONFIGURED = "not_configured"
+    UNKNOWN = "unknown"
+
+
 # ----------------------------------------------------------------------
 # Timestamp validator (shared behavior — UTC-aware only)
 # ----------------------------------------------------------------------
@@ -248,8 +263,9 @@ class SessionSummary(OperatorConsoleModel):
     """Lightweight session card for overview/history surfaces.
 
     Fields mirror §4.E.1 operator concerns: identity, status, duration,
-    the §4.C active arm + expected greeting, and the most recent §7B
-    reward outcome so the operator sees adaptive progress at a glance.
+    the §4.C active arm + expected greeting, the operator-readiness
+    calibration summary, and the most recent §7B reward outcome so the
+    operator sees adaptive progress at a glance.
     """
 
     session_id: UUID
@@ -260,6 +276,9 @@ class SessionSummary(OperatorConsoleModel):
     experiment_id: str | None = None
     active_arm: str | None = None
     expected_greeting: str | None = None
+    is_calibrating: bool | None = None
+    calibration_frames_accumulated: int | None = Field(default=None, ge=0)
+    calibration_frames_required: int | None = Field(default=None, ge=0)
     last_segment_completed_at_utc: datetime | None = None
     latest_reward: float | None = None
     latest_semantic_gate: int | None = Field(default=None, ge=0, le=1)
@@ -344,8 +363,9 @@ class ArmSummary(OperatorConsoleModel):
     """One arm of a Thompson-sampled experiment.
 
     Posterior parameters (`posterior_alpha`, `posterior_beta`) and
-    evaluation variance are the readback an operator needs to reason
-    about exploration vs exploitation on this arm.
+    evaluation variance are read-only readbacks. Human-owned management
+    fields (`greeting_text`, `enabled`, `end_dated_at`) let the operator
+    see arm metadata without implying posterior edits are supported.
     """
 
     arm_id: str
@@ -356,6 +376,13 @@ class ArmSummary(OperatorConsoleModel):
     selection_count: int = Field(default=0, ge=0)
     recent_reward_mean: float | None = None
     recent_semantic_pass_rate: float | None = Field(default=None, ge=0.0, le=1.0)
+    enabled: bool = True
+    end_dated_at: datetime | None = None
+
+    @field_validator("end_dated_at")
+    @classmethod
+    def _utc_only(cls, value: datetime | None) -> datetime | None:
+        return _require_utc(value)
 
 
 class ExperimentSummary(OperatorConsoleModel):
@@ -494,15 +521,50 @@ class HealthSubsystemStatus(OperatorConsoleModel):
         return _require_utc(value)
 
 
+class HealthSubsystemProbe(OperatorConsoleModel):
+    """One bounded read-only subsystem connectivity diagnostic.
+
+    These rows augment the operator Health page with active checks such
+    as Postgres ``SELECT 1`` and Redis ``PING``. They are deliberately
+    not §12 subsystem statuses: probe failures are visible diagnostics
+    only and must not synthesize or mutate alert events.
+    """
+
+    subsystem_key: str
+    label: str
+    state: HealthProbeState
+    latency_ms: float | None = Field(default=None, ge=0.0)
+    detail: str | None = None
+    checked_at_utc: datetime
+
+    @field_validator("checked_at_utc")
+    @classmethod
+    def _utc_only(cls, value: datetime) -> datetime:
+        validated = _require_utc(value)
+        assert validated is not None
+        return validated
+
+
 class HealthSnapshot(OperatorConsoleModel):
-    """Overall health rollup + per-subsystem rows."""
+    """Overall health rollup + per-subsystem rows + keyed bounded probes."""
 
     generated_at_utc: datetime
     overall_state: HealthState
     subsystems: list[HealthSubsystemStatus] = Field(default_factory=list)
+    subsystem_probes: dict[str, HealthSubsystemProbe] = Field(default_factory=dict)
     degraded_count: int = Field(default=0, ge=0)
     recovering_count: int = Field(default=0, ge=0)
     error_count: int = Field(default=0, ge=0)
+
+    @field_validator("subsystem_probes")
+    @classmethod
+    def _probes_keyed_by_subsystem(
+        cls, value: dict[str, HealthSubsystemProbe]
+    ) -> dict[str, HealthSubsystemProbe]:
+        for key, probe in value.items():
+            if key != probe.subsystem_key:
+                raise ValueError("subsystem_probes keys must match probe subsystem_key")
+        return value
 
     @field_validator("generated_at_utc")
     @classmethod
@@ -592,6 +654,51 @@ class StimulusAccepted(OperatorConsoleModel):
     measurement window is surfaced later via the encounter readback.
     """
 
+    session_id: UUID
+    client_action_id: UUID
+    accepted: bool
+    received_at_utc: datetime
+    message: str | None = None
+
+    @field_validator("received_at_utc")
+    @classmethod
+    def _utc_only(cls, value: datetime) -> datetime:
+        validated = _require_utc(value)
+        assert validated is not None
+        return validated
+
+
+class SessionCreateRequest(OperatorConsoleModel):
+    """Operator-issued request to begin a live session lifecycle.
+
+    The API Server generates/publishes the session identifier and the
+    orchestrator remains the sole owner of authoritative `started_at`.
+    `client_action_id` is the Redis SETNX idempotency key.
+    """
+
+    stream_url: str = Field(..., min_length=1)
+    experiment_id: str = Field(..., min_length=1)
+    client_action_id: UUID
+
+    @field_validator("stream_url", "experiment_id")
+    @classmethod
+    def _non_blank(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("value must not be blank")
+        return stripped
+
+
+class SessionEndRequest(OperatorConsoleModel):
+    """Operator-issued request to end a live session lifecycle."""
+
+    client_action_id: UUID
+
+
+class SessionLifecycleAccepted(OperatorConsoleModel):
+    """API Server acknowledgment of a session lifecycle intent publish."""
+
+    action: Literal["start", "end"]
     session_id: UUID
     client_action_id: UUID
     accepted: bool

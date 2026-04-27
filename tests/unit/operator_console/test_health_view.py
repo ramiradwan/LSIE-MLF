@@ -16,8 +16,10 @@ from packages.schemas.operator_console import (
     AlertEvent,
     AlertKind,
     AlertSeverity,
+    HealthProbeState,
     HealthSnapshot,
     HealthState,
+    HealthSubsystemProbe,
     HealthSubsystemStatus,
     UiStatusKind,
 )
@@ -48,11 +50,14 @@ def _snapshot(
     recovering: int = 0,
     errors: int = 0,
     subsystems: list[HealthSubsystemStatus] | None = None,
+    subsystem_probes: list[HealthSubsystemProbe] | None = None,
 ) -> HealthSnapshot:
+    probes = {probe.subsystem_key: probe for probe in subsystem_probes or []}
     return HealthSnapshot(
         generated_at_utc=_NOW,
         overall_state=overall,
         subsystems=subsystems or [],
+        subsystem_probes=probes,
         degraded_count=degraded,
         recovering_count=recovering,
         error_count=errors,
@@ -72,6 +77,30 @@ def test_health_view_renders_ok_snapshot() -> None:
     assert view._degraded_card._primary.text() == "0"  # type: ignore[attr-defined]
     assert view._recovering_card._primary.text() == "0"  # type: ignore[attr-defined]
     assert view._error_card._primary.text() == "0"  # type: ignore[attr-defined]
+
+
+def test_health_view_probe_matrix_renders_not_configured_as_neutral() -> None:
+    view, store = _view()
+    store.set_health(
+        _snapshot(
+            HealthState.OK,
+            subsystem_probes=[
+                HealthSubsystemProbe(
+                    subsystem_key="azure_openai",
+                    label="Azure OpenAI",
+                    state=HealthProbeState.NOT_CONFIGURED,
+                    latency_ms=None,
+                    detail="missing AZURE_OPENAI_ENDPOINT",
+                    checked_at_utc=_NOW,
+                )
+            ],
+        )
+    )
+    pill = view._probe_matrix._state_pills[0]  # type: ignore[attr-defined]
+    latency = view._probe_matrix._latency_labels[0]  # type: ignore[attr-defined]
+    assert pill.kind() is UiStatusKind.NEUTRAL
+    assert pill.text() == "not configured"
+    assert latency.text() == "—"
 
 
 def test_health_view_degraded_pill_is_warn_not_error() -> None:

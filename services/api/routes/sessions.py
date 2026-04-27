@@ -1,18 +1,30 @@
 """
-Session Endpoints
+Session endpoints.
 
-REST endpoints for managing live stream inference sessions.
-§2 step 7 — Parameterized queries only.
+Read handlers expose session history/summary views. Lifecycle writes publish
+Redis intent for authoritative execution by the orchestrator; the API Server
+never assigns authoritative `started_at`/`ended_at` timestamps itself.
 """
 
 from __future__ import annotations
 
 import logging
 from typing import Any
+from uuid import UUID
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
+from packages.schemas.operator_console import (
+    SessionCreateRequest,
+    SessionEndRequest,
+    SessionLifecycleAccepted,
+)
 from services.api.db.connection import get_connection, put_connection
+from services.api.services.session_lifecycle_service import (
+    SessionLifecycleConflictError,
+    SessionLifecyclePublishError,
+    SessionLifecycleService,
+)
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -48,6 +60,23 @@ _SESSION_SUMMARY_SQL: str = """
 """
 
 
+# ----------------------------------------------------------------------
+# Dependency providers — small factories so tests can override easily.
+# ----------------------------------------------------------------------
+
+
+def get_session_lifecycle_service() -> SessionLifecycleService:
+    return SessionLifecycleService()
+
+
+_LifecycleDep = Depends(get_session_lifecycle_service)
+
+
+# ----------------------------------------------------------------------
+# Read helpers
+# ----------------------------------------------------------------------
+
+
 def _serialize(val: Any) -> Any:
     """Serialize values for JSON response."""
     if hasattr(val, "isoformat"):
@@ -73,6 +102,11 @@ def _rows_to_dicts(cursor: Any) -> list[dict[str, Any]]:
     columns = [desc[0] for desc in cursor.description]
     rows: list[Any] = cursor.fetchall()
     return [{col: _serialize(val) for col, val in zip(columns, row, strict=True)} for row in rows]
+
+
+# ----------------------------------------------------------------------
+# Read routes
+# ----------------------------------------------------------------------
 
 
 @router.get("/sessions")
@@ -134,3 +168,51 @@ async def get_session(session_id: str) -> dict[str, Any]:
     finally:
         if conn is not None:
             put_connection(conn)
+
+
+# ----------------------------------------------------------------------
+# Lifecycle write routes
+# ----------------------------------------------------------------------
+
+
+@router.post("/sessions", response_model=SessionLifecycleAccepted)
+async def create_session(
+    request: SessionCreateRequest,
+    service: SessionLifecycleService = _LifecycleDep,
+) -> SessionLifecycleAccepted:
+    """Publish a session-start intent for authoritative orchestrator execution."""
+    try:
+        return service.request_session_start(request)
+    except SessionLifecyclePublishError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="broker unavailable — cannot deliver session lifecycle intent",
+        ) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        logger.error("create session lifecycle failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error") from exc
+
+
+@router.post("/sessions/{session_id}/end", response_model=SessionLifecycleAccepted)
+async def end_session(
+    session_id: UUID,
+    request: SessionEndRequest,
+    service: SessionLifecycleService = _LifecycleDep,
+) -> SessionLifecycleAccepted:
+    """Publish a session-end intent for authoritative orchestrator execution."""
+    try:
+        return service.request_session_end(session_id, request)
+    except SessionLifecycleConflictError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except SessionLifecyclePublishError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="broker unavailable — cannot deliver session lifecycle intent",
+        ) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        logger.error("end session lifecycle failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error") from exc

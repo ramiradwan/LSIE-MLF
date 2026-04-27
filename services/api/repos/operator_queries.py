@@ -89,7 +89,10 @@ _LIST_RECENT_SESSIONS_SQL: str = """
         latest_enc.arm AS active_arm,
         latest_enc.timestamp_utc AS last_segment_completed_at_utc,
         latest_enc.gated_reward AS latest_reward,
-        latest_enc.semantic_gate AS latest_semantic_gate
+        latest_enc.semantic_gate AS latest_semantic_gate,
+        NULL::boolean AS is_calibrating,
+        NULL::integer AS calibration_frames_accumulated,
+        NULL::integer AS calibration_frames_required
     FROM sessions s
     LEFT JOIN LATERAL (
         SELECT e.experiment_id, e.arm, e.timestamp_utc,
@@ -115,7 +118,10 @@ _GET_SESSION_SQL: str = """
         latest_enc.arm AS active_arm,
         latest_enc.timestamp_utc AS last_segment_completed_at_utc,
         latest_enc.gated_reward AS latest_reward,
-        latest_enc.semantic_gate AS latest_semantic_gate
+        latest_enc.semantic_gate AS latest_semantic_gate,
+        NULL::boolean AS is_calibrating,
+        NULL::integer AS calibration_frames_accumulated,
+        NULL::integer AS calibration_frames_required
     FROM sessions s
     LEFT JOIN LATERAL (
         SELECT e.experiment_id, e.arm, e.timestamp_utc,
@@ -139,7 +145,10 @@ _GET_ACTIVE_SESSION_SQL: str = """
         latest_enc.arm AS active_arm,
         latest_enc.timestamp_utc AS last_segment_completed_at_utc,
         latest_enc.gated_reward AS latest_reward,
-        latest_enc.semantic_gate AS latest_semantic_gate
+        latest_enc.semantic_gate AS latest_semantic_gate,
+        NULL::boolean AS is_calibrating,
+        NULL::integer AS calibration_frames_accumulated,
+        NULL::integer AS calibration_frames_required
     FROM sessions s
     LEFT JOIN LATERAL (
         SELECT e.experiment_id, e.arm, e.timestamp_utc,
@@ -211,28 +220,21 @@ _LATEST_ENCOUNTER_SQL: str = f"""
 # ----------------------------------------------------------------------
 
 # All arms for an experiment, including rollup counts from encounter_log.
-_EXPERIMENT_ARMS_SQL: str = """
-    SELECT
-        ex.experiment_id,
-        ex.arm,
-        ex.alpha_param,
-        ex.beta_param,
-        ex.updated_at,
-        rollup.selection_count,
-        rollup.recent_reward_mean,
-        rollup.recent_semantic_pass_rate
-    FROM experiments ex
-    LEFT JOIN LATERAL (
-        SELECT
-            COUNT(*)::int AS selection_count,
-            AVG(e.gated_reward)::double precision AS recent_reward_mean,
-            AVG(e.semantic_gate::numeric)::double precision AS recent_semantic_pass_rate
-        FROM encounter_log e
-        WHERE e.experiment_id = ex.experiment_id
-          AND e.arm = ex.arm
-    ) rollup ON TRUE
-    WHERE ex.experiment_id = %(experiment_id)s
-    ORDER BY ex.arm
+# The management columns are additive. Build the projection after checking
+# information_schema so pre-migration deployments keep serving operator reads
+# instead of failing parse-time on missing columns.
+_EXPERIMENT_MANAGEMENT_COLUMNS: tuple[str, ...] = (
+    "label",
+    "greeting_text",
+    "enabled",
+    "end_dated_at",
+)
+
+_EXPERIMENT_MANAGEMENT_COLUMNS_SQL: str = """
+    SELECT column_name
+    FROM information_schema.columns
+    WHERE table_name = 'experiments'
+      AND column_name IN ('label', 'greeting_text', 'enabled', 'end_dated_at')
 """
 
 # Identify the most-recently-selected arm for an experiment from encounter_log —
@@ -340,6 +342,60 @@ def _rows_to_dicts(cursor: Any) -> list[dict[str, Any]]:
     return [dict(zip(columns, row, strict=True)) for row in rows]
 
 
+def _available_experiment_management_columns(cursor: Any) -> set[str]:
+    """Return additive experiment-management columns present on this schema."""
+    cursor.execute(_EXPERIMENT_MANAGEMENT_COLUMNS_SQL)
+    return {str(row[0]) for row in cursor.fetchall()}
+
+
+def _experiment_arms_sql(available_columns: set[str]) -> str:
+    """Build a rollout-safe experiment-arm projection.
+
+    PostgreSQL parses every referenced column before evaluating CASE or
+    COALESCE, so legacy compatibility has to remove missing column names
+    from the statement entirely rather than hiding them in expressions.
+    """
+    label_expr = (
+        "COALESCE(ex.label, ex.experiment_id)"
+        if "label" in available_columns
+        else "ex.experiment_id"
+    )
+    greeting_expr = (
+        "COALESCE(ex.greeting_text, ex.arm)" if "greeting_text" in available_columns else "ex.arm"
+    )
+    enabled_expr = "COALESCE(ex.enabled, TRUE)" if "enabled" in available_columns else "TRUE"
+    end_dated_expr = (
+        "ex.end_dated_at" if "end_dated_at" in available_columns else "NULL::timestamptz"
+    )
+    return f"""
+    SELECT
+        ex.experiment_id,
+        {label_expr} AS label,
+        ex.arm,
+        {greeting_expr} AS greeting_text,
+        ex.alpha_param,
+        ex.beta_param,
+        {enabled_expr} AS enabled,
+        {end_dated_expr} AS end_dated_at,
+        ex.updated_at,
+        rollup.selection_count,
+        rollup.recent_reward_mean,
+        rollup.recent_semantic_pass_rate
+    FROM experiments ex
+    LEFT JOIN LATERAL (
+        SELECT
+            COUNT(*)::int AS selection_count,
+            AVG(e.gated_reward)::double precision AS recent_reward_mean,
+            AVG(e.semantic_gate::numeric)::double precision AS recent_semantic_pass_rate
+        FROM encounter_log e
+        WHERE e.experiment_id = ex.experiment_id
+          AND e.arm = ex.arm
+    ) rollup ON TRUE
+    WHERE ex.experiment_id = %(experiment_id)s
+    ORDER BY ex.arm
+"""
+
+
 # ----------------------------------------------------------------------
 # Public fetchers — each takes a cursor and returns plain row dicts.
 # ----------------------------------------------------------------------
@@ -384,7 +440,8 @@ def fetch_latest_encounter(cursor: Any, session_id: UUID) -> dict[str, Any] | No
 
 
 def fetch_experiment_arms(cursor: Any, experiment_id: str) -> list[dict[str, Any]]:
-    cursor.execute(_EXPERIMENT_ARMS_SQL, {"experiment_id": experiment_id})
+    available_columns = _available_experiment_management_columns(cursor)
+    cursor.execute(_experiment_arms_sql(available_columns), {"experiment_id": experiment_id})
     return _rows_to_dicts(cursor)
 
 

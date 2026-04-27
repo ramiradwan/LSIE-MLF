@@ -187,11 +187,26 @@ class MainWindow(QMainWindow):
         self._sessions_model = SessionsTableModel(self)
 
         # Viewmodels (Phase 8) — subscribe to the store, expose
-        # read-only getters + the one write path (Live Session's
-        # stimulus lifecycle, Sessions' selection push).
+        # read-only getters plus safe operator intents (stimulus,
+        # experiment management, and Sessions' selection push).
         self._overview_vm = OverviewViewModel(self._store, self)
         self._live_session_vm = LiveSessionViewModel(self._store, self._encounters_model, self)
-        self._experiments_vm = ExperimentsViewModel(self._store, self._experiments_arms_model, self)
+        self._live_session_vm.bind_session_lifecycle_actions(
+            self._coordinator.request_session_start,
+            self._coordinator.request_session_end,
+        )
+        self._experiments_vm = ExperimentsViewModel(
+            self._store,
+            self._experiments_arms_model,
+            self,
+            default_experiment_id=self._config.default_experiment_id,
+        )
+        self._experiments_vm.create_experiment_requested.connect(
+            self._coordinator.create_experiment
+        )
+        self._experiments_vm.add_arm_requested.connect(self._coordinator.add_experiment_arm)
+        self._experiments_vm.rename_arm_requested.connect(self._coordinator.rename_experiment_arm)
+        self._experiments_vm.disable_arm_requested.connect(self._coordinator.disable_experiment_arm)
         self._physiology_vm = PhysiologyViewModel(self._store, self)
         self._health_vm = HealthViewModel(self._store, self._health_model, self._alerts_model, self)
         self._sessions_vm = SessionsViewModel(self._store, self._sessions_model, self)
@@ -337,20 +352,28 @@ class MainWindow(QMainWindow):
         self._update_action_bar_context()
 
     def _update_action_bar_context(self) -> None:
-        """Push session / arm / greeting into the ActionBar.
+        """Push session / arm / greeting and safe-submit readiness into the ActionBar.
 
-        The bar is only enabled when a session is selected AND the
-        live-session DTO we have on hand describes that same session —
-        otherwise we'd surface an arm/greeting from a stale context.
+        The bar is only populated with arm/greeting/readiness when the
+        live-session DTO we have on hand describes the selected session;
+        readiness is the console-level threshold check, not the worker's
+        authoritative ``is_calibrating`` lifecycle flag.
         """
         session_id = self._store.selected_session_id()
         live = self._store.live_session()
         active_arm: str | None = None
         expected_greeting: str | None = None
+        operator_ready: bool | None = None
         if live is not None and session_id is not None and live.session_id == session_id:
             active_arm = live.active_arm
             expected_greeting = live.expected_greeting
-        self._action_bar.set_session_context(session_id, active_arm, expected_greeting)
+            operator_ready = self._live_session_vm.operator_ready_for_submit()
+        self._action_bar.set_session_context(
+            session_id,
+            active_arm,
+            expected_greeting,
+            operator_ready_for_submit=operator_ready,
+        )
 
     # ------------------------------------------------------------------
     # Stimulus submit path (§4.C)

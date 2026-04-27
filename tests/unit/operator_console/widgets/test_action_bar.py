@@ -39,6 +39,28 @@ def test_set_session_context_enables_button() -> None:
     assert bar._submit_button.isEnabled() is True  # type: ignore[attr-defined]
 
 
+def test_operator_not_ready_session_context_disables_button() -> None:
+    bar = ActionBar()
+    bar.set_session_context(
+        session_id=uuid4(),
+        active_arm="greeting_v1",
+        expected_greeting="hei rakas",
+        operator_ready_for_submit=False,
+    )
+    assert bar._submit_button.isEnabled() is False  # type: ignore[attr-defined]
+
+
+def test_legacy_unknown_readiness_defaults_to_enabled_for_bound_session() -> None:
+    bar = ActionBar()
+    bar.set_session_context(
+        session_id=uuid4(),
+        active_arm="greeting_v1",
+        expected_greeting="hei rakas",
+        operator_ready_for_submit=None,
+    )
+    assert bar._submit_button.isEnabled() is True  # type: ignore[attr-defined]
+
+
 def test_set_session_context_none_disables_button() -> None:
     bar = ActionBar()
     bar.set_session_context(uuid4(), "arm1", "hello")
@@ -51,6 +73,17 @@ def test_submitting_state_disables_button() -> None:
     bar.set_session_context(uuid4(), "arm1", "hello")
     bar.set_action_state(StimulusUiContext(state=StimulusActionState.SUBMITTING))
     assert bar._submit_button.isEnabled() is False  # type: ignore[attr-defined]
+
+
+def test_completed_state_stays_disabled_until_operator_ready() -> None:
+    bar = ActionBar()
+    session_id = uuid4()
+    bar.set_session_context(session_id, "arm1", "hello", operator_ready_for_submit=False)
+    bar.set_action_state(StimulusUiContext(state=StimulusActionState.COMPLETED))
+    assert bar._submit_button.isEnabled() is False  # type: ignore[attr-defined]
+
+    bar.set_session_context(session_id, "arm1", "hello", operator_ready_for_submit=True)
+    assert bar._submit_button.isEnabled() is True  # type: ignore[attr-defined]
 
 
 def test_accepted_measuring_completed_progression() -> None:

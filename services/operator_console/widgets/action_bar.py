@@ -80,6 +80,7 @@ class ActionBar(QWidget):
         self._session_id: UUID | None = None
         self._active_arm: str | None = None
         self._expected_greeting: str | None = None
+        self._operator_ready_for_submit: bool = True
 
         self._session_label = QLabel("No session selected", self)
         self._session_label.setObjectName("ActionBarSession")
@@ -143,15 +144,20 @@ class ActionBar(QWidget):
         session_id: UUID | None,
         active_arm: str | None,
         expected_greeting: str | None,
+        operator_ready_for_submit: bool | None = None,
     ) -> None:
         """Update the session header + enable/disable submit.
 
         The button stays disabled when no session is selected so the
-        operator cannot fire a stimulus at nothing.
+        operator cannot fire a stimulus at nothing. When a session is
+        selected, submit gating uses the console's derived readiness
+        (safe-submit frame threshold), not the worker lifecycle flag.
+        ``None`` preserves the legacy ready behavior.
         """
         self._session_id = session_id
         self._active_arm = active_arm
         self._expected_greeting = expected_greeting
+        self._operator_ready_for_submit = operator_ready_for_submit is not False
 
         if session_id is None:
             self._session_label.setText("No session selected")
@@ -171,16 +177,14 @@ class ActionBar(QWidget):
         # Restore enabled state based on current action state — do not
         # auto-reset to IDLE here, a re-select mid-flight should not
         # unblock a second submit.
-        self._submit_button.setEnabled(
-            _BUTTON_ENABLED[self._current_state()] and session_id is not None
-        )
+        self._submit_button.setEnabled(self._submit_enabled())
 
     def set_action_state(self, ctx: StimulusUiContext) -> None:
         """Walk the button + pill through the lifecycle state in `ctx`."""
         self._last_ctx = ctx
         state = ctx.state
         self._submit_button.setText(_BUTTON_LABEL[state])
-        self._submit_button.setEnabled(_BUTTON_ENABLED[state] and self._session_id is not None)
+        self._submit_button.setEnabled(self._submit_enabled())
         kind, label = _STATE_PILL[state]
         self._state_pill.set_kind(kind)
         self._state_pill.set_text(label)
@@ -229,6 +233,13 @@ class ActionBar(QWidget):
         # `ctx` is typed as StimulusUiContext above; narrow for mypy.
         assert isinstance(ctx, StimulusUiContext)
         return ctx.state
+
+    def _submit_enabled(self) -> bool:
+        if self._session_id is None:
+            return False
+        if not self._operator_ready_for_submit:
+            return False
+        return _BUTTON_ENABLED[self._current_state()]
 
     # ---- keyboard shortcut hook ---------------------------------------
 

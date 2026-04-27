@@ -9,3 +9,4 @@ Append-only ledger of latency and throughput measurements captured after feature
 | Date | Commit SHA | Cycle / PR | Segment-assembly p50 (ms) | Segment-assembly p95 (ms) | ML inference p50 (ms) | ML inference p95 (ms) | AU12 per-frame p50 (ms) | Co-Modulation window compute (ms) | Notes |
 |---|---|---|---|---|---|---|---|---|---|
 | 2026-04-16 | `60be7ec` | PR 91 — `feature/v31-physio-comodulation` | TBD | TBD | TBD | TBD | TBD | TBD | Physiology ingress + co-modulation added. Benchmark TBD pending live stack (no GPU in hardening env). Follow-up ADO work item required to populate the row. |
+| 2026-04-27 | TBD | Task 130 — `feature/v33-baseline-operability-task-130` | TBD | TBD | TBD | TBD | TBD | TBD | Deterministic replay posterior-movement proof is CI-covered. Live-stack benchmark values are hardware/credentials gated; follow-up ADO item should wire live Module B and populate this row from the standard benchmark protocol. |

@@ -20,6 +20,7 @@ from packages.schemas.operator_console import (
     ObservationalAcousticSummary,
     PhysiologyCurrentSnapshot,
     SessionPhysiologySnapshot,
+    SessionSummary,
     UiStatusKind,
 )
 from services.operator_console.formatters import (
@@ -33,6 +34,7 @@ from services.operator_console.formatters import (
     format_acoustic_validity,
     format_acoustic_validity_pill,
     format_acoustic_voiced_coverage,
+    format_calibration_status,
     format_comodulation_index,
     format_duration,
     format_f0_hz,
@@ -45,6 +47,7 @@ from services.operator_console.formatters import (
     format_semantic_gate,
     format_semitone_delta,
     format_timestamp,
+    operator_ready_for_submit,
     truncate_expected_greeting,
     ui_status_for_health,
 )
@@ -127,6 +130,69 @@ class TestFreshness:
 
     def test_absent_freshness_em_dash(self) -> None:
         assert format_freshness(None) == "—"
+
+
+# ----------------------------------------------------------------------
+# Calibration readiness
+# ----------------------------------------------------------------------
+
+
+class TestCalibrationStatus:
+    def test_missing_live_state_defaults_to_ready(self) -> None:
+        summary = SessionSummary(
+            session_id=_SESSION_ID,
+            status="active",
+            started_at_utc=_utc(2026, 4, 17, 12, 0),
+        )
+        assert operator_ready_for_submit(summary) is True
+        assert format_calibration_status(summary) == (UiStatusKind.OK, "Ready")
+
+    def test_explicit_false_calibrating_state_is_ready(self) -> None:
+        summary = SessionSummary(
+            session_id=_SESSION_ID,
+            status="active",
+            started_at_utc=_utc(2026, 4, 17, 12, 0),
+            is_calibrating=False,
+        )
+        assert operator_ready_for_submit(summary) is True
+        assert format_calibration_status(summary) == (UiStatusKind.OK, "Ready")
+
+    def test_progress_includes_frame_counts_below_threshold(self) -> None:
+        summary = SessionSummary(
+            session_id=_SESSION_ID,
+            status="active",
+            started_at_utc=_utc(2026, 4, 17, 12, 0),
+            is_calibrating=True,
+            calibration_frames_accumulated=12,
+            calibration_frames_required=45,
+        )
+        assert operator_ready_for_submit(summary) is False
+        assert format_calibration_status(summary) == (
+            UiStatusKind.PROGRESS,
+            "Calibrating · 12/45 frames",
+        )
+
+    def test_pre_stimulus_threshold_renders_ready_while_lifecycle_calibrating(self) -> None:
+        summary = SessionSummary(
+            session_id=_SESSION_ID,
+            status="active",
+            started_at_utc=_utc(2026, 4, 17, 12, 0),
+            is_calibrating=True,
+            calibration_frames_accumulated=45,
+            calibration_frames_required=45,
+        )
+        assert operator_ready_for_submit(summary) is True
+        assert format_calibration_status(summary) == (UiStatusKind.OK, "Ready")
+
+    def test_progress_without_counts_falls_back_to_generic_label(self) -> None:
+        summary = SessionSummary(
+            session_id=_SESSION_ID,
+            status="active",
+            started_at_utc=_utc(2026, 4, 17, 12, 0),
+            is_calibrating=True,
+        )
+        assert operator_ready_for_submit(summary) is False
+        assert format_calibration_status(summary) == (UiStatusKind.PROGRESS, "Calibrating")
 
 
 # ----------------------------------------------------------------------

@@ -29,6 +29,8 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QLineEdit,
+    QPushButton,
     QTableView,
     QVBoxLayout,
     QWidget,
@@ -87,6 +89,7 @@ class ExperimentsView(QWidget):
         cards.addWidget(self._active_arm_card, 1)
         cards.addWidget(self._arms_card, 1)
 
+        self._manage_panel = _ManagePanel(self._vm, self)
         self._table = self._build_table()
         self._update_panel = _LatestUpdatePanel(self)
 
@@ -105,6 +108,7 @@ class ExperimentsView(QWidget):
         layout.setSpacing(14)
         layout.addWidget(self._header)
         layout.addWidget(self._error_banner)
+        layout.addWidget(self._manage_panel)
         layout.addWidget(self._empty_state)
         layout.addWidget(self._body_container, 1)
         layout.setAlignment(Qt.AlignmentFlag.AlignTop)
@@ -138,7 +142,10 @@ class ExperimentsView(QWidget):
         table.setAlternatingRowColors(True)
         table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-        table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        table.setEditTriggers(
+            QAbstractItemView.EditTrigger.DoubleClicked
+            | QAbstractItemView.EditTrigger.EditKeyPressed
+        )
         vertical = table.verticalHeader()
         if vertical is not None:
             vertical.setVisible(False)
@@ -153,6 +160,10 @@ class ExperimentsView(QWidget):
 
     def _refresh(self) -> None:
         detail = self._vm.detail()
+        self._manage_panel.set_detail(
+            detail,
+            default_experiment_id=self._vm.current_experiment_id(),
+        )
         if detail is None:
             self._empty_state.setVisible(True)
             self._body_container.setVisible(False)
@@ -230,6 +241,148 @@ class ExperimentsView(QWidget):
 # ----------------------------------------------------------------------
 # Panels + helpers
 # ----------------------------------------------------------------------
+
+
+class _ManagePanel(QFrame):
+    """Compact experiment/arm management controls.
+
+    The panel intentionally owns only human-entered strings. Posterior
+    fields stay in the read-only table columns; writes are emitted via
+    `ExperimentsViewModel`, which routes them to the coordinator.
+    """
+
+    def __init__(
+        self,
+        vm: ExperimentsViewModel,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setObjectName("ExperimentManagePanel")
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        self._vm = vm
+        self._has_detail = False
+
+        self._title = QLabel("Manage", self)
+        self._title.setObjectName("PanelTitle")
+        self._hint = QLabel(
+            "Create or seed the current experiment, add arms, double-click a Greeting "
+            "cell to rename it, or uncheck Enabled to disable an arm. Posterior "
+            "columns are read-only.",
+            self,
+        )
+        self._hint.setObjectName("PanelSubtitle")
+        self._hint.setWordWrap(True)
+
+        self._create_experiment_id = QLineEdit(self)
+        self._create_experiment_id.setObjectName("CreateExperimentIdInput")
+        self._create_experiment_id.setPlaceholderText("experiment id")
+        self._create_label = QLineEdit(self)
+        self._create_label.setObjectName("CreateExperimentLabelInput")
+        self._create_label.setPlaceholderText("label")
+        self._create_arm_id = QLineEdit(self)
+        self._create_arm_id.setObjectName("CreateInitialArmInput")
+        self._create_arm_id.setPlaceholderText("initial arm id")
+        self._create_greeting = QLineEdit(self)
+        self._create_greeting.setObjectName("CreateInitialGreetingInput")
+        self._create_greeting.setPlaceholderText("initial greeting")
+        self._create_button = QPushButton("Create experiment", self)
+        self._create_button.setObjectName("CreateExperimentButton")
+
+        create_row = QHBoxLayout()
+        create_row.setContentsMargins(0, 0, 0, 0)
+        create_row.setSpacing(8)
+        create_row.addWidget(self._create_experiment_id, 2)
+        create_row.addWidget(self._create_label, 2)
+        create_row.addWidget(self._create_arm_id, 1)
+        create_row.addWidget(self._create_greeting, 3)
+        create_row.addWidget(self._create_button)
+
+        self._add_arm_id = QLineEdit(self)
+        self._add_arm_id.setObjectName("AddArmIdInput")
+        self._add_arm_id.setPlaceholderText("new arm id")
+        self._add_greeting = QLineEdit(self)
+        self._add_greeting.setObjectName("AddArmGreetingInput")
+        self._add_greeting.setPlaceholderText("greeting text")
+        self._add_button = QPushButton("Add arm", self)
+        self._add_button.setObjectName("AddArmButton")
+
+        add_row = QHBoxLayout()
+        add_row.setContentsMargins(0, 0, 0, 0)
+        add_row.setSpacing(8)
+        add_row.addWidget(self._add_arm_id, 1)
+        add_row.addWidget(self._add_greeting, 3)
+        add_row.addWidget(self._add_button)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 12, 16, 16)
+        layout.setSpacing(8)
+        layout.addWidget(self._title)
+        layout.addWidget(self._hint)
+        layout.addLayout(create_row)
+        layout.addLayout(add_row)
+
+        for edit in (
+            self._create_experiment_id,
+            self._create_label,
+            self._create_arm_id,
+            self._create_greeting,
+            self._add_arm_id,
+            self._add_greeting,
+        ):
+            edit.textChanged.connect(self._sync_enabled)
+        self._create_button.clicked.connect(self._on_create_clicked)
+        self._add_button.clicked.connect(self._on_add_clicked)
+        self._sync_enabled()
+
+    def set_detail(
+        self,
+        detail: ExperimentDetail | None,
+        *,
+        default_experiment_id: str | None,
+    ) -> None:
+        self._has_detail = detail is not None
+        if not self._create_experiment_id.text():
+            candidate_id = detail.experiment_id if detail is not None else default_experiment_id
+            self._create_experiment_id.setText(candidate_id or "")
+        if detail is not None and not self._create_label.text():
+            self._create_label.setText(detail.label or detail.experiment_id)
+        self._add_arm_id.setEnabled(self._has_detail)
+        self._add_greeting.setEnabled(self._has_detail)
+        self._add_button.setToolTip(
+            "Add a Beta(1,1) arm to the loaded experiment."
+            if self._has_detail
+            else "Load or create an experiment before adding arms."
+        )
+        self._sync_enabled()
+
+    def _on_create_clicked(self) -> None:
+        self._vm.create_experiment(
+            self._create_experiment_id.text(),
+            self._create_label.text(),
+            self._create_arm_id.text(),
+            self._create_greeting.text(),
+        )
+
+    def _on_add_clicked(self) -> None:
+        self._vm.add_arm(self._add_arm_id.text(), self._add_greeting.text())
+
+    def _sync_enabled(self, *_: object) -> None:
+        create_ready = all(
+            edit.text().strip()
+            for edit in (
+                self._create_experiment_id,
+                self._create_label,
+                self._create_arm_id,
+                self._create_greeting,
+            )
+        )
+        self._create_button.setEnabled(create_ready)
+        add_ready = (
+            self._has_detail
+            and bool(self._add_arm_id.text().strip())
+            and bool(self._add_greeting.text().strip())
+        )
+        self._add_button.setEnabled(add_ready)
 
 
 class _LatestUpdatePanel(QFrame):

@@ -59,17 +59,18 @@ jobs:
             requirements/base.txt
             requirements/api.txt
             requirements/worker.txt
-      - name: Install Qt runtime libraries
+      - name: Install Qt runtime libraries and FFmpeg
         # PySide6's QtWidgets dynamically loads libEGL.so.1 / libGL.so.1
         # at import time, even under QT_QPA_PLATFORM=offscreen. The
         # ubuntu-latest runner does not ship these by default, so the
         # operator-console conftests (unit + integration) fail at import
         # before any test body runs. libxkbcommon / libdbus / libfontconfig
         # are additional transitive dlopen targets for QtGui / QtWidgets.
+        # ffmpeg is required for the synthetic replay capture tests.
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            libegl1 libgl1 libxkbcommon0 libdbus-1-3 libfontconfig1
+            libegl1 libgl1 libxkbcommon0 libdbus-1-3 libfontconfig1 ffmpeg
       - name: Install worker dependencies
         run: |
           pip install --upgrade pip

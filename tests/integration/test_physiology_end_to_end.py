@@ -252,6 +252,17 @@ class _RecordingMetricsStore(MetricsStore):
             for arm, state in self._arms.items()
         ]
 
+    def get_experiment_arm(self, experiment_id: str, arm: str) -> dict[str, Any] | None:
+        del experiment_id
+        state = self._arms.get(arm)
+        if state is None:
+            return None
+        return {
+            "arm": arm,
+            "alpha_param": state["alpha_param"],
+            "beta_param": state["beta_param"],
+        }
+
     def update_experiment_arm(
         self,
         experiment_id: str,

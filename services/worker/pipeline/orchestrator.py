@@ -16,13 +16,17 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
+import os
 import subprocess
+import threading
 import time
 import uuid
 from collections import deque
 from datetime import UTC, datetime
 from math import sqrt
+from queue import Empty, Queue
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -67,6 +71,26 @@ PHYSIO_DERIVE_WINDOW_S: int = 300
 PHYSIO_VALIDITY_MIN: float = 0.80
 PHYSIO_STALENESS_THRESHOLD_S: float = 600.0  # 10 minutes
 MAX_PHYSIO_DRAIN_PER_CYCLE: int = 100  # Bounded drain to prevent stall
+
+# Session lifecycle pub/sub bridge (API Server -> Orchestrator).
+SESSION_LIFECYCLE_CHANNEL: str = "session:lifecycle"
+SESSION_LIFECYCLE_POLL_TIMEOUT_S: float = 1.0
+
+# Operator-read live-session overlay — a Redis key, not a pub/sub channel.
+LIVE_SESSION_STATE_KEY_PREFIX: str = "operator:live_session:"
+LIVE_SESSION_STATE_TTL_S: int = 24 * 3600
+# Read-only operator readiness threshold. Calibration math still continues
+# until stimulus injection, so §7A.4 behaviour is unchanged.
+LIVE_SESSION_CALIBRATION_FRAMES_REQUIRED: int = 45
+
+# Operator health heartbeat — written by the orchestrator, read by the API probe.
+ORCHESTRATOR_HEARTBEAT_KEY: str = "operator:orchestrator:heartbeat"
+ORCHESTRATOR_HEARTBEAT_TTL_S: int = 30
+ORCHESTRATOR_HEARTBEAT_INTERVAL_S: float = 1.0
+
+
+def _live_session_state_key(session_id: str) -> str:
+    return f"{LIVE_SESSION_STATE_KEY_PREFIX}{session_id}"
 
 
 class DriftCorrector:
@@ -274,7 +298,21 @@ class Orchestrator:
             experiment_id: Thompson Sampling experiment ID (§4.E.1).
         """
         self.drift_corrector = DriftCorrector()
-        self.audio_resampler = AudioResampler()
+        replay_fixture = os.environ.get("REPLAY_CAPTURE_FIXTURE")
+        replay_source: Any = None
+        self._using_replay_capture: bool = bool(replay_fixture)
+        self._replay_capture_source: Any = None
+        if replay_fixture:
+            from services.worker.pipeline.replay_capture import ReplayCaptureSource
+
+            realtime_value = os.environ.get("REPLAY_CAPTURE_REALTIME", "1").strip().lower()
+            replay_realtime = realtime_value not in {"0", "false", "no", "off"}
+            replay_source = ReplayCaptureSource(replay_fixture, realtime=replay_realtime)
+            self._replay_capture_source = replay_source
+            self.audio_resampler = replay_source
+            logger.info("Replay capture fixture configured: %s", replay_fixture)
+        else:
+            self.audio_resampler = AudioResampler()
         # §12 Queue overload B/C — deque eviction
         self.event_buffer: deque[dict[str, Any]] = deque(maxlen=10000)
         self._stream_url = stream_url
@@ -288,8 +326,9 @@ class Orchestrator:
         self._active_arm: str = ""
         self._expected_greeting: str = ""
 
-        # Gap G-03 — Video capture (lazy-init in run())
-        self.video_capture: Any = None
+        # Gap G-03 — Video capture (lazy-init in run() for live capture).
+        # Replay mode binds the same source to the video and audio surfaces.
+        self.video_capture: Any = replay_source
 
         # [v3.0] AU12 telemetry accumulator for continuous reward pipeline.
         # Each entry: {"timestamp_s": float, "intensity": float}
@@ -311,8 +350,6 @@ class Orchestrator:
         # Client creation is best-effort; actual I/O happens on LPOP.
         self._redis: Any = None
         try:
-            import os
-
             import redis as redis_lib
 
             self._redis = redis_lib.Redis.from_url(
@@ -332,6 +369,78 @@ class Orchestrator:
         # [v3.0] FaceMesh processor — lazy-init on first frame
         self._face_mesh: Any = None
 
+        # Session lifecycle state — boot session starts during run(), but
+        # subsequent create/end intents are delivered through Redis pub/sub.
+        self._session_active: bool = False
+        self._session_lifecycle_received: bool = False
+        self._session_lifecycle_queue: Queue[dict[str, Any]] = Queue()
+        self._session_lifecycle_stop = threading.Event()
+        self._session_lifecycle_thread: threading.Thread | None = None
+
+        # Read-side live-session publish dedupe. The API merges this JSON
+        # onto SessionSummary without exposing any raw frame data.
+        self._last_live_session_state_payload: str | None = None
+        self._last_heartbeat_monotonic: float = 0.0
+
+    def _calibration_frames_accumulated(self) -> int:
+        normalizer = self._au12_normalizer
+        if normalizer is None:
+            return 0
+        buffer = getattr(normalizer, "calibration_buffer", None)
+        return len(buffer) if isinstance(buffer, list) else 0
+
+    def _live_session_state_payload(self) -> dict[str, Any]:
+        accumulated = self._calibration_frames_accumulated()
+        required = LIVE_SESSION_CALIBRATION_FRAMES_REQUIRED
+        return {
+            "active_arm": self._active_arm or None,
+            "expected_greeting": self._expected_greeting or None,
+            "is_calibrating": self._is_calibrating,
+            "calibration_frames_accumulated": accumulated,
+            "calibration_frames_required": required,
+        }
+
+    def _publish_live_session_state(self) -> None:
+        if self._redis is None:
+            return
+        raw_payload = json.dumps(self._live_session_state_payload(), sort_keys=True)
+        if raw_payload == self._last_live_session_state_payload:
+            return
+        try:
+            self._redis.set(
+                _live_session_state_key(self._session_id),
+                raw_payload,
+                ex=LIVE_SESSION_STATE_TTL_S,
+            )
+        except Exception:
+            logger.debug("Live-session state publish unavailable", exc_info=True)
+            return
+        self._last_live_session_state_payload = raw_payload
+
+    def _publish_orchestrator_heartbeat(self) -> None:
+        """Publish a small heartbeat consumed by the operator health probe."""
+        if self._redis is None:
+            return
+        payload = {
+            "timestamp_utc": datetime.now(UTC).isoformat(),
+            "session_id": self._session_id,
+            "session_active": self._session_active,
+        }
+        try:
+            self._redis.set(
+                ORCHESTRATOR_HEARTBEAT_KEY,
+                json.dumps(payload, sort_keys=True),
+                ex=ORCHESTRATOR_HEARTBEAT_TTL_S,
+            )
+        except Exception:
+            logger.debug("Orchestrator heartbeat publish unavailable", exc_info=True)
+
+    def _publish_orchestrator_heartbeat_if_due(self, now_monotonic: float) -> None:
+        if now_monotonic - self._last_heartbeat_monotonic < ORCHESTRATOR_HEARTBEAT_INTERVAL_S:
+            return
+        self._publish_orchestrator_heartbeat()
+        self._last_heartbeat_monotonic = now_monotonic
+
     def record_stimulus_injection(self) -> None:
         """
         [v3.0] Record the exact moment the greeting line was sent.
@@ -350,6 +459,7 @@ class Orchestrator:
         """
         self._stimulus_time = self.drift_corrector.correct_timestamp(time.time())
         self._is_calibrating = False
+        self._publish_live_session_state()
         logger.info(
             "Stimulus injected at t=%.3f (arm=%s, greeting='%s')",
             self._stimulus_time,
@@ -419,6 +529,7 @@ class Orchestrator:
                 landmarks,
                 is_calibrating=self._is_calibrating,
             )
+            self._publish_live_session_state()
 
             # Only accumulate post-stimulus frames (calibration returns 0.0
             # and doesn't produce meaningful reward signal)
@@ -620,6 +731,7 @@ class Orchestrator:
             MediaSource,
         )
 
+        assembly_started = time.perf_counter()
         self._segment_counter += 1
         segment_id = f"seg-{self._segment_counter:04d}"
 
@@ -693,15 +805,254 @@ class Orchestrator:
         from services.worker.pipeline.serialization import encode_bytes_fields
 
         result = encode_bytes_fields(result, ["_audio_data", "_frame_data"])
+        logger.info(
+            "BENCHMARK segment_assembly_ms=%.3f segment_id=%s",
+            (time.perf_counter() - assembly_started) * 1000.0,
+            segment_id,
+        )
 
         return result
+
+    def _dispatch_payload(self, payload: dict[str, Any]) -> None:
+        """Dispatch a validated payload to Module D."""
+        try:
+            from services.worker.tasks.inference import process_segment
+
+            process_segment.delay(payload)
+        except Exception as exc:
+            logger.error("Failed to dispatch segment: %s", exc)
+
+    def _drain_event_buffer(self) -> list[dict[str, Any]]:
+        """Drain queued ground-truth events into the current segment payload."""
+        events: list[dict[str, Any]] = []
+        while self.event_buffer:
+            events.append(self.event_buffer.popleft())
+        return events
+
+    def _flush_inflight_segment(self) -> None:
+        """Flush the current partial segment before a session transitions."""
+        has_inflight_state = bool(self._audio_buffer or self.event_buffer or self._au12_series)
+        if not has_inflight_state:
+            self._audio_buffer.clear()
+            self.event_buffer.clear()
+            return
+
+        audio_data = bytes(self._audio_buffer)
+        self._audio_buffer.clear()
+        events = self._drain_event_buffer()
+        self._drain_physio_events()
+        payload = self.assemble_segment(audio_data, events)
+        self._dispatch_payload(payload)
+
+    def _reset_session_state(self) -> None:
+        """Reset per-session accumulators without restarting capture surfaces."""
+        self._segment_counter = 0
+        self._audio_buffer.clear()
+        self.event_buffer.clear()
+        self._au12_series.clear()
+        self._stimulus_time = None
+        self._active_arm = ""
+        self._expected_greeting = ""
+        self._is_calibrating = True
+        self._au12_normalizer = None
+
+    def _begin_session(self, *, session_id: str, stream_url: str, experiment_id: str) -> None:
+        """Make a session active and register it authoritatively in Postgres."""
+        self._reset_session_state()
+        self._session_id = session_id
+        self._stream_url = stream_url
+        self._experiment_id = experiment_id or "greeting_line_v1"
+        self._session_active = True
+        self._register_session()
+        self._select_experiment_arm()
+        self._publish_live_session_state()
+        self._publish_orchestrator_heartbeat()
+        logger.info(
+            "Session lifecycle started: session_id=%s stream_url=%s experiment_id=%s",
+            self._session_id,
+            self._stream_url or "(none)",
+            self._experiment_id,
+        )
+
+    def _mark_session_ended(self, session_id: str) -> None:
+        """Persist an authoritative `ended_at` timestamp for the session."""
+        update_session_sql = """
+            UPDATE sessions
+            SET ended_at = NOW()
+            WHERE session_id = %(session_id)s
+              AND ended_at IS NULL
+        """
+
+        try:
+            import psycopg2
+
+            conn = psycopg2.connect(
+                host=os.environ.get("POSTGRES_HOST", "postgres"),
+                port=int(os.environ.get("POSTGRES_PORT", "5432")),
+                user=os.environ["POSTGRES_USER"],
+                password=os.environ["POSTGRES_PASSWORD"],
+                dbname=os.environ["POSTGRES_DB"],
+            )
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(update_session_sql, {"session_id": session_id})
+                conn.commit()
+                logger.info("Session marked ended in Persistent Store: %s", session_id)
+            finally:
+                conn.close()
+        except Exception as exc:
+            logger.error(
+                "Failed to mark session ended %s: %s",
+                session_id,
+                exc,
+                exc_info=True,
+            )
+
+    def _finish_active_session(self, *, flush: bool) -> None:
+        """Flush and close the currently active session, if any."""
+        if not self._session_active:
+            return
+
+        session_id = self._session_id
+        if flush:
+            self._flush_inflight_segment()
+        self._mark_session_ended(session_id)
+        self._session_active = False
+        self._reset_session_state()
+        self._publish_live_session_state()
+        self._publish_orchestrator_heartbeat()
+        logger.info("Session lifecycle ended: session_id=%s", session_id)
+
+    def _handle_session_lifecycle_intent(self, intent: dict[str, Any]) -> None:
+        """Apply a queued lifecycle intent published by the API Server."""
+        action = str(intent.get("action") or "").strip().lower()
+        session_id = str(intent.get("session_id") or "").strip()
+        if action not in {"start", "end"} or not session_id:
+            logger.warning("Malformed session lifecycle intent ignored: %r", intent)
+            return
+
+        self._session_lifecycle_received = True
+
+        if action == "start":
+            if session_id == self._session_id:
+                logger.info("Duplicate/stale session start ignored: %s", session_id)
+                return
+            if self._session_active:
+                self._finish_active_session(flush=True)
+            self._begin_session(
+                session_id=session_id,
+                stream_url=str(intent.get("stream_url") or ""),
+                experiment_id=str(intent.get("experiment_id") or self._experiment_id),
+            )
+            return
+
+        if not self._session_active:
+            logger.info("Session end ignored; no active session is running")
+            return
+        if session_id != self._session_id:
+            logger.info(
+                "Session end ignored for non-active session_id=%s (active=%s)",
+                session_id,
+                self._session_id,
+            )
+            return
+        self._finish_active_session(flush=True)
+
+    def _drain_session_lifecycle_intents(self) -> None:
+        """Apply all queued lifecycle intents without blocking the main loop."""
+        while True:
+            try:
+                intent = self._session_lifecycle_queue.get_nowait()
+            except Empty:
+                break
+            try:
+                self._handle_session_lifecycle_intent(intent)
+            except Exception:
+                logger.warning("Session lifecycle intent failed", exc_info=True)
+
+    def _start_session_lifecycle_listener(self) -> None:
+        """Listen for API-published session lifecycle JSON on Redis pub/sub."""
+        if self._session_lifecycle_thread is not None and self._session_lifecycle_thread.is_alive():
+            return
+
+        redis_url = os.environ.get("REDIS_URL", "redis://redis:6379/0")
+        self._session_lifecycle_stop.clear()
+
+        def _listen() -> None:
+            client: Any = None
+            pubsub: Any = None
+            try:
+                import redis
+
+                client = redis.from_url(  # type: ignore[no-untyped-call]
+                    redis_url,
+                    decode_responses=True,
+                )
+                pubsub = client.pubsub(ignore_subscribe_messages=True)
+                pubsub.subscribe(SESSION_LIFECYCLE_CHANNEL)
+                logger.info(
+                    "Redis session lifecycle listener subscribed to '%s'",
+                    SESSION_LIFECYCLE_CHANNEL,
+                )
+
+                while not self._session_lifecycle_stop.is_set():
+                    message = pubsub.get_message(timeout=SESSION_LIFECYCLE_POLL_TIMEOUT_S)
+                    if message is None:
+                        continue
+                    if message.get("type") != "message":
+                        continue
+
+                    raw_message = message.get("data")
+                    if isinstance(raw_message, bytes):
+                        raw_message = raw_message.decode("utf-8")
+
+                    try:
+                        intent = json.loads(str(raw_message))
+                    except json.JSONDecodeError:
+                        logger.warning(
+                            "Malformed session lifecycle payload ignored: %r",
+                            raw_message,
+                        )
+                        continue
+
+                    if not isinstance(intent, dict):
+                        logger.warning("Unexpected session lifecycle payload ignored: %r", intent)
+                        continue
+                    self._session_lifecycle_queue.put(intent)
+            except Exception:
+                logger.warning("Redis session lifecycle listener unavailable", exc_info=True)
+            finally:
+                if pubsub is not None:
+                    with contextlib.suppress(Exception):
+                        pubsub.unsubscribe(SESSION_LIFECYCLE_CHANNEL)
+                    with contextlib.suppress(Exception):
+                        pubsub.close()
+                if client is not None and hasattr(client, "close"):
+                    with contextlib.suppress(Exception):
+                        client.close()
+
+        thread = threading.Thread(
+            target=_listen,
+            name="session-lifecycle-listener",
+            daemon=True,
+        )
+        thread.start()
+        self._session_lifecycle_thread = thread
 
     def stop(self) -> None:
         """Stop the orchestration loop and clean up all resources."""
         self._running = False
+        self._session_lifecycle_stop.set()
+        if (
+            self._session_lifecycle_thread is not None
+            and self._session_lifecycle_thread.is_alive()
+            and self._session_lifecycle_thread is not threading.current_thread()
+        ):
+            with contextlib.suppress(Exception):
+                self._session_lifecycle_thread.join(timeout=SESSION_LIFECYCLE_POLL_TIMEOUT_S + 1.0)
         self.audio_resampler.stop()
         # [Stage 2] Gap G-03 — Stop video capture thread
-        if self.video_capture is not None:
+        if self.video_capture is not None and self.video_capture is not self.audio_resampler:
             with contextlib.suppress(Exception):
                 self.video_capture.stop()
         # [v3.1] Release Redis client used for physiological drain.
@@ -720,38 +1071,44 @@ class Orchestrator:
 
     async def run(self) -> None:
         """
-        Main orchestration loop — revised for v3.0.
+        Main orchestration loop — revised for lifecycle-aware session ownership.
 
         §4.C — Coordinates all Module C responsibilities:
-        0. Register session in Persistent Store (Gap G-02)
-        0b. Select Thompson Sampling arm for this session (§4.E.1)
-        0c. Start video capture thread (Gap G-03)
-        1. Poll drift every DRIFT_POLL_INTERVAL seconds (§4.C.1)
-        2. Continuously read resampled audio chunks (§4.C.2)
-        2b. [v3.0] Process latest video frame → AU12 accumulation
-        3. Accumulate 30s of audio, drain event buffer (§2 step 5)
-        4. Assemble InferenceHandoffPayload and dispatch (§6.1)
+        0. Preserve boot-time session auto-create from STREAM_URL/EXPERIMENT_ID.
+        0b. Start background Redis lifecycle listener for authoritative start/end.
+        0c. Start video capture thread (Gap G-03).
+        1. Poll drift every DRIFT_POLL_INTERVAL seconds (§4.C.1).
+        2. Continuously read resampled audio chunks (§4.C.2).
+        2b. [v3.0] Process latest video frame → AU12 accumulation.
+        3. Assemble fixed 30-second segments only while a session is active.
+        4. Flush/rotate sessions on lifecycle intents from the API Server.
         """
-        # --- Pre-loop initialization (Stage 2 + v3.0) ---
-
-        # Gap G-02 — Must execute before any segment dispatch
-        self._register_session()
-
-        # §4.E.1 — Select greeting line for this session
-        self._select_experiment_arm()
-
-        # Gap G-03 — Start video capture from IPC Pipe
-        try:
-            from services.worker.pipeline.video_capture import VideoCapture
-
-            self.video_capture = VideoCapture()
-            self.video_capture.start()
-        except Exception as exc:
-            logger.warning("Video capture unavailable: %s", exc)
-            self.video_capture = None
-
-        # --- Main loop ---
+        # --- Pre-loop initialization ---
         self._running = True
+        self._start_session_lifecycle_listener()
+
+        # Preserve the historical boot path until/unless lifecycle messages arrive.
+        self._begin_session(
+            session_id=self._session_id,
+            stream_url=self._stream_url,
+            experiment_id=self._experiment_id,
+        )
+        self._publish_live_session_state()
+        self._publish_orchestrator_heartbeat()
+
+        # Gap G-03 — Start video capture from IPC Pipe unless replay is opt-in.
+        if self._using_replay_capture:
+            logger.info("Using replay capture source instead of live IPC pipes")
+        else:
+            try:
+                from services.worker.pipeline.video_capture import VideoCapture
+
+                self.video_capture = VideoCapture()
+                self.video_capture.start()
+            except Exception as exc:
+                logger.warning("Video capture unavailable: %s", exc)
+                self.video_capture = None
+
         self.audio_resampler.start()
 
         # §4.C.2 — 16 kHz, mono, s16le = 2 bytes/sample = 32000 bytes/second
@@ -763,22 +1120,32 @@ class Orchestrator:
         last_drift_poll = 0.0
 
         while self._running:
+            self._drain_session_lifecycle_intents()
             now = time.monotonic()
+            self._publish_orchestrator_heartbeat_if_due(now)
 
-            # §4.C.1 — Poll drift at configured interval
-            if now - last_drift_poll >= DRIFT_POLL_INTERVAL:
+            # §4.C.1 — Poll drift at configured interval. Replay mode keeps the
+            # zero/cached offset and intentionally avoids ADB/USB dependencies.
+            if not self._using_replay_capture and now - last_drift_poll >= DRIFT_POLL_INTERVAL:
                 self.drift_corrector.poll()
                 last_drift_poll = now
 
-            # §4.C.2 — Read resampled audio chunk
+            # §4.C.2 — Read resampled audio chunk. When no session is active we
+            # still drain the pipe, but intentionally discard the bytes so a later
+            # start intent begins from a clean lifecycle boundary.
             chunk = self.audio_resampler.read_chunk(chunk_size)
-            if chunk:
+            if chunk and self._session_active:
                 self._audio_buffer.extend(chunk)
 
             # §12 Worker crash C — Self-heal video capture thread.
             # PyAV crashes silently if the IPC Pipe drops a keyframe.
             # If the thread dies, automatically revive it so we don't lose telemetry.
-            if self.video_capture is None or not getattr(self.video_capture, "is_running", False):
+            video_dead = self.video_capture is None or not getattr(
+                self.video_capture,
+                "is_running",
+                False,
+            )
+            if not self._using_replay_capture and video_dead:
                 try:
                     from services.worker.pipeline.video_capture import VideoCapture
 
@@ -793,30 +1160,20 @@ class Orchestrator:
                     # fails, the next loop iteration will retry.
                     logger.debug("Video revival failed", exc_info=True)
 
-            # [v3.0] §4.D.2 + §7A.4 — Process latest video frame for AU12
-            self._process_video_frame()
+            # [v3.0] §4.D.2 + §7A.4 — Process latest video frame for AU12 only
+            # while a lifecycle session is actively running.
+            if self._session_active:
+                self._process_video_frame()
 
-            # §2 step 5 — When we have 30s of audio, assemble segment
-            if len(self._audio_buffer) >= segment_bytes:
+            # §2 step 5 — When we have 30s of audio for an active session,
+            # assemble and dispatch a segment.
+            if self._session_active and len(self._audio_buffer) >= segment_bytes:
                 audio_data = bytes(self._audio_buffer[:segment_bytes])
                 self._audio_buffer = bytearray(self._audio_buffer[segment_bytes:])
-
-                # Drain events from buffer for this segment window
-                events: list[dict[str, Any]] = []
-                while self.event_buffer:
-                    events.append(self.event_buffer.popleft())
-
-                # [v3.1] Drain physiological events before assembling segment
+                events = self._drain_event_buffer()
                 self._drain_physio_events()
                 payload = self.assemble_segment(audio_data, events)
-
-                # §2 step 5 → §2 step 6 — Dispatch to Module D
-                try:
-                    from services.worker.tasks.inference import process_segment
-
-                    process_segment.delay(payload)
-                except Exception as exc:
-                    logger.error("Failed to dispatch segment: %s", exc)
+                self._dispatch_payload(payload)
 
             # Yield control to event loop
             await asyncio.sleep(0.01)
@@ -836,8 +1193,6 @@ class Orchestrator:
         Uses a direct psycopg2 connection (not the MetricsStore pool)
         to avoid circular dependency with the Celery task layer.
         """
-        import os
-
         insert_session_sql = """
             INSERT INTO sessions (session_id, stream_url, started_at)
             VALUES (%(session_id)s, %(stream_url)s, NOW())

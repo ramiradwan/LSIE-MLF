@@ -23,6 +23,8 @@ import pytest
 from PySide6.QtGui import QCloseEvent
 
 from packages.schemas.operator_console import (
+    ArmSummary,
+    ExperimentDetail,
     SessionSummary,
     StimulusActionState,
 )
@@ -80,6 +82,9 @@ def _make_session(
     *,
     active_arm: str | None = "greeting_v1",
     expected_greeting: str | None = "hei rakas",
+    is_calibrating: bool | None = None,
+    calibration_frames_accumulated: int | None = None,
+    calibration_frames_required: int | None = None,
 ) -> SessionSummary:
     return SessionSummary(
         session_id=session_id,
@@ -87,6 +92,9 @@ def _make_session(
         started_at_utc=datetime(2026, 4, 17, 12, 0, 0, tzinfo=UTC),
         active_arm=active_arm,
         expected_greeting=expected_greeting,
+        is_calibrating=is_calibrating,
+        calibration_frames_accumulated=calibration_frames_accumulated,
+        calibration_frames_required=calibration_frames_required,
     )
 
 
@@ -167,6 +175,40 @@ def test_action_bar_enables_when_session_and_live_match() -> None:
     assert bar._greeting_label.isHidden() is False
 
 
+def test_action_bar_disables_when_live_session_below_safe_submit_threshold() -> None:
+    window, store, _coord = _make_window()
+    session_id = uuid4()
+    store.set_selected_session_id(session_id)
+    store.set_live_session(
+        _make_session(
+            session_id,
+            is_calibrating=True,
+            calibration_frames_accumulated=12,
+            calibration_frames_required=45,
+        )
+    )
+
+    bar = window._action_bar
+    assert bar._submit_button.isEnabled() is False
+
+
+def test_action_bar_enables_at_safe_submit_threshold_while_lifecycle_calibrating() -> None:
+    window, store, _coord = _make_window()
+    session_id = uuid4()
+    store.set_selected_session_id(session_id)
+    store.set_live_session(
+        _make_session(
+            session_id,
+            is_calibrating=True,
+            calibration_frames_accumulated=45,
+            calibration_frames_required=45,
+        )
+    )
+
+    bar = window._action_bar
+    assert bar._submit_button.isEnabled() is True
+
+
 def test_action_bar_ignores_live_session_of_other_session() -> None:
     window, store, _coord = _make_window()
     selected = uuid4()
@@ -180,6 +222,52 @@ def test_action_bar_ignores_live_session_of_other_session() -> None:
     # strings should not come from the mismatched live DTO.
     assert bar._active_arm is None
     assert bar._expected_greeting is None
+
+
+# ---------------------------------------------------------------------
+# Experiment management submit path
+# ---------------------------------------------------------------------
+
+
+def test_experiment_management_vm_signals_route_to_coordinator() -> None:
+    config = _make_config()
+    store = build_store()
+    coord = build_polling_coordinator(config, MagicMock(), store)
+    coord.create_experiment = MagicMock()  # type: ignore[method-assign]
+    coord.add_experiment_arm = MagicMock()  # type: ignore[method-assign]
+    coord.rename_experiment_arm = MagicMock()  # type: ignore[method-assign]
+    coord.disable_experiment_arm = MagicMock()  # type: ignore[method-assign]
+    window = build_main_window(config, store, coord)
+    vm = window._experiments_vm
+
+    assert vm.create_experiment("exp-new", "Greeting v2", "arm-a", "Hei") is True
+    coord.create_experiment.assert_called_once()
+    create_request = coord.create_experiment.call_args.args[0]
+    assert create_request.experiment_id == "exp-new"
+
+    store.set_experiment(
+        ExperimentDetail(
+            experiment_id="exp-new",
+            arms=[
+                ArmSummary(
+                    arm_id="arm-a",
+                    greeting_text="Hei",
+                    posterior_alpha=1.0,
+                    posterior_beta=1.0,
+                )
+            ],
+        )
+    )
+    assert vm.add_arm("arm-b", "Moi") is True
+    assert vm.rename_arm_greeting("arm-a", "Hei uusi") is True
+    assert vm.disable_arm("arm-a") is True
+
+    coord.add_experiment_arm.assert_called_once()
+    add_experiment_id, add_request = coord.add_experiment_arm.call_args.args
+    assert add_experiment_id == "exp-new"
+    assert add_request.arm == "arm-b"
+    coord.rename_experiment_arm.assert_called_once_with("exp-new", "arm-a", "Hei uusi")
+    coord.disable_experiment_arm.assert_called_once_with("exp-new", "arm-a")
 
 
 # ---------------------------------------------------------------------

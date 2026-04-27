@@ -37,11 +37,14 @@ from datetime import UTC, datetime
 from packages.schemas.operator_console import (
     CoModulationSummary,
     EncounterSummary,
+    HealthProbeState,
     HealthState,
+    HealthSubsystemProbe,
     HealthSubsystemStatus,
     ObservationalAcousticSummary,
     PhysiologyCurrentSnapshot,
     SessionPhysiologySnapshot,
+    SessionSummary,
     UiStatusKind,
 )
 
@@ -363,6 +366,35 @@ def format_health_state(state: HealthState) -> str:
     return mapping[state]
 
 
+def format_health_probe_state(state: HealthProbeState) -> str:
+    """Operator-facing label for active read-only probes."""
+
+    mapping = {
+        HealthProbeState.OK: "ok",
+        HealthProbeState.ERROR: "error",
+        HealthProbeState.TIMEOUT: "timeout",
+        HealthProbeState.NOT_CONFIGURED: "not configured",
+        HealthProbeState.UNKNOWN: "unknown",
+    }
+    return mapping[state]
+
+
+def format_latency_ms(value: float | None) -> str:
+    """Render bounded probe latency; absent latency stays explicit."""
+
+    if value is None:
+        return _EM_DASH
+    if value >= 1000.0:
+        return f"{value / 1000.0:.2f}s"
+    return f"{value:.0f}ms"
+
+
+def build_health_probe_detail(probe: HealthSubsystemProbe) -> str:
+    """Compact tooltip/detail text for subsystem probes."""
+
+    return probe.detail or "probe completed without additional detail"
+
+
 # ----------------------------------------------------------------------
 # Freshness / physiology
 # ----------------------------------------------------------------------
@@ -383,6 +415,41 @@ def format_freshness(
     stale = bool(is_stale) if is_stale is not None else freshness_s >= _DEGREE_OF_FRESHNESS_STALE_S
     label = "stale" if stale else "fresh"
     return f"{freshness_s:.0f}s ({label})"
+
+
+def operator_ready_for_submit(snapshot: SessionSummary | None) -> bool:
+    """Return the console's safe-submit readiness for a live session.
+
+    The worker's ``is_calibrating`` flag is lifecycle telemetry: it can
+    remain true until the first stimulus has actually been injected. The
+    console needs a narrower operator-readiness concept so the first
+    stimulus is not deadlocked behind that same lifecycle transition.
+    """
+
+    if snapshot is None:
+        return False
+    if snapshot.is_calibrating is not True:
+        # Legacy DTOs publish ``None`` here; keep rendering/submission
+        # behavior ready rather than treating absent telemetry as blocked.
+        return True
+    accumulated = snapshot.calibration_frames_accumulated
+    required = snapshot.calibration_frames_required
+    return accumulated is not None and required is not None and accumulated >= required
+
+
+def format_calibration_status(snapshot: SessionSummary | None) -> tuple[UiStatusKind, str]:
+    """Operator pill text for live-session calibration readiness."""
+
+    if snapshot is None:
+        return UiStatusKind.NEUTRAL, "No session"
+    if operator_ready_for_submit(snapshot):
+        return UiStatusKind.OK, "Ready"
+    accumulated = snapshot.calibration_frames_accumulated
+    required = snapshot.calibration_frames_required
+    if accumulated is None or required is None:
+        return UiStatusKind.PROGRESS, "Calibrating"
+    current = min(max(accumulated, 0), required)
+    return UiStatusKind.PROGRESS, f"Calibrating · {current}/{required} frames"
 
 
 def truncate_expected_greeting(greeting: str | None, *, limit: int = 60) -> str:

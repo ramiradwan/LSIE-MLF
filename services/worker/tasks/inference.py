@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 import math
 import tempfile
+import time
 from dataclasses import asdict
 from datetime import UTC, datetime
 from typing import Any
@@ -46,6 +47,26 @@ _BINARY_FIELDS: list[str] = ["_audio_data", "_frame_data"]
 
 # Raw Module C → D audio is mono PCM s16le at 16 kHz.
 _PCM_SAMPLE_WIDTH_BYTES: int = 2
+
+# Cached per worker-process transcriber. Celery concurrency is constrained to a
+# single worker process in docker-compose, so this preserves the initialized
+# model object after the first successful transcription without sharing it
+# across processes.
+_TRANSCRIPTION_ENGINE: Any | None = None
+_TRANSCRIPTION_ENGINE_FACTORY: Any | None = None
+
+
+def _get_transcription_engine() -> Any:
+    """Return the worker-process transcriber without loading it in /healthz."""
+
+    global _TRANSCRIPTION_ENGINE, _TRANSCRIPTION_ENGINE_FACTORY
+    from packages.ml_core.transcription import TranscriptionEngine
+
+    if _TRANSCRIPTION_ENGINE is None or _TRANSCRIPTION_ENGINE_FACTORY is not TranscriptionEngine:
+        _TRANSCRIPTION_ENGINE = TranscriptionEngine()
+        _TRANSCRIPTION_ENGINE_FACTORY = TranscriptionEngine
+    return _TRANSCRIPTION_ENGINE
+
 
 # §2.7 — Parameterized INSERT for encounter audit trail persistence.
 _INSERT_ENCOUNTER_LOG_SQL: str = """
@@ -207,6 +228,8 @@ def process_segment(self: Task, payload: dict[str, Any]) -> dict[str, Any]:
         (plus optional legacy pitch/jitter/shimmer compatibility fields)
         required by §2 step 6 / §4.D.3.
     """
+    started_at = time.perf_counter()
+
     # --- Gap 2 fix: decode base64-encoded binary fields from JSON transport ---
     from services.worker.pipeline.serialization import decode_bytes_fields, sanitize_json_payload
 
@@ -226,12 +249,14 @@ def process_segment(self: Task, payload: dict[str, Any]) -> dict[str, Any]:
             import os
             import subprocess
 
-            from packages.ml_core.transcription import TranscriptionEngine
+            from services.worker.health import (
+                record_whisper_model_error,
+                record_whisper_model_ready,
+            )
 
-            logger.info("Initializing faster-whisper (first run downloads ~3GB model)")
-
-            engine = TranscriptionEngine()
-            logger.info("Whisper model loaded")
+            engine = _get_transcription_engine()
+            if getattr(engine, "_model", None) is None:
+                logger.info("Initializing faster-whisper (first run downloads ~3GB model)")
 
             # Write the raw PCM bytes to disk
             with tempfile.NamedTemporaryFile(suffix=".raw", delete=False) as raw_file:
@@ -259,8 +284,18 @@ def process_segment(self: Task, payload: dict[str, Any]) -> dict[str, Any]:
                 check=True,
             )
 
-            # Transcribe the pristine WAV file
-            transcription = engine.transcribe(wav_path)
+            # Transcribe the pristine WAV file. ``TranscriptionEngine`` lazily
+            # loads on first use; after success, the cached engine holds the
+            # initialized model that the health process reports via marker.
+            try:
+                transcription = engine.transcribe(wav_path)
+            except Exception as exc:
+                if getattr(engine, "_model", None) is None:
+                    record_whisper_model_error(engine, exc)
+                raise
+            else:
+                record_whisper_model_ready(engine)
+                logger.info("Whisper model ready")
 
             # Clean up the temp files
             os.remove(raw_path)
@@ -403,6 +438,11 @@ def process_segment(self: Task, payload: dict[str, Any]) -> dict[str, Any]:
     except Exception:
         logger.error("Failed to dispatch persist_metrics for %s", segment_id, exc_info=True)
 
+    logger.info(
+        "BENCHMARK ml_inference_ms=%.3f segment_id=%s",
+        (time.perf_counter() - started_at) * 1000.0,
+        segment_id,
+    )
     return result
 
 

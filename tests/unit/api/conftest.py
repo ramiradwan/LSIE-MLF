@@ -62,6 +62,34 @@ class APIRouter:
 
         return decorator
 
+    def patch(
+        self,
+        path: str,
+        *args: Any,
+        **kwargs: Any,
+    ) -> RouteDecorator:
+        del args, kwargs
+
+        def decorator(fn: Handler) -> Handler:
+            self.routes.append(SimpleNamespace(path=path, endpoint=fn, methods={"PATCH"}))
+            return fn
+
+        return decorator
+
+    def delete(
+        self,
+        path: str,
+        *args: Any,
+        **kwargs: Any,
+    ) -> RouteDecorator:
+        del args, kwargs
+
+        def decorator(fn: Handler) -> Handler:
+            self.routes.append(SimpleNamespace(path=path, endpoint=fn, methods={"DELETE"}))
+            return fn
+
+        return decorator
+
 
 class FastAPI:
     """Minimal FastAPI shim that records included routes."""

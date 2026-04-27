@@ -36,7 +36,13 @@ pytestmark = pytest.mark.usefixtures("qt_app")
 # ---------------------------------------------------------------------
 
 
-def _arm(arm_id: str, *, alpha: float = 3.0, beta: float = 5.0) -> ArmSummary:
+def _arm(
+    arm_id: str,
+    *,
+    alpha: float = 3.0,
+    beta: float = 5.0,
+    enabled: bool = True,
+) -> ArmSummary:
     return ArmSummary(
         arm_id=arm_id,
         greeting_text=f"greeting {arm_id}",
@@ -46,6 +52,7 @@ def _arm(arm_id: str, *, alpha: float = 3.0, beta: float = 5.0) -> ArmSummary:
         selection_count=7,
         recent_reward_mean=0.33,
         recent_semantic_pass_rate=0.5,
+        enabled=enabled,
     )
 
 
@@ -61,11 +68,59 @@ def test_experiments_model_shape_and_lookup() -> None:
 def test_experiments_model_surfaces_alpha_beta() -> None:
     model = ExperimentsTableModel()
     model.set_rows([_arm("a", alpha=3.0, beta=5.0)])
-    # Column 2 = posterior α, Column 3 = posterior β
-    alpha_text = model.data(model.index(0, 2), Qt.ItemDataRole.DisplayRole)
-    beta_text = model.data(model.index(0, 3), Qt.ItemDataRole.DisplayRole)
+    # Column 3 = posterior α, Column 4 = posterior β (column 2 is the disable toggle).
+    alpha_text = model.data(model.index(0, 3), Qt.ItemDataRole.DisplayRole)
+    beta_text = model.data(model.index(0, 4), Qt.ItemDataRole.DisplayRole)
     assert "3" in alpha_text
     assert "5" in beta_text
+
+
+def test_experiments_model_emits_greeting_edit_without_mutating_row() -> None:
+    model = ExperimentsTableModel()
+    model.set_rows([_arm("a")])
+    emissions: list[tuple[str, str]] = []
+    model.greeting_edit_requested.connect(lambda *args: emissions.append(tuple(args)))
+
+    assert model.setData(model.index(0, 1), "new greeting", Qt.ItemDataRole.EditRole) is True
+    assert emissions == [("a", "new greeting")]
+    # The row waits for store/coordinator readback before changing.
+    assert model.row_at(0).greeting_text == "greeting a"  # type: ignore[union-attr]
+
+
+def test_experiments_model_allows_disabled_arm_greeting_rename_intent() -> None:
+    model = ExperimentsTableModel()
+    model.set_rows([_arm("a", enabled=False)])
+    emissions: list[tuple[str, str]] = []
+    model.greeting_edit_requested.connect(lambda *args: emissions.append(tuple(args)))
+
+    assert bool(model.flags(model.index(0, 1)) & Qt.ItemFlag.ItemIsEditable)
+    assert model.setData(model.index(0, 1), "archived greeting", Qt.ItemDataRole.EditRole)
+    assert emissions == [("a", "archived greeting")]
+
+
+def test_experiments_model_disable_is_one_way_only() -> None:
+    model = ExperimentsTableModel()
+    model.set_rows([_arm("a")])
+    disabled: list[str] = []
+    model.disable_requested.connect(disabled.append)
+
+    assert (
+        model.setData(model.index(0, 2), Qt.CheckState.Unchecked, Qt.ItemDataRole.CheckStateRole)
+        is True
+    )
+    assert disabled == ["a"]
+    assert (
+        model.setData(model.index(0, 2), Qt.CheckState.Checked, Qt.ItemDataRole.CheckStateRole)
+        is False
+    )
+    assert disabled == ["a"]
+
+
+def test_experiments_model_posterior_columns_are_not_editable() -> None:
+    model = ExperimentsTableModel()
+    model.set_rows([_arm("a")])
+    flags = model.flags(model.index(0, 3))
+    assert not bool(flags & Qt.ItemFlag.ItemIsEditable)
 
 
 # ---------------------------------------------------------------------

@@ -25,6 +25,7 @@ from packages.schemas.operator_console import (
     AlertSeverity,
     EncounterState,
     EncounterSummary,
+    ExperimentDetail,
     HealthSnapshot,
     HealthState,
     ObservationalAcousticSummary,
@@ -155,6 +156,22 @@ class TestRouting:
         store.selected_session_changed.connect(spy)
         store.set_selected_session_id(sid)
         assert spy.emissions == []
+
+    def test_managed_experiment_persists_across_route_change(self) -> None:
+        store = OperatorStore()
+        store.set_managed_experiment_id("exp-non-default")
+        store.set_route(AppRoute.EXPERIMENTS)
+        store.set_route(AppRoute.OVERVIEW)
+        assert store.managed_experiment_id() == "exp-non-default"
+
+    def test_setting_experiment_updates_managed_experiment_id(self) -> None:
+        store = OperatorStore()
+        spy = _SignalSpy()
+        store.managed_experiment_changed.connect(spy)
+        detail = ExperimentDetail(experiment_id="exp-loaded")
+        store.set_experiment(detail)
+        assert store.managed_experiment_id() == "exp-loaded"
+        assert spy.emissions == [("exp-loaded",)]
 
 
 # ----------------------------------------------------------------------

@@ -8,11 +8,14 @@ tests guards against silent drift when the DTOs or formatters evolve.
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 import pytest
+from PySide6.QtCore import Qt
 
+from packages.schemas.experiments import ExperimentArmCreateRequest, ExperimentCreateRequest
 from packages.schemas.operator_console import (
     AlertEvent,
     AlertKind,
@@ -22,17 +25,24 @@ from packages.schemas.operator_console import (
     EncounterState,
     EncounterSummary,
     ExperimentDetail,
+    HealthProbeState,
     HealthSnapshot,
     HealthState,
+    HealthSubsystemProbe,
     HealthSubsystemStatus,
     LatestEncounterSummary,
     OverviewSnapshot,
     PhysiologyCurrentSnapshot,
+    SessionCreateRequest,
+    SessionEndRequest,
+    SessionLifecycleAccepted,
     SessionPhysiologySnapshot,
     SessionSummary,
     StimulusAccepted,
     StimulusActionState,
+    UiStatusKind,
 )
+from services.operator_console.api_client import ApiError
 from services.operator_console.state import OperatorStore, StimulusUiContext
 from services.operator_console.table_models.alerts_table_model import AlertsTableModel
 from services.operator_console.table_models.encounters_table_model import (
@@ -47,6 +57,7 @@ from services.operator_console.viewmodels.health_vm import HealthViewModel
 from services.operator_console.viewmodels.live_session_vm import LiveSessionViewModel
 from services.operator_console.viewmodels.overview_vm import OverviewViewModel
 from services.operator_console.viewmodels.physiology_vm import PhysiologyViewModel
+from services.operator_console.workers import OneShotSignals
 
 pytestmark = pytest.mark.usefixtures("qt_app")
 
@@ -64,6 +75,9 @@ def _session(
     *,
     active_arm: str | None = "greeting_v1",
     expected: str | None = "hei rakas",
+    is_calibrating: bool | None = None,
+    calibration_frames_accumulated: int | None = None,
+    calibration_frames_required: int | None = None,
 ) -> SessionSummary:
     return SessionSummary(
         session_id=session_id or uuid4(),
@@ -71,6 +85,9 @@ def _session(
         started_at_utc=_NOW,
         active_arm=active_arm,
         expected_greeting=expected,
+        is_calibrating=is_calibrating,
+        calibration_frames_accumulated=calibration_frames_accumulated,
+        calibration_frames_required=calibration_frames_required,
     )
 
 
@@ -100,6 +117,36 @@ def _encounter(
         gated_reward=gated_reward,
         n_frames_in_window=frames,
     )
+
+
+@dataclass
+class _FakeSessionStartDispatcher:
+    calls: list[SessionCreateRequest] = field(default_factory=list)
+    signals: list[OneShotSignals] = field(default_factory=list)
+
+    def __call__(self, request: SessionCreateRequest) -> OneShotSignals:
+        self.calls.append(request)
+        bus = OneShotSignals()
+        self.signals.append(bus)
+        return bus
+
+
+@dataclass
+class _FakeSessionEndCall:
+    session_id: UUID
+    request: SessionEndRequest
+
+
+@dataclass
+class _FakeSessionEndDispatcher:
+    calls: list[_FakeSessionEndCall] = field(default_factory=list)
+    signals: list[OneShotSignals] = field(default_factory=list)
+
+    def __call__(self, session_id: UUID, request: SessionEndRequest) -> OneShotSignals:
+        self.calls.append(_FakeSessionEndCall(session_id=session_id, request=request))
+        bus = OneShotSignals()
+        self.signals.append(bus)
+        return bus
 
 
 # ---------------------------------------------------------------------
@@ -176,6 +223,54 @@ def test_live_session_vm_surfaces_active_arm_from_live_session() -> None:
     store.set_live_session(_session(active_arm="greeting_v7"))
     assert vm.active_arm() == "greeting_v7"
     assert vm.expected_greeting() == "hei rakas"
+
+
+def test_live_session_vm_surfaces_calibration_status_from_live_session() -> None:
+    store = OperatorStore()
+    model = EncountersTableModel()
+    vm = LiveSessionViewModel(store, model)
+    store.set_live_session(
+        _session(
+            is_calibrating=True,
+            calibration_frames_accumulated=12,
+            calibration_frames_required=45,
+        )
+    )
+    kind, text = vm.calibration_status()
+    assert vm.is_calibrating() is True
+    assert vm.operator_ready_for_submit() is False
+    assert kind is UiStatusKind.PROGRESS
+    assert text == "Calibrating · 12/45 frames"
+
+
+def test_live_session_vm_ready_at_threshold_preserves_authoritative_calibrating_flag() -> None:
+    store = OperatorStore()
+    model = EncountersTableModel()
+    vm = LiveSessionViewModel(store, model)
+    store.set_live_session(
+        _session(
+            is_calibrating=True,
+            calibration_frames_accumulated=45,
+            calibration_frames_required=45,
+        )
+    )
+    kind, text = vm.calibration_status()
+    assert vm.is_calibrating() is True
+    assert vm.operator_ready_for_submit() is True
+    assert kind is UiStatusKind.OK
+    assert text == "Ready"
+
+
+def test_live_session_vm_false_and_none_calibration_are_submit_ready() -> None:
+    for is_calibrating in (False, None):
+        store = OperatorStore()
+        model = EncountersTableModel()
+        vm = LiveSessionViewModel(store, model)
+        store.set_live_session(_session(is_calibrating=is_calibrating))
+
+        assert vm.is_calibrating() is False
+        assert vm.operator_ready_for_submit() is True
+        assert vm.calibration_status() == (UiStatusKind.OK, "Ready")
 
 
 def test_live_session_vm_reward_explanation_for_gate_closed() -> None:
@@ -341,6 +436,135 @@ def test_live_session_vm_selection_dropped_when_row_evicted() -> None:
     assert vm.selected_encounter() is None
 
 
+def test_live_session_vm_hides_mismatched_live_session_and_rows() -> None:
+    store = OperatorStore()
+    model = EncountersTableModel()
+    vm = LiveSessionViewModel(store, model)
+    selected_session_id = uuid4()
+    store.set_selected_session_id(selected_session_id)
+    store.set_live_session(_session(uuid4()))
+    store.set_encounters([_encounter("other-row", session_id=uuid4())])
+
+    assert vm.session() is None
+    assert model.rowCount() == 0
+
+
+def test_live_session_vm_start_new_session_validates_modal_fields() -> None:
+    store = OperatorStore()
+    vm = LiveSessionViewModel(store, EncountersTableModel())
+
+    assert vm.start_new_session("   ", "exp-a") is None
+    assert vm.error() == "Stream URL is required."
+
+    assert vm.start_new_session("rtmp://example/live", "   ") is None
+    assert vm.error() == "Experiment ID is required."
+
+
+def test_live_session_vm_start_new_session_dispatches_and_switches_selection() -> None:
+    store = OperatorStore()
+    selected_session_id = uuid4()
+    store.set_selected_session_id(selected_session_id)
+    store.set_live_session(_session(selected_session_id))
+    store.set_encounters([_encounter("old-row", session_id=selected_session_id)])
+    model = EncountersTableModel()
+    vm = LiveSessionViewModel(store, model)
+    start_dispatcher = _FakeSessionStartDispatcher()
+    end_dispatcher = _FakeSessionEndDispatcher()
+    vm.bind_session_lifecycle_actions(start_dispatcher, end_dispatcher)
+
+    action_id = vm.start_new_session("  rtmp://example/live  ", "  greeting_line_v1  ")
+
+    assert action_id is not None
+    assert len(start_dispatcher.calls) == 1
+    request = start_dispatcher.calls[0]
+    assert request.client_action_id == action_id
+    assert request.stream_url == "rtmp://example/live"
+    assert request.experiment_id == "greeting_line_v1"
+    assert vm.session_start_in_progress() is True
+
+    new_session_id = uuid4()
+    start_dispatcher.signals[0].succeeded.emit(
+        "session_start",
+        SessionLifecycleAccepted(
+            action="start",
+            session_id=new_session_id,
+            client_action_id=request.client_action_id,
+            accepted=True,
+            received_at_utc=_NOW,
+        ),
+    )
+
+    assert store.selected_session_id() == new_session_id
+    assert vm.session() is None  # stale live-session DTO is filtered away
+    assert model.rowCount() == 0  # stale encounter rows are filtered away too
+    assert vm.session_start_in_progress() is True
+
+    store.set_live_session(_session(new_session_id))
+    assert vm.session() is not None
+    assert vm.session_start_in_progress() is False
+
+
+def test_live_session_vm_end_current_session_waits_for_ended_at_readback() -> None:
+    store = OperatorStore()
+    session_id = uuid4()
+    store.set_selected_session_id(session_id)
+    store.set_live_session(_session(session_id))
+    vm = LiveSessionViewModel(store, EncountersTableModel())
+    start_dispatcher = _FakeSessionStartDispatcher()
+    end_dispatcher = _FakeSessionEndDispatcher()
+    vm.bind_session_lifecycle_actions(start_dispatcher, end_dispatcher)
+
+    action_id = vm.end_current_session()
+
+    assert action_id is not None
+    assert len(end_dispatcher.calls) == 1
+    call = end_dispatcher.calls[0]
+    assert call.session_id == session_id
+    assert call.request.client_action_id == action_id
+    assert vm.session_end_in_progress() is True
+    assert vm.can_end_session() is False
+
+    end_dispatcher.signals[0].succeeded.emit(
+        "session_end",
+        SessionLifecycleAccepted(
+            action="end",
+            session_id=session_id,
+            client_action_id=call.request.client_action_id,
+            accepted=True,
+            received_at_utc=_NOW,
+        ),
+    )
+
+    assert vm.session_end_in_progress() is True
+    store.set_live_session(
+        _session(session_id).model_copy(
+            update={
+                "status": "ended",
+                "ended_at_utc": _NOW + timedelta(minutes=1),
+            }
+        )
+    )
+    assert vm.session_end_in_progress() is False
+    assert vm.can_end_session() is False
+
+
+def test_live_session_vm_session_control_failure_sets_error_and_clears_pending() -> None:
+    store = OperatorStore()
+    vm = LiveSessionViewModel(store, EncountersTableModel())
+    start_dispatcher = _FakeSessionStartDispatcher()
+    end_dispatcher = _FakeSessionEndDispatcher()
+    vm.bind_session_lifecycle_actions(start_dispatcher, end_dispatcher)
+
+    vm.start_new_session("rtmp://example/live", "greeting_line_v1")
+    start_dispatcher.signals[0].failed.emit(
+        "session_start",
+        ApiError(message="broker unavailable", retryable=True),
+    )
+
+    assert vm.error() == "broker unavailable"
+    assert vm.session_start_in_progress() is False
+
+
 # ---------------------------------------------------------------------
 # ExperimentsViewModel
 # ---------------------------------------------------------------------
@@ -369,6 +593,123 @@ def test_experiments_vm_latest_update_placeholder_when_absent() -> None:
     store = OperatorStore()
     vm = ExperimentsViewModel(store, ExperimentsTableModel())
     assert vm.latest_update_summary() == "No experiment update yet."
+
+
+def test_experiments_vm_create_emits_typed_request() -> None:
+    store = OperatorStore()
+    vm = ExperimentsViewModel(store, ExperimentsTableModel(), default_experiment_id="exp-default")
+    emissions: list[ExperimentCreateRequest] = []
+    vm.create_experiment_requested.connect(emissions.append)
+
+    assert vm.create_experiment("exp-new", "Greeting v2", "arm-a", "Hei") is True
+    assert len(emissions) == 1
+    assert emissions[0].experiment_id == "exp-new"
+    assert emissions[0].arms[0].arm == "arm-a"
+    assert vm.error() == ""
+
+
+def test_experiments_vm_add_arm_requires_loaded_experiment() -> None:
+    store = OperatorStore()
+    vm = ExperimentsViewModel(store, ExperimentsTableModel(), default_experiment_id="exp-default")
+    emissions: list[tuple[str, ExperimentArmCreateRequest]] = []
+    vm.add_arm_requested.connect(lambda *args: emissions.append(tuple(args)))
+
+    assert vm.add_arm("arm-b", "Moi") is False
+    assert emissions == []
+    assert "Load or create" in vm.error()
+
+
+def test_experiments_vm_uses_managed_experiment_id_when_present() -> None:
+    store = OperatorStore()
+    vm = ExperimentsViewModel(store, ExperimentsTableModel(), default_experiment_id="exp-default")
+    assert vm.current_experiment_id() == "exp-default"
+    store.set_managed_experiment_id("exp-managed")
+    assert vm.current_experiment_id() == "exp-managed"
+
+
+def test_experiments_vm_add_arm_emits_for_current_experiment() -> None:
+    store = OperatorStore()
+    model = ExperimentsTableModel()
+    vm = ExperimentsViewModel(store, model)
+    store.set_experiment(
+        ExperimentDetail(
+            experiment_id="exp1",
+            arms=[
+                ArmSummary(
+                    arm_id="a1",
+                    greeting_text="hi",
+                    posterior_alpha=1.0,
+                    posterior_beta=1.0,
+                )
+            ],
+        )
+    )
+    emissions: list[tuple[str, ExperimentArmCreateRequest]] = []
+    vm.add_arm_requested.connect(lambda *args: emissions.append(tuple(args)))
+
+    assert vm.add_arm("a2", "hei") is True
+    assert emissions[0][0] == "exp1"
+    assert emissions[0][1].arm == "a2"
+
+
+def test_experiments_vm_table_rename_and_disable_emit_safe_commands() -> None:
+    store = OperatorStore()
+    model = ExperimentsTableModel()
+    vm = ExperimentsViewModel(store, model)
+    store.set_experiment(
+        ExperimentDetail(
+            experiment_id="exp1",
+            arms=[
+                ArmSummary(
+                    arm_id="a1",
+                    greeting_text="hi",
+                    posterior_alpha=1.0,
+                    posterior_beta=1.0,
+                )
+            ],
+        )
+    )
+    renames: list[tuple[str, str, str]] = []
+    disables: list[tuple[str, str]] = []
+    vm.rename_arm_requested.connect(lambda *args: renames.append(tuple(args)))
+    vm.disable_arm_requested.connect(lambda *args: disables.append(tuple(args)))
+
+    assert model.setData(model.index(0, 1), "hei ystävä") is True
+    assert (
+        model.setData(
+            model.index(0, 2),
+            Qt.CheckState.Unchecked,
+            Qt.ItemDataRole.CheckStateRole,
+        )
+        is True
+    )
+    assert renames == [("exp1", "a1", "hei ystävä")]
+    assert disables == [("exp1", "a1")]
+
+
+def test_experiments_vm_allows_disabled_arm_greeting_rename() -> None:
+    store = OperatorStore()
+    model = ExperimentsTableModel()
+    vm = ExperimentsViewModel(store, model)
+    store.set_experiment(
+        ExperimentDetail(
+            experiment_id="exp1",
+            arms=[
+                ArmSummary(
+                    arm_id="archived",
+                    greeting_text="old",
+                    posterior_alpha=1.0,
+                    posterior_beta=1.0,
+                    enabled=False,
+                )
+            ],
+        )
+    )
+    renames: list[tuple[str, str, str]] = []
+    vm.rename_arm_requested.connect(lambda *args: renames.append(tuple(args)))
+
+    assert vm.rename_arm_greeting("archived", "historical label") is True
+    assert renames == [("exp1", "archived", "historical label")]
 
 
 # ---------------------------------------------------------------------
@@ -425,6 +766,69 @@ def test_physiology_vm_comodulation_explanation_without_data() -> None:
 # ---------------------------------------------------------------------
 # HealthViewModel
 # ---------------------------------------------------------------------
+
+
+def test_health_vm_surfaces_probe_rows_without_touching_alerts() -> None:
+    store = OperatorStore()
+    vm = HealthViewModel(store, HealthTableModel(), AlertsTableModel())
+    probe = HealthSubsystemProbe(
+        subsystem_key="redis",
+        label="Redis Broker",
+        state=HealthProbeState.OK,
+        latency_ms=2.0,
+        checked_at_utc=_NOW,
+    )
+    store.set_health(
+        HealthSnapshot(
+            generated_at_utc=_NOW,
+            overall_state=HealthState.OK,
+            subsystem_probes={probe.subsystem_key: probe},
+        )
+    )
+    assert vm.subsystem_probes() == [probe]
+    assert vm.alerts_model().rowCount() == 0
+
+
+def test_health_vm_orders_keyed_probe_rows_locally() -> None:
+    store = OperatorStore()
+    vm = HealthViewModel(store, HealthTableModel(), AlertsTableModel())
+    redis_probe = HealthSubsystemProbe(
+        subsystem_key="redis",
+        label="Redis Broker",
+        state=HealthProbeState.OK,
+        latency_ms=2.0,
+        checked_at_utc=_NOW,
+    )
+    postgres_probe = HealthSubsystemProbe(
+        subsystem_key="postgres",
+        label="Postgres",
+        state=HealthProbeState.OK,
+        latency_ms=1.0,
+        checked_at_utc=_NOW,
+    )
+    custom_probe = HealthSubsystemProbe(
+        subsystem_key="zz_custom",
+        label="Custom",
+        state=HealthProbeState.UNKNOWN,
+        checked_at_utc=_NOW,
+    )
+    store.set_health(
+        HealthSnapshot(
+            generated_at_utc=_NOW,
+            overall_state=HealthState.OK,
+            subsystem_probes={
+                redis_probe.subsystem_key: redis_probe,
+                custom_probe.subsystem_key: custom_probe,
+                postgres_probe.subsystem_key: postgres_probe,
+            },
+        )
+    )
+
+    assert [probe.subsystem_key for probe in vm.subsystem_probes()] == [
+        "postgres",
+        "redis",
+        "zz_custom",
+    ]
 
 
 def test_health_vm_degraded_count_sums_degraded_and_recovering() -> None:

@@ -14,7 +14,8 @@ lifecycle, reward explanation, countdown arithmetic — lives in
 Spec references:
   §4.C           — `_active_arm`, `_expected_greeting`, authoritative
                    `_stimulus_time`; header reads from live-session DTO
-                   never from the encounter rows
+                   never from the encounter rows, while the calibration
+                   pill renders console safe-submit readiness
   §4.C.4         — physiology freshness badge in the detail pane
   §4.E.1         — Live Session operator surface
   §7B            — reward = p90_intensity × semantic_gate; detail pane
@@ -25,16 +26,21 @@ Spec references:
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import UTC, datetime
 
 from PySide6.QtCore import Qt, QTimer, Signal, Slot
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QDialog,
+    QDialogButtonBox,
     QFrame,
     QGridLayout,
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QLineEdit,
+    QPushButton,
     QTableView,
     QVBoxLayout,
     QWidget,
@@ -71,18 +77,6 @@ from services.operator_console.widgets.status_pill import StatusPill
 _COUNTDOWN_TICK_MS: int = 1000
 
 
-# Visual state for the readiness pill on the header. `active_arm` +
-# `expected_greeting` on the live-session DTO is what drives it — if
-# either is missing the orchestrator has not yet chosen an arm, so the
-# operator should not fire a stimulus.
-def _readiness_status(session: SessionSummary | None) -> tuple[UiStatusKind, str]:
-    if session is None:
-        return UiStatusKind.NEUTRAL, "no session"
-    if session.active_arm is None or session.expected_greeting is None:
-        return UiStatusKind.WARN, "awaiting arm"
-    return UiStatusKind.OK, "ready"
-
-
 class LiveSessionView(QWidget):
     """Live Session page: header, encounter table, detail pane."""
 
@@ -109,7 +103,7 @@ class LiveSessionView(QWidget):
         self._empty_state = EmptyStateWidget(self)
         self._empty_state.set_title("No session selected")
         self._empty_state.set_message(
-            "Pick a session from Overview or Sessions to start the live view."
+            "Pick a session from Overview or Sessions, or start a new session here."
         )
 
         self._table = self._build_table()
@@ -118,7 +112,6 @@ class LiveSessionView(QWidget):
         body = QVBoxLayout()
         body.setContentsMargins(0, 0, 0, 0)
         body.setSpacing(14)
-        body.addWidget(self._session_panel)
         body.addWidget(self._table, 2)
         body.addWidget(self._detail_panel, 3)
 
@@ -130,6 +123,7 @@ class LiveSessionView(QWidget):
         layout.setSpacing(14)
         layout.addWidget(self._header)
         layout.addWidget(self._error_banner)
+        layout.addWidget(self._session_panel)
         layout.addWidget(self._empty_state)
         layout.addWidget(self._body_container, 1)
         layout.setAlignment(Qt.AlignmentFlag.AlignTop)
@@ -137,6 +131,9 @@ class LiveSessionView(QWidget):
         self._countdown_timer = QTimer(self)
         self._countdown_timer.setInterval(_COUNTDOWN_TICK_MS)
         self._countdown_timer.timeout.connect(self._tick_countdown)
+
+        self._session_panel.start_requested.connect(self._on_start_session_requested)
+        self._session_panel.end_requested.connect(self._on_end_session_requested)
 
         # Subscriptions — the VM fans out all relevant store changes.
         self._vm.changed.connect(self._refresh)
@@ -194,19 +191,23 @@ class LiveSessionView(QWidget):
 
     def _refresh(self) -> None:
         session = self._vm.session()
-        if session is None:
-            self._empty_state.setVisible(True)
-            self._body_container.setVisible(False)
-            return
-        self._empty_state.setVisible(False)
-        self._body_container.setVisible(True)
-
         self._session_panel.set_session(
             session,
             active_arm=self._vm.active_arm(),
             expected_greeting=self._vm.expected_greeting(),
-            readiness=_readiness_status(session),
+            calibration_status=self._vm.calibration_status(),
+            start_enabled=self._vm.can_start_session(),
+            end_enabled=self._vm.can_end_session(),
+            start_in_progress=self._vm.session_start_in_progress(),
+            end_in_progress=self._vm.session_end_in_progress(),
         )
+        if session is None:
+            self._empty_state.setVisible(True)
+            self._body_container.setVisible(False)
+            self._sync_countdown_timer()
+            return
+        self._empty_state.setVisible(False)
+        self._body_container.setVisible(True)
 
         selected = self._vm.selected_encounter()
         if selected is None:
@@ -303,19 +304,125 @@ class LiveSessionView(QWidget):
         # Entering MEASURING starts the countdown; leaving it stops.
         self._sync_countdown_timer()
 
+    def _create_start_session_dialog(self) -> _StartSessionDialog:
+        return _StartSessionDialog(self._vm.validate_start_session_inputs, self)
+
+    @Slot()
+    def _on_start_session_requested(self) -> None:
+        dialog = self._create_start_session_dialog()
+        if dialog.exec() != int(QDialog.DialogCode.Accepted):
+            return
+        stream_url, experiment_id = dialog.values()
+        self._vm.start_new_session(stream_url, experiment_id)
+
+    @Slot()
+    def _on_end_session_requested(self) -> None:
+        self._vm.end_current_session()
+
 
 # ----------------------------------------------------------------------
 # Panels — small helper widgets kept private to this module
 # ----------------------------------------------------------------------
 
 
+class _StartSessionDialog(QDialog):
+    """Modal collecting the operator-provided stream target and experiment id."""
+
+    def __init__(
+        self,
+        validator: Callable[[str, str], tuple[str, str]],
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setObjectName("StartSessionDialog")
+        self.setModal(True)
+        self.setWindowTitle("Start new session")
+        self._validator = validator
+        self._validated_stream_url: str | None = None
+        self._validated_experiment_id: str | None = None
+
+        self._stream_url_label = QLabel("Stream URL", self)
+        self._stream_url_input = QLineEdit(self)
+        self._stream_url_input.setObjectName("StartSessionStreamUrlInput")
+        self._stream_url_input.setPlaceholderText("rtmp://example/live")
+
+        self._experiment_id_label = QLabel("Experiment ID", self)
+        self._experiment_id_input = QLineEdit(self)
+        self._experiment_id_input.setObjectName("StartSessionExperimentIdInput")
+        self._experiment_id_input.setPlaceholderText("greeting_line_v1")
+
+        self._validation_label = QLabel("", self)
+        self._validation_label.setObjectName("MetricCardSecondary")
+        self._validation_label.setWordWrap(True)
+
+        self._buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel, self)
+        self._start_button = self._buttons.addButton(
+            "Start session",
+            QDialogButtonBox.ButtonRole.AcceptRole,
+        )
+        self._start_button.setObjectName("StartSessionSubmitButton")
+
+        self._buttons.rejected.connect(self.reject)
+        self._start_button.clicked.connect(self._on_submit_clicked)
+        self._stream_url_input.textChanged.connect(self._revalidate)
+        self._experiment_id_input.textChanged.connect(self._revalidate)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(10)
+        layout.addWidget(self._stream_url_label)
+        layout.addWidget(self._stream_url_input)
+        layout.addWidget(self._experiment_id_label)
+        layout.addWidget(self._experiment_id_input)
+        layout.addWidget(self._validation_label)
+        layout.addWidget(self._buttons)
+
+        self._revalidate()
+
+    def values(self) -> tuple[str, str]:
+        self._revalidate()
+        if self._validated_stream_url is None or self._validated_experiment_id is None:
+            raise RuntimeError("start-session values requested while dialog is invalid")
+        return self._validated_stream_url, self._validated_experiment_id
+
+    def _revalidate(self) -> None:
+        try:
+            stream_url, experiment_id = self._validator(
+                self._stream_url_input.text(),
+                self._experiment_id_input.text(),
+            )
+        except ValueError as exc:
+            self._validated_stream_url = None
+            self._validated_experiment_id = None
+            self._validation_label.setText(str(exc))
+            self._validation_label.setVisible(True)
+            self._start_button.setEnabled(False)
+            return
+
+        self._validated_stream_url = stream_url
+        self._validated_experiment_id = experiment_id
+        self._validation_label.setText("")
+        self._validation_label.setVisible(False)
+        self._start_button.setEnabled(True)
+
+    def _on_submit_clicked(self) -> None:
+        self._revalidate()
+        if self._validated_stream_url is None or self._validated_experiment_id is None:
+            return
+        self.accept()
+
+
 class _SessionHeaderPanel(QFrame):
-    """Header row: session id, arm, expected greeting, readiness pill.
+    """Header row: session readback, calibration pill, and lifecycle controls.
 
     §4.C: arm and expected greeting come from the live-session DTO, not
-    from any encounter row. The panel enforces this at the view layer
-    by exposing a single `set_session` entry point.
+    from any encounter row. The calibration pill receives the centralized
+    console-readiness status. Start/end controls stay independent from
+    calibration so AU12 readiness can only gate stimulus submission.
     """
+
+    start_requested = Signal()
+    end_requested = Signal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -324,7 +431,7 @@ class _SessionHeaderPanel(QFrame):
 
         self._title = QLabel("Session", self)
         self._title.setObjectName("PanelTitle")
-        self._session_label = QLabel("—", self)
+        self._session_label = QLabel("No session selected", self)
         self._session_label.setObjectName("MetricCardPrimary")
         self._session_label.setWordWrap(True)
         self._arm_label = QLabel("", self)
@@ -333,46 +440,89 @@ class _SessionHeaderPanel(QFrame):
         self._greeting_label = QLabel("", self)
         self._greeting_label.setObjectName("MetricCardSecondary")
         self._greeting_label.setWordWrap(True)
-        self._readiness_pill = StatusPill(self)
-        self._readiness_pill.set_kind(UiStatusKind.NEUTRAL)
-        self._readiness_pill.set_text("no session")
+
+        self._controls_label = QLabel("Session controls", self)
+        self._controls_label.setObjectName("MetricCardSecondary")
+        self._start_button = QPushButton("Start new session", self)
+        self._start_button.setObjectName("SessionStartButton")
+        self._end_button = QPushButton("End session", self)
+        self._end_button.setObjectName("SessionEndButton")
+        self._end_button.setVisible(False)
+
+        self._calibration_pill = StatusPill(self)
+        self._calibration_pill.set_kind(UiStatusKind.NEUTRAL)
+        self._calibration_pill.set_text("No session")
+
+        self._start_button.clicked.connect(lambda _checked=False: self.start_requested.emit())
+        self._end_button.clicked.connect(lambda _checked=False: self.end_requested.emit())
 
         top = QHBoxLayout()
         top.setContentsMargins(0, 0, 0, 0)
         top.setSpacing(12)
         top.addWidget(self._title)
         top.addStretch(1)
-        top.addWidget(self._readiness_pill)
+        top.addWidget(self._controls_label)
+        top.addWidget(self._start_button)
+        top.addWidget(self._end_button)
+
+        arm_row = QHBoxLayout()
+        arm_row.setContentsMargins(0, 0, 0, 0)
+        arm_row.setSpacing(12)
+        arm_row.addWidget(self._arm_label)
+        arm_row.addWidget(self._calibration_pill)
+        arm_row.addStretch(1)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 12, 16, 12)
         layout.setSpacing(4)
         layout.addLayout(top)
         layout.addWidget(self._session_label)
-        layout.addWidget(self._arm_label)
+        layout.addLayout(arm_row)
         layout.addWidget(self._greeting_label)
 
     def set_session(
         self,
-        session: SessionSummary,
+        session: SessionSummary | None,
         *,
         active_arm: str | None,
         expected_greeting: str | None,
-        readiness: tuple[UiStatusKind, str],
+        calibration_status: tuple[UiStatusKind, str],
+        start_enabled: bool,
+        end_enabled: bool,
+        start_in_progress: bool,
+        end_in_progress: bool,
     ) -> None:
-        self._session_label.setText(f"Session {session.session_id}")
-        self._arm_label.setText(f"arm: {active_arm if active_arm else '—'}")
-        if expected_greeting:
-            self._greeting_label.setText(
-                f"expected greeting: “{truncate_expected_greeting(expected_greeting, limit=80)}”"
-            )
-            self._greeting_label.setVisible(True)
-        else:
+        if session is None:
+            self._session_label.setText("No session selected")
+            self._arm_label.setText("")
+            self._arm_label.setVisible(False)
             self._greeting_label.setText("")
             self._greeting_label.setVisible(False)
-        kind, text = readiness
-        self._readiness_pill.set_kind(kind)
-        self._readiness_pill.set_text(text)
+            self._end_button.setVisible(False)
+        else:
+            self._session_label.setText(f"Session {session.session_id}")
+            self._arm_label.setText(f"arm: {active_arm if active_arm else '—'}")
+            self._arm_label.setVisible(True)
+            if expected_greeting:
+                truncated_greeting = truncate_expected_greeting(
+                    expected_greeting,
+                    limit=80,
+                )
+                self._greeting_label.setText(f"expected greeting: “{truncated_greeting}”")
+                self._greeting_label.setVisible(True)
+            else:
+                self._greeting_label.setText("")
+                self._greeting_label.setVisible(False)
+            self._end_button.setVisible(session.ended_at_utc is None)
+
+        self._start_button.setText("Starting…" if start_in_progress else "Start new session")
+        self._end_button.setText("Ending…" if end_in_progress else "End session")
+        self._start_button.setEnabled(start_enabled)
+        self._end_button.setEnabled(end_enabled)
+
+        kind, text = calibration_status
+        self._calibration_pill.set_kind(kind)
+        self._calibration_pill.set_text(text)
 
 
 class _EncounterDetailPanel(QFrame):
