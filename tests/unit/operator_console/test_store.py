@@ -23,6 +23,7 @@ from packages.schemas.operator_console import (
     AlertEvent,
     AlertKind,
     AlertSeverity,
+    AttributionSummary,
     EncounterState,
     EncounterSummary,
     ExperimentDetail,
@@ -30,6 +31,7 @@ from packages.schemas.operator_console import (
     HealthState,
     ObservationalAcousticSummary,
     OverviewSnapshot,
+    SemanticEvaluationSummary,
     SessionSummary,
     StimulusActionState,
 )
@@ -92,6 +94,20 @@ def _encounter(session_id: UUID) -> EncounterSummary:
             voiced_coverage_measure_s=2.0,
             voiced_coverage_baseline_s=2.5,
             f0_delta_semitones=1.25,
+        ),
+        semantic_evaluation=SemanticEvaluationSummary(
+            reasoning="gray_band_llm_match",
+            is_match=True,
+            confidence_score=0.68,
+            semantic_method="llm_gray_band",
+            semantic_method_version="gray-v1",
+        ),
+        attribution=AttributionSummary(
+            finality="online_provisional",
+            soft_reward_candidate=0.33,
+            au12_lift_p90=0.49,
+            sync_peak_corr=0.21,
+            outcome_link_lag_s=31.0,
         ),
     )
 
@@ -214,11 +230,19 @@ class TestDataReplacements:
         assert isinstance(emitted[0], EncounterSummary)
         assert emitted[0].observational_acoustic is not None
         assert emitted[0].observational_acoustic.f0_delta_semitones == 1.25
+        assert emitted[0].semantic_evaluation is not None
+        assert emitted[0].semantic_evaluation.reasoning == "gray_band_llm_match"
+        assert emitted[0].attribution is not None
+        assert emitted[0].attribution.finality == "online_provisional"
         stored = store.encounters()
         assert isinstance(stored[0], EncounterSummary)
         assert stored[0].encounter_id == "e1"
         assert stored[0].observational_acoustic is not None
         assert stored[0].observational_acoustic.f0_valid_measure is True
+        assert stored[0].semantic_evaluation is not None
+        assert stored[0].semantic_evaluation.semantic_method == "llm_gray_band"
+        assert stored[0].attribution is not None
+        assert stored[0].attribution.outcome_link_lag_s == 31.0
 
     def test_alerts_replacement(self) -> None:
         store = OperatorStore()

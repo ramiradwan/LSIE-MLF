@@ -60,10 +60,12 @@ from packages.schemas.operator_console import (
 )
 from services.operator_console.formatters import (
     AcousticDetailDisplay,
+    SemanticAttributionDiagnosticsDisplay,
     build_acoustic_detail_display,
     build_reward_explanation,
     format_calibration_status,
     operator_ready_for_submit,
+    semantic_attribution_diagnostics_for_encounter,
 )
 from services.operator_console.state import OperatorStore, StimulusUiContext
 from services.operator_console.table_models.encounters_table_model import (
@@ -468,6 +470,22 @@ class LiveSessionViewModel(ViewModelBase):
     def acoustic_explanation(self) -> str:
         """Formatted §7D acoustic text for the selected (or latest) encounter."""
         return self.acoustic_detail().explanation
+
+    def semantic_attribution_diagnostics_for_encounter(
+        self,
+        encounter: EncounterSummary | None,
+    ) -> SemanticAttributionDiagnosticsDisplay:
+        """Preformatted read-only §7E diagnostics for one encounter."""
+
+        return semantic_attribution_diagnostics_for_encounter(encounter)
+
+    def semantic_attribution_diagnostics(self) -> SemanticAttributionDiagnosticsDisplay:
+        """Preformatted §7E diagnostics for the selected (or latest) encounter."""
+
+        encounter = self.selected_encounter()
+        if encounter is None:
+            encounter = _latest_completed_encounter(self._current_session_encounters())
+        return self.semantic_attribution_diagnostics_for_encounter(encounter)
 
     # ------------------------------------------------------------------
     # Slots

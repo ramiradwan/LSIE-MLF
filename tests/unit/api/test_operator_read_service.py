@@ -17,8 +17,12 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime, timedelta
+from decimal import Decimal
 from typing import Any
 from unittest.mock import MagicMock
+
+import pytest
+from pydantic import ValidationError
 
 from packages.schemas.operator_console import (
     AlertKind,
@@ -524,8 +528,26 @@ _ACOUSTIC_COLS = [
     "shimmer_delta",
 ]
 
-_ENC_WITH_ACOUSTIC_COLS = [*_ENC_COLS, *_ACOUSTIC_COLS]
+_SEMANTIC_ATTRIBUTION_COLS = [
+    "semantic_reasoning",
+    "semantic_is_match",
+    "semantic_confidence_score",
+    "semantic_method",
+    "semantic_method_version",
+    "attribution_finality",
+    "soft_reward_candidate",
+    "au12_baseline_pre",
+    "au12_lift_p90",
+    "au12_lift_peak",
+    "au12_peak_latency_ms",
+    "sync_peak_corr",
+    "sync_peak_lag",
+    "outcome_link_lag_s",
+]
+
+_ENC_WITH_ACOUSTIC_COLS = [*_ENC_COLS, *_ACOUSTIC_COLS, *_SEMANTIC_ATTRIBUTION_COLS]
 _ALL_NULL_ACOUSTIC_VALUES = (None,) * len(_ACOUSTIC_COLS)
+_ALL_NULL_SEMANTIC_ATTRIBUTION_VALUES = (None,) * len(_SEMANTIC_ATTRIBUTION_COLS)
 
 
 class TestEncounterExplanation:
@@ -554,6 +576,7 @@ class TestEncounterExplanation:
                             stim_epoch,
                             ts,
                             *_ALL_NULL_ACOUSTIC_VALUES,
+                            *_ALL_NULL_SEMANTIC_ATTRIBUTION_VALUES,
                         )
                     ],
                 )
@@ -576,6 +599,8 @@ class TestEncounterExplanation:
         assert enc.stimulus_time_utc.tzinfo is UTC
         assert enc.acoustic is None
         assert enc.observational_acoustic is None
+        assert enc.semantic_evaluation is None
+        assert enc.attribution is None
         assert enc.notes == []
 
     def test_completed_encounter_attaches_canonical_acoustic_metrics(self) -> None:
@@ -621,6 +646,7 @@ class TestEncounterExplanation:
                             0.027,
                             None,
                             None,
+                            *_ALL_NULL_SEMANTIC_ATTRIBUTION_VALUES,
                         )
                     ],
                 )
@@ -733,6 +759,152 @@ class TestEncounterExplanation:
         assert acoustic.shimmer_mean_baseline is None
         assert acoustic.shimmer_delta is None
         assert latest.observational_acoustic is None
+        assert latest.semantic_evaluation is None
+        assert latest.attribution is None
+
+    def test_latest_encounter_hydrates_semantic_and_attribution_false_zero_values(self) -> None:
+        svc = _service(_cursor([]))
+        ts = datetime(2026, 4, 17, 11, 52, tzinfo=UTC)
+        latest = svc._build_latest_encounter_summary(
+            {
+                "id": 48,
+                "session_id": "37373737-3737-3737-3737-373737373737",
+                "segment_id": "seg-attribution",
+                "experiment_id": "greeting_line_v1",
+                "arm": "warm_welcome",
+                "timestamp_utc": ts,
+                "gated_reward": 0.0,
+                "p90_intensity": 0.0,
+                "semantic_gate": 0,
+                "is_valid": False,
+                "n_frames": 0,
+                "baseline_neutral": 0.0,
+                "stimulus_time": None,
+                "created_at": ts,
+                "metrics_row_id": None,
+                "pitch_f0": None,
+                "jitter": None,
+                "shimmer": None,
+                "f0_valid_measure": None,
+                "f0_valid_baseline": None,
+                "perturbation_valid_measure": None,
+                "perturbation_valid_baseline": None,
+                "voiced_coverage_measure_s": None,
+                "voiced_coverage_baseline_s": None,
+                "f0_mean_measure_hz": None,
+                "f0_mean_baseline_hz": None,
+                "f0_delta_semitones": None,
+                "jitter_mean_measure": None,
+                "jitter_mean_baseline": None,
+                "jitter_delta": None,
+                "shimmer_mean_measure": None,
+                "shimmer_mean_baseline": None,
+                "shimmer_delta": None,
+                "semantic_reasoning": "cross_encoder_high_nonmatch",
+                "semantic_is_match": False,
+                "semantic_confidence_score": 0.0,
+                "semantic_method": "cross_encoder",
+                "semantic_method_version": "ce-v1.2.3",
+                "attribution_finality": "online_provisional",
+                "soft_reward_candidate": 0.0,
+                "au12_baseline_pre": 0.0,
+                "au12_lift_p90": 0.0,
+                "au12_lift_peak": 0.0,
+                "au12_peak_latency_ms": 0.0,
+                "sync_peak_corr": 0.0,
+                "sync_peak_lag": 0,
+                "outcome_link_lag_s": 0.0,
+            }
+        )
+
+        assert latest is not None
+        assert latest.semantic_evaluation is not None
+        assert latest.semantic_evaluation.reasoning == "cross_encoder_high_nonmatch"
+        assert latest.semantic_evaluation.is_match is False
+        assert latest.semantic_evaluation.confidence_score == 0.0
+        assert latest.semantic_evaluation.semantic_method == "cross_encoder"
+        assert latest.semantic_evaluation.semantic_method_version == "ce-v1.2.3"
+        assert latest.attribution is not None
+        assert latest.attribution.finality == "online_provisional"
+        assert latest.attribution.soft_reward_candidate == 0.0
+        assert latest.attribution.au12_baseline_pre == 0.0
+        assert latest.attribution.au12_lift_p90 == 0.0
+        assert latest.attribution.au12_lift_peak == 0.0
+        assert latest.attribution.au12_peak_latency_ms == 0.0
+        assert latest.attribution.sync_peak_corr == 0.0
+        assert latest.attribution.sync_peak_lag == 0
+        assert isinstance(latest.attribution.sync_peak_lag, int)
+        assert latest.attribution.outcome_link_lag_s == 0.0
+
+    def test_encounter_hydrates_full_semantic_and_attribution_objects(self) -> None:
+        svc = _service(_cursor([]))
+        ts = datetime(2026, 4, 17, 11, 53, tzinfo=UTC)
+        encounter = svc._build_encounter_summary(
+            {
+                "id": 49,
+                "session_id": "38383838-3838-3838-3838-383838383838",
+                "segment_id": "seg-attribution-full",
+                "experiment_id": "greeting_line_v1",
+                "arm": "warm_welcome",
+                "timestamp_utc": ts,
+                "gated_reward": 0.81,
+                "p90_intensity": 0.9,
+                "semantic_gate": 1,
+                "is_valid": True,
+                "n_frames": 160,
+                "baseline_neutral": 0.12,
+                "stimulus_time": ts.timestamp(),
+                "created_at": ts,
+                "semantic_reasoning": "cross_encoder_high_match",
+                "semantic_is_match": True,
+                "semantic_confidence_score": 0.9,
+                "semantic_method": "cross_encoder",
+                "semantic_method_version": "ce-v1.2.3",
+                "attribution_finality": "offline_final",
+                "soft_reward_candidate": 0.72,
+                "au12_baseline_pre": 0.12,
+                "au12_lift_p90": 0.63,
+                "au12_lift_peak": 0.7,
+                "au12_peak_latency_ms": 250.0,
+                "sync_peak_corr": 0.42,
+                "sync_peak_lag": 3,
+                "outcome_link_lag_s": 45.0,
+            }
+        )
+
+        assert encounter.semantic_evaluation is not None
+        assert encounter.semantic_evaluation.is_match is True
+        assert encounter.semantic_evaluation.confidence_score == 0.9
+        assert encounter.attribution is not None
+        assert encounter.attribution.finality == "offline_final"
+        assert encounter.attribution.soft_reward_candidate == 0.72
+        assert encounter.attribution.au12_baseline_pre == 0.12
+        assert encounter.attribution.au12_lift_p90 == 0.63
+        assert encounter.attribution.au12_lift_peak == 0.7
+        assert encounter.attribution.au12_peak_latency_ms == 250.0
+        assert encounter.attribution.sync_peak_corr == 0.42
+        assert encounter.attribution.sync_peak_lag == 3
+        assert isinstance(encounter.attribution.sync_peak_lag, int)
+        assert encounter.attribution.outcome_link_lag_s == 45.0
+
+    def test_attribution_sync_peak_lag_accepts_integral_source_shapes(self) -> None:
+        svc = _service(_cursor([]))
+        for raw_lag in (0, 2.0, Decimal("3.0"), "4"):
+            attribution = svc._build_attribution_summary({"sync_peak_lag": raw_lag})
+            assert attribution is not None
+            assert attribution.sync_peak_lag == int(Decimal(str(raw_lag)))
+            assert isinstance(attribution.sync_peak_lag, int)
+
+    def test_attribution_sync_peak_lag_rejects_negative_values(self) -> None:
+        svc = _service(_cursor([]))
+        with pytest.raises(ValidationError):
+            svc._build_attribution_summary({"sync_peak_lag": -1})
+
+    @pytest.mark.parametrize("raw_lag", [1.5, Decimal("1.5"), "1.5"])
+    def test_attribution_sync_peak_lag_rejects_fractional_sources(self, raw_lag: object) -> None:
+        svc = _service(_cursor([]))
+        with pytest.raises(ValueError, match="expected integral integer value"):
+            svc._build_attribution_summary({"sync_peak_lag": raw_lag})
 
     def test_gate_closed_encounter_rejection(self) -> None:
         session_id = "44444444-4444-4444-4444-444444444444"
@@ -758,6 +930,7 @@ class TestEncounterExplanation:
                             None,
                             ts,
                             *_ALL_NULL_ACOUSTIC_VALUES,
+                            *_ALL_NULL_SEMANTIC_ATTRIBUTION_VALUES,
                         )
                     ],
                 )
@@ -796,6 +969,7 @@ class TestEncounterExplanation:
                             None,
                             ts,
                             *_ALL_NULL_ACOUSTIC_VALUES,
+                            *_ALL_NULL_SEMANTIC_ATTRIBUTION_VALUES,
                         )
                     ],
                 )

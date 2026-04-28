@@ -25,6 +25,8 @@ Spec references:
                legitimate outcome, not a bug
   §7D        — observational acoustic validity, means, and deltas render
                as measured values or explicit not-measured outcomes
+  §7E / §8   — semantic/attribution diagnostics are observational only;
+               reason codes are bounded, not free-form rationale
   §12        — degraded-but-recovering vocabulary for health rows
 """
 
@@ -35,14 +37,17 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from packages.schemas.operator_console import (
+    AttributionSummary,
     CoModulationSummary,
     EncounterSummary,
     HealthProbeState,
     HealthState,
     HealthSubsystemProbe,
     HealthSubsystemStatus,
+    LatestEncounterSummary,
     ObservationalAcousticSummary,
     PhysiologyCurrentSnapshot,
+    SemanticEvaluationSummary,
     SessionPhysiologySnapshot,
     SessionSummary,
     UiStatusKind,
@@ -51,6 +56,13 @@ from packages.schemas.operator_console import (
 _EM_DASH = "—"
 _ACOUSTIC_SECTION_TITLE = "Observational Acoustics (§7D)"
 _ACOUSTIC_EMPTY_TEXT = "No acoustic analytics for this segment"
+_SEMANTIC_ATTRIBUTION_SECTION_TITLE = "Semantic & Attribution (§8 / §7E)"
+_SEMANTIC_ATTRIBUTION_EMPTY_TEXT = "No semantic/attribution diagnostics for this encounter"
+_SEMANTIC_ATTRIBUTION_ATTRIBUTION_EMPTY_TEXT = "Attribution analytics absent for this encounter"
+_SEMANTIC_ATTRIBUTION_OBSERVATIONAL_NOTE = (
+    "Observational only under the §7B reward-path invariance rule; "
+    "no reward-path effect — §7B reward path unchanged."
+)
 _DEGREE_OF_FRESHNESS_STALE_S = 60.0  # §4.C.4 default — UI-side fallback
 
 
@@ -97,6 +109,35 @@ class AcousticDetailDisplay:
     shimmer_mean: AcousticMetricCardDisplay
     voiced_coverage_text: str
     explanation: str
+
+
+@dataclass(frozen=True)
+class SemanticAttributionDiagnosticsDisplay:
+    """Read-only §7E diagnostics contract for compact operator panes.
+
+    The display keeps semantic/attribution analytics adjacent to an encounter
+    without changing the §7B reward explanation structure. Every value is
+    preformatted so views do not render raw bounded codes or JSON-shaped DTOs.
+    """
+
+    section_title: str
+    empty_text: str
+    attribution_empty_text: str
+    has_diagnostics: bool
+    has_semantic: bool
+    has_attribution: bool
+    semantic_method: str
+    bounded_reason_code: str
+    probability_confidence: str
+    match_result: str
+    attribution_finality: str
+    soft_reward_candidate: str
+    au12_lift_metrics: str
+    au12_peak_latency: str
+    synchrony_metrics: str
+    outcome_link_lag: str
+    compact_summary: str
+    observational_note: str
 
 
 # ----------------------------------------------------------------------
@@ -351,6 +392,213 @@ def format_semantic_gate(gate: int | None) -> str:
 def format_semantic_confidence(confidence: float | None) -> str:
     """Confidence ∈ [0,1], rendered as a percentage. `—` when absent."""
     return format_percentage(confidence, digits=0)
+
+
+def format_semantic_method_label(
+    semantic_method: str | None,
+    semantic_method_version: str | None = None,
+) -> str:
+    """Operator label for the deterministic §8 semantic method.
+
+    v3.4 routes through the local cross-encoder first and may use an
+    LLM only as a gray-band fallback. The label names that path without
+    implying the diagnostics affect the §7B reward update.
+    """
+
+    if semantic_method is None:
+        return _EM_DASH
+    mapping = {
+        "cross_encoder": "local cross-encoder",
+        "llm_gray_band": "LLM gray-band fallback",
+        "azure_llm_legacy": "Azure LLM legacy",
+    }
+    label = mapping.get(semantic_method, _clean_code_label(semantic_method))
+    if semantic_method_version:
+        return f"{label} · {semantic_method_version}"
+    return label
+
+
+def format_bounded_reason_code_label(reason_code: str | None) -> str:
+    """Operator label for §8.3 bounded semantic reason codes.
+
+    The persisted `reasoning` field is a bounded code, not free-form
+    rationale; this formatter prevents raw JSON/code strings from leaking
+    into operator panes while preserving the diagnostic meaning.
+    """
+
+    if reason_code is None:
+        return _EM_DASH
+    mapping = {
+        "cross_encoder_high_match": "Cross-encoder high-confidence match",
+        "cross_encoder_high_nonmatch": "Cross-encoder high-confidence non-match",
+        "gray_band_llm_match": "Gray-band fallback match",
+        "gray_band_llm_nonmatch": "Gray-band fallback non-match",
+        "semantic_local_failure_fallback": "Local scorer failure fallback",
+        "semantic_timeout": "Semantic timeout",
+        "semantic_error": "Semantic error",
+    }
+    return mapping.get(reason_code, _clean_code_label(reason_code))
+
+
+def format_probability_confidence(confidence_score: float | None) -> str:
+    """Render the §7E semantic probability estimate `p_match`."""
+
+    if confidence_score is None:
+        return _EM_DASH
+    return f"p_match {format_percentage(confidence_score, digits=0)}"
+
+
+def format_semantic_match_label(is_match: bool | None) -> str:
+    """Render the final boolean semantic gate result for diagnostics."""
+
+    if is_match is None:
+        return _EM_DASH
+    return "match" if is_match else "non-match"
+
+
+def format_attribution_finality_label(finality: str | None) -> str:
+    """Render the §7E attribution lifecycle state."""
+
+    if finality is None:
+        return _EM_DASH
+    mapping = {
+        "online_provisional": "online provisional",
+        "offline_final": "offline final",
+    }
+    return mapping.get(finality, _clean_code_label(finality))
+
+
+def format_soft_reward_candidate(value: float | None) -> str:
+    """Render observational §7E `soft_reward_candidate` / `r_t^soft`."""
+
+    if value is None:
+        return _EM_DASH
+    return f"r_t^soft {format_reward(value)}"
+
+
+def format_au12_lift_metrics(attribution: AttributionSummary | None) -> str:
+    """Render baseline-aware AU12 lift metrics from §7E attribution."""
+
+    if attribution is None:
+        return _EM_DASH
+    parts: list[str] = []
+    if attribution.au12_baseline_pre is not None:
+        parts.append(f"pre baseline {format_reward(attribution.au12_baseline_pre)}")
+    if attribution.au12_lift_p90 is not None:
+        parts.append(f"P90 lift {format_reward(attribution.au12_lift_p90)}")
+    if attribution.au12_lift_peak is not None:
+        parts.append(f"peak lift {format_reward(attribution.au12_lift_peak)}")
+    return " · ".join(parts) if parts else _EM_DASH
+
+
+def format_au12_peak_latency(attribution: AttributionSummary | None) -> str:
+    """Render the §7E latency from stimulus to peak AU12 lift."""
+
+    if attribution is None:
+        return _EM_DASH
+    return format_latency_ms(attribution.au12_peak_latency_ms)
+
+
+def format_synchrony_metrics(attribution: AttributionSummary | None) -> str:
+    """Render lag-aware synchrony diagnostics from §7E attribution."""
+
+    if attribution is None:
+        return _EM_DASH
+    parts: list[str] = []
+    if attribution.sync_peak_corr is not None:
+        parts.append(f"peak corr {attribution.sync_peak_corr:+.3f}")
+    if attribution.sync_peak_lag is not None:
+        parts.append(f"peak lag {attribution.sync_peak_lag}")
+    return " · ".join(parts) if parts else _EM_DASH
+
+
+def format_outcome_link_lag(lag_s: float | None) -> str:
+    """Render event→outcome lag when a §7E link exists."""
+
+    if lag_s is None or not math.isfinite(lag_s):
+        return _EM_DASH
+    return f"lag_s {lag_s:.1f}s"
+
+
+def format_semantic_attribution_compact_summary(
+    semantic: SemanticEvaluationSummary | None,
+    attribution: AttributionSummary | None,
+) -> str:
+    """Compact §8/§7E readback for dense cards such as Overview."""
+
+    parts: list[str] = []
+    if semantic is not None:
+        parts.append(f"semantic {format_semantic_match_label(semantic.is_match)}")
+        if semantic.confidence_score is not None:
+            parts.append(format_probability_confidence(semantic.confidence_score))
+    else:
+        parts.append("semantic absent")
+
+    if attribution is not None:
+        parts.append(f"attribution {format_attribution_finality_label(attribution.finality)}")
+    else:
+        parts.append("attribution absent")
+    return " · ".join(parts)
+
+
+def build_semantic_attribution_diagnostics_display(
+    semantic: SemanticEvaluationSummary | None,
+    attribution: AttributionSummary | None,
+) -> SemanticAttributionDiagnosticsDisplay:
+    """Build preformatted read-only §7E diagnostics from encounter aggregates."""
+
+    return SemanticAttributionDiagnosticsDisplay(
+        section_title=_SEMANTIC_ATTRIBUTION_SECTION_TITLE,
+        empty_text=_SEMANTIC_ATTRIBUTION_EMPTY_TEXT,
+        attribution_empty_text=_SEMANTIC_ATTRIBUTION_ATTRIBUTION_EMPTY_TEXT,
+        has_diagnostics=semantic is not None or attribution is not None,
+        has_semantic=semantic is not None,
+        has_attribution=attribution is not None,
+        semantic_method=format_semantic_method_label(
+            semantic.semantic_method if semantic is not None else None,
+            semantic.semantic_method_version if semantic is not None else None,
+        ),
+        bounded_reason_code=format_bounded_reason_code_label(
+            semantic.reasoning if semantic is not None else None,
+        ),
+        probability_confidence=format_probability_confidence(
+            semantic.confidence_score if semantic is not None else None,
+        ),
+        match_result=format_semantic_match_label(
+            semantic.is_match if semantic is not None else None,
+        ),
+        attribution_finality=format_attribution_finality_label(
+            attribution.finality if attribution is not None else None,
+        ),
+        soft_reward_candidate=format_soft_reward_candidate(
+            attribution.soft_reward_candidate if attribution is not None else None,
+        ),
+        au12_lift_metrics=format_au12_lift_metrics(attribution),
+        au12_peak_latency=format_au12_peak_latency(attribution),
+        synchrony_metrics=format_synchrony_metrics(attribution),
+        outcome_link_lag=format_outcome_link_lag(
+            attribution.outcome_link_lag_s if attribution is not None else None,
+        ),
+        compact_summary=format_semantic_attribution_compact_summary(semantic, attribution),
+        observational_note=_SEMANTIC_ATTRIBUTION_OBSERVATIONAL_NOTE,
+    )
+
+
+def semantic_attribution_diagnostics_for_encounter(
+    encounter: EncounterSummary | LatestEncounterSummary | None,
+) -> SemanticAttributionDiagnosticsDisplay:
+    """Preformatted §7E diagnostics for an encounter aggregate, if present."""
+
+    if encounter is None:
+        return build_semantic_attribution_diagnostics_display(None, None)
+    return build_semantic_attribution_diagnostics_display(
+        encounter.semantic_evaluation,
+        encounter.attribution,
+    )
+
+
+def _clean_code_label(value: str) -> str:
+    return value.replace("_", " ").replace("-", " ").strip().capitalize()
 
 
 def format_health_state(state: HealthState) -> str:

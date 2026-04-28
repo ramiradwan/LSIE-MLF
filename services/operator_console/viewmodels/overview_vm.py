@@ -29,6 +29,10 @@ from packages.schemas.operator_console import (
     SessionPhysiologySnapshot,
     SessionSummary,
 )
+from services.operator_console.formatters import (
+    SemanticAttributionDiagnosticsDisplay,
+    semantic_attribution_diagnostics_for_encounter,
+)
 from services.operator_console.state import OperatorStore
 from services.operator_console.viewmodels.base import ViewModelBase
 
@@ -90,6 +94,13 @@ class OverviewViewModel(ViewModelBase):
 
     def alerts(self) -> list[AlertEvent]:
         return self._store.alerts()
+
+    def latest_encounter_semantic_attribution_diagnostics(
+        self,
+    ) -> SemanticAttributionDiagnosticsDisplay:
+        """Preformatted read-only §7E diagnostics from the latest encounter card."""
+
+        return semantic_attribution_diagnostics_for_encounter(self.latest_encounter())
 
     # ------------------------------------------------------------------
     # Slots

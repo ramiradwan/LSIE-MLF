@@ -57,6 +57,7 @@ from packages.schemas.operator_console import (
 from services.operator_console.formatters import (
     AcousticDetailDisplay,
     AcousticMetricCardDisplay,
+    SemanticAttributionDiagnosticsDisplay,
     acoustic_section_labels,
     format_reward,
     format_semantic_confidence,
@@ -212,8 +213,9 @@ class LiveSessionView(QWidget):
         selected = self._vm.selected_encounter()
         if selected is None:
             # When no row is selected, fall back to the same encounter row
-            # for subtitle, reward explanation, and §7D acoustic details so
-            # the detail pane never mixes identities while data exists.
+            # for subtitle, reward explanation, §7D acoustic details, and
+            # §8/§7E diagnostics so the detail pane never mixes identities
+            # while data exists.
             rows = self._vm.encounters_model()
             if rows.rowCount() > 0:
                 selected = rows.row_at(rows.rowCount() - 1)
@@ -221,6 +223,7 @@ class LiveSessionView(QWidget):
             selected,
             self._vm.reward_explanation_for_encounter(selected),
             self._vm.acoustic_detail_for_encounter(selected),
+            self._vm.semantic_attribution_diagnostics_for_encounter(selected),
         )
         self._sync_countdown_timer()
 
@@ -526,11 +529,12 @@ class _SessionHeaderPanel(QFrame):
 
 
 class _EncounterDetailPanel(QFrame):
-    """Reward and §7D acoustic detail pane for the selected encounter.
+    """Reward, §7D acoustic, and §8/§7E detail pane for one encounter.
 
     The existing §7B grid remains the first trust surface. The appended
-    §7D section is observational only: validity, windowed means, deltas,
-    and voiced coverage are displayed without coupling them to reward.
+    §7D and §8/§7E sections are observational only: validity, windowed
+    means, semantic probabilities, and attribution diagnostics are displayed
+    without coupling them to reward.
     """
 
     def __init__(self, parent: QWidget | None = None) -> None:
@@ -619,6 +623,61 @@ class _EncounterDetailPanel(QFrame):
         acoustic_layout.addWidget(self._voiced_coverage_label)
         acoustic_layout.addWidget(self._acoustic_explanation)
 
+        self._semantic_title = QLabel("Semantic & Attribution (§8 / §7E)", self)
+        self._semantic_title.setObjectName("PanelTitle")
+        self._semantic_empty = QLabel("", self)
+        self._semantic_empty.setObjectName("MetricCardSecondary")
+        self._semantic_empty.setWordWrap(True)
+        self._semantic_observational_note = QLabel("", self)
+        self._semantic_observational_note.setObjectName("MetricCardSecondary")
+        self._semantic_observational_note.setWordWrap(True)
+        self._semantic_method_pill = StatusPill(self)
+        self._semantic_match_pill = StatusPill(self)
+        self._semantic_reason_label = QLabel("", self)
+        self._semantic_reason_label.setObjectName("MetricCardSecondary")
+        self._semantic_reason_label.setWordWrap(True)
+        semantic_pill_row = QHBoxLayout()
+        semantic_pill_row.setContentsMargins(0, 0, 0, 0)
+        semantic_pill_row.setSpacing(16)
+        semantic_pill_row.addWidget(self._semantic_method_pill)
+        semantic_pill_row.addWidget(self._semantic_match_pill)
+        semantic_pill_row.addStretch(1)
+
+        self._confidence_card = MetricCard("Confidence score", self)
+        self._attribution_finality_pill = StatusPill(self)
+        self._soft_reward_card = MetricCard("soft_reward_candidate", self)
+        self._au12_lifts_card = MetricCard("AU12 lifts", self)
+        self._peak_latency_card = MetricCard("Peak latency", self)
+        self._synchrony_card = MetricCard("Synchrony", self)
+        self._outcome_link_lag_card = MetricCard("Outcome-link lag", self)
+
+        semantic_grid = QGridLayout()
+        semantic_grid.setContentsMargins(0, 0, 0, 0)
+        semantic_grid.setHorizontalSpacing(10)
+        semantic_grid.setVerticalSpacing(10)
+        semantic_cards: list[MetricCard] = [
+            self._confidence_card,
+            self._soft_reward_card,
+            self._au12_lifts_card,
+            self._peak_latency_card,
+            self._synchrony_card,
+            self._outcome_link_lag_card,
+        ]
+        for idx, card in enumerate(semantic_cards):
+            row, col = divmod(idx, 3)
+            semantic_grid.addWidget(card, row, col)
+        for col in range(3):
+            semantic_grid.setColumnStretch(col, 1)
+
+        self._semantic_metrics_container = QWidget(self)
+        semantic_layout = QVBoxLayout(self._semantic_metrics_container)
+        semantic_layout.setContentsMargins(0, 0, 0, 0)
+        semantic_layout.setSpacing(8)
+        semantic_layout.addLayout(semantic_pill_row)
+        semantic_layout.addWidget(self._semantic_reason_label)
+        semantic_layout.addWidget(self._attribution_finality_pill)
+        semantic_layout.addLayout(semantic_grid)
+
         self._countdown_label = QLabel("", self)
         self._countdown_label.setObjectName("ActionBarCountdown")
         self._countdown_label.setVisible(False)
@@ -633,6 +692,10 @@ class _EncounterDetailPanel(QFrame):
         layout.addWidget(self._acoustic_title)
         layout.addWidget(self._acoustic_empty)
         layout.addWidget(self._acoustic_metrics_container)
+        layout.addWidget(self._semantic_title)
+        layout.addWidget(self._semantic_empty)
+        layout.addWidget(self._semantic_metrics_container)
+        layout.addWidget(self._semantic_observational_note)
         layout.addWidget(self._countdown_label)
 
     def set_encounter(
@@ -640,6 +703,7 @@ class _EncounterDetailPanel(QFrame):
         encounter: EncounterSummary | None,
         explanation: str,
         acoustic_detail: AcousticDetailDisplay,
+        semantic_detail: SemanticAttributionDiagnosticsDisplay,
     ) -> None:
         if encounter is None:
             self._subtitle.setText("No encounter selected.")
@@ -656,6 +720,7 @@ class _EncounterDetailPanel(QFrame):
                 card.set_status(UiStatusKind.NEUTRAL, None)
             self._explanation.setText(explanation)
             self._set_acoustic(acoustic_detail)
+            self._set_semantic_attribution(semantic_detail)
             return
 
         ts_text = format_timestamp(encounter.segment_timestamp_utc)
@@ -714,6 +779,7 @@ class _EncounterDetailPanel(QFrame):
 
         self._explanation.setText(explanation)
         self._set_acoustic(acoustic_detail)
+        self._set_semantic_attribution(semantic_detail)
 
     def _set_acoustic(self, detail: AcousticDetailDisplay) -> None:
         self._acoustic_title.setText(detail.section_title)
@@ -730,6 +796,79 @@ class _EncounterDetailPanel(QFrame):
 
         self._acoustic_empty.setVisible(not detail.has_summary)
         self._acoustic_metrics_container.setVisible(detail.has_summary)
+
+    def _set_semantic_attribution(
+        self,
+        detail: SemanticAttributionDiagnosticsDisplay,
+    ) -> None:
+        self._semantic_title.setText(detail.section_title)
+        self._semantic_empty.setText(
+            detail.empty_text if not detail.has_diagnostics else detail.attribution_empty_text
+        )
+        self._semantic_empty.setVisible(not detail.has_diagnostics or not detail.has_attribution)
+
+        method_status = UiStatusKind.INFO if detail.has_semantic else UiStatusKind.NEUTRAL
+        self._semantic_method_pill.set_kind(method_status)
+        self._semantic_method_pill.set_text(f"method · {detail.semantic_method}")
+
+        if detail.match_result == "match":
+            match_status = UiStatusKind.OK
+        elif detail.match_result == "non-match":
+            match_status = UiStatusKind.WARN
+        else:
+            match_status = UiStatusKind.NEUTRAL
+        self._semantic_match_pill.set_kind(match_status)
+        self._semantic_match_pill.set_text(detail.match_result)
+        self._semantic_reason_label.setText(f"Bounded reason code: {detail.bounded_reason_code}")
+
+        if detail.attribution_finality == "offline final":
+            finality_status = UiStatusKind.OK
+        elif detail.has_attribution:
+            finality_status = UiStatusKind.INFO
+        else:
+            finality_status = UiStatusKind.NEUTRAL
+        self._attribution_finality_pill.set_kind(finality_status)
+        self._attribution_finality_pill.set_text(
+            f"attribution finality · {detail.attribution_finality}"
+        )
+
+        self._confidence_card.set_primary_text(detail.probability_confidence)
+        self._confidence_card.set_secondary_text("§8 semantic probability estimate")
+        self._confidence_card.set_status(method_status, None)
+
+        self._soft_reward_card.set_primary_text(detail.soft_reward_candidate)
+        self._soft_reward_card.set_secondary_text("observational candidate only")
+        self._soft_reward_card.set_status(UiStatusKind.INFO, None)
+
+        self._au12_lifts_card.set_primary_text(detail.au12_lift_metrics)
+        self._au12_lifts_card.set_secondary_text("baseline-aware AU12 lift")
+        self._au12_lifts_card.set_status(UiStatusKind.INFO, None)
+
+        self._peak_latency_card.set_primary_text(detail.au12_peak_latency)
+        self._peak_latency_card.set_secondary_text("stimulus→peak AU12")
+        self._peak_latency_card.set_status(UiStatusKind.INFO, None)
+
+        self._synchrony_card.set_primary_text(detail.synchrony_metrics)
+        self._synchrony_card.set_secondary_text("lag-aware observational synchrony")
+        self._synchrony_card.set_status(UiStatusKind.INFO, None)
+
+        self._outcome_link_lag_card.set_primary_text(detail.outcome_link_lag)
+        self._outcome_link_lag_card.set_secondary_text("event→outcome link")
+        self._outcome_link_lag_card.set_status(UiStatusKind.INFO, None)
+
+        self._confidence_card.setVisible(detail.has_semantic)
+        self._attribution_finality_pill.setVisible(detail.has_attribution)
+        for card in (
+            self._soft_reward_card,
+            self._au12_lifts_card,
+            self._peak_latency_card,
+            self._synchrony_card,
+            self._outcome_link_lag_card,
+        ):
+            card.setVisible(detail.has_attribution)
+
+        self._semantic_observational_note.setText(detail.observational_note)
+        self._semantic_metrics_container.setVisible(detail.has_diagnostics)
 
     def _set_acoustic_card(
         self,

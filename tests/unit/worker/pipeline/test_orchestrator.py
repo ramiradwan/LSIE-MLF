@@ -13,7 +13,9 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import json
+import logging
 import subprocess
 import time
 import uuid
@@ -22,6 +24,7 @@ from datetime import UTC, datetime
 from typing import Any, Literal
 from unittest.mock import MagicMock, patch
 
+from packages.schemas.inference_handoff import InferenceHandoffPayload
 from packages.schemas.physiology import PhysiologicalChunkEvent, PhysiologicalChunkPayload
 from services.worker.pipeline.orchestrator import (
     DRIFT_FREEZE_AFTER_FAILURES,
@@ -33,10 +36,25 @@ from services.worker.pipeline.orchestrator import (
     PHYSIO_BUFFER_RETENTION_S,
     PHYSIO_DERIVE_WINDOW_S,
     PHYSIO_STALENESS_THRESHOLD_S,
+    SEGMENT_WINDOW_SECONDS,
     AudioResampler,
     DriftCorrector,
     Orchestrator,
 )
+
+
+def _canonical_utc_timestamp(value: str) -> str:
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    return parsed.astimezone(UTC).isoformat().replace("+00:00", "Z")
+
+
+def _expected_segment_id(payload: dict[str, Any]) -> str:
+    stable_identity = (
+        f"{uuid.UUID(payload['session_id'])}"
+        f"{_canonical_utc_timestamp(payload['segment_window_start_utc'])}"
+        f"{_canonical_utc_timestamp(payload['segment_window_end_utc'])}"
+    )
+    return hashlib.sha256(stable_identity.encode("utf-8")).hexdigest()
 
 
 def _physio_chunk_json(
@@ -56,6 +74,7 @@ def _physio_chunk_json(
     end = window_end_utc or start
     event = PhysiologicalChunkEvent(
         unique_id=uuid.uuid4(),
+        event_type="physiological_chunk",
         provider="oura",
         subject_role=subject_role,
         source_kind=source_kind,
@@ -499,7 +518,11 @@ class TestOrchestrator:
         assert "timestamp_utc" in payload
         assert "media_source" in payload
         assert "segments" in payload
-        assert payload["_segment_id"] == "seg-0001"
+        assert "segment_id" in payload
+        assert "_segment_id" not in payload
+        assert payload["segment_id"] == _expected_segment_id(payload)
+        assert payload["_experiment_id"] == 0
+        assert payload["_bandit_decision_snapshot"]["experiment_id"] == 0
         assert base64.b64decode(payload["_audio_data"]) == audio
 
     def test_assemble_segment_prefers_ibi_over_session(self) -> None:
@@ -551,12 +574,8 @@ class TestOrchestrator:
         assert snapshot["heart_rate_bpm"] == 72
         assert snapshot["source_kind"] == "ibi"
         assert snapshot["derivation_method"] == "server"
-        assert (
-            snapshot["source_timestamp_utc"]
-            == datetime.fromtimestamp(
-                ibi_end,
-                tz=UTC,
-            ).isoformat()
+        assert _canonical_utc_timestamp(snapshot["source_timestamp_utc"]) == (
+            datetime.fromtimestamp(ibi_end, tz=UTC).isoformat().replace("+00:00", "Z")
         )
         assert snapshot["freshness_s"] == 20.0
         assert snapshot["is_valid"] is True
@@ -593,12 +612,8 @@ class TestOrchestrator:
         assert snapshot["heart_rate_bpm"] == 69
         assert snapshot["source_kind"] == "ibi"
         assert snapshot["derivation_method"] == "server"
-        assert (
-            snapshot["source_timestamp_utc"]
-            == datetime.fromtimestamp(
-                end,
-                tz=UTC,
-            ).isoformat()
+        assert _canonical_utc_timestamp(snapshot["source_timestamp_utc"]) == (
+            datetime.fromtimestamp(end, tz=UTC).isoformat().replace("+00:00", "Z")
         )
         assert snapshot["validity_ratio"] == 0.25
         assert snapshot["is_valid"] is False
@@ -683,7 +698,8 @@ class TestOrchestrator:
         assert snapshot["is_stale"] is True
         assert snapshot["freshness_s"] == PHYSIO_STALENESS_THRESHOLD_S + 5
         assert snapshot["rmssd_ms"] is None
-        assert payload["_segment_id"] == "seg-0001"
+        assert payload["segment_id"] == _expected_segment_id(payload)
+        assert "_segment_id" not in payload
 
     def test_context_omitted_only_when_neither_role_has_state(self) -> None:
         orch = Orchestrator()
@@ -727,8 +743,16 @@ class TestOrchestrator:
         p1 = orch.assemble_segment(audio, [])
         p2 = orch.assemble_segment(audio, [])
 
-        assert p1["_segment_id"] == "seg-0001"
-        assert p2["_segment_id"] == "seg-0002"
+        assert p1["segment_id"] == _expected_segment_id(p1)
+        assert p2["segment_id"] == _expected_segment_id(p2)
+        assert p1["segment_id"] != p2["segment_id"]
+        p1_end = datetime.fromisoformat(p1["segment_window_end_utc"].replace("Z", "+00:00"))
+        p2_start = datetime.fromisoformat(p2["segment_window_start_utc"].replace("Z", "+00:00"))
+        assert (p2_start - p1_end).total_seconds() == 0
+        assert (
+            datetime.fromisoformat(p1["segment_window_end_utc"].replace("Z", "+00:00"))
+            - datetime.fromisoformat(p1["segment_window_start_utc"].replace("Z", "+00:00"))
+        ).total_seconds() == SEGMENT_WINDOW_SECONDS
 
     def test_assemble_segment_applies_drift(self) -> None:
         orch = Orchestrator()
@@ -789,6 +813,106 @@ class TestOrchestrator:
         orch._dispatch_payload.assert_called_once_with({"payload": "ok"})
         assert orch._audio_buffer == bytearray()
         assert list(orch.event_buffer) == []
+
+    def test_flush_inflight_segment_discards_invalid_assembly(self, caplog: Any) -> None:
+        session_id = "99999999-9999-4999-8999-999999999999"
+        orch = Orchestrator(session_id=session_id)
+        failed_au12 = {"timestamp_s": 1.0, "intensity": 1.5}
+        orch._audio_buffer = bytearray(b"partial-audio")
+        orch.event_buffer.append({"event_type": "gift", "uniqueId": "u1"})
+        orch._au12_series = [failed_au12]
+        original_assemble_segment = orch.assemble_segment
+        orch.assemble_segment = MagicMock(wraps=original_assemble_segment)  # type: ignore[method-assign]
+        orch._dispatch_payload = MagicMock()  # type: ignore[method-assign]
+        orch._drain_physio_events = MagicMock()  # type: ignore[method-assign]
+
+        with caplog.at_level(logging.WARNING, logger="services.worker.pipeline.orchestrator"):
+            orch._flush_inflight_segment()
+
+        orch._drain_physio_events.assert_called_once()
+        orch.assemble_segment.assert_called_once_with(
+            b"partial-audio",
+            [{"event_type": "gift", "uniqueId": "u1"}],
+        )
+        orch._dispatch_payload.assert_not_called()
+        assert orch._audio_buffer == bytearray()
+        assert list(orch.event_buffer) == []
+        assert orch._au12_series == []
+        assert "Discarding invalid assembled handoff segment" in caplog.text
+        assert "source=flush_inflight" in caplog.text
+        assert session_id in caplog.text
+        assert "intensity" in caplog.text
+
+    def test_run_discards_invalid_segment_and_dispatches_later_valid_work(
+        self,
+        caplog: Any,
+    ) -> None:
+        session_id = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        orch = Orchestrator(session_id=session_id)
+        orch._using_replay_capture = True
+        orch._redis = None
+        orch._start_session_lifecycle_listener = MagicMock()  # type: ignore[method-assign]
+        orch._publish_live_session_state = MagicMock()  # type: ignore[method-assign]
+        orch._publish_orchestrator_heartbeat = MagicMock()  # type: ignore[method-assign]
+        orch._publish_orchestrator_heartbeat_if_due = MagicMock()  # type: ignore[method-assign]
+        orch._drain_session_lifecycle_intents = MagicMock()  # type: ignore[method-assign]
+        orch._process_video_frame = MagicMock()  # type: ignore[method-assign]
+        orch._drain_physio_events = MagicMock()  # type: ignore[method-assign]
+
+        def begin_session(**_kwargs: Any) -> None:
+            orch._session_active = True
+
+        orch._begin_session = MagicMock(side_effect=begin_session)  # type: ignore[method-assign]
+        segment_bytes = 16000 * 2 * SEGMENT_WINDOW_SECONDS
+        first_audio = b"\x00" * segment_bytes
+        second_audio = b"\x01" * segment_bytes
+        failed_au12 = {"timestamp_s": 1.0, "intensity": 1.5}
+        orch._au12_series = [failed_au12]
+        orch.audio_resampler = MagicMock()
+        read_chunks = deque([first_audio, second_audio, b""])
+        orch.audio_resampler.read_chunk.side_effect = lambda _chunk_size: (
+            read_chunks.popleft() if read_chunks else b""
+        )
+        bad_segment_event = {"event_type": "gift", "uniqueId": "bad-segment-event"}
+        orch.event_buffer.append(bad_segment_event)
+        original_assemble_segment = orch.assemble_segment
+        orch.assemble_segment = MagicMock(wraps=original_assemble_segment)  # type: ignore[method-assign]
+
+        def dispatch_payload(_payload: dict[str, Any]) -> None:
+            orch._running = False
+
+        orch._dispatch_payload = MagicMock(side_effect=dispatch_payload)  # type: ignore[method-assign]
+
+        sleep_count = 0
+
+        async def fast_sleep(_delay: float) -> None:
+            nonlocal sleep_count
+            sleep_count += 1
+            if sleep_count >= 3:
+                orch._running = False
+
+        with (
+            caplog.at_level(logging.WARNING, logger="services.worker.pipeline.orchestrator"),
+            patch("services.worker.pipeline.orchestrator.asyncio.sleep", fast_sleep),
+        ):
+            asyncio.run(orch.run())
+
+        assert orch.assemble_segment.call_count == 2
+        first_call, second_call = orch.assemble_segment.call_args_list
+        assert first_call.args == (
+            first_audio,
+            [bad_segment_event],
+        )
+        assert second_call.args == (second_audio, [])
+        orch._dispatch_payload.assert_called_once()
+        dispatched_payload = orch._dispatch_payload.call_args.args[0]
+        assert dispatched_payload["_au12_series"] == []
+        assert failed_au12 not in dispatched_payload["_au12_series"]
+        assert orch._au12_series == []
+        assert "Discarding invalid assembled handoff segment" in caplog.text
+        assert "source=run_dispatch" in caplog.text
+        assert session_id in caplog.text
+        assert "intensity" in caplog.text
 
     def test_start_intent_rotates_active_session(self) -> None:
         original_session_id = str(uuid.uuid4())
@@ -901,3 +1025,88 @@ class TestOrchestrator:
         assert orch._redis is None
         assert orch._face_mesh is None
         assert orch._au12_series == []
+
+    def test_segment_id_replay_stable_for_identical_window_boundaries(self) -> None:
+        session_id = "66666666-6666-4666-8666-666666666666"
+        anchor = datetime(2026, 3, 13, 12, 0, 0, tzinfo=UTC)
+
+        first = Orchestrator(session_id=session_id)
+        first._segment_window_anchor_utc = anchor
+        second = Orchestrator(session_id=session_id)
+        second._segment_window_anchor_utc = anchor
+
+        with patch("services.worker.pipeline.orchestrator.time.time", return_value=1710000000.0):
+            first_payload = first.assemble_segment(b"\x00", [])
+        with patch("services.worker.pipeline.orchestrator.time.time", return_value=1710000999.0):
+            second_payload = second.assemble_segment(b"\x00", [])
+
+        assert (
+            first_payload["segment_window_start_utc"] == second_payload["segment_window_start_utc"]
+        )
+        assert first_payload["segment_window_end_utc"] == second_payload["segment_window_end_utc"]
+        assert first_payload["segment_id"] == second_payload["segment_id"]
+        assert first_payload["segment_id"] == _expected_segment_id(first_payload)
+        assert first_payload["timestamp_utc"] != second_payload["timestamp_utc"]
+
+    def test_bandit_snapshot_copies_pre_update_state_and_omits_absent_optionals(self) -> None:
+        orch = Orchestrator(session_id="77777777-7777-4777-8777-777777777777")
+        orch._active_arm = "arm_a"
+        orch._expected_greeting = "hello before update"
+        orch._experiment_row_id = 17
+        selection_time = datetime(2026, 3, 13, 12, 0, 0, tzinfo=UTC)
+        candidate_arm_ids = ["arm_a", "arm_b"]
+        posterior_by_arm = {
+            "arm_a": {"alpha": 2.0, "beta": 3.0},
+            "arm_b": {"alpha": 4.0, "beta": 5.0},
+        }
+
+        orch._capture_bandit_decision_snapshot(
+            selection_time_utc=selection_time,
+            candidate_arm_ids=candidate_arm_ids,
+            posterior_by_arm=posterior_by_arm,
+            sampled_theta_by_arm=None,
+        )
+        candidate_arm_ids.append("arm_c")
+        posterior_by_arm["arm_a"]["alpha"] = 99.0
+
+        snapshot = orch._bandit_decision_snapshot
+        assert snapshot is not None
+        assert snapshot["selection_method"] == "thompson_sampling"
+        assert snapshot["selection_time_utc"] == selection_time
+        assert snapshot["experiment_id"] == 17
+        assert snapshot["policy_version"] == "thompson_sampling_v1"
+        assert snapshot["selected_arm_id"] == "arm_a"
+        assert snapshot["candidate_arm_ids"] == ["arm_a", "arm_b"]
+        assert snapshot["posterior_by_arm"]["arm_a"] == {"alpha": 2.0, "beta": 3.0}
+        assert snapshot["expected_greeting"] == "hello before update"
+        assert len(snapshot["decision_context_hash"]) == 64
+        assert "sampled_theta_by_arm" not in snapshot
+        assert "random_seed" not in snapshot
+
+        payload = orch.assemble_segment(b"\x00", [])
+        payload_snapshot = payload["_bandit_decision_snapshot"]
+        assert payload_snapshot["posterior_by_arm"]["arm_a"] == {"alpha": 2.0, "beta": 3.0}
+        assert "sampled_theta_by_arm" not in payload_snapshot
+        assert "random_seed" not in payload_snapshot
+
+    def test_dispatch_payload_validates_model_and_omits_ineligible_physio(self) -> None:
+        orch = Orchestrator(session_id="88888888-8888-4888-8888-888888888888")
+        payload = orch.assemble_segment(b"\x01\x02", [])
+        payload["_physiological_context"] = {"streamer": None, "operator": None}
+        mock_task = MagicMock()
+
+        with patch("services.worker.tasks.inference.process_segment", mock_task):
+            orch._dispatch_payload(payload)
+
+        mock_task.delay.assert_called_once()
+        dispatched = mock_task.delay.call_args.args[0]
+        handoff_fields = {
+            key: value
+            for key, value in dispatched.items()
+            if key not in {"_audio_data", "_frame_data", "_experiment_code"}
+        }
+        InferenceHandoffPayload.model_validate(handoff_fields)
+        assert "_physiological_context" not in dispatched
+        assert "sampled_theta_by_arm" not in dispatched["_bandit_decision_snapshot"]
+        assert "random_seed" not in dispatched["_bandit_decision_snapshot"]
+        assert base64.b64decode(dispatched["_audio_data"]) == b"\x01\x02"

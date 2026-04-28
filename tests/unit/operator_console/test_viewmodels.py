@@ -21,6 +21,7 @@ from packages.schemas.operator_console import (
     AlertKind,
     AlertSeverity,
     ArmSummary,
+    AttributionSummary,
     CoModulationSummary,
     EncounterState,
     EncounterSummary,
@@ -33,6 +34,7 @@ from packages.schemas.operator_console import (
     LatestEncounterSummary,
     OverviewSnapshot,
     PhysiologyCurrentSnapshot,
+    SemanticEvaluationSummary,
     SessionCreateRequest,
     SessionEndRequest,
     SessionLifecycleAccepted,
@@ -210,6 +212,36 @@ def test_overview_vm_prefers_dedicated_health_slice() -> None:
     assert vm.health_summary() is fresh
 
 
+def test_overview_vm_formats_latest_encounter_semantic_attribution_diagnostics() -> None:
+    store = OperatorStore()
+    vm = OverviewViewModel(store)
+    session = _session()
+    store.set_overview(
+        OverviewSnapshot(
+            generated_at_utc=_NOW,
+            latest_encounter=LatestEncounterSummary(
+                encounter_id="e-diagnostics",
+                session_id=session.session_id,
+                segment_timestamp_utc=_NOW,
+                state=EncounterState.COMPLETED,
+                semantic_evaluation=SemanticEvaluationSummary(
+                    reasoning="cross_encoder_high_nonmatch",
+                    is_match=False,
+                    confidence_score=0.08,
+                    semantic_method="cross_encoder",
+                    semantic_method_version="ce-v1",
+                ),
+                attribution=AttributionSummary(finality="offline_final"),
+            ),
+        )
+    )
+
+    display = vm.latest_encounter_semantic_attribution_diagnostics()
+    assert display.semantic_method == "local cross-encoder · ce-v1"
+    assert display.bounded_reason_code == "Cross-encoder high-confidence non-match"
+    assert display.attribution_finality == "offline final"
+
+
 # ---------------------------------------------------------------------
 # LiveSessionViewModel
 # ---------------------------------------------------------------------
@@ -321,6 +353,39 @@ def test_live_session_vm_reward_explanation_without_encounters() -> None:
     store = OperatorStore()
     vm = LiveSessionViewModel(store, EncountersTableModel())
     assert vm.reward_explanation() == "No completed encounter yet."
+
+
+def test_live_session_vm_semantic_attribution_diagnostics_ride_encounters_cache() -> None:
+    store = OperatorStore()
+    model = EncountersTableModel()
+    vm = LiveSessionViewModel(store, model)
+    store.set_encounters(
+        [
+            _encounter("e1").model_copy(
+                update={
+                    "semantic_evaluation": SemanticEvaluationSummary(
+                        reasoning="gray_band_llm_match",
+                        is_match=True,
+                        confidence_score=0.68,
+                        semantic_method="llm_gray_band",
+                        semantic_method_version="gray-v1",
+                    ),
+                    "attribution": AttributionSummary(
+                        finality="online_provisional",
+                        soft_reward_candidate=0.22,
+                        au12_lift_p90=0.40,
+                    ),
+                }
+            )
+        ]
+    )
+    vm.select_encounter("e1")
+
+    display = vm.semantic_attribution_diagnostics()
+    assert display.semantic_method == "LLM gray-band fallback · gray-v1"
+    assert display.bounded_reason_code == "Gray-band fallback match"
+    assert display.soft_reward_candidate == "r_t^soft 0.220"
+    assert display.au12_lift_metrics == "P90 lift 0.400"
 
 
 def test_live_session_vm_set_stimulus_submitting_emits_key() -> None:

@@ -25,6 +25,7 @@ from packages.schemas.operator_console import (
     AlertKind,
     AlertSeverity,
     ArmSummary,
+    AttributionSummary,
     CoModulationSummary,
     EncounterState,
     EncounterSummary,
@@ -39,6 +40,7 @@ from packages.schemas.operator_console import (
     ObservationalAcousticSummary,
     OverviewSnapshot,
     PhysiologyCurrentSnapshot,
+    SemanticEvaluationSummary,
     SessionCreateRequest,
     SessionEndRequest,
     SessionLifecycleAccepted,
@@ -282,6 +284,116 @@ class TestObservationalAcousticSummary:
         assert restored.observational_acoustic is not None
         assert restored.observational_acoustic.f0_valid_measure is True
         assert restored.observational_acoustic.f0_mean_measure_hz == pytest.approx(210.0)
+
+
+# ----------------------------------------------------------------------
+# §7E semantic / attribution payloads
+# ----------------------------------------------------------------------
+
+
+class TestSemanticAndAttributionSummaries:
+    def test_optional_nested_fields_default_to_none_on_encounter_summaries(self) -> None:
+        encounter = EncounterSummary(
+            encounter_id="e-no-attribution",
+            session_id=uuid.uuid4(),
+            segment_timestamp_utc=_utc(),
+            state=EncounterState.COMPLETED,
+        )
+        latest = LatestEncounterSummary(
+            encounter_id="e-latest-no-attribution",
+            session_id=uuid.uuid4(),
+            segment_timestamp_utc=_utc(),
+            state=EncounterState.COMPLETED,
+        )
+
+        assert encounter.semantic_evaluation is None
+        assert encounter.attribution is None
+        assert latest.semantic_evaluation is None
+        assert latest.attribution is None
+
+    def test_field_names_match_section_7e_operator_summary_contract(self) -> None:
+        assert tuple(SemanticEvaluationSummary.model_fields.keys()) == (
+            "reasoning",
+            "is_match",
+            "confidence_score",
+            "semantic_method",
+            "semantic_method_version",
+        )
+        assert tuple(AttributionSummary.model_fields.keys()) == (
+            "finality",
+            "soft_reward_candidate",
+            "au12_baseline_pre",
+            "au12_lift_p90",
+            "au12_lift_peak",
+            "au12_peak_latency_ms",
+            "sync_peak_corr",
+            "sync_peak_lag",
+            "outcome_link_lag_s",
+        )
+
+    def test_encounter_summary_roundtrips_nested_semantic_and_attribution(self) -> None:
+        summary = EncounterSummary(
+            encounter_id="e-semantic-attribution-1",
+            session_id=uuid.uuid4(),
+            segment_timestamp_utc=_utc(),
+            state=EncounterState.COMPLETED,
+            semantic_gate=0,
+            p90_intensity=0.0,
+            gated_reward=0.0,
+            semantic_evaluation=SemanticEvaluationSummary(
+                reasoning="cross_encoder_high_nonmatch",
+                is_match=False,
+                confidence_score=0.0,
+                semantic_method="cross_encoder",
+                semantic_method_version="ce-v1.2.3",
+            ),
+            attribution=AttributionSummary(
+                finality="online_provisional",
+                soft_reward_candidate=0.0,
+                au12_baseline_pre=0.0,
+                au12_lift_p90=0.0,
+                au12_lift_peak=0.04,
+                au12_peak_latency_ms=125.0,
+                sync_peak_corr=0.0,
+                sync_peak_lag=0,
+                outcome_link_lag_s=0.0,
+            ),
+        )
+
+        restored = EncounterSummary.model_validate_json(summary.model_dump_json())
+        assert restored.semantic_evaluation is not None
+        assert restored.semantic_evaluation.is_match is False
+        assert restored.semantic_evaluation.confidence_score == 0.0
+        assert restored.attribution is not None
+        assert restored.attribution.soft_reward_candidate == 0.0
+        assert restored.attribution.sync_peak_lag == 0
+        assert isinstance(restored.attribution.sync_peak_lag, int)
+        assert restored.attribution.outcome_link_lag_s == 0.0
+
+    @pytest.mark.parametrize("confidence", [-0.1, 1.1])
+    def test_semantic_confidence_is_probability(self, confidence: float) -> None:
+        with pytest.raises(ValidationError):
+            SemanticEvaluationSummary(confidence_score=confidence)
+
+    @pytest.mark.parametrize("corr", [-1.1, 1.1])
+    def test_sync_peak_corr_is_bounded_to_pearson_range(self, corr: float) -> None:
+        with pytest.raises(ValidationError):
+            AttributionSummary(sync_peak_corr=corr)
+
+    def test_attribution_finality_is_restricted_to_spec_values(self) -> None:
+        with pytest.raises(ValidationError):
+            AttributionSummary.model_validate({"finality": "draft"})
+
+    @pytest.mark.parametrize("soft_reward", [-0.1, 1.1])
+    def test_soft_reward_candidate_is_probability(self, soft_reward: float) -> None:
+        with pytest.raises(ValidationError):
+            AttributionSummary(soft_reward_candidate=soft_reward)
+
+    def test_sync_peak_lag_is_non_negative_integer(self) -> None:
+        with pytest.raises(ValidationError):
+            AttributionSummary(sync_peak_lag=-1)
+        with pytest.raises(ValidationError):
+            AttributionSummary.model_validate({"sync_peak_lag": 1.5})
 
 
 class TestAcousticObservationalMetrics:

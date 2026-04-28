@@ -79,8 +79,14 @@ def sanitize_json_payload(payload: Any) -> Any:
     """Recursively coerce JSON-unsafe non-finite floats to ``None``.
 
     This keeps Python ``None`` intact so downstream JSON serializers emit
-    canonical ``null`` values, and prevents ``NaN`` / ``Infinity`` tokens
-    from leaking into Celery JSON payloads or operator-facing responses.
+    canonical ``null`` values for required nullable fields, and prevents
+    ``NaN`` / ``Infinity`` tokens from leaking into Celery JSON payloads or
+    operator-facing responses.
+
+    Handoff-specific optional objects are normalized while traversing dicts:
+    an ineligible ``_physiological_context`` is removed instead of serialized
+    as ``{}`` or as a null-only role wrapper, and absent bandit snapshot
+    optionals are omitted rather than emitted as explicit ``null`` members.
 
     Dicts and lists are mutated in place and returned for convenience.
     Tuples are rebuilt because they are immutable.
@@ -88,7 +94,34 @@ def sanitize_json_payload(payload: Any) -> Any:
     if isinstance(payload, float):
         return payload if math.isfinite(payload) else None
     if isinstance(payload, dict):
-        for key, value in payload.items():
+        if "_physiological_context" in payload:
+            context = payload.get("_physiological_context")
+            if not isinstance(context, dict) or not context:
+                payload.pop("_physiological_context", None)
+            else:
+                streamer = context.get("streamer")
+                operator = context.get("operator")
+                if isinstance(streamer, dict) and not streamer:
+                    streamer = None
+                if isinstance(operator, dict) and not operator:
+                    operator = None
+                if streamer is None and operator is None:
+                    payload.pop("_physiological_context", None)
+                else:
+                    context["streamer"] = streamer
+                    context["operator"] = operator
+
+        snapshot = payload.get("_bandit_decision_snapshot")
+        if isinstance(snapshot, dict):
+            for optional_key in (
+                "sampled_theta_by_arm",
+                "decision_context_hash",
+                "random_seed",
+            ):
+                if snapshot.get(optional_key) is None:
+                    snapshot.pop(optional_key, None)
+
+        for key, value in list(payload.items()):
             payload[key] = sanitize_json_payload(value)
         return payload
     if isinstance(payload, list):

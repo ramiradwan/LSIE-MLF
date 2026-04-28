@@ -106,8 +106,8 @@ class AU12Normalizer:
         """
         Compute the raw D_mouth/IOD ratio without baseline subtraction.
 
-        Exposed for per-subject range normalization in the reward pipeline.
-        The reward module uses this to estimate x_max during calibration.
+        Exposed as per-subject calibration telemetry/diagnostics. §7B live
+        reward uses bounded AU12 intensity directly and does not normalize by x_max.
 
         §7A.3 — IOD derivation
         §7A.4 — D_mouth / IOD ratio

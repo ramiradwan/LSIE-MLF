@@ -12,6 +12,7 @@ from typing import Any
 from uuid import UUID
 
 from packages.schemas.operator_console import (
+    AttributionSummary,
     CoModulationSummary,
     EncounterState,
     EncounterSummary,
@@ -19,6 +20,7 @@ from packages.schemas.operator_console import (
     HealthSubsystemStatus,
     ObservationalAcousticSummary,
     PhysiologyCurrentSnapshot,
+    SemanticEvaluationSummary,
     SessionPhysiologySnapshot,
     SessionSummary,
     UiStatusKind,
@@ -29,25 +31,36 @@ from services.operator_console.formatters import (
     build_health_detail,
     build_physiology_explanation,
     build_reward_explanation,
+    build_semantic_attribution_diagnostics_display,
     format_acoustic_ratio,
     format_acoustic_seconds,
     format_acoustic_validity,
     format_acoustic_validity_pill,
     format_acoustic_voiced_coverage,
+    format_attribution_finality_label,
+    format_au12_lift_metrics,
+    format_au12_peak_latency,
+    format_bounded_reason_code_label,
     format_calibration_status,
     format_comodulation_index,
     format_duration,
     format_f0_hz,
     format_freshness,
     format_health_state,
+    format_outcome_link_lag,
     format_percentage,
     format_perturbation_delta,
+    format_probability_confidence,
     format_reward,
     format_semantic_confidence,
     format_semantic_gate,
+    format_semantic_method_label,
     format_semitone_delta,
+    format_soft_reward_candidate,
+    format_synchrony_metrics,
     format_timestamp,
     operator_ready_for_submit,
+    semantic_attribution_diagnostics_for_encounter,
     truncate_expected_greeting,
     ui_status_for_health,
 )
@@ -108,6 +121,110 @@ class TestSemanticGate:
     def test_semantic_confidence_is_percentage(self) -> None:
         assert format_semantic_confidence(0.87) == "87%"
         assert format_semantic_confidence(None) == "—"
+
+
+# ----------------------------------------------------------------------
+# §7E / §8 semantic-attribution diagnostics
+# ----------------------------------------------------------------------
+
+
+class TestSemanticAttributionDiagnostics:
+    def test_semantic_method_labels_cover_cross_encoder_and_gray_band(self) -> None:
+        assert format_semantic_method_label("cross_encoder", "ce-v1") == (
+            "local cross-encoder · ce-v1"
+        )
+        assert format_semantic_method_label("llm_gray_band", "llm-v2") == (
+            "LLM gray-band fallback · llm-v2"
+        )
+        assert format_semantic_method_label(None) == "—"
+
+    def test_bounded_reason_code_labels_are_operator_friendly(self) -> None:
+        assert format_bounded_reason_code_label("cross_encoder_high_match") == (
+            "Cross-encoder high-confidence match"
+        )
+        assert format_bounded_reason_code_label("gray_band_llm_nonmatch") == (
+            "Gray-band fallback non-match"
+        )
+        assert "{" not in format_bounded_reason_code_label("semantic_timeout")
+        assert format_bounded_reason_code_label(None) == "—"
+
+    def test_probability_finality_soft_reward_and_lag_labels(self) -> None:
+        assert format_probability_confidence(0.834) == "p_match 83%"
+        assert format_probability_confidence(None) == "—"
+        assert format_attribution_finality_label("online_provisional") == "online provisional"
+        assert format_attribution_finality_label("offline_final") == "offline final"
+        assert format_soft_reward_candidate(0.4264) == "r_t^soft 0.426"
+        assert format_outcome_link_lag(42.25) == "lag_s 42.2s"
+
+    def test_attribution_metric_formatters_render_au12_and_synchrony(self) -> None:
+        attribution = AttributionSummary(
+            finality="online_provisional",
+            soft_reward_candidate=0.426,
+            au12_baseline_pre=0.12,
+            au12_lift_p90=0.42,
+            au12_lift_peak=0.68,
+            au12_peak_latency_ms=1250.0,
+            sync_peak_corr=-0.314,
+            sync_peak_lag=3,
+            outcome_link_lag_s=42.0,
+        )
+        assert format_au12_lift_metrics(attribution) == (
+            "pre baseline 0.120 · P90 lift 0.420 · peak lift 0.680"
+        )
+        assert format_au12_peak_latency(attribution) == "1.25s"
+        assert format_synchrony_metrics(attribution) == "peak corr -0.314 · peak lag 3"
+        assert format_au12_lift_metrics(None) == "—"
+        assert format_au12_peak_latency(None) == "—"
+        assert format_synchrony_metrics(None) == "—"
+
+    def test_display_combines_direct_cross_encoder_diagnostics(self) -> None:
+        display = build_semantic_attribution_diagnostics_display(
+            SemanticEvaluationSummary(
+                reasoning="cross_encoder_high_match",
+                is_match=True,
+                confidence_score=0.91,
+                semantic_method="cross_encoder",
+                semantic_method_version="ce-v1",
+            ),
+            AttributionSummary(
+                finality="offline_final",
+                soft_reward_candidate=0.77,
+                au12_baseline_pre=0.10,
+                au12_lift_p90=0.55,
+                sync_peak_corr=0.401,
+                outcome_link_lag_s=15.0,
+            ),
+        )
+        assert display.has_diagnostics is True
+        assert display.semantic_method == "local cross-encoder · ce-v1"
+        assert display.bounded_reason_code == "Cross-encoder high-confidence match"
+        assert display.probability_confidence == "p_match 91%"
+        assert display.match_result == "match"
+        assert display.attribution_finality == "offline final"
+        assert "§7B reward path unchanged" in display.observational_note
+
+    def test_display_combines_gray_band_fallback_diagnostics_from_encounter(self) -> None:
+        encounter = _encounter(
+            semantic_gate=0,
+            gated_reward=0.0,
+            semantic_confidence=0.63,
+        ).model_copy(
+            update={
+                "semantic_evaluation": SemanticEvaluationSummary(
+                    reasoning="gray_band_llm_nonmatch",
+                    is_match=False,
+                    confidence_score=0.63,
+                    semantic_method="llm_gray_band",
+                    semantic_method_version="gray-v1",
+                ),
+                "attribution": AttributionSummary(finality="online_provisional"),
+            }
+        )
+        display = semantic_attribution_diagnostics_for_encounter(encounter)
+        assert display.semantic_method == "LLM gray-band fallback · gray-v1"
+        assert display.bounded_reason_code == "Gray-band fallback non-match"
+        assert display.match_result == "non-match"
+        assert display.attribution_finality == "online provisional"
 
 
 # ----------------------------------------------------------------------

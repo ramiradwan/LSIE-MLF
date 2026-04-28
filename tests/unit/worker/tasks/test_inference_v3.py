@@ -11,8 +11,9 @@ from __future__ import annotations
 import base64
 import importlib
 import sys
+from dataclasses import asdict
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 
 def _get_inference_module() -> Any:
@@ -210,3 +211,402 @@ class TestBase64Decode:
             # Original bytes should pass through serialization.decode_bytes_fields
             # (bytes is not str, so decode is a no-op) and be written as-is
             mock_file.write.assert_called_once_with(raw_audio)
+
+    def test_semantic_shadow_observational_payload_never_overrides_live(self) -> None:
+        """§8.6 — v3 handoff enriches live/shadow payloads without interference."""
+        mod = _get_inference_module()
+        raw_audio = b"\x00\x01" * 1600
+        b64_audio = base64.b64encode(raw_audio).decode("ascii")
+        payload = _make_payload(_audio_data=b64_audio)
+        mock_persist = MagicMock()
+        mock_engine = MagicMock()
+        mock_engine.transcribe.return_value = "hello welcome"
+        mock_preprocessor = MagicMock()
+        mock_preprocessor.preprocess.return_value = "hello welcome"
+        method_version = "lsie-greeting-cross-encoder-v1.0.0+semantic-greeting-calibration-v1.0.0"
+        live_semantic = {
+            "reasoning": "cross_encoder_high_nonmatch",
+            "is_match": False,
+            "confidence_score": 0.57,
+        }
+        expected_live_semantic = {
+            **live_semantic,
+            "semantic_method": "cross_encoder",
+            "semantic_method_version": method_version,
+        }
+        shadow_semantic = {
+            "reasoning": "cross_encoder_high_match",
+            "is_match": True,
+            "confidence_score": 0.99,
+        }
+        expected_shadow_semantic = {
+            **shadow_semantic,
+            "semantic_method": "cross_encoder",
+            "semantic_method_version": method_version,
+        }
+        mock_semantic = MagicMock()
+        mock_semantic.evaluate.return_value = live_semantic
+        mock_semantic.evaluate_shadow.return_value = shadow_semantic
+
+        with (
+            patch.object(mod, "persist_metrics", mock_persist),
+            patch("packages.ml_core.transcription.TranscriptionEngine", return_value=mock_engine),
+            patch(
+                "packages.ml_core.preprocessing.TextPreprocessor",
+                return_value=mock_preprocessor,
+            ),
+            patch("packages.ml_core.semantic.SemanticEvaluator", return_value=mock_semantic),
+            patch("subprocess.run"),
+            patch("os.remove"),
+            patch("tempfile.NamedTemporaryFile") as mock_tmpfile,
+        ):
+            mock_file = MagicMock()
+            mock_file.__enter__ = MagicMock(return_value=mock_file)
+            mock_file.__exit__ = MagicMock(return_value=False)
+            mock_file.name = "/tmp/test.raw"
+            mock_tmpfile.return_value = mock_file
+
+            result = mod.process_segment(MagicMock(), payload)
+
+        assert "semantic_method" not in live_semantic
+        assert "semantic_method_version" not in live_semantic
+        assert result["semantic"] == expected_live_semantic
+        assert result["semantic_shadow"] == expected_shadow_semantic
+        assert result["semantic"]["is_match"] is False
+        assert result["semantic"]["confidence_score"] == 0.57
+        dispatched = mock_persist.delay.call_args.args[0]
+        assert dispatched["semantic"] == expected_live_semantic
+        assert dispatched["semantic_shadow"] == expected_shadow_semantic
+
+
+class TestPersistMetricsRewardInvariance:
+    """§7B — Module E reward path ignores observational side channels."""
+
+    def _reward_eligible_metrics(self, **overrides: Any) -> dict[str, Any]:
+        """Build a reward-eligible Module D → E payload with stable AU12/is_match."""
+        metrics: dict[str, Any] = {
+            "session_id": "550e8400-e29b-41d4-a716-446655440000",
+            "segment_id": "d" * 64,
+            "timestamp_utc": "2026-03-13T12:00:00+00:00",
+            "semantic": {
+                "reasoning": "cross_encoder_high_match",
+                "is_match": True,
+                "confidence_score": 0.25,
+                "semantic_method": "cross_encoder",
+                "semantic_method_version": "ce-v1",
+            },
+            "_active_arm": "arm-a",
+            "_experiment_id": "exp-1",
+            "_expected_greeting": "hello welcome",
+            "_stimulus_time": 100.0,
+            "stimulus_time_utc": "2026-03-13T12:00:00+00:00",
+            "_x_max": None,
+            "_bandit_decision_snapshot": {
+                "selection_method": "thompson_sampling",
+                "selection_time_utc": "2026-03-13T12:00:00+00:00",
+                "experiment_id": 1,
+                "policy_version": "policy-v1",
+                "selected_arm_id": "arm-a",
+                "candidate_arm_ids": ["arm-a", "arm-b"],
+                "posterior_by_arm": {
+                    "arm-a": {"alpha": 1.0, "beta": 1.0},
+                    "arm-b": {"alpha": 2.0, "beta": 3.0},
+                },
+                "sampled_theta_by_arm": {"arm-a": 0.6, "arm-b": 0.4},
+                "expected_greeting": "hello welcome",
+                "decision_context_hash": "e" * 64,
+                "random_seed": 42,
+            },
+            "_au12_series": [
+                {"timestamp_s": 95.1, "intensity": 0.10},
+                {"timestamp_s": 96.0, "intensity": 0.12},
+                {"timestamp_s": 97.4, "intensity": 0.11},
+                {"timestamp_s": 100.5, "intensity": 0.20},
+                {"timestamp_s": 100.8, "intensity": 0.24},
+                {"timestamp_s": 101.1, "intensity": 0.28},
+                {"timestamp_s": 101.4, "intensity": 0.32},
+                {"timestamp_s": 101.7, "intensity": 0.36},
+                {"timestamp_s": 102.0, "intensity": 0.40},
+                {"timestamp_s": 102.3, "intensity": 0.44},
+                {"timestamp_s": 102.6, "intensity": 0.48},
+                {"timestamp_s": 102.9, "intensity": 0.52},
+                {"timestamp_s": 103.2, "intensity": 0.56},
+                {"timestamp_s": 103.5, "intensity": 0.60},
+                {"timestamp_s": 103.8, "intensity": 0.64},
+            ],
+        }
+        metrics.update(overrides)
+        return metrics
+
+    def _side_channel_overrides(self) -> dict[str, Any]:
+        """Payload differences that must remain observational-only for reward."""
+        return {
+            "semantic": {
+                "reasoning": "gray_band_llm_match",
+                "is_match": True,
+                "confidence_score": 0.99,
+                "semantic_method": "azure_llm_legacy",
+                "semantic_method_version": "fallback-v9",
+            },
+            "semantic_shadow": {
+                "reasoning": "shadow_nonmatch",
+                "is_match": False,
+                "confidence_score": 0.01,
+                "semantic_method": "candidate_shadow_method",
+                "semantic_method_version": "shadow-v2",
+            },
+            "_x_max": 0.99,
+            "_physiological_context": {
+                "streamer": {
+                    "rmssd_ms": 88.0,
+                    "heart_rate_bpm": 60,
+                    "freshness_s": 5.0,
+                    "is_stale": False,
+                    "provider": "oura",
+                    "source_kind": "physiology_chunk",
+                    "derivation_method": "rolling_rmssd",
+                    "window_s": 300.0,
+                    "validity_ratio": 0.96,
+                    "is_valid": True,
+                    "source_timestamp_utc": "2026-03-13T11:59:55+00:00",
+                },
+                "operator": {
+                    "rmssd_ms": 22.0,
+                    "heart_rate_bpm": 82,
+                    "freshness_s": 4.0,
+                    "is_stale": False,
+                    "provider": "oura",
+                    "source_kind": "physiology_chunk",
+                    "derivation_method": "rolling_rmssd",
+                    "window_s": 300.0,
+                    "validity_ratio": 0.91,
+                    "is_valid": True,
+                    "source_timestamp_utc": "2026-03-13T11:59:56+00:00",
+                },
+            },
+            "co_modulation_index": -0.8,
+            "n_paired_observations": 9,
+            "coverage_ratio": 0.9,
+            "f0_valid_measure": True,
+            "f0_valid_baseline": True,
+            "perturbation_valid_measure": True,
+            "perturbation_valid_baseline": True,
+            "voiced_coverage_measure_s": 2.4,
+            "voiced_coverage_baseline_s": 1.8,
+            "f0_mean_measure_hz": 260.0,
+            "f0_mean_baseline_hz": 170.0,
+            "f0_delta_semitones": 7.35,
+            "jitter_mean_measure": 0.04,
+            "jitter_mean_baseline": 0.01,
+            "jitter_delta": 0.03,
+            "shimmer_mean_measure": 0.08,
+            "shimmer_mean_baseline": 0.02,
+            "shimmer_delta": 0.06,
+            "pitch_f0": 260.0,
+            "jitter": 0.04,
+            "shimmer": 0.08,
+            "_bandit_decision_snapshot": {
+                "selection_method": "thompson_sampling",
+                "selection_time_utc": "2026-03-13T12:00:00+00:00",
+                "experiment_id": 1,
+                "policy_version": "policy-v9",
+                "selected_arm_id": "arm-a",
+                "candidate_arm_ids": ["arm-a", "arm-b"],
+                "posterior_by_arm": {
+                    "arm-a": {"alpha": 1.0, "beta": 1.0},
+                    "arm-b": {"alpha": 9.0, "beta": 1.0},
+                },
+                "sampled_theta_by_arm": {"arm-a": 0.2, "arm-b": 0.9},
+                "expected_greeting": "hello welcome",
+                "decision_context_hash": "f" * 64,
+                "random_seed": 99,
+            },
+            "outcome_event": {
+                "outcome_type": "creator_follow",
+                "outcome_value": 1.0,
+                "outcome_time_utc": "2026-03-13T12:02:00+00:00",
+                "source_system": "tiktok_webcast",
+                "source_event_ref": "follow-differential",
+                "confidence": 1.0,
+            },
+            "attribution_event": {"event_id": "evt-1", "evidence_flags": ["semantic"]},
+            "attribution_score": {
+                "attribution_method": "lagged_correlation",
+                "soft_reward_candidate": 0.99,
+                "au12_baseline_pre": 0.0,
+                "sync_peak_corr": 0.95,
+            },
+        }
+
+    def test_empty_au12_list_flows_to_reward_and_updates_from_gated_reward(self) -> None:
+        """§7B/§7E — Empty AU12 updates reward while missing outcomes stay non-fatal."""
+        mod = _get_inference_module()
+        mock_store = MagicMock()
+        mock_engine = MagicMock()
+        metrics = self._reward_eligible_metrics(_au12_series=[])
+
+        from services.worker.pipeline.reward import RewardResult
+
+        reward_result = RewardResult(
+            gated_reward=0.37,
+            p90_intensity=0.91,
+            semantic_gate=1,
+            is_valid=False,
+            n_frames_in_window=0,
+            au12_baseline_pre=None,
+        )
+        mock_log_encounter = MagicMock()
+
+        with (
+            patch("services.worker.pipeline.analytics.MetricsStore", return_value=mock_store),
+            patch(
+                "services.worker.pipeline.analytics.ThompsonSamplingEngine",
+                return_value=mock_engine,
+            ),
+            patch(
+                "services.worker.pipeline.reward.compute_reward",
+                return_value=reward_result,
+            ) as mock_compute_reward,
+            patch.object(mod, "_log_encounter", mock_log_encounter),
+        ):
+            mod.persist_metrics(MagicMock(), metrics)
+
+        mock_compute_reward.assert_called_once()
+        reward_call = mock_compute_reward.call_args
+        assert reward_call.kwargs["au12_series"] == []
+        assert reward_call.kwargs["stimulus_time_s"] == 100.0
+        assert reward_call.kwargs["is_match"] is True
+        mock_engine.update.assert_called_once_with("exp-1", "arm-a", 0.37)
+        mock_log_encounter.assert_called_once()
+        assert mock_log_encounter.call_args.args[4] is reward_result
+
+        mock_store.persist_attribution_ledger.assert_called_once()
+        ledger = mock_store.persist_attribution_ledger.call_args.args[0]
+        assert ledger.event.semantic_method == "cross_encoder"
+        assert ledger.event.semantic_method_version == "ce-v1"
+        assert ledger.outcomes == ()
+        assert ledger.links == ()
+        assert len(ledger.scores) == 6
+        assert {score.outcome_id for score in ledger.scores} == {None}
+
+    def test_differential_payloads_produce_identical_reward_result(self) -> None:
+        """§7E writes preserve §7B reward result and posterior invariance."""
+        mod = _get_inference_module()
+        mock_store = MagicMock()
+        mock_store.compute_comodulation.return_value = None
+        mock_engine = MagicMock()
+        base_metrics = self._reward_eligible_metrics()
+        differential_metrics = self._reward_eligible_metrics(**self._side_channel_overrides())
+
+        from services.worker.pipeline.reward import compute_reward as real_compute_reward
+
+        reward_results: list[Any] = []
+
+        def _record_reward(**kwargs: Any) -> Any:
+            reward_result = real_compute_reward(**kwargs)
+            reward_results.append(reward_result)
+            return reward_result
+
+        with (
+            patch("services.worker.pipeline.analytics.MetricsStore", return_value=mock_store),
+            patch(
+                "services.worker.pipeline.analytics.ThompsonSamplingEngine",
+                return_value=mock_engine,
+            ),
+            patch(
+                "services.worker.pipeline.reward.compute_reward",
+                side_effect=_record_reward,
+            ) as mock_compute_reward,
+            patch.object(mod, "_log_encounter", MagicMock()),
+        ):
+            mod.persist_metrics(MagicMock(), base_metrics)
+            mod.persist_metrics(MagicMock(), differential_metrics)
+
+        assert len(reward_results) == 2
+        assert reward_results[0] == reward_results[1]
+        # Differential payload equality check: the serialized RewardResult is
+        # identical even though semantic confidence/method, physiology,
+        # co-modulation, acoustics, attribution, shadow semantic, and _x_max differ.
+        assert asdict(reward_results[0]) == asdict(reward_results[1])
+        assert "au12_baseline_pre" in asdict(reward_results[0])
+        assert "baseline_b_neutral" not in asdict(reward_results[0])
+
+        for reward_call in mock_compute_reward.call_args_list:
+            assert set(reward_call.kwargs) == {"au12_series", "stimulus_time_s", "is_match"}
+            assert reward_call.kwargs["is_match"] is True
+            assert "confidence_score" not in reward_call.kwargs
+            assert "semantic_method" not in reward_call.kwargs
+            assert "semantic_shadow" not in reward_call.kwargs
+            assert "_physiological_context" not in reward_call.kwargs
+            assert "co_modulation_index" not in reward_call.kwargs
+            assert "pitch_f0" not in reward_call.kwargs
+            assert "attribution_score" not in reward_call.kwargs
+            assert "x_max" not in reward_call.kwargs
+
+        expected_reward = reward_results[0].gated_reward
+        assert mock_engine.update.call_args_list == [
+            call("exp-1", "arm-a", expected_reward),
+            call("exp-1", "arm-a", expected_reward),
+        ]
+
+        persisted_differential = mock_store.insert_metrics.call_args_list[1].args[0]
+        assert persisted_differential["semantic"]["confidence_score"] == 0.99
+        assert persisted_differential["semantic"]["semantic_method"] == "azure_llm_legacy"
+        assert (
+            persisted_differential["semantic_shadow"]["semantic_method"]
+            == "candidate_shadow_method"
+        )
+        assert persisted_differential["_physiological_context"]["streamer"]["rmssd_ms"] == 88.0
+        assert persisted_differential["pitch_f0"] == 260.0
+        assert persisted_differential["attribution_score"]["soft_reward_candidate"] == 0.99
+
+        assert mock_store.persist_attribution_ledger.call_count == 2
+        base_ledger = mock_store.persist_attribution_ledger.call_args_list[0].args[0]
+        differential_ledger = mock_store.persist_attribution_ledger.call_args_list[1].args[0]
+        assert base_ledger.event.event_id == differential_ledger.event.event_id
+        assert base_ledger.event.semantic_method == "cross_encoder"
+        assert base_ledger.event.semantic_method_version == "ce-v1"
+        assert base_ledger.outcomes == ()
+        assert base_ledger.links == ()
+        assert {score.outcome_id for score in base_ledger.scores} == {None}
+        assert differential_ledger.event.semantic_method == "azure_llm_legacy"
+        assert differential_ledger.event.semantic_method_version == "fallback-v9"
+        assert len(differential_ledger.outcomes) == 1
+        assert len(differential_ledger.links) == 1
+        assert len(differential_ledger.scores) == 6
+        assert differential_ledger.links[0].event_id == differential_ledger.event.event_id
+        assert differential_ledger.links[0].outcome_id == differential_ledger.outcomes[0].outcome_id
+        assert {score.event_id for score in differential_ledger.scores} == {
+            differential_ledger.event.event_id
+        }
+        assert {score.outcome_id for score in differential_ledger.scores} == {
+            differential_ledger.outcomes[0].outcome_id
+        }
+        differential_scores = {
+            score.attribution_method: score for score in differential_ledger.scores
+        }
+        assert differential_scores["sync_peak_corr"].score_raw is None
+        assert differential_scores["sync_peak_lag"].score_raw is None
+        assert differential_scores["sync_peak_corr"].evidence_flags == []
+        assert differential_scores["sync_peak_lag"].evidence_flags == []
+
+    def test_connect_failure_routes_attribution_payload_to_store_contract(self) -> None:
+        """§2.7/§7E — Connect outage still hands attribution ledger to store buffering."""
+        mod = _get_inference_module()
+        mock_store = MagicMock()
+        mock_store.connect.side_effect = RuntimeError("persistent store unavailable")
+        metrics = self._reward_eligible_metrics()
+
+        with patch("services.worker.pipeline.analytics.MetricsStore", return_value=mock_store):
+            mod.persist_metrics(MagicMock(), metrics)
+
+        mock_store.connect.assert_called_once()
+        mock_store.insert_metrics.assert_not_called()
+        mock_store.persist_attribution_ledger.assert_called_once()
+        ledger = mock_store.persist_attribution_ledger.call_args.args[0]
+        assert str(ledger.event.event_id)
+        assert str(ledger.event.session_id) == metrics["session_id"]
+        assert ledger.event.segment_id == metrics["segment_id"]
+        assert ledger.event.selected_arm_id == "arm-a"
+        assert len(ledger.scores) == 6
+        mock_store.close.assert_called_once()

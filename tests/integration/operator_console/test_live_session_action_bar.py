@@ -208,10 +208,10 @@ def test_live_session_view_encounter_selection_updates_detail_pane() -> None:
     assert "gate" in detail_text.lower()
     # And the reward card reads a numeric value (the §7B gated reward).
     assert view._detail_panel._reward_card._primary.text() != "—"  # type: ignore[attr-defined]
-    # The detail pane now has the original six reward/physiology cards plus
-    # three additive §7D acoustic MetricCards; the reward assertions above
-    # remain untouched.
-    assert len(view._detail_panel.findChildren(MetricCard)) == 9  # type: ignore[attr-defined]
+    # The detail pane keeps the original six reward/physiology cards and adds
+    # three §7D acoustic cards plus six compact §8/§7E diagnostic cards; the
+    # reward assertions above remain untouched.
+    assert len(view._detail_panel.findChildren(MetricCard)) == 15  # type: ignore[attr-defined]
     acoustic_text = view._detail_panel._acoustic_explanation.text()  # type: ignore[attr-defined]
     perturbation_text = (  # type: ignore[attr-defined]
         view._detail_panel._perturbation_validity_pill.text()

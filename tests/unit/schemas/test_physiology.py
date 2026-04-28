@@ -38,6 +38,7 @@ def _valid_payload_data(**overrides: Any) -> dict[str, Any]:
 def _valid_event_data(**overrides: Any) -> dict[str, Any]:
     event = {
         "unique_id": uuid.uuid4(),
+        "event_type": "physiological_chunk",
         "provider": "oura",
         "subject_role": "streamer",
         "source_kind": "ibi",
@@ -76,6 +77,15 @@ class TestPhysiologicalChunkEvent:
         assert event.source_kind == "ibi"
         assert event.payload.ibi_ms_items == [810.0, 820.0, 830.0]
 
+    def test_event_type_is_required_and_literal_constrained(self) -> None:
+        missing_event_type = _valid_event_data()
+        missing_event_type.pop("event_type")
+        with pytest.raises(ValidationError):
+            PhysiologicalChunkEvent.model_validate(missing_event_type)
+
+        with pytest.raises(ValidationError):
+            PhysiologicalChunkEvent.model_validate(_valid_event_data(event_type="scalar_sample"))
+
     def test_event_literal_constraints_reject_invalid_values(self) -> None:
         with pytest.raises(ValidationError):
             PhysiologicalChunkEvent.model_validate(_valid_event_data(subject_role="viewer"))
@@ -91,6 +101,7 @@ class TestPhysiologicalChunkEvent:
         schema = PhysiologicalChunkEvent.model_json_schema()
 
         assert schema.get("$schema") == DRAFT_07_SCHEMA_URI
+        assert "event_type" in schema["required"]
 
 
 class TestPhysiologicalChunkPayload:
@@ -174,11 +185,19 @@ class TestPhysiologicalSnapshot:
 
 
 class TestPhysiologicalContext:
-    def test_context_accepts_missing_roles(self) -> None:
-        context = PhysiologicalContext.model_validate({})
+    def test_context_rejects_empty_object(self) -> None:
+        with pytest.raises(ValidationError):
+            PhysiologicalContext.model_validate({})
 
-        assert context.streamer is None
-        assert context.operator is None
+    def test_context_rejects_null_only_placeholders(self) -> None:
+        null_only_contexts = (
+            {"streamer": None},
+            {"operator": None},
+            {"streamer": None, "operator": None},
+        )
+        for context in null_only_contexts:
+            with pytest.raises(ValidationError):
+                PhysiologicalContext.model_validate(context)
 
     def test_context_allows_single_role_snapshot(self) -> None:
         context = PhysiologicalContext.model_validate(
@@ -187,3 +206,9 @@ class TestPhysiologicalContext:
 
         assert context.streamer is not None
         assert context.operator is None
+
+    def test_context_allows_operator_only_snapshot(self) -> None:
+        context = PhysiologicalContext.model_validate({"operator": _valid_snapshot_data()})
+
+        assert context.streamer is None
+        assert context.operator is not None

@@ -312,6 +312,15 @@ def _iso_z(value: datetime) -> str:
     return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
 
 
+def _expected_segment_id(payload: dict[str, Any]) -> str:
+    stable_identity = (
+        f"{uuid.UUID(payload['session_id'])}"
+        f"{_iso_z(_parse_dt(payload['segment_window_start_utc']))}"
+        f"{_iso_z(_parse_dt(payload['segment_window_end_utc']))}"
+    )
+    return hashlib.sha256(stable_identity.encode("utf-8")).hexdigest()
+
+
 def _sign(body: bytes, secret: str) -> str:
     return hmac.new(secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
 
@@ -465,8 +474,22 @@ def _load_inference_module() -> Any:
     mock_app = MagicMock()
     mock_app.task.return_value = lambda fn: fn
     module_name = "services.worker.tasks.inference"
+    worker_pkg = importlib.import_module("services.worker")
+    fake_celery_module = ModuleType("services.worker.celery_app")
+    cast(Any, fake_celery_module).celery_app = mock_app
+    fake_celery = ModuleType("celery")
+    cast(Any, fake_celery).Task = type("Task", (), {})
 
-    with patch("services.worker.celery_app.celery_app", mock_app):
+    with (
+        patch.dict(
+            sys.modules,
+            {
+                "celery": fake_celery,
+                "services.worker.celery_app": fake_celery_module,
+            },
+        ),
+        patch.object(worker_pkg, "celery_app", fake_celery_module, create=True),
+    ):
         sys.modules.pop(module_name, None)
         return importlib.import_module(module_name)
 
@@ -617,7 +640,12 @@ def test_notification_hydration_chunk_derivation_and_scalar_persistence_end_to_e
         PCM_AUDIO,
         [],
     )
-    validated_empty_payload = InferenceHandoffPayload.model_validate(empty_payload)
+    schema_empty_payload = {
+        key: value
+        for key, value in empty_payload.items()
+        if key not in {"_audio_data", "_frame_data", "_experiment_code"}
+    }
+    validated_empty_payload = InferenceHandoffPayload.model_validate(schema_empty_payload)
     expected_physio_event_schema = PhysiologicalChunkEvent.model_json_schema()
 
     assert hasattr(inference_handoff_schema, "physiological_sample_event_schema")
@@ -652,7 +680,8 @@ def test_notification_hydration_chunk_derivation_and_scalar_persistence_end_to_e
         )
 
         assert payload["session_id"] == session_id
-        assert payload["_segment_id"] == f"seg-{index + 1:04d}"
+        assert payload["segment_id"] == _expected_segment_id(payload)
+        assert "_segment_id" not in payload
         assert payload["_au12_series"] == _reward_telemetry()
         assert payload["_stimulus_time"] == STIMULUS_TIME_S
         assert len(chunk_events) == 2

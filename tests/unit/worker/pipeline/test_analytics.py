@@ -27,11 +27,18 @@ _mock_psycopg2.extensions.ISOLATION_LEVEL_SERIALIZABLE = 6
 
 
 @pytest.fixture(autouse=True)
-def _patch_psycopg2(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Ensure psycopg2 mock is in sys.modules for every test."""
+def _patch_psycopg2(monkeypatch: pytest.MonkeyPatch) -> Any:
+    """Ensure psycopg2 mock and shared attribution buffer are reset per test."""
     monkeypatch.setitem(sys.modules, "psycopg2", _mock_psycopg2)
     monkeypatch.setitem(sys.modules, "psycopg2.pool", _mock_psycopg2.pool)
     monkeypatch.setitem(sys.modules, "psycopg2.extensions", _mock_psycopg2.extensions)
+    store_cls = globals().get("MetricsStore")
+    if store_cls is not None and hasattr(store_cls, "_shared_attribution_buffer"):
+        store_cls._shared_attribution_buffer.clear()
+    yield
+    store_cls = globals().get("MetricsStore")
+    if store_cls is not None and hasattr(store_cls, "_shared_attribution_buffer"):
+        store_cls._shared_attribution_buffer.clear()
 
 
 from services.worker.pipeline.analytics import (  # noqa: E402
@@ -521,6 +528,526 @@ class TestMetricsStore:
         assert metrics_params["jitter"] == pytest.approx(0.02)
         assert metrics_params["shimmer"] == pytest.approx(0.05)
         mock_conn.commit.assert_called_once()
+
+    def test_encounter_log_persists_canonical_au12_baseline_pre(
+        self,
+        mock_conn: MagicMock,
+    ) -> None:
+        """§7B/§11.5.6 — persistence maps au12_baseline_pre to legacy column."""
+        mod = self._get_inference_module()
+        from services.worker.pipeline.reward import RewardResult
+
+        reward_result = RewardResult(
+            gated_reward=0.42,
+            p90_intensity=0.42,
+            semantic_gate=1,
+            is_valid=True,
+            n_frames_in_window=12,
+            au12_baseline_pre=0.123,
+        )
+        store = MagicMock()
+        store._get_conn.return_value = mock_conn
+        metrics = {
+            "session_id": "550e8400-e29b-41d4-a716-446655440000",
+            "segment_id": "seg-baseline",
+            "timestamp_utc": "2026-03-13T12:00:00+00:00",
+        }
+
+        mod._log_encounter(
+            store,
+            metrics,
+            experiment_id="exp-1",
+            arm="arm-a",
+            result=reward_result,
+            stimulus_time=100.0,
+        )
+
+        cursor = mock_conn.cursor.return_value.__enter__.return_value
+        _, params = cursor.execute.call_args.args
+        assert params["baseline_neutral"] == pytest.approx(reward_result.au12_baseline_pre)
+        assert reward_result.baseline_b_neutral == reward_result.au12_baseline_pre
+        mock_conn.commit.assert_called_once()
+        store._put_conn.assert_called_once_with(mock_conn)
+
+    def test_attribution_ledger_persistence_uses_deterministic_upserts(
+        self,
+        store: MetricsStore,
+        mock_conn: MagicMock,
+    ) -> None:
+        """§7E/§13.24 — Persist all attribution rows with replay-stable IDs."""
+        from datetime import UTC, datetime
+
+        from packages.ml_core.attribution import (
+            ATTRIBUTION_EVENT_TYPE_GREETING,
+            DEFAULT_ATTRIBUTION_METHOD_VERSION,
+            DEFAULT_LINK_RULE_VERSION,
+            DEFAULT_REWARD_PATH_VERSION,
+            attribution_event_id,
+            attribution_score_id,
+            build_attribution_ledger_records,
+            event_outcome_link_id,
+            outcome_event_id,
+        )
+        from services.worker.pipeline.reward import RewardResult
+
+        created_at = datetime(2026, 3, 13, 12, 2, tzinfo=UTC)
+        metrics: dict[str, Any] = {
+            "session_id": "550e8400-e29b-41d4-a716-446655440000",
+            "segment_id": "a" * 64,
+            "timestamp_utc": "2026-03-13T12:00:00+00:00",
+            "semantic": {
+                "reasoning": "cross_encoder_high_match",
+                "is_match": True,
+                "confidence_score": 0.75,
+                "semantic_method": "cross_encoder",
+                "semantic_method_version": "ce-v1.2.3",
+            },
+            "_active_arm": "arm-a",
+            "_expected_greeting": "hello welcome",
+            "_stimulus_time": 1773403200.0,
+            "_au12_series": [
+                {"timestamp_s": 1773403195.5, "intensity": 0.10},
+                {"timestamp_s": 1773403197.5, "intensity": 0.12},
+                {"timestamp_s": 1773403200.5, "intensity": 0.20},
+                {"timestamp_s": 1773403201.0, "intensity": 0.40},
+                {"timestamp_s": 1773403202.0, "intensity": 0.60},
+            ],
+            "_bandit_decision_snapshot": {
+                "selection_method": "thompson_sampling",
+                "selection_time_utc": "2026-03-13T12:00:00+00:00",
+                "experiment_id": 1,
+                "policy_version": "policy-v1",
+                "selected_arm_id": "arm-a",
+                "candidate_arm_ids": ["arm-a", "arm-b"],
+                "posterior_by_arm": {
+                    "arm-a": {"alpha": 2.0, "beta": 3.0},
+                    "arm-b": {"alpha": 4.0, "beta": 5.0},
+                },
+                "sampled_theta_by_arm": {"arm-a": 0.4, "arm-b": 0.2},
+                "expected_greeting": "hello welcome",
+                "decision_context_hash": "b" * 64,
+                "random_seed": 123,
+            },
+            "outcome_event": {
+                "outcome_type": "creator_follow",
+                "outcome_value": 1.0,
+                "outcome_time_utc": "2026-03-13T12:01:00+00:00",
+                "source_system": "tiktok_webcast",
+                "source_event_ref": "follow-123",
+                "confidence": 1.0,
+            },
+        }
+        reward_result = RewardResult(
+            gated_reward=0.5,
+            p90_intensity=0.5,
+            semantic_gate=1,
+            is_valid=True,
+            n_frames_in_window=3,
+            au12_baseline_pre=0.11,
+        )
+
+        ledger = build_attribution_ledger_records(
+            metrics,
+            reward_result=reward_result,
+            comodulation_result={"co_modulation_index": 0.25},
+            created_at=created_at,
+        )
+        replay_ledger = build_attribution_ledger_records(
+            dict(metrics),
+            reward_result=reward_result,
+            comodulation_result={"co_modulation_index": 0.25},
+            created_at=created_at,
+        )
+
+        assert ledger is not None
+        assert replay_ledger is not None
+        assert len(ledger.outcomes) == 1
+        assert len(ledger.links) == 1
+        assert len(ledger.scores) == 6
+        expected_event_id = attribution_event_id(
+            session_id=metrics["session_id"],
+            segment_id=metrics["segment_id"],
+            event_type=ATTRIBUTION_EVENT_TYPE_GREETING,
+            reward_path_version=DEFAULT_REWARD_PATH_VERSION,
+        )
+        expected_outcome_id = outcome_event_id(
+            session_id=metrics["session_id"],
+            outcome_type="creator_follow",
+            outcome_time_utc=ledger.outcomes[0].outcome_time_utc,
+            source_system="tiktok_webcast",
+            source_event_ref="follow-123",
+        )
+        expected_link_id = event_outcome_link_id(
+            event_id=expected_event_id,
+            outcome_id=expected_outcome_id,
+            link_rule_version=DEFAULT_LINK_RULE_VERSION,
+        )
+        assert ledger.event.event_id == expected_event_id
+        assert ledger.outcomes[0].outcome_id == expected_outcome_id
+        assert ledger.links[0].link_id == expected_link_id
+        assert ledger.event.event_id == replay_ledger.event.event_id
+        assert ledger.outcomes[0].outcome_id == replay_ledger.outcomes[0].outcome_id
+        assert ledger.links[0].link_id == replay_ledger.links[0].link_id
+        assert [score.score_id for score in ledger.scores] == [
+            score.score_id for score in replay_ledger.scores
+        ]
+        assert ledger.scores[0].score_id == attribution_score_id(
+            event_id=expected_event_id,
+            outcome_id=expected_outcome_id,
+            attribution_method="soft_reward_candidate",
+            method_version=DEFAULT_ATTRIBUTION_METHOD_VERSION,
+        )
+
+        store.persist_attribution_ledger(ledger)
+        store.persist_attribution_ledger(replay_ledger)
+
+        cursor = mock_conn.cursor.return_value.__enter__.return_value
+        calls = cursor.execute.call_args_list
+        assert len(calls) == 18
+        first_pass = calls[:9]
+        replay_pass = calls[9:]
+        table_expectations = (
+            ("attribution_event", "ON CONFLICT (event_id)"),
+            ("outcome_event", "ON CONFLICT (outcome_id)"),
+            ("event_outcome_link", "ON CONFLICT (link_id)"),
+        )
+        for call_args, (table_name, conflict_clause) in zip(
+            first_pass[:3], table_expectations, strict=True
+        ):
+            sql, _ = call_args.args
+            assert f"INSERT INTO {table_name}" in sql
+            assert conflict_clause in sql
+        assert "INSERT INTO attribution_score" in first_pass[3].args[0]
+        assert "ON CONFLICT (score_id)" in first_pass[3].args[0]
+
+        event_params = first_pass[0].args[1]
+        assert event_params["event_id"] == str(expected_event_id)
+        assert event_params["semantic_method"] == "cross_encoder"
+        assert event_params["semantic_method_version"] == "ce-v1.2.3"
+        assert event_params["semantic_p_match"] == pytest.approx(0.75)
+        assert isinstance(event_params["bandit_decision_snapshot"], str)
+        assert json.loads(event_params["bandit_decision_snapshot"])["selected_arm_id"] == "arm-a"
+        assert first_pass[1].args[1]["outcome_id"] == str(expected_outcome_id)
+        assert first_pass[2].args[1]["link_id"] == str(expected_link_id)
+        assert first_pass[3].args[1]["score_id"] == str(ledger.scores[0].score_id)
+
+        first_ids = [call_args.args[1].get("event_id") for call_args in first_pass]
+        first_ids += [first_pass[1].args[1]["outcome_id"], first_pass[2].args[1]["link_id"]]
+        first_ids += [call_args.args[1]["score_id"] for call_args in first_pass[3:]]
+        replay_ids = [call_args.args[1].get("event_id") for call_args in replay_pass]
+        replay_ids += [replay_pass[1].args[1]["outcome_id"], replay_pass[2].args[1]["link_id"]]
+        replay_ids += [call_args.args[1]["score_id"] for call_args in replay_pass[3:]]
+        assert first_ids == replay_ids
+        assert mock_conn.commit.call_count == 2
+
+    def test_attribution_ledger_missing_outcome_persists_event_and_null_link_scores(
+        self,
+        store: MetricsStore,
+        mock_conn: MagicMock,
+    ) -> None:
+        """§7E.2/§7E.6 — Missing outcomes/null links are non-fatal states."""
+        from datetime import UTC, datetime
+
+        from packages.ml_core.attribution import build_attribution_ledger_records
+        from services.worker.pipeline.reward import RewardResult
+
+        metrics: dict[str, Any] = {
+            "session_id": "550e8400-e29b-41d4-a716-446655440000",
+            "segment_id": "c" * 64,
+            "timestamp_utc": "2026-03-13T12:00:00+00:00",
+            "semantic": {
+                "reasoning": "gray_band_llm_match",
+                "is_match": True,
+                "confidence_score": 0.61,
+                "semantic_method": "llm_gray_band",
+                "semantic_method_version": "gray-v2",
+            },
+            "_active_arm": "arm-b",
+            "_expected_greeting": "hello welcome",
+            "_stimulus_time": 1773403200.0,
+            "_au12_series": [],
+            "_bandit_decision_snapshot": {
+                "selection_method": "thompson_sampling",
+                "selection_time_utc": "2026-03-13T12:00:00+00:00",
+                "experiment_id": 2,
+                "policy_version": "policy-v1",
+                "selected_arm_id": "arm-b",
+                "candidate_arm_ids": ["arm-b"],
+                "posterior_by_arm": {"arm-b": {"alpha": 1.0, "beta": 1.0}},
+                "sampled_theta_by_arm": {"arm-b": 0.5},
+                "expected_greeting": "hello welcome",
+            },
+        }
+        reward_result = RewardResult(
+            gated_reward=0.0,
+            p90_intensity=0.0,
+            semantic_gate=1,
+            is_valid=False,
+            n_frames_in_window=0,
+            au12_baseline_pre=None,
+        )
+
+        ledger = build_attribution_ledger_records(
+            metrics,
+            reward_result=reward_result,
+            created_at=datetime(2026, 3, 13, 12, 3, tzinfo=UTC),
+        )
+
+        assert ledger is not None
+        assert ledger.outcomes == ()
+        assert ledger.links == ()
+        assert len(ledger.scores) == 6
+        assert {score.outcome_id for score in ledger.scores} == {None}
+
+        store.persist_attribution_ledger(ledger)
+
+        cursor = mock_conn.cursor.return_value.__enter__.return_value
+        calls = cursor.execute.call_args_list
+        assert len(calls) == 7
+        assert "INSERT INTO attribution_event" in calls[0].args[0]
+        assert all("outcome_event" not in call_args.args[0] for call_args in calls)
+        assert all("event_outcome_link" not in call_args.args[0] for call_args in calls)
+        assert all("INSERT INTO attribution_score" in call_args.args[0] for call_args in calls[1:])
+        assert {call_args.args[1]["outcome_id"] for call_args in calls[1:]} == {None}
+        mock_conn.commit.assert_called_once()
+
+    def _sample_attribution_ledger(
+        self,
+        *,
+        finality: str = "online_provisional",
+        sync_peak_corr: float | None = None,
+        sync_peak_lag: float | None = None,
+        comodulation_result: dict[str, Any] | None = None,
+    ) -> Any:
+        """Build a valid deterministic attribution ledger for persistence tests."""
+        from datetime import UTC, datetime
+
+        from packages.ml_core.attribution import build_attribution_ledger_records
+        from services.worker.pipeline.reward import RewardResult
+
+        metrics: dict[str, Any] = {
+            "session_id": "550e8400-e29b-41d4-a716-446655440000",
+            "segment_id": "e" * 64,
+            "timestamp_utc": "2026-03-13T12:00:00+00:00",
+            "semantic": {
+                "reasoning": "cross_encoder_high_match",
+                "is_match": True,
+                "confidence_score": 0.75,
+                "semantic_method": "cross_encoder",
+                "semantic_method_version": "ce-v1.2.3",
+            },
+            "_active_arm": "arm-a",
+            "_expected_greeting": "hello welcome",
+            "_stimulus_time": 1773403200.0,
+            "_au12_series": [
+                {"timestamp_s": 1773403195.5, "intensity": 0.10},
+                {"timestamp_s": 1773403197.5, "intensity": 0.12},
+                {"timestamp_s": 1773403200.5, "intensity": 0.20},
+                {"timestamp_s": 1773403201.0, "intensity": 0.40},
+                {"timestamp_s": 1773403202.0, "intensity": 0.60},
+            ],
+            "_bandit_decision_snapshot": {
+                "selection_method": "thompson_sampling",
+                "selection_time_utc": "2026-03-13T12:00:00+00:00",
+                "experiment_id": 1,
+                "policy_version": "policy-v1",
+                "selected_arm_id": "arm-a",
+                "candidate_arm_ids": ["arm-a", "arm-b"],
+                "posterior_by_arm": {
+                    "arm-a": {"alpha": 2.0, "beta": 3.0},
+                    "arm-b": {"alpha": 4.0, "beta": 5.0},
+                },
+                "sampled_theta_by_arm": {"arm-a": 0.4, "arm-b": 0.2},
+                "expected_greeting": "hello welcome",
+                "decision_context_hash": "b" * 64,
+                "random_seed": 123,
+            },
+            "outcome_event": {
+                "outcome_type": "creator_follow",
+                "outcome_value": 1.0,
+                "outcome_time_utc": "2026-03-13T12:01:00+00:00",
+                "source_system": "tiktok_webcast",
+                "source_event_ref": "follow-123",
+                "confidence": 1.0,
+            },
+        }
+        if sync_peak_corr is not None:
+            metrics["sync_peak_corr"] = sync_peak_corr
+        if sync_peak_lag is not None:
+            metrics["sync_peak_lag"] = sync_peak_lag
+
+        reward_result = RewardResult(
+            gated_reward=0.5,
+            p90_intensity=0.5,
+            semantic_gate=1,
+            is_valid=True,
+            n_frames_in_window=3,
+            au12_baseline_pre=0.11,
+        )
+        ledger = build_attribution_ledger_records(
+            metrics,
+            reward_result=reward_result,
+            comodulation_result=comodulation_result,
+            finality=finality,
+            created_at=datetime(2026, 3, 13, 12, 2, tzinfo=UTC),
+        )
+        assert ledger is not None
+        return ledger
+
+    def test_attribution_outage_buffers_and_overflows_to_csv(
+        self,
+        store: MetricsStore,
+        mock_conn: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """§2.7/§7E — Attribution CSV-overflows as soon as capacity is reached."""
+        ledger = self._sample_attribution_ledger()
+        cursor = mock_conn.cursor.return_value.__enter__.return_value
+        cursor.execute.side_effect = _mock_psycopg2.OperationalError("connection lost")
+
+        with (
+            patch("services.worker.pipeline.analytics.DB_BUFFER_MAX", 2),
+            patch("services.worker.pipeline.analytics.CSV_FALLBACK_DIR", str(tmp_path)),
+        ):
+            store.persist_attribution_ledger(ledger)
+            assert store._attribution_buffer == [ledger]
+            assert len(store._attribution_buffer) < 2
+            assert list(tmp_path.glob("attribution_overflow_*.csv")) == []
+
+            store.persist_attribution_ledger(ledger)
+            assert store._attribution_buffer == []
+
+        csv_files = list(tmp_path.glob("attribution_overflow_*.csv"))
+        assert len(csv_files) == 1
+        with open(csv_files[0], encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            assert reader.fieldnames == ["record_type", "payload_json"]
+            rows = list(reader)
+        assert len(rows) == 2
+        assert {row["record_type"] for row in rows} == {"attribution_ledger"}
+        payload = json.loads(rows[0]["payload_json"])
+        assert payload["event"]["event_id"] == str(ledger.event.event_id)
+        assert len(payload["scores"]) == 6
+
+    def test_attribution_flush_replays_with_upserts_without_duplicate_identities(
+        self,
+        store: MetricsStore,
+        mock_conn: MagicMock,
+    ) -> None:
+        """§13.28 — Buffered attribution replay uses deterministic upserts."""
+        ledger = self._sample_attribution_ledger()
+        cursor = mock_conn.cursor.return_value.__enter__.return_value
+        cursor.execute.side_effect = _mock_psycopg2.OperationalError("connection lost")
+
+        store.persist_attribution_ledger(ledger)
+        assert store._attribution_buffer == [ledger]
+
+        cursor.execute.reset_mock()
+        cursor.execute.side_effect = None
+        mock_conn.commit.reset_mock()
+        mock_conn.rollback.reset_mock()
+
+        store.persist_attribution_ledger(ledger)
+
+        assert store._attribution_buffer == []
+        calls = cursor.execute.call_args_list
+        assert len(calls) == 18
+        current_pass = calls[:9]
+        flushed_pass = calls[9:]
+        assert all("ON CONFLICT" in call_args.args[0] for call_args in calls)
+        current_ids = [call_args.args[1].get("event_id") for call_args in current_pass]
+        current_ids += [current_pass[1].args[1]["outcome_id"], current_pass[2].args[1]["link_id"]]
+        current_ids += [call_args.args[1]["score_id"] for call_args in current_pass[3:]]
+        flushed_ids = [call_args.args[1].get("event_id") for call_args in flushed_pass]
+        flushed_ids += [flushed_pass[1].args[1]["outcome_id"], flushed_pass[2].args[1]["link_id"]]
+        flushed_ids += [call_args.args[1]["score_id"] for call_args in flushed_pass[3:]]
+        assert current_ids == flushed_ids
+        assert mock_conn.commit.call_count == 2
+
+    def test_attribution_score_id_stable_across_finality_transition(
+        self,
+        store: MetricsStore,
+        mock_conn: MagicMock,
+    ) -> None:
+        """§7E.6/§13.28 — online_provisional → offline_final updates same score rows."""
+        online = self._sample_attribution_ledger(finality="online_provisional")
+        offline = self._sample_attribution_ledger(finality="offline_final")
+
+        assert [score.score_id for score in online.scores] == [
+            score.score_id for score in offline.scores
+        ]
+        assert {score.finality for score in online.scores} == {"online_provisional"}
+        assert {score.finality for score in offline.scores} == {"offline_final"}
+
+        store.persist_attribution_ledger(online)
+        store.persist_attribution_ledger(offline)
+
+        cursor = mock_conn.cursor.return_value.__enter__.return_value
+        calls = cursor.execute.call_args_list
+        first_score = calls[3].args[1]
+        final_score = calls[12].args[1]
+        assert first_score["score_id"] == final_score["score_id"]
+        assert first_score["finality"] == "online_provisional"
+        assert final_score["finality"] == "offline_final"
+        assert "finality = EXCLUDED.finality" in calls[12].args[0]
+
+    def test_synchrony_scores_do_not_synthesize_zero_lag_comodulation_proxy(self) -> None:
+        """§7E.5/§11.5.13-14 — unavailable lag-aware inputs persist as NULL."""
+        ledger = self._sample_attribution_ledger(comodulation_result={"co_modulation_index": 0.95})
+        scores = {score.attribution_method: score for score in ledger.scores}
+
+        assert scores["sync_peak_corr"].score_raw is None
+        assert scores["sync_peak_corr"].score_normalized is None
+        assert scores["sync_peak_lag"].score_raw is None
+        assert scores["sync_peak_corr"].evidence_flags == []
+        assert scores["sync_peak_lag"].evidence_flags == []
+        assert "zero_lag_comodulation_proxy" not in scores["sync_peak_lag"].evidence_flags
+
+    def test_synchrony_scores_persist_real_upstream_peak_outputs(self) -> None:
+        """§7E.5 — Real upstream lag-scan peak correlation/lag are persisted."""
+        ledger = self._sample_attribution_ledger(sync_peak_corr=0.42, sync_peak_lag=3.0)
+        scores = {score.attribution_method: score for score in ledger.scores}
+
+        assert scores["sync_peak_corr"].score_raw == pytest.approx(0.42)
+        assert scores["sync_peak_corr"].score_normalized == pytest.approx(0.42)
+        assert scores["sync_peak_lag"].score_raw == pytest.approx(3.0)
+        assert scores["sync_peak_corr"].evidence_flags == ["lag_scan_result"]
+        assert scores["sync_peak_lag"].evidence_flags == ["lag_scan_result"]
+
+    def test_attribution_buffer_survives_task_local_store_disposal_and_flushes(
+        self,
+        store: MetricsStore,
+        mock_conn: MagicMock,
+    ) -> None:
+        """§2.7/§7E — Buffered ledgers survive discarded task-local stores."""
+        ledger = self._sample_attribution_ledger()
+        cursor = mock_conn.cursor.return_value.__enter__.return_value
+        cursor.execute.side_effect = _mock_psycopg2.OperationalError("connection lost")
+
+        store.persist_attribution_ledger(ledger)
+        assert store._attribution_buffer == [ledger]
+
+        store.close()
+        assert store._attribution_buffer == [ledger]
+
+        next_store = MetricsStore()
+        next_pool = MagicMock()
+        next_store._pool = next_pool
+        next_store._psycopg2 = _mock_psycopg2
+        next_pool.getconn.return_value = mock_conn
+        cursor.execute.reset_mock()
+        cursor.execute.side_effect = None
+        mock_conn.commit.reset_mock()
+        mock_conn.rollback.reset_mock()
+
+        next_store.persist_attribution_ledger(ledger)
+
+        assert next_store._attribution_buffer == []
+        assert store._attribution_buffer == []
+        calls = cursor.execute.call_args_list
+        assert len(calls) == 18
+        assert all("ON CONFLICT" in call_args.args[0] for call_args in calls)
+        assert mock_conn.commit.call_count == 2
 
 
 class TestMetricsStoreExperiments:

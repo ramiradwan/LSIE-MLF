@@ -5,6 +5,7 @@ services:
   # --- Message Broker (§9.1, §9.6 starts first) ---
   redis:
     image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
     container_name: redis
     networks:
       - appnetwork
@@ -145,7 +146,7 @@ services:
     # This process produces Celery tasks; the worker service consumes them.
     command: ["python3.11", "-m", "services.worker.run_orchestrator"]
 
-  # --- API Server (§9.1, §9.6 starts after redis, worker, and postgres) ---
+  # --- API Server (§9.1, §9.6 starts after redis and postgres) ---
   api:
     build:
       context: .
@@ -162,8 +163,6 @@ services:
     depends_on:
       redis:
         condition: service_healthy
-      worker:
-        condition: service_started
       postgres:
         condition: service_healthy
 

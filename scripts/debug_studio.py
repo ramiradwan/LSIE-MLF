@@ -167,7 +167,25 @@ latest_transcript AS (
   LIMIT 1
 ),
 latest_evaluation AS (
-  SELECT *
+  SELECT
+    id,
+    session_id,
+    segment_id,
+    timestamp_utc,
+    created_at,
+    reasoning,
+    is_match,
+    confidence AS confidence_score,
+    NULL::text AS semantic_method,
+    NULL::text AS semantic_method_version,
+    NULL::text AS finality,
+    NULL::double precision AS soft_reward_candidate,
+    NULL::double precision AS au12_lift_p90,
+    NULL::double precision AS au12_lift_peak,
+    NULL::double precision AS au12_peak_latency_ms,
+    NULL::double precision AS sync_peak_corr,
+    NULL::double precision AS sync_peak_lag,
+    NULL::double precision AS outcome_link_lag_s
   FROM evaluations
   ORDER BY timestamp_utc DESC
   LIMIT 1
@@ -304,6 +322,86 @@ SELECT json_build_object(
       FROM comodulation_history
     ) c),
     '[]'::json
+  )
+);
+"""
+
+# v3.4 Semantic / Attribution snapshot — depends on data/sql/05-attribution.sql.
+# AnalyticsThread skips this query on older volumes where attribution tables are
+# absent, preserving the direct-Postgres polling path for legacy rows.
+OPERATOR_ATTRIBUTION_SQL = r"""
+WITH latest_encounter AS (
+  SELECT *
+  FROM encounter_log
+  ORDER BY created_at DESC
+  LIMIT 1
+)
+SELECT json_build_object(
+  'semantic_attribution',
+  COALESCE(
+    (SELECT row_to_json(sa) FROM (
+      SELECT
+        attr.semantic_method,
+        attr.semantic_method_version,
+        attr.semantic_reason_code AS reasoning,
+        attr.semantic_p_match AS confidence_score,
+        attr.finality,
+        attribution_scores.soft_reward_candidate,
+        attribution_scores.au12_lift_p90,
+        attribution_scores.au12_lift_peak,
+        attribution_scores.au12_peak_latency_ms,
+        attribution_scores.sync_peak_corr,
+        attribution_scores.sync_peak_lag,
+        outcome_link.lag_s AS outcome_link_lag_s
+      FROM latest_encounter el
+      LEFT JOIN LATERAL (
+        SELECT
+          ae.event_id,
+          ae.semantic_method,
+          ae.semantic_method_version,
+          ae.semantic_reason_code,
+          ae.semantic_p_match,
+          ae.finality,
+          ae.created_at
+        FROM attribution_event ae
+        WHERE ae.session_id = el.session_id
+          AND ae.segment_id = el.segment_id
+          AND ae.event_type = 'greeting_interaction'
+        ORDER BY ae.created_at DESC, ae.event_id DESC
+        LIMIT 1
+      ) attr ON TRUE
+      LEFT JOIN LATERAL (
+        SELECT
+          MAX(s.score_raw) FILTER (
+            WHERE s.attribution_method = 'soft_reward_candidate'
+          ) AS soft_reward_candidate,
+          MAX(s.score_raw) FILTER (
+            WHERE s.attribution_method = 'au12_lift_p90'
+          ) AS au12_lift_p90,
+          MAX(s.score_raw) FILTER (
+            WHERE s.attribution_method = 'au12_lift_peak'
+          ) AS au12_lift_peak,
+          MAX(s.score_raw) FILTER (
+            WHERE s.attribution_method = 'au12_peak_latency_ms'
+          ) AS au12_peak_latency_ms,
+          MAX(s.score_raw) FILTER (
+            WHERE s.attribution_method = 'sync_peak_corr'
+          ) AS sync_peak_corr,
+          MAX(s.score_raw) FILTER (
+            WHERE s.attribution_method = 'sync_peak_lag'
+          ) AS sync_peak_lag
+        FROM attribution_score s
+        WHERE s.event_id = attr.event_id
+      ) attribution_scores ON TRUE
+      LEFT JOIN LATERAL (
+        SELECT link.lag_s
+        FROM event_outcome_link link
+        WHERE link.event_id = attr.event_id
+        ORDER BY link.created_at DESC, link.lag_s ASC
+        LIMIT 1
+      ) outcome_link ON TRUE
+    ) sa),
+    '{}'::json
   )
 );
 """
@@ -736,6 +834,117 @@ def format_validity_pair(
     if is_missing_value(measure) and is_missing_value(baseline):
         return "--"
     return f"M {format_validity_flag(measure)} · B {format_validity_flag(baseline)}"
+
+
+SEMANTIC_ATTRIBUTION_FIELDS: tuple[str, ...] = (
+    "semantic_method",
+    "semantic_method_version",
+    "reasoning",
+    "confidence_score",
+    "finality",
+    "soft_reward_candidate",
+    "au12_lift_p90",
+    "au12_lift_peak",
+    "au12_peak_latency_ms",
+    "sync_peak_corr",
+    "sync_peak_lag",
+    "outcome_link_lag_s",
+)
+
+V34_ROUTE_FIELDS: tuple[str, ...] = tuple(
+    field
+    for field in SEMANTIC_ATTRIBUTION_FIELDS
+    if field not in {"reasoning", "confidence_score"}
+)
+
+
+def has_v34_semantic_attribution_fields(view: dict[str, Any]) -> bool:
+    if not isinstance(view, dict):
+        return False
+    return any(not is_missing_value(view.get(field)) for field in V34_ROUTE_FIELDS)
+
+
+def build_semantic_attribution_view(
+    evaluation: dict[str, Any], semantic_attribution: dict[str, Any]
+) -> dict[str, Any]:
+    v34_source: dict[str, Any] = {}
+    if has_v34_semantic_attribution_fields(semantic_attribution):
+        v34_source = semantic_attribution
+    elif has_v34_semantic_attribution_fields(evaluation):
+        v34_source = evaluation
+
+    view: dict[str, Any] = {}
+    for field in SEMANTIC_ATTRIBUTION_FIELDS:
+        if v34_source:
+            view[field] = first_present(v34_source, field, default=None)
+        elif field in {"reasoning", "confidence_score"}:
+            view[field] = first_present(evaluation, field, default=None)
+        else:
+            view[field] = None
+    return view
+
+
+def clean_code_label(value: Any) -> str:
+    text = str(value).replace("_", " ").replace("-", " ").strip()
+    return text.capitalize() if text else "--"
+
+
+def format_semantic_route(method: Any, has_v34_fields: bool) -> str:
+    if method == "cross_encoder":
+        return "primary local cross_encoder"
+    if method == "llm_gray_band":
+        return "gray-band fallback"
+    if method == "azure_llm_legacy":
+        return "historical Azure LLM method"
+    if not has_v34_fields:
+        return "legacy (historical row; no v3.4 fields)"
+    if is_missing_value(method):
+        return "v3.4 route unavailable"
+    return clean_code_label(method)
+
+
+def format_reason_code(value: Any, *, has_v34_fields: bool) -> str:
+    if is_missing_value(value):
+        return "--" if has_v34_fields else "legacy (see text)"
+    if not has_v34_fields:
+        return "legacy (see text)"
+    mapping = {
+        "cross_encoder_high_match": "Cross-encoder high-confidence match",
+        "cross_encoder_high_nonmatch": "Cross-encoder high-confidence non-match",
+        "gray_band_llm_match": "Gray-band fallback match",
+        "gray_band_llm_nonmatch": "Gray-band fallback non-match",
+        "semantic_local_failure_fallback": "Local scorer failure fallback",
+        "semantic_timeout": "Semantic timeout",
+        "semantic_error": "Semantic error",
+    }
+    return mapping.get(str(value), clean_code_label(value))
+
+
+def format_finality(value: Any) -> str:
+    if is_missing_value(value):
+        return "--"
+    mapping = {
+        "online_provisional": "online provisional",
+        "offline_final": "offline final",
+    }
+    return mapping.get(str(value), clean_code_label(value))
+
+
+def format_optional_signed_float(value: Any, precision: int, default: str = "--") -> str:
+    if is_missing_value(value):
+        return default
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return default
+    if not math.isfinite(number):
+        return default
+    return f"{number:+.{precision}f}"
+
+
+def join_display_parts(*parts: str) -> str:
+    cleaned = [part for part in parts if part and part != "--"]
+    return " · ".join(cleaned) if cleaned else "--"
   
   
 def format_numeric_or_text(value: Any, precision: int, default: str = "--") -> str:  
@@ -1667,6 +1876,7 @@ class AnalyticsThread(QThread):
         self._last_snapshot_fingerprint = ""
         self._last_error = ""
         self._physio_available = True
+        self._attribution_available = True
 
     def stop(self) -> None:
         self._stop_event.set()
@@ -1692,6 +1902,23 @@ class AnalyticsThread(QThread):
                     else:
                         if physio:
                             snapshot.update(physio)
+
+                if self._attribution_available:
+                    try:
+                        attribution = run_psql_json(OPERATOR_ATTRIBUTION_SQL)
+                    except RuntimeError as attribution_exc:
+                        if "does not exist" in str(attribution_exc):
+                            self._attribution_available = False
+                            self.log_message.emit(
+                                "Attribution tables missing — run migrations in "
+                                "data/sql/05-attribution.sql to enable the "
+                                "Semantic / Attribution diagnostics"
+                            )
+                        else:
+                            raise
+                    else:
+                        if attribution:
+                            snapshot.update(attribution)
 
                 if snapshot:
                     fingerprint = json.dumps(snapshot, sort_keys=True, separators=(",", ":"))
@@ -2490,9 +2717,38 @@ class MainWindow(QMainWindow):
         self.reasoning_output.setUndoRedoEnabled(False)  
         self.reasoning_output.setMaximumHeight(80)  
         self.reasoning_output.setPlaceholderText("Waiting for evaluation reasoning...")  
+
+        semantic_attr_label = QLabel("Semantic / Attribution")
+        semantic_attr_label.setObjectName("CardHint")
+
+        semantic_attr_row_1 = QHBoxLayout()
+        semantic_attr_row_1.setContentsMargins(0, 0, 0, 0)
+        semantic_attr_row_1.setSpacing(12)
+        self.stat_semantic_route = InlineStat("Route", "--", compact=True)
+        self.stat_semantic_reason_finality = InlineStat(
+            "Reason / Finality", "--", compact=True
+        )
+        semantic_attr_row_1.addWidget(self.stat_semantic_route)
+        semantic_attr_row_1.addWidget(self.stat_semantic_reason_finality)
+
+        semantic_attr_row_2 = QHBoxLayout()
+        semantic_attr_row_2.setContentsMargins(0, 0, 0, 0)
+        semantic_attr_row_2.setSpacing(12)
+        self.stat_soft_reward = InlineStat(
+            "Soft Reward Candidate", "--", compact=True
+        )
+        self.stat_au12_attribution = InlineStat("AU12 Attribution", "--", compact=True)
+        semantic_attr_row_2.addWidget(self.stat_soft_reward)
+        semantic_attr_row_2.addWidget(self.stat_au12_attribution)
+
+        self.stat_sync_outcome = InlineStat("Synchrony / Outcome", "--", compact=True)
   
         semantic_panel.body_layout.addLayout(semantic_stats_row)  
-        semantic_panel.body_layout.addWidget(self.reasoning_output)  
+        semantic_panel.body_layout.addWidget(self.reasoning_output)
+        semantic_panel.body_layout.addWidget(semantic_attr_label)
+        semantic_panel.body_layout.addLayout(semantic_attr_row_1)
+        semantic_panel.body_layout.addLayout(semantic_attr_row_2)
+        semantic_panel.body_layout.addWidget(self.stat_sync_outcome)
         side_layout.addWidget(semantic_panel)  
   
         reward_panel = PanelCard("Thompson Sampling & Reward")  
@@ -2876,6 +3132,9 @@ class MainWindow(QMainWindow):
         evaluation = snapshot.get("evaluation") or {}  
         encounter = snapshot.get("encounter") or {}  
         experiments = snapshot.get("experiments") or []  
+        semantic_attribution = snapshot.get("semantic_attribution") or {}
+        if not isinstance(semantic_attribution, dict):
+            semantic_attribution = {}
   
         transcript_text = str(  
             pick(transcript, "transcription", "transcript", "text", default="--")  
@@ -2942,17 +3201,96 @@ class MainWindow(QMainWindow):
         self.card_shimmer.set_values(shimmers)
   
   
+        semantic_diag = build_semantic_attribution_view(evaluation, semantic_attribution)
+        has_v34_diag = has_v34_semantic_attribution_fields(semantic_diag)
+
         is_match = pick(evaluation, "is_match", default=None)  
         if isinstance(is_match, bool):  
             self.stat_match.set_value("YES" if is_match else "NO")  
         else:  
             self.stat_match.set_value(str(is_match if is_match is not None else "--"))  
   
-        confidence = pick(evaluation, "confidence_score", default="--")  
+        confidence = first_present(
+            semantic_diag,
+            "confidence_score",
+            default=pick(evaluation, "confidence", default="--"),
+        )
         self.stat_confidence.set_value(format_numeric_or_text(confidence, 2))  
   
-        reasoning_text = str(pick(evaluation, "reasoning", default="Waiting for evaluation..."))  
-        set_plaintext_if_changed(self.reasoning_output, reasoning_text)  
+        reasoning_text = str(
+            first_present(
+                semantic_diag,
+                "reasoning",
+                default=pick(evaluation, "reasoning", default="Waiting for evaluation..."),
+            )
+        )
+        set_plaintext_if_changed(self.reasoning_output, reasoning_text)
+
+        semantic_method = first_present(semantic_diag, "semantic_method", default=None)
+        semantic_version = first_present(
+            semantic_diag, "semantic_method_version", default=None
+        )
+        self.stat_semantic_route.set_value(
+            format_semantic_route(semantic_method, has_v34_diag)
+        )
+        self.stat_semantic_route.set_hint(
+            f"version: {semantic_version}" if not is_missing_value(semantic_version) else ""
+        )
+
+        reason_label = format_reason_code(
+            first_present(semantic_diag, "reasoning", default=None),
+            has_v34_fields=has_v34_diag,
+        )
+        finality_label = format_finality(
+            first_present(semantic_diag, "finality", default=None)
+        )
+        self.stat_semantic_reason_finality.set_value(
+            join_display_parts(f"reason: {reason_label}", f"finality: {finality_label}")
+        )
+
+        self.stat_soft_reward.set_value(
+            format_optional_float(
+                first_present(semantic_diag, "soft_reward_candidate", default=None), 3
+            )
+        )
+
+        au12_lift_parts = []
+        au12_p90 = format_optional_float(
+            first_present(semantic_diag, "au12_lift_p90", default=None), 3
+        )
+        au12_peak = format_optional_float(
+            first_present(semantic_diag, "au12_lift_peak", default=None), 3
+        )
+        au12_latency = format_optional_float(
+            first_present(semantic_diag, "au12_peak_latency_ms", default=None), 0
+        )
+        if au12_p90 != "--":
+            au12_lift_parts.append(f"P90 {au12_p90}")
+        if au12_peak != "--":
+            au12_lift_parts.append(f"peak {au12_peak}")
+        if au12_latency != "--":
+            au12_lift_parts.append(f"latency {au12_latency} ms")
+        self.stat_au12_attribution.set_value(
+            " · ".join(au12_lift_parts) if au12_lift_parts else "--"
+        )
+
+        sync_corr = format_optional_signed_float(
+            first_present(semantic_diag, "sync_peak_corr", default=None), 3
+        )
+        sync_lag = format_optional_float(
+            first_present(semantic_diag, "sync_peak_lag", default=None), 0
+        )
+        outcome_lag = format_optional_float(
+            first_present(semantic_diag, "outcome_link_lag_s", default=None), 1
+        )
+        sync_parts = []
+        if sync_corr != "--":
+            sync_parts.append(f"corr {sync_corr}")
+        if sync_lag != "--":
+            sync_parts.append(f"lag {sync_lag}")
+        if outcome_lag != "--":
+            sync_parts.append(f"outcome lag {outcome_lag}s")
+        self.stat_sync_outcome.set_value(" · ".join(sync_parts) if sync_parts else "--")
   
         reward = format_if_number(deep_find(encounter, "gated_reward", default="--"), 3)  
         p90 = format_if_number(deep_find(encounter, "p90_intensity", default="--"), 3)  

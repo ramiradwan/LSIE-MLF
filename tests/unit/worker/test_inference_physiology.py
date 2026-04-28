@@ -163,8 +163,6 @@ def test_persist_metrics_keeps_reward_pipeline_unchanged() -> None:
         au12_series=expected_series,
         stimulus_time_s=100.0,
         is_match=True,
-        confidence_score=0.8,
-        x_max=0.9,
     )
     call_order: list[str] = []
 

@@ -25,8 +25,10 @@ Spec references:
   §4.E.1   — Operator-facing execution details (replaces the retired
              Streamlit dashboard per SPEC-AMEND-008).
   §4.E.2   — Physiology persistence schema (rmssd_ms, hr, provider).
+  §4.E.3   — Attribution analytics persistence.
   §7B      — Thompson Sampling reward = p90_intensity × semantic_gate.
   §7C      — Rolling Co-Modulation Index; null-valid.
+  §7E      — Event→outcome attribution diagnostics.
   §12      — Error-handling matrix (degraded/recovering vs error).
 """
 
@@ -38,7 +40,8 @@ import os
 from collections.abc import Awaitable, Callable, Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
-from typing import Any, Protocol
+from decimal import Decimal, InvalidOperation
+from typing import Any, Literal, Protocol, cast
 from uuid import UUID, uuid4
 
 from packages.schemas.operator_console import (
@@ -47,6 +50,7 @@ from packages.schemas.operator_console import (
     AlertKind,
     AlertSeverity,
     ArmSummary,
+    AttributionSummary,
     CoModulationSummary,
     EncounterState,
     EncounterSummary,
@@ -60,6 +64,7 @@ from packages.schemas.operator_console import (
     ObservationalAcousticSummary,
     OverviewSnapshot,
     PhysiologyCurrentSnapshot,
+    SemanticEvaluationSummary,
     SessionPhysiologySnapshot,
     SessionSummary,
 )
@@ -68,6 +73,8 @@ from services.api.repos import operator_queries as q
 from services.api.services.subsystem_probes import ProbeResult, collect_subsystem_probes
 
 logger = logging.getLogger(__name__)
+
+AttributionFinality = Literal["online_provisional", "offline_final"]
 
 _LIVE_SESSION_STATE_KEY_PREFIX: str = "operator:live_session:"
 
@@ -366,6 +373,8 @@ class OperatorReadService:
             notes.append("no valid frames in measurement window")
         acoustic = self._build_acoustic_observational_metrics(row)
         observational_acoustic = self._build_observational_acoustic_summary(row)
+        semantic_evaluation = self._build_semantic_evaluation_summary(row)
+        attribution = self._build_attribution_summary(row)
         return EncounterSummary(
             encounter_id=str(row["id"]),
             session_id=_as_uuid(row["session_id"]),
@@ -382,6 +391,8 @@ class OperatorReadService:
             baseline_b_neutral=_as_float(row.get("baseline_neutral")),
             acoustic=acoustic,
             observational_acoustic=observational_acoustic,
+            semantic_evaluation=semantic_evaluation,
+            attribution=attribution,
             physiology_attached=False,
             physiology_stale=None,
             notes=notes,
@@ -395,6 +406,8 @@ class OperatorReadService:
         state = _encounter_state_for(row)
         acoustic = self._build_acoustic_observational_metrics(row)
         observational_acoustic = self._build_observational_acoustic_summary(row)
+        semantic_evaluation = self._build_semantic_evaluation_summary(row)
+        attribution = self._build_attribution_summary(row)
         return LatestEncounterSummary(
             encounter_id=str(row["id"]),
             session_id=_as_uuid(row["session_id"]),
@@ -409,6 +422,78 @@ class OperatorReadService:
             n_frames_in_window=_as_int(row.get("n_frames")),
             acoustic=acoustic,
             observational_acoustic=observational_acoustic,
+            semantic_evaluation=semantic_evaluation,
+            attribution=attribution,
+        )
+
+    def _build_semantic_evaluation_summary(
+        self, row: dict[str, Any]
+    ) -> SemanticEvaluationSummary | None:
+        """Hydrate §7E semantic attribution readback with all-null → None."""
+        semantic_reasoning = _as_str(row.get("semantic_reasoning"))
+        semantic_is_match = _as_optional_bool(row.get("semantic_is_match"))
+        semantic_confidence_score = _as_float(row.get("semantic_confidence_score"))
+        semantic_method = _as_str(row.get("semantic_method"))
+        semantic_method_version = _as_str(row.get("semantic_method_version"))
+
+        semantic_values: tuple[str | bool | float | None, ...] = (
+            semantic_reasoning,
+            semantic_is_match,
+            semantic_confidence_score,
+            semantic_method,
+            semantic_method_version,
+        )
+        if all(value is None for value in semantic_values):
+            return None
+
+        return SemanticEvaluationSummary(
+            reasoning=semantic_reasoning,
+            is_match=semantic_is_match,
+            confidence_score=semantic_confidence_score,
+            semantic_method=semantic_method,
+            semantic_method_version=semantic_method_version,
+        )
+
+    def _build_attribution_summary(self, row: dict[str, Any]) -> AttributionSummary | None:
+        """Hydrate §7E attribution diagnostics with all-null → None.
+
+        Use identity-based null checks so legitimate ``False``/``0`` source
+        values still produce a populated DTO.
+        """
+        finality = _as_str(row.get("attribution_finality"))
+        soft_reward_candidate = _as_float(row.get("soft_reward_candidate"))
+        au12_baseline_pre = _as_float(row.get("au12_baseline_pre"))
+        au12_lift_p90 = _as_float(row.get("au12_lift_p90"))
+        au12_lift_peak = _as_float(row.get("au12_lift_peak"))
+        au12_peak_latency_ms = _as_float(row.get("au12_peak_latency_ms"))
+        sync_peak_corr = _as_float(row.get("sync_peak_corr"))
+        sync_peak_lag = _as_integral_int(row.get("sync_peak_lag"))
+        outcome_link_lag_s = _as_float(row.get("outcome_link_lag_s"))
+
+        attribution_values: tuple[str | float | int | None, ...] = (
+            finality,
+            soft_reward_candidate,
+            au12_baseline_pre,
+            au12_lift_p90,
+            au12_lift_peak,
+            au12_peak_latency_ms,
+            sync_peak_corr,
+            sync_peak_lag,
+            outcome_link_lag_s,
+        )
+        if all(value is None for value in attribution_values):
+            return None
+
+        return AttributionSummary(
+            finality=cast(AttributionFinality | None, finality),
+            soft_reward_candidate=soft_reward_candidate,
+            au12_baseline_pre=au12_baseline_pre,
+            au12_lift_p90=au12_lift_p90,
+            au12_lift_peak=au12_lift_peak,
+            au12_peak_latency_ms=au12_peak_latency_ms,
+            sync_peak_corr=sync_peak_corr,
+            sync_peak_lag=sync_peak_lag,
+            outcome_link_lag_s=outcome_link_lag_s,
         )
 
     def _build_acoustic_observational_metrics(
@@ -873,6 +958,30 @@ def _as_int(value: Any) -> int | None:
     if isinstance(value, bool):
         return int(value)
     return int(value)
+
+
+def _as_integral_int(value: Any) -> int | None:
+    """Return an int only when the source value is exactly integral.
+
+    Attribution sync_peak_lag is specified as an integer lag. Values may arrive
+    from PostgreSQL numeric/double projections or string fixtures; fractional
+    values must not be silently truncated before DTO validation.
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise ValueError("integer value must not be boolean")
+    if isinstance(value, int):
+        return value
+
+    try:
+        decimal_value = value if isinstance(value, Decimal) else Decimal(str(value).strip())
+    except (InvalidOperation, ValueError) as exc:
+        raise ValueError(f"expected integral integer value, got {value!r}") from exc
+
+    if not decimal_value.is_finite() or decimal_value != decimal_value.to_integral_value():
+        raise ValueError(f"expected integral integer value, got {value!r}")
+    return int(decimal_value)
 
 
 def _as_str(value: Any) -> str | None:

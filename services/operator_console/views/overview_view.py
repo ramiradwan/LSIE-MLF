@@ -306,12 +306,16 @@ class OverviewView(QWidget):
         )
         # §7B: surface the explicit reward inputs on the card so the
         # operator can reason about a zero without opening the detail pane.
+        # §8/§7E diagnostics stay compact here; the full readback lives in
+        # Live Session and does not add Overview table columns.
+        diagnostics = self._vm.latest_encounter_semantic_attribution_diagnostics()
         parts: list[str] = [
             f"P90 {format_reward(encounter.p90_intensity)}",
             format_semantic_gate(encounter.semantic_gate),
         ]
         if encounter.n_frames_in_window is not None:
             parts.append(f"{encounter.n_frames_in_window} frames")
+        parts.append(diagnostics.compact_summary)
         parts.append(format_timestamp(encounter.segment_timestamp_utc))
         self._latest_encounter_card.set_secondary_text(" · ".join(parts))
         status_kind = (

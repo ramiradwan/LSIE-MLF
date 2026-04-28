@@ -14,7 +14,7 @@ import logging
 from collections import deque
 from collections.abc import Callable
 from datetime import UTC, datetime
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, Protocol, cast, runtime_checkable
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +77,50 @@ class EulerStreamSigner:
                 "X-Bogus": str(data.get("X-Bogus", "")),
                 "msToken": str(data.get("msToken", "")),
             }
+
+
+CREATOR_FOLLOW_EVENT_TYPES: frozenset[str] = frozenset(
+    {"creator_follow", "follow", "user_follow", "followevent"}
+)
+
+
+def creator_follow_outcome_from_live_event(
+    live_event: dict[str, Any],
+    *,
+    session_id: str | None = None,
+) -> dict[str, Any] | None:
+    """Normalize TikTok follow events into the canonical §7E outcome input.
+
+    The returned dict is intentionally still an analytics payload, not a schema
+    model. Module E assigns deterministic IDs and performs idempotent database
+    persistence after the event reaches the attribution ledger path.
+    """
+    raw_event_type = str(live_event.get("event_type", "")).strip().lower()
+    normalized_event_type = raw_event_type.replace("_", "")
+    if raw_event_type not in CREATOR_FOLLOW_EVENT_TYPES and normalized_event_type not in {
+        "creatorfollow",
+        "userfollow",
+        "followevent",
+    }:
+        return None
+
+    raw_payload = live_event.get("payload")
+    payload = cast(dict[str, Any], raw_payload) if isinstance(raw_payload, dict) else {}
+    source_event_ref = (
+        payload.get("event_id")
+        or payload.get("message_id")
+        or payload.get("msg_id")
+        or live_event.get("event_id")
+    )
+    return {
+        "session_id": session_id or live_event.get("session_id"),
+        "outcome_type": "creator_follow",
+        "outcome_value": 1.0,
+        "outcome_time_utc": live_event.get("timestamp_utc"),
+        "source_system": "tiktok_webcast",
+        "source_event_ref": str(source_event_ref) if source_event_ref is not None else None,
+        "confidence": 1.0,
+    }
 
 
 class GroundTruthIngester:
@@ -148,6 +192,9 @@ class GroundTruthIngester:
                 "timestamp_utc": datetime.now(UTC).isoformat(),
                 "payload": event.get("payload", {}),
             }
+            outcome_payload = creator_follow_outcome_from_live_event(live_event)
+            if outcome_payload is not None:
+                live_event["_attribution_outcome"] = outcome_payload
 
             # §4.B.1 — Action_Combo constraint: track concurrent events
             self._combo_window.append(live_event)
@@ -167,6 +214,13 @@ class GroundTruthIngester:
                     "timestamp_utc": datetime.now(UTC).isoformat(),
                     "payload": {"events": combo_events},
                 }
+                combo_outcomes = [
+                    item["_attribution_outcome"]
+                    for item in combo_events
+                    if isinstance(item.get("_attribution_outcome"), dict)
+                ]
+                if combo_outcomes:
+                    combo_dict["_outcome_events"] = combo_outcomes
                 # §12 Queue overload B — deque eviction via maxlen
                 self.event_buffer.append(combo_dict)
             else:

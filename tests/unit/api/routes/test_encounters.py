@@ -16,6 +16,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from services.api.routes.encounters import (
+    _rows_to_dicts,
     get_encounter_summary,
     list_encounters,
 )
@@ -101,6 +102,41 @@ class TestListEncounters:
         assert result[0]["p90_intensity"] == 0.81
         assert result[0]["semantic_gate"] == 1
         assert result[0]["n_frames"] == 130
+
+    def test_row_serializer_preserves_additive_semantic_attribution_columns(self) -> None:
+        """Pass-through serialization keeps legacy fields plus additive readbacks."""
+        cursor = _make_mock_cursor(
+            [
+                "id",
+                "semantic_gate",
+                "semantic_reasoning",
+                "semantic_is_match",
+                "semantic_confidence_score",
+                "soft_reward_candidate",
+                "outcome_link_lag_s",
+            ],
+            [
+                (
+                    1,
+                    0,
+                    "cross_encoder_high_nonmatch",
+                    False,
+                    0.0,
+                    0.0,
+                    0.0,
+                )
+            ],
+        )
+
+        [row] = _rows_to_dicts(cursor)
+
+        assert row["id"] == 1
+        assert row["semantic_gate"] == 0
+        assert row["semantic_reasoning"] == "cross_encoder_high_nonmatch"
+        assert row["semantic_is_match"] is False
+        assert row["semantic_confidence_score"] == 0.0
+        assert row["soft_reward_candidate"] == 0.0
+        assert row["outcome_link_lag_s"] == 0.0
 
     def test_filters_by_experiment_id(self) -> None:
         """GET /encounters?experiment_id=X uses parameterized filter."""

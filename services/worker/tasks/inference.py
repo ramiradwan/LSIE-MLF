@@ -6,7 +6,9 @@ Module D → Module E via Celery async task through Message Broker (§2 step 6).
 
 Gap 1 fix: process_segment() now forwards orchestrator experiment and
 telemetry fields (_active_arm, _experiment_id, _expected_greeting,
-_au12_series, _stimulus_time, _x_max) to persist_metrics.
+_au12_series, _stimulus_time, _x_max) to persist_metrics. _x_max is
+carried only as calibration telemetry/diagnostics and is not consumed by
+§7B reward computation.
 
 Gap 2 fix: _audio_data and _frame_data are base64-decoded from the
 JSON-serialized Celery payload back to bytes.
@@ -31,7 +33,8 @@ logger = logging.getLogger(__name__)
 # Orchestrator experiment and telemetry fields that must be forwarded
 # from the input payload to the persist_metrics output. These are
 # underscore-prefixed internal fields not part of the §2 step 6 spec
-# payload, but required by the v3.0 reward pipeline in persist_metrics.
+# payload. _au12_series and _stimulus_time feed the §7B reward pipeline;
+# _x_max is forwarded only as calibration telemetry/diagnostics.
 _FORWARD_FIELDS: tuple[str, ...] = (
     "_active_arm",
     "_experiment_id",
@@ -39,6 +42,17 @@ _FORWARD_FIELDS: tuple[str, ...] = (
     "_au12_series",
     "_stimulus_time",
     "_x_max",
+)
+
+# Optional §7E attribution/outcome metadata forwarded only when present. Kept
+# separate from _FORWARD_FIELDS to preserve the historical v3 reward-path test
+# fixture contract for the six Thompson Sampling telemetry fields.
+_ATTRIBUTION_FORWARD_FIELDS: tuple[str, ...] = (
+    "_outcome_event",
+    "_outcome_events",
+    "_creator_follow",
+    "_creator_follow_outcome",
+    "_attribution_outcome",
 )
 
 # Binary fields that are base64-encoded for Celery JSON transport.
@@ -186,6 +200,120 @@ def _derive_segment_start_time_s(
     return segment_end_time_s - segment_duration_s
 
 
+def _coerce_semantic_bool(value: Any, *, default: bool = False) -> bool:
+    """Coerce JSON-compatible booleans for semantic metadata normalization."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered == "true":
+            return True
+        if lowered == "false":
+            return False
+    if isinstance(value, int | float) and value in {0, 1}:
+        return bool(value)
+    return default
+
+
+def _default_semantic_method_version(method: str) -> str:
+    """Return a deterministic method version when callers omit metadata."""
+    if method == "llm_gray_band":
+        import os
+
+        deployment = os.environ.get("AZURE_OPENAI_DEPLOYMENT") or "unconfigured"
+        api_version = os.environ.get("AZURE_OPENAI_API_VERSION", "2024-02-01")
+        return f"azure-openai:{deployment}:{api_version}"
+    if method == "azure_llm_legacy":
+        return "azure-openai-legacy"
+
+    try:
+        from packages.ml_core.semantic import CROSS_ENCODER_METHOD_VERSION
+    except (AttributeError, ImportError):
+        return "lsie-greeting-cross-encoder-v1.0.0+semantic-greeting-calibration-v1.0.0"
+
+    return CROSS_ENCODER_METHOD_VERSION
+
+
+def _bounded_semantic_reason(reasoning: Any, *, method: str, is_match: bool) -> str:
+    """Map legacy/free-form semantic reasoning to the bounded reason-code enum."""
+    from packages.schemas.evaluation import SEMANTIC_REASON_CODES
+
+    if reasoning in SEMANTIC_REASON_CODES:
+        return str(reasoning)
+    if method == "llm_gray_band":
+        return "gray_band_llm_match" if is_match else "gray_band_llm_nonmatch"
+    if method == "cross_encoder":
+        return "cross_encoder_high_match" if is_match else "cross_encoder_high_nonmatch"
+    return "semantic_error"
+
+
+def _normalize_semantic_result(
+    semantic: dict[str, Any] | None,
+    *,
+    semantic_method: str | None = None,
+    semantic_method_version: str | None = None,
+) -> dict[str, Any] | None:
+    """Validate the canonical scorer payload, then attach D→E method metadata."""
+    if semantic is None:
+        return None
+
+    from packages.schemas.evaluation import SEMANTIC_METHODS, SemanticEvaluationResult
+
+    data = dict(semantic)
+    raw_reasoning = data.get("reasoning")
+    explicit_method = (
+        semantic_method if isinstance(semantic_method, str) and semantic_method else None
+    )
+    explicit_version = (
+        semantic_method_version
+        if isinstance(semantic_method_version, str) and semantic_method_version
+        else None
+    )
+    raw_method = explicit_method or data.get("semantic_method")
+    fallback_reason_codes = {
+        "gray_band_llm_match",
+        "gray_band_llm_nonmatch",
+        "semantic_timeout",
+    }
+    if raw_method is None:
+        method = "llm_gray_band" if raw_reasoning in fallback_reason_codes else "cross_encoder"
+    else:
+        method = str(raw_method)
+    if method not in SEMANTIC_METHODS:
+        method = "cross_encoder"
+
+    is_match = _coerce_semantic_bool(data.get("is_match"), default=False)
+    confidence = _finite_float_or_none(data.get("confidence_score"))
+    if confidence is None:
+        confidence = 0.0
+    confidence = min(1.0, max(0.0, confidence))
+
+    canonical = {
+        "reasoning": _bounded_semantic_reason(raw_reasoning, method=method, is_match=is_match),
+        "is_match": is_match,
+        "confidence_score": confidence,
+    }
+
+    try:
+        scorer_payload = SemanticEvaluationResult.model_validate(canonical).model_dump()
+    except Exception:
+        method = "cross_encoder"
+        scorer_payload = SemanticEvaluationResult.model_validate(
+            {
+                "reasoning": "semantic_error",
+                "is_match": False,
+                "confidence_score": 0.0,
+            }
+        ).model_dump()
+
+    raw_version = explicit_version or data.get("semantic_method_version")
+    if not isinstance(raw_version, str) or not raw_version:
+        raw_version = _default_semantic_method_version(method)
+    scorer_payload["semantic_method"] = method
+    scorer_payload["semantic_method_version"] = raw_version
+    return scorer_payload
+
+
 def _serialize_acoustic_metrics(metrics: Any) -> dict[str, Any]:
     """Serialize ``AcousticMetrics`` into a JSON-safe Module D → E payload."""
     acoustic_payload = _default_acoustic_payload()
@@ -236,7 +364,7 @@ def process_segment(self: Task, payload: dict[str, Any]) -> dict[str, Any]:
     payload = decode_bytes_fields(payload, _BINARY_FIELDS)
 
     session_id: str = payload["session_id"]
-    segment_id: str = payload.get("_segment_id", "unknown")
+    segment_id: str = payload.get("segment_id") or payload.get("_segment_id", "unknown")
     audio_data: bytes | None = payload.get("_audio_data")
     timestamp_utc: str = payload["timestamp_utc"]
 
@@ -390,6 +518,7 @@ def process_segment(self: Task, payload: dict[str, Any]) -> dict[str, Any]:
 
     # --- §8 — Semantic Evaluation ---
     semantic: dict[str, Any] | None = None
+    semantic_shadow: dict[str, Any] | None = None
     if preprocessed_text:
         try:
             from packages.ml_core.semantic import SemanticEvaluator
@@ -399,9 +528,35 @@ def process_segment(self: Task, payload: dict[str, Any]) -> dict[str, Any]:
             expected_greeting: str = payload.get(
                 "_expected_greeting", "Hello, welcome to the stream!"
             )
-            semantic = evaluator.evaluate(expected_greeting, preprocessed_text)
+            live_semantic = evaluator.evaluate(expected_greeting, preprocessed_text)
+            semantic = _normalize_semantic_result(
+                live_semantic,
+                semantic_method=getattr(evaluator, "last_semantic_method", None),
+                semantic_method_version=getattr(
+                    evaluator,
+                    "last_semantic_method_version",
+                    None,
+                ),
+            )
+
+            shadow_evaluator = getattr(evaluator, "evaluate_shadow", None)
+            if callable(shadow_evaluator):
+                shadow_semantic = shadow_evaluator(expected_greeting, preprocessed_text)
+                semantic_shadow = _normalize_semantic_result(
+                    shadow_semantic,
+                    semantic_method=getattr(
+                        evaluator,
+                        "last_shadow_semantic_method",
+                        None,
+                    ),
+                    semantic_method_version=getattr(
+                        evaluator,
+                        "last_shadow_semantic_method_version",
+                        None,
+                    ),
+                )
         except Exception:
-            # §4.D contract — LLM timeout retries once before recording null
+            # §4.D contract — semantic failures are bounded and local to Module D.
             logger.warning("Semantic evaluation failed for %s", segment_id, exc_info=True)
 
     # --- §2 step 6 — Assemble output payload for Module E ---
@@ -414,6 +569,9 @@ def process_segment(self: Task, payload: dict[str, Any]) -> dict[str, Any]:
         "semantic": semantic,
         **acoustic_payload,
     }
+    if semantic_shadow is not None:
+        # §8.6 — Observational only; reward path reads the live ``semantic`` field.
+        result["semantic_shadow"] = semantic_shadow
 
     physio_context: dict[str, Any] | None = payload.get("_physiological_context")
     if physio_context is not None:
@@ -423,10 +581,13 @@ def process_segment(self: Task, payload: dict[str, Any]) -> dict[str, Any]:
 
     # --- Gap 1 fix: Forward orchestrator experiment and telemetry fields ---
     # These underscore-prefixed fields are not part of the §2 step 6 spec payload
-    # but are required by persist_metrics v3.0 for the Thompson Sampling reward
-    # pipeline (_au12_series, _stimulus_time) and experiment attribution
-    # (_active_arm, _experiment_id, _expected_greeting, _x_max).
+    # _au12_series and _stimulus_time are required by persist_metrics for
+    # the Thompson Sampling reward pipeline. _x_max is carried forward only
+    # as calibration telemetry/diagnostics and must not scale reward.
     for key in _FORWARD_FIELDS:
+        if key in payload:
+            result[key] = payload[key]
+    for key in (*_ATTRIBUTION_FORWARD_FIELDS, "_experiment_code", "_bandit_decision_snapshot"):
         if key in payload:
             result[key] = payload[key]
 
@@ -478,7 +639,9 @@ def _log_encounter(
             # §2.7 typing is enforced by the encounter_log schema:
             # timestamp_utc -> TIMESTAMPTZ, and reward/stimulus scalars ->
             # DOUBLE PRECISION (gated_reward, p90_intensity,
-            # baseline_neutral, stimulus_time).
+            # baseline_neutral, stimulus_time). The legacy DB column
+            # baseline_neutral stores the canonical §7B au12_baseline_pre
+            # diagnostic without broad schema churn.
             with conn.cursor() as cur:
                 cur.execute(
                     _INSERT_ENCOUNTER_LOG_SQL,
@@ -493,7 +656,7 @@ def _log_encounter(
                         "semantic_gate": result.semantic_gate,
                         "is_valid": result.is_valid,
                         "n_frames": result.n_frames_in_window,
-                        "baseline_neutral": result.baseline_b_neutral,
+                        "baseline_neutral": result.au12_baseline_pre,
                         "stimulus_time": stimulus_time,
                     },
                 )
@@ -540,10 +703,43 @@ def persist_metrics(self: Task, metrics: dict[str, Any]) -> None:
                  remains the drift-corrected epoch used by the reward pipeline
                  and is stored in encounter_log.stimulus_time as DOUBLE PRECISION.
     """
+    from packages.ml_core.attribution import build_attribution_ledger_records
     from services.worker.pipeline.analytics import MetricsStore, ThompsonSamplingEngine
     from services.worker.pipeline.serialization import sanitize_json_payload
 
     store = MetricsStore()
+    reward_result_for_attribution: Any = None
+    comodulation_result_for_attribution: dict[str, Any] | None = None
+
+    def _handle_attribution_ledger(metrics_payload: dict[str, Any]) -> None:
+        try:
+            ledger = build_attribution_ledger_records(
+                metrics_payload,
+                reward_result=reward_result_for_attribution,
+                comodulation_result=comodulation_result_for_attribution,
+            )
+            if ledger is not None:
+                store.persist_attribution_ledger(ledger)
+                logger.info(
+                    "Attribution ledger persisted: event_id=%s outcomes=%d links=%d scores=%d",
+                    ledger.event.event_id,
+                    len(ledger.outcomes),
+                    len(ledger.links),
+                    len(ledger.scores),
+                )
+            else:
+                logger.debug(
+                    "Attribution ledger skipped for %s/%s: missing v3.4 identity inputs",
+                    metrics_payload.get("session_id"),
+                    metrics_payload.get("segment_id"),
+                )
+        except Exception:
+            logger.warning(
+                "Attribution ledger persistence failed for %s/%s",
+                metrics_payload.get("session_id"),
+                metrics_payload.get("segment_id"),
+                exc_info=True,
+            )
 
     try:
         store.connect()
@@ -553,6 +749,19 @@ def persist_metrics(self: Task, metrics: dict[str, Any]) -> None:
             metrics.get("segment_id", "unknown"),
             exc_info=True,
         )
+        try:
+            attribution_metrics = sanitize_json_payload(dict(metrics))
+            _handle_attribution_ledger(attribution_metrics)
+        except Exception:
+            logger.warning(
+                "Attribution ledger buffering failed after Persistent Store "
+                "connect failure for %s/%s",
+                metrics.get("session_id"),
+                metrics.get("segment_id"),
+                exc_info=True,
+            )
+        finally:
+            store.close()
         return
 
     try:
@@ -593,27 +802,31 @@ def persist_metrics(self: Task, metrics: dict[str, Any]) -> None:
         #        β ← β + (1 − r_t)
         #
         # Null observation handling:
-        #   If the reward pipeline determines the observation is invalid
-        #   (e.g., insufficient AU12 frames in the response window), the
-        #   Thompson Sampling posterior is NOT updated. Missing telemetry
-        #   is treated as "no observation", not negative feedback.
+        #   Missing reward inputs (no AU12 field or no stimulus time) remain
+        #   "no observation" and are skipped. A present but empty AU12 list is
+        #   a normative zero-frame measurement: §7B computes P90=0.0 and the
+        #   Thompson Sampling update uses result_reward.gated_reward directly.
 
         semantic: dict[str, Any] | None = metrics.get("semantic")
         active_arm: str = metrics.get("_active_arm", "")
-        experiment_id: str = metrics.get("_experiment_id", "")
+        experiment_id_value: Any = metrics.get(
+            "_experiment_code",
+            metrics.get("_experiment_id", ""),
+        )
+        experiment_id: str = str(experiment_id_value) if experiment_id_value is not None else ""
         au12_raw_series: list[dict[str, Any]] | None = metrics.get("_au12_series")
         stimulus_time: float | None = metrics.get("_stimulus_time")
         # §2.7 cross-artifact typing: timestamp_utc captures the wall-clock
         # observation time as TIMESTAMPTZ, while stimulus_time is the reward
         # pipeline's drift-corrected epoch scalar persisted as DOUBLE PRECISION.
-        x_max: float | None = metrics.get("_x_max")
+        # _x_max may be present in metrics as calibration telemetry, but §7B
+        # reward uses only bounded AU12 post-stimulus data and binary is_match.
 
         if (
             semantic is not None
             and active_arm
             and experiment_id
             and au12_raw_series is not None
-            and len(au12_raw_series) > 0
             and stimulus_time is not None
         ):
             try:
@@ -632,63 +845,44 @@ def persist_metrics(self: Task, metrics: dict[str, Any]) -> None:
                 ]
 
                 is_match: bool = semantic.get("is_match", False)
-                confidence: float = semantic.get("confidence_score", 0.0)
 
                 result_reward: RewardResult = compute_reward(
                     au12_series=au12_series,
                     stimulus_time_s=stimulus_time,
                     is_match=is_match,
-                    confidence_score=confidence,
-                    x_max=x_max,
                 )
 
-                if result_reward.is_valid:
-                    if not (0.0 <= result_reward.gated_reward <= 1.0):
-                        logger.warning(
-                            "Invalid reward outside [0,1]: experiment=%s arm=%s reward=%f",
-                            experiment_id,
-                            active_arm,
-                            result_reward.gated_reward,
-                        )
-                        return
-
-                    engine = ThompsonSamplingEngine(store)
-                    engine.update(experiment_id, active_arm, result_reward.gated_reward)
-
-                    logger.info(
-                        "Thompson Sampling updated: experiment=%s arm=%s "
-                        "reward=%.4f (p90=%.4f gate=%d frames=%d)",
+                if not (0.0 <= result_reward.gated_reward <= 1.0):
+                    logger.warning(
+                        "Invalid reward outside [0,1]: experiment=%s arm=%s reward=%f",
                         experiment_id,
                         active_arm,
                         result_reward.gated_reward,
-                        result_reward.p90_intensity,
-                        result_reward.semantic_gate,
-                        result_reward.n_frames_in_window,
                     )
-                    _log_encounter(
-                        store,
-                        metrics,
-                        experiment_id,
-                        active_arm,
-                        result_reward,
-                        stimulus_time,
-                    )
-                else:
-                    logger.info(
-                        "Thompson Sampling update SKIPPED (invalid): "
-                        "experiment=%s arm=%s frames=%d",
-                        experiment_id,
-                        active_arm,
-                        result_reward.n_frames_in_window,
-                    )
-                    _log_encounter(
-                        store,
-                        metrics,
-                        experiment_id,
-                        active_arm,
-                        result_reward,
-                        stimulus_time,
-                    )
+                    return
+
+                reward_result_for_attribution = result_reward
+                engine = ThompsonSamplingEngine(store)
+                engine.update(experiment_id, active_arm, result_reward.gated_reward)
+
+                logger.info(
+                    "Thompson Sampling updated: experiment=%s arm=%s "
+                    "reward=%.4f (p90=%.4f gate=%d frames=%d)",
+                    experiment_id,
+                    active_arm,
+                    result_reward.gated_reward,
+                    result_reward.p90_intensity,
+                    result_reward.semantic_gate,
+                    result_reward.n_frames_in_window,
+                )
+                _log_encounter(
+                    store,
+                    metrics,
+                    experiment_id,
+                    active_arm,
+                    result_reward,
+                    stimulus_time,
+                )
 
             except Exception:
                 logger.warning(
@@ -750,6 +944,7 @@ def persist_metrics(self: Task, metrics: dict[str, Any]) -> None:
                             session_id,
                         )
                     else:
+                        comodulation_result_for_attribution = comodulation_result
                         logger.info(
                             "Co-modulation persisted: session=%s index=%.4f pairs=%d coverage=%.3f",
                             session_id,
@@ -770,6 +965,8 @@ def persist_metrics(self: Task, metrics: dict[str, Any]) -> None:
                 streamer_available,
                 operator_available,
             )
+
+        _handle_attribution_ledger(metrics)
 
     except Exception:
         logger.error(

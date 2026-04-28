@@ -7,13 +7,12 @@ the per-subject context snapshot attached to InferenceHandoffPayload.
 Design constraints:
   - PhysiologicalChunkEvent mirrors the API Server → Orchestrator transport
     for hydrated wearable chunks rather than retired scalar samples.
-  - PhysiologicalSnapshot is validated independently before dict-injection
-    into assemble_segment(). It does NOT become a typed field on
-    InferenceHandoffPayload — the existing payload uses dict-injection
-    for experiment fields (_active_arm, _au12_series, etc.) and physiology
-    follows the same pattern.
-  - PhysiologicalContext wraps two optional snapshots (streamer, operator)
-    and is the shape of the _physiological_context dict key.
+  - PhysiologicalSnapshot is validated independently before it is embedded
+    under the typed InferenceHandoffPayload _physiological_context field.
+  - PhysiologicalContext wraps two optional role snapshots (streamer,
+    operator). The parent _physiological_context key may be omitted, but
+    when a context object is present at least one role must contain a real
+    PhysiologicalSnapshot.
 
 Spec references:
   §6     — InferenceHandoffPayload interface contract
@@ -117,7 +116,10 @@ class PhysiologicalChunkEvent(BaseModel):
     """§6.2 — Canonical transport event for hydrated physiological chunks."""
 
     unique_id: UUID = Field(..., description="UUID v4 for idempotency tracking.")
-    event_type: Literal["physiological_chunk"] = "physiological_chunk"
+    event_type: Literal["physiological_chunk"] = Field(
+        ...,
+        description="Canonical physiological chunk event discriminator.",
+    )
     provider: Literal["oura"] = Field(..., description="Wearable data provider identifier.")
     subject_role: Literal["streamer", "operator"] = Field(
         ...,
@@ -186,13 +188,21 @@ class PhysiologicalSnapshot(BaseModel):
 class PhysiologicalContext(BaseModel):
     """§6.3 — Shape of the optional _physiological_context dict key.
 
-    Streamer and operator entries are independently optional. Either role may be
-    omitted or set to null when no derived snapshot is available. The entire
-    _physiological_context key is omitted from the payload when physiology is not
-    enabled or no subject snapshots are attached for that segment.
+    Streamer and operator entries are independently optional so a legitimate
+    partial context may carry only one role snapshot. The entire
+    _physiological_context key is omitted from the parent payload when
+    physiology is not enabled or no subject snapshots are attached. If a context
+    object is present, at least one role must contain a real
+    PhysiologicalSnapshot; empty objects and null-only placeholders are invalid.
     """
 
     streamer: PhysiologicalSnapshot | None = None
     operator: PhysiologicalSnapshot | None = None
 
     model_config = {"extra": "forbid"}
+
+    @model_validator(mode="after")
+    def _require_real_role_snapshot(self) -> PhysiologicalContext:
+        if self.streamer is None and self.operator is None:
+            raise ValueError("PhysiologicalContext must include at least one real role snapshot")
+        return self

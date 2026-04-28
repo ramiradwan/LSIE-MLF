@@ -40,6 +40,7 @@ Spec references:
                source_timestamp_utc)
   §7B        — Thompson Sampling reward: r_t = p90_intensity × semantic_gate
   §7C        — Co-Modulation Index, rolling Pearson; null-valid
+  §7E        — Event→outcome attribution diagnostics (operator readback only)
   §12        — Error-handling matrix (degraded/recovering subsystem states)
   §0.3       — Canonical terms: subject_role, Physiological State Buffer,
                Co-Modulation Index, API Server
@@ -236,6 +237,41 @@ class ObservationalAcousticSummary(OperatorConsoleModel):
     shimmer_delta: float | None = None
 
 
+class SemanticEvaluationSummary(OperatorConsoleModel):
+    """Bounded §7E semantic attribution readback for encounter aggregates.
+
+    `reasoning` is the bounded reason code persisted on the attribution event,
+    not a free-form rationale. The confidence/probability and method metadata
+    are observational readbacks and do not change the §7B reward path.
+    """
+
+    reasoning: str | None = None
+    is_match: bool | None = None
+    confidence_score: float | None = Field(default=None, ge=0.0, le=1.0)
+    semantic_method: str | None = None
+    semantic_method_version: str | None = None
+
+
+class AttributionSummary(OperatorConsoleModel):
+    """§7E attribution diagnostics summarized for operator aggregates.
+
+    The fields are derived analytics only: soft semantic reward candidate,
+    baseline-aware AU12 lift diagnostics, lag-aware synchrony diagnostics, and
+    the event→outcome lag when a link exists. Absence of all source values is
+    represented by the parent field being ``None`` rather than an empty object.
+    """
+
+    finality: Literal["online_provisional", "offline_final"] | None = None
+    soft_reward_candidate: float | None = Field(default=None, ge=0.0, le=1.0)
+    au12_baseline_pre: float | None = Field(default=None, ge=0.0)
+    au12_lift_p90: float | None = Field(default=None, ge=0.0)
+    au12_lift_peak: float | None = Field(default=None, ge=0.0)
+    au12_peak_latency_ms: float | None = None
+    sync_peak_corr: float | None = Field(default=None, ge=-1.0, le=1.0)
+    sync_peak_lag: int | None = Field(default=None, ge=0)
+    outcome_link_lag_s: float | None = Field(default=None, ge=0.0)
+
+
 class AcousticObservationalMetrics(OperatorConsoleModel):
     """Deprecated compatibility DTO for the legacy operator acoustic field."""
 
@@ -317,6 +353,8 @@ class EncounterSummary(OperatorConsoleModel):
     baseline_b_neutral: float | None = None
     acoustic: AcousticObservationalMetrics | None = None
     observational_acoustic: ObservationalAcousticSummary | None = None
+    semantic_evaluation: SemanticEvaluationSummary | None = None
+    attribution: AttributionSummary | None = None
     physiology_attached: bool = False
     physiology_stale: bool | None = None
     notes: list[str] = Field(default_factory=list)
@@ -347,6 +385,8 @@ class LatestEncounterSummary(OperatorConsoleModel):
     n_frames_in_window: int | None = Field(default=None, ge=0)
     acoustic: AcousticObservationalMetrics | None = None
     observational_acoustic: ObservationalAcousticSummary | None = None
+    semantic_evaluation: SemanticEvaluationSummary | None = None
+    attribution: AttributionSummary | None = None
 
     @field_validator("segment_timestamp_utc", "stimulus_time_utc")
     @classmethod

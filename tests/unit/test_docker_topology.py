@@ -48,20 +48,23 @@ def api_dockerfile() -> str:
 
 
 class TestComposeTopology:
-    """§9 — Five-container topology validation."""
+    """§9 — Six-service topology validation."""
 
-    def test_five_services(self, compose_content: str) -> None:
-        """§9.1 — Exactly five services defined."""
-        import re
-
-        services = re.findall(r"^\s{2}(\w+):", compose_content, re.MULTILINE)
-        # Filter to actual service names (not sub-keys)
-        top_level = [s for s in services if s not in ("condition", "driver")]
-        assert "redis" in top_level
-        assert "postgres" in top_level
-        assert "stream_scrcpy" in top_level
-        assert "worker" in top_level
-        assert "api" in top_level
+    def test_six_services(self, compose_content: str) -> None:
+        """§9.1 / SPEC-AMEND-003 — Exactly six services are defined."""
+        services_section = compose_content.split("services:\n", 1)[1].split(
+            "\nvolumes:\n",
+            1,
+        )[0]
+        services = re.findall(r"^  (\w+):\s*$", services_section, re.MULTILINE)
+        assert set(services) == {
+            "redis",
+            "postgres",
+            "stream_scrcpy",
+            "worker",
+            "orchestrator",
+            "api",
+        }
 
     def test_redis_image(self, compose_content: str) -> None:
         """§9.1 — Message Broker uses redis:7-alpine."""
@@ -75,6 +78,28 @@ class TestComposeTopology:
         """§9.5 — appnetwork uses bridge driver."""
         assert "appnetwork:" in compose_content
         assert "driver: bridge" in compose_content
+
+    def test_redis_aof_command_array(self, compose_content: str) -> None:
+        """§9 — Redis renders explicit AOF command as a three-item array."""
+        redis_section = compose_content.split("  redis:\n", 1)[1].split(
+            "\n  postgres:\n",
+            1,
+        )[0]
+        assert 'command: ["redis-server", "--appendonly", "yes"]' in redis_section
+
+    def test_redis_and_postgres_are_internal_only(self, compose_content: str) -> None:
+        """§9.5 — Redis and PostgreSQL do not publish host ports."""
+        redis_section = compose_content.split("  redis:\n", 1)[1].split(
+            "\n  postgres:\n",
+            1,
+        )[0]
+        postgres_section = compose_content.split("  postgres:\n", 1)[1].split(
+            "\n  stream_scrcpy:\n",
+            1,
+        )[0]
+
+        for service_section in (redis_section, postgres_section):
+            assert "\n    ports:" not in service_section
 
 
 class TestComposeVolumes:
@@ -107,9 +132,17 @@ class TestComposeDependencies:
         """§9.6 — ML Worker starts after Persistent Store."""
         assert "stream_scrcpy:" in compose_content
 
-    def test_api_depends_on_worker(self, compose_content: str) -> None:
-        """§9.6 — API Server starts after ML Worker."""
-        assert "worker:" in compose_content
+    def test_api_depends_on_redis_and_postgres_only(self, compose_content: str) -> None:
+        """§9.6 — API starts after Redis and PostgreSQL, not the worker."""
+        api_section = compose_content.split("  api:\n", 1)[1].split(
+            "\nvolumes:\n",
+            1,
+        )[0]
+        depends_on_section = api_section.split("    depends_on:\n", 1)[1]
+        dependencies = re.findall(r"^      (\w+):", depends_on_section, re.MULTILINE)
+
+        assert dependencies == ["redis", "postgres"]
+        assert "worker" not in dependencies
 
 
 class TestComposeGPU:
@@ -171,6 +204,20 @@ class TestWorkerDockerfile:
         """ML Worker runs as Celery consumer."""
         assert "celery" in worker_dockerfile
         assert "services.worker.celery_app" in worker_dockerfile
+
+    def test_shared_worker_requirements_cover_orchestrator_runtime_deps(self) -> None:
+        """§10.2 / §4.C — Shared worker image carries orchestrator dependencies."""
+        worker_requirements = (REPO_ROOT / "requirements/worker.txt").read_text(
+            encoding="utf-8",
+        )
+        base_requirements = (REPO_ROOT / "requirements/base.txt").read_text(
+            encoding="utf-8",
+        )
+
+        assert "-r base.txt" in worker_requirements
+        assert "mediapipe==0.10.9" in worker_requirements
+        assert "av==12.3.*" in worker_requirements
+        assert "numpy==1.26.*" in base_requirements
 
 
 class TestApiDockerfile:

@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import json
 import logging
 import os
@@ -24,10 +25,12 @@ import threading
 import time
 import uuid
 from collections import deque
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from math import sqrt
 from queue import Empty, Queue
 from typing import Any
+
+from pydantic import ValidationError
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +63,17 @@ FFMPEG_RESAMPLE_CMD: list[str] = [
 
 # §4.C segment window
 SEGMENT_WINDOW_SECONDS: int = 30
+DEFAULT_MEDIA_SOURCE_URI: str = "file:///tmp/ipc/video_stream.mkv"
+DEFAULT_EXPERIMENT_ROW_ID: int = 0
+BANDIT_POLICY_VERSION: str = "thompson_sampling_v1"
+
+GREETING_LINES: dict[str, str] = {
+    "warm_welcome": "Hey! Thanks for streaming, you're awesome!",
+    "direct_question": "Hi! What's the best advice you've gotten today?",
+    "compliment_content": "Love the energy on this stream! How long have you been live?",
+    "simple_hello": "Hello! Just joined, happy to be here!",
+}
+DEFAULT_GREETING_TEXT: str = "Hello, welcome to the stream!"
 
 # §2 step 3 — FFmpeg crash restart delay
 FFMPEG_RESTART_DELAY: float = 1.0  # seconds
@@ -321,10 +335,15 @@ class Orchestrator:
         self._audio_buffer: bytearray = bytearray()
         self._running: bool = False
 
-        # Gap G-05 / Stage 2 — Thompson Sampling state
+        # Gap G-05 / Stage 2 — Thompson Sampling state. _experiment_id keeps
+        # the string experiment key used by the reward updater; v3.4 handoff
+        # emits the selected Persistent Store row ID via _experiment_row_id.
         self._experiment_id: str = experiment_id
+        self._experiment_row_id: int = DEFAULT_EXPERIMENT_ROW_ID
         self._active_arm: str = ""
         self._expected_greeting: str = ""
+        self._bandit_decision_snapshot: dict[str, Any] | None = None
+        self._segment_window_anchor_utc: datetime | None = None
 
         # Gap G-03 — Video capture (lazy-init in run() for live capture).
         # Replay mode binds the same source to the video and audio surfaces.
@@ -705,55 +724,233 @@ class Orchestrator:
         for role in ("streamer", "operator"):
             self._prune_physio_buffer(role, now_wall=wall_now)
 
+    @staticmethod
+    def _canonical_utc_timestamp(value: datetime) -> str:
+        """Return the canonical UTC string used for stable segment identity."""
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=UTC)
+        return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
+
+    def _segment_window_for_counter(
+        self,
+        segment_number: int,
+        timestamp_utc: datetime,
+    ) -> tuple[datetime, datetime]:
+        """Compute deterministic segment window boundaries for a segment ordinal."""
+        if self._segment_window_anchor_utc is None:
+            self._segment_window_anchor_utc = timestamp_utc - timedelta(
+                seconds=SEGMENT_WINDOW_SECONDS
+            )
+
+        anchor = self._segment_window_anchor_utc
+        if anchor.tzinfo is None:
+            anchor = anchor.replace(tzinfo=UTC)
+        anchor = anchor.astimezone(UTC)
+        self._segment_window_anchor_utc = anchor
+
+        start = anchor + timedelta(seconds=(segment_number - 1) * SEGMENT_WINDOW_SECONDS)
+        end = start + timedelta(seconds=SEGMENT_WINDOW_SECONDS)
+        return start, end
+
+    def _stable_segment_id(self, window_start_utc: datetime, window_end_utc: datetime) -> str:
+        """Return SHA-256(session_id || window_start || window_end)."""
+        stable_identity = (
+            f"{uuid.UUID(self._session_id)}"
+            f"{self._canonical_utc_timestamp(window_start_utc)}"
+            f"{self._canonical_utc_timestamp(window_end_utc)}"
+        )
+        return hashlib.sha256(stable_identity.encode("utf-8")).hexdigest()
+
+    def _lookup_selected_experiment_row_id(self, store: Any, arm: str) -> int:
+        """Best-effort lookup of the Persistent Store row ID for the selected arm."""
+        if not (hasattr(store, "_get_conn") and hasattr(store, "_put_conn")):
+            return DEFAULT_EXPERIMENT_ROW_ID
+
+        conn: Any | None = None
+        try:
+            conn = store._get_conn()
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id FROM experiments
+                    WHERE experiment_id = %(experiment_id)s
+                      AND arm = %(arm)s
+                    ORDER BY id ASC
+                    LIMIT 1
+                    """,
+                    {"experiment_id": self._experiment_id, "arm": arm},
+                )
+                row = cur.fetchone()
+            if row is None:
+                return DEFAULT_EXPERIMENT_ROW_ID
+            if isinstance(row, dict):
+                return int(row.get("id") or DEFAULT_EXPERIMENT_ROW_ID)
+            return int(row[0])
+        except Exception:
+            logger.debug(
+                "Unable to resolve experiment row ID for experiment=%s arm=%s",
+                self._experiment_id,
+                arm,
+                exc_info=True,
+            )
+            return DEFAULT_EXPERIMENT_ROW_ID
+        finally:
+            if conn is not None:
+                with contextlib.suppress(Exception):
+                    store._put_conn(conn)
+
+    def _decision_context_hash(
+        self,
+        *,
+        candidate_arm_ids: list[str],
+        posterior_by_arm: dict[str, dict[str, float]],
+        selected_arm_id: str,
+    ) -> str:
+        """Hash the stable pre-update selection context for attribution linkage."""
+        context = {
+            "experiment_code": self._experiment_id,
+            "experiment_row_id": self._experiment_row_id,
+            "candidate_arm_ids": candidate_arm_ids,
+            "posterior_by_arm": posterior_by_arm,
+            "selected_arm_id": selected_arm_id,
+            "policy_version": BANDIT_POLICY_VERSION,
+        }
+        encoded = json.dumps(context, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+    def _capture_bandit_decision_snapshot(
+        self,
+        *,
+        selection_time_utc: datetime,
+        candidate_arm_ids: list[str],
+        posterior_by_arm: dict[str, dict[str, float]],
+        sampled_theta_by_arm: dict[str, float] | None,
+        random_seed: int | None = None,
+    ) -> None:
+        """Capture the v3.4 pre-update Thompson Sampling decision snapshot.
+
+        The caller invokes this immediately after arm selection. Copy every
+        mutable selection input before storing it so later posterior updates,
+        test mutations, or store-side object reuse cannot alter the pre-update
+        evidence carried on the handoff payload.
+        """
+        if not self._active_arm:
+            self._active_arm = "simple_hello"
+        if not self._expected_greeting:
+            self._expected_greeting = GREETING_LINES.get(self._active_arm, DEFAULT_GREETING_TEXT)
+
+        normalized_candidates = [str(arm_id) for arm_id in candidate_arm_ids]
+        if not normalized_candidates:
+            normalized_candidates = [self._active_arm]
+        if self._active_arm not in normalized_candidates:
+            normalized_candidates.append(self._active_arm)
+        normalized_candidates = list(dict.fromkeys(normalized_candidates))
+
+        posterior_copy: dict[str, dict[str, float]] = {}
+        for arm_id, posterior in posterior_by_arm.items():
+            posterior_copy[str(arm_id)] = {
+                "alpha": float(posterior["alpha"]),
+                "beta": float(posterior["beta"]),
+            }
+        if self._active_arm not in posterior_copy:
+            posterior_copy[self._active_arm] = {"alpha": 1.0, "beta": 1.0}
+
+        snapshot: dict[str, Any] = {
+            "selection_method": "thompson_sampling",
+            "selection_time_utc": selection_time_utc,
+            "experiment_id": int(self._experiment_row_id),
+            "policy_version": BANDIT_POLICY_VERSION,
+            "selected_arm_id": self._active_arm,
+            "candidate_arm_ids": normalized_candidates,
+            "posterior_by_arm": posterior_copy,
+            "expected_greeting": self._expected_greeting,
+            "decision_context_hash": self._decision_context_hash(
+                candidate_arm_ids=normalized_candidates,
+                posterior_by_arm=posterior_copy,
+                selected_arm_id=self._active_arm,
+            ),
+        }
+        if sampled_theta_by_arm is not None:
+            snapshot["sampled_theta_by_arm"] = {
+                str(arm_id): float(theta) for arm_id, theta in sampled_theta_by_arm.items()
+            }
+        if random_seed is not None:
+            snapshot["random_seed"] = int(random_seed)
+
+        self._bandit_decision_snapshot = snapshot
+
+    def _ensure_bandit_decision_snapshot(self, selection_time_utc: datetime) -> None:
+        """Populate a fallback snapshot when tests assemble without live arm selection."""
+        if self._bandit_decision_snapshot is not None:
+            return
+        fallback_arm = self._active_arm or "simple_hello"
+        self._active_arm = fallback_arm
+        self._expected_greeting = self._expected_greeting or GREETING_LINES.get(
+            fallback_arm,
+            DEFAULT_GREETING_TEXT,
+        )
+        self._capture_bandit_decision_snapshot(
+            selection_time_utc=selection_time_utc,
+            candidate_arm_ids=[fallback_arm],
+            posterior_by_arm={fallback_arm: {"alpha": 1.0, "beta": 1.0}},
+            sampled_theta_by_arm=None,
+        )
+
     def assemble_segment(
         self,
         audio_data: bytes,
         events: list[dict[str, Any]],
     ) -> dict[str, Any]:
         """
-        Assemble a 30-second segment as InferenceHandoffPayload.
+        Assemble a 30-second segment as a fully validated v3.4 InferenceHandoffPayload.
 
         §2 step 5 — Validates against Pydantic schema before returning.
         §6.1 — InferenceHandoffPayload JSON Schema Draft 07 contract.
-
-        Stage 2 fields: _frame_data, _active_arm, _experiment_id, _expected_greeting
-        v3.0 fields: _au12_series, _stimulus_time, _x_max
-
-        Args:
-            audio_data: Raw 16 kHz s16le PCM bytes for this segment.
-            events: Ground truth events within the segment window.
-
-        Returns:
-            Validated payload dict ready for Module D dispatch.
+        §7E/§11.3 — Stable segment_id = SHA-256 over session/window identity.
         """
-        from packages.schemas.inference_handoff import (
-            InferenceHandoffPayload,
-            MediaSource,
+        from packages.schemas.inference_handoff import InferenceHandoffPayload
+        from services.worker.pipeline.serialization import (
+            encode_bytes_fields,
+            sanitize_json_payload,
         )
 
         assembly_started = time.perf_counter()
         self._segment_counter += 1
-        segment_id = f"seg-{self._segment_counter:04d}"
+        segment_number = self._segment_counter
+        # Callers have already drained audio/events for this attempted window.
+        # Consume AU12 before validation so invalid payloads cannot leak forward.
+        au12_series = list(self._au12_series)
+        self._au12_series.clear()
 
-        # §4.C.1 — Apply drift correction to current timestamp
+        # §4.C.1 — Apply drift correction to current timestamp.
         now_utc = self.drift_corrector.correct_timestamp(time.time())
         timestamp = datetime.fromtimestamp(now_utc, tz=UTC)
+        segment_window_start_utc, segment_window_end_utc = self._segment_window_for_counter(
+            segment_number,
+            timestamp,
+        )
+        segment_id = self._stable_segment_id(
+            segment_window_start_utc,
+            segment_window_end_utc,
+        )
 
-        # §2 step 5 — Build segment dict for the segments array
+        # §2 step 5 — Build segment dict for the segments array.
         segment_data: dict[str, Any] = {
             "segment_id": segment_id,
             "audio_bytes": len(audio_data),
             "events": events,
         }
 
-        # [Stage 2] Gap G-03 — Determine codec based on video availability
+        # [Stage 2] Gap G-03 — Determine codec based on video availability.
         has_video = self.video_capture is not None and getattr(
-            self.video_capture, "is_running", False
+            self.video_capture,
+            "is_running",
+            False,
         )
         codec = "h264" if has_video else "raw"
         resolution = [1920, 1080] if has_video else [1, 1]
 
-        # [Stage 2] Gap G-03 — Extract latest video frame FIRST
+        # [Stage 2] Gap G-03 — Extract latest video frame FIRST.
         frame_data: bytes | None = None
         if self.video_capture is not None:
             try:
@@ -767,43 +964,51 @@ class Orchestrator:
             except Exception:
                 logger.warning("Assemble segment frame extraction failed", exc_info=True)
 
-        payload = InferenceHandoffPayload(
-            session_id=uuid.UUID(self._session_id),
-            timestamp_utc=timestamp,
-            media_source=MediaSource(
-                stream_url=self._stream_url or "unknown",
-                codec=codec,
-                resolution=resolution,
-            ),
-            segments=[segment_data],
-        )
+        self._ensure_bandit_decision_snapshot(selection_time_utc=timestamp)
 
-        result: dict[str, Any] = payload.model_dump(mode="json")
-        result["_audio_data"] = audio_data
-        result["_segment_id"] = segment_id
-        result["_frame_data"] = frame_data
-
-        result["_active_arm"] = self._active_arm
-        result["_experiment_id"] = self._experiment_id
-        result["_expected_greeting"] = self._expected_greeting
-
-        result["_au12_series"] = list(self._au12_series)
-        self._au12_series.clear()
-
-        result["_stimulus_time"] = self._stimulus_time
-
+        physiological_context: dict[str, Any] | None = None
         now_wall = time.time()
         if any(self._physio_buffer[role] for role in ("streamer", "operator")):
             context = {
                 "streamer": self._derive_physio_snapshot("streamer", now_wall=now_wall),
                 "operator": self._derive_physio_snapshot("operator", now_wall=now_wall),
             }
-            result["_physiological_context"] = context
+            if any(snapshot is not None for snapshot in context.values()):
+                physiological_context = context
 
-        result["_x_max"] = None
+        payload_data: dict[str, Any] = {
+            "session_id": uuid.UUID(self._session_id),
+            "segment_id": segment_id,
+            "segment_window_start_utc": segment_window_start_utc,
+            "segment_window_end_utc": segment_window_end_utc,
+            "timestamp_utc": timestamp,
+            "media_source": {
+                "stream_url": self._stream_url or DEFAULT_MEDIA_SOURCE_URI,
+                "codec": codec,
+                "resolution": resolution,
+            },
+            "segments": [segment_data],
+            "_active_arm": self._active_arm,
+            "_experiment_id": int(self._experiment_row_id),
+            "_expected_greeting": self._expected_greeting,
+            "_stimulus_time": self._stimulus_time,
+            "_au12_series": au12_series,
+            "_x_max": None,
+            "_bandit_decision_snapshot": self._bandit_decision_snapshot,
+        }
+        if physiological_context is not None:
+            payload_data["_physiological_context"] = physiological_context
 
-        from services.worker.pipeline.serialization import encode_bytes_fields
+        payload = InferenceHandoffPayload.model_validate(sanitize_json_payload(payload_data))
+        result: dict[str, Any] = payload.model_dump(mode="json", by_alias=True)
 
+        # Transport-only binary and reward-wiring fields are added after schema
+        # validation so they do not weaken InferenceHandoffPayload.extra='forbid'.
+        result["_audio_data"] = audio_data
+        result["_frame_data"] = frame_data
+        result["_experiment_code"] = self._experiment_id
+
+        result = sanitize_json_payload(result)
         result = encode_bytes_fields(result, ["_audio_data", "_frame_data"])
         logger.info(
             "BENCHMARK segment_assembly_ms=%.3f segment_id=%s",
@@ -814,11 +1019,31 @@ class Orchestrator:
         return result
 
     def _dispatch_payload(self, payload: dict[str, Any]) -> None:
-        """Dispatch a validated payload to Module D."""
+        """Validate the typed handoff surface and dispatch it to Module D."""
         try:
+            from packages.schemas.inference_handoff import InferenceHandoffPayload
+            from services.worker.pipeline.serialization import (
+                encode_bytes_fields,
+                sanitize_json_payload,
+            )
             from services.worker.tasks.inference import process_segment
 
-            process_segment.delay(payload)
+            transport_fields = ("_audio_data", "_frame_data", "_experiment_code")
+            transport_payload = {key: payload[key] for key in transport_fields if key in payload}
+            handoff_data = {
+                key: value for key, value in payload.items() if key not in transport_fields
+            }
+
+            validated = InferenceHandoffPayload.model_validate(sanitize_json_payload(handoff_data))
+            dispatch_payload: dict[str, Any] = validated.model_dump(mode="json", by_alias=True)
+            dispatch_payload = sanitize_json_payload(dispatch_payload)
+            dispatch_payload.update(transport_payload)
+            dispatch_payload = encode_bytes_fields(
+                dispatch_payload,
+                ["_audio_data", "_frame_data"],
+            )
+
+            process_segment.delay(dispatch_payload)
         except Exception as exc:
             logger.error("Failed to dispatch segment: %s", exc)
 
@@ -841,7 +1066,25 @@ class Orchestrator:
         self._audio_buffer.clear()
         events = self._drain_event_buffer()
         self._drain_physio_events()
-        payload = self.assemble_segment(audio_data, events)
+        candidate_segment_number = self._segment_counter + 1
+        try:
+            payload = self.assemble_segment(audio_data, events)
+        except (ValidationError, ValueError) as exc:
+            logger.warning(
+                "Discarding invalid assembled handoff segment source=flush_inflight "
+                "session_id=%s segment_number=%d segment_counter=%d "
+                "window_anchor_utc=%s audio_bytes=%d event_count=%d error=%s",
+                self._session_id,
+                candidate_segment_number,
+                self._segment_counter,
+                self._segment_window_anchor_utc,
+                len(audio_data),
+                len(events),
+                exc,
+                exc_info=True,
+            )
+            return
+
         self._dispatch_payload(payload)
 
     def _reset_session_state(self) -> None:
@@ -853,6 +1096,9 @@ class Orchestrator:
         self._stimulus_time = None
         self._active_arm = ""
         self._expected_greeting = ""
+        self._experiment_row_id = DEFAULT_EXPERIMENT_ROW_ID
+        self._bandit_decision_snapshot = None
+        self._segment_window_anchor_utc = None
         self._is_calibrating = True
         self._au12_normalizer = None
 
@@ -862,6 +1108,10 @@ class Orchestrator:
         self._session_id = session_id
         self._stream_url = stream_url
         self._experiment_id = experiment_id or "greeting_line_v1"
+        self._segment_window_anchor_utc = datetime.fromtimestamp(
+            self.drift_corrector.correct_timestamp(time.time()),
+            tz=UTC,
+        )
         self._session_active = True
         self._register_session()
         self._select_experiment_arm()
@@ -1172,8 +1422,25 @@ class Orchestrator:
                 self._audio_buffer = bytearray(self._audio_buffer[segment_bytes:])
                 events = self._drain_event_buffer()
                 self._drain_physio_events()
-                payload = self.assemble_segment(audio_data, events)
-                self._dispatch_payload(payload)
+                candidate_segment_number = self._segment_counter + 1
+                try:
+                    payload = self.assemble_segment(audio_data, events)
+                except (ValidationError, ValueError) as exc:
+                    logger.warning(
+                        "Discarding invalid assembled handoff segment source=run_dispatch "
+                        "session_id=%s segment_number=%d segment_counter=%d "
+                        "window_anchor_utc=%s audio_bytes=%d event_count=%d error=%s",
+                        self._session_id,
+                        candidate_segment_number,
+                        self._segment_counter,
+                        self._segment_window_anchor_utc,
+                        len(audio_data),
+                        len(events),
+                        exc,
+                        exc_info=True,
+                    )
+                else:
+                    self._dispatch_payload(payload)
 
             # Yield control to event loop
             await asyncio.sleep(0.01)
@@ -1241,36 +1508,68 @@ class Orchestrator:
         """
         §4.E.1 — Select the active greeting line via Thompson Sampling.
 
-        Queries the Persistent Store for the experiment arms and draws
-        from the Beta(alpha, beta) posterior to select the arm with the
-        highest sample. The selected arm and its corresponding greeting
-        line are stored on the orchestrator instance and injected into
-        every InferenceHandoffPayload for the duration of this session.
-
-        If no arms exist (experiment not seeded), falls back to the
-        first greeting line and logs a warning.
+        Captures the pre-update v3.4 BanditDecisionSnapshot at arm-selection
+        time while keeping the string experiment key available for the existing
+        §7B reward update path.
         """
-        # Mapping of arm names to greeting line strings.
-        # These must match the arms seeded in 02-seed-experiments.sql.
-        greeting_lines: dict[str, str] = {
-            "warm_welcome": "Hey! Thanks for streaming, you're awesome!",
-            "direct_question": "Hi! What's the best advice you've gotten today?",
-            "compliment_content": "Love the energy on this stream! How long have you been live?",
-            "simple_hello": "Hello! Just joined, happy to be here!",
-        }
+        selection_time = datetime.fromtimestamp(
+            self.drift_corrector.correct_timestamp(time.time()),
+            tz=UTC,
+        )
 
         try:
-            from services.worker.pipeline.analytics import MetricsStore, ThompsonSamplingEngine
+            from scipy.stats import beta as beta_dist
+
+            from services.worker.pipeline.analytics import MetricsStore
 
             store = MetricsStore()
             store.connect()
             try:
-                engine = ThompsonSamplingEngine(store)
-                self._active_arm = engine.select_arm(self._experiment_id)
-                self._expected_greeting = greeting_lines.get(
-                    self._active_arm,
-                    "Hello, welcome to the stream!",
+                arms = store.get_experiment_arms(self._experiment_id)
+                if not arms:
+                    raise ValueError(f"No arms found for experiment '{self._experiment_id}'")
+
+                posterior_by_arm: dict[str, dict[str, float]] = {}
+                sampled_theta_by_arm: dict[str, float] = {}
+                selected_arm_data: dict[str, Any] | None = None
+                best_sample = -1.0
+
+                for arm_data in arms:
+                    arm_id = str(arm_data["arm"])
+                    alpha = float(arm_data["alpha_param"])
+                    beta_param = float(arm_data["beta_param"])
+                    posterior_by_arm[arm_id] = {"alpha": alpha, "beta": beta_param}
+                    sample = float(beta_dist.rvs(alpha, beta_param))
+                    sampled_theta_by_arm[arm_id] = sample
+                    if sample > best_sample:
+                        best_sample = sample
+                        selected_arm_data = arm_data
+
+                if selected_arm_data is None:
+                    raise ValueError(
+                        f"No selectable arms found for experiment '{self._experiment_id}'"
+                    )
+
+                self._active_arm = str(selected_arm_data["arm"])
+                self._expected_greeting = str(
+                    selected_arm_data.get("greeting_text")
+                    or GREETING_LINES.get(self._active_arm, DEFAULT_GREETING_TEXT)
                 )
+
+                row_id = selected_arm_data.get("id") or selected_arm_data.get("experiment_row_id")
+                self._experiment_row_id = (
+                    int(row_id)
+                    if row_id is not None
+                    else self._lookup_selected_experiment_row_id(store, self._active_arm)
+                )
+                candidate_arm_ids = list(posterior_by_arm)
+                self._capture_bandit_decision_snapshot(
+                    selection_time_utc=selection_time,
+                    candidate_arm_ids=candidate_arm_ids,
+                    posterior_by_arm=posterior_by_arm,
+                    sampled_theta_by_arm=sampled_theta_by_arm,
+                )
+
                 logger.info(
                     "Thompson Sampling selected arm '%s' for session %s: \"%s\"",
                     self._active_arm,
@@ -1280,9 +1579,16 @@ class Orchestrator:
             finally:
                 store.close()
         except Exception as exc:
-            # Fallback: use first greeting line if TS unavailable
+            # Fallback: use the stable default greeting if TS unavailable.
             self._active_arm = "simple_hello"
-            self._expected_greeting = greeting_lines["simple_hello"]
+            self._expected_greeting = GREETING_LINES["simple_hello"]
+            self._experiment_row_id = DEFAULT_EXPERIMENT_ROW_ID
+            self._capture_bandit_decision_snapshot(
+                selection_time_utc=selection_time,
+                candidate_arm_ids=[self._active_arm],
+                posterior_by_arm={self._active_arm: {"alpha": 1.0, "beta": 1.0}},
+                sampled_theta_by_arm=None,
+            )
             logger.warning(
                 "Thompson Sampling unavailable, using fallback arm: %s",
                 exc,

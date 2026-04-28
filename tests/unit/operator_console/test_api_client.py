@@ -41,11 +41,13 @@ from packages.schemas.operator_console import (
     AlertEvent,
     AlertKind,
     AlertSeverity,
+    AttributionSummary,
     EncounterState,
     HealthSnapshot,
     HealthState,
     ObservationalAcousticSummary,
     OverviewSnapshot,
+    SemanticEvaluationSummary,
     SessionCreateRequest,
     SessionEndRequest,
     SessionLifecycleAccepted,
@@ -613,6 +615,58 @@ class TestEncounterValidation:
         assert e.state is EncounterState.REJECTED_GATE_CLOSED
         assert e.semantic_gate == 0
         assert e.gated_reward == 0.0
+
+    def test_completed_encounter_round_trips_semantic_attribution_diagnostics(self) -> None:
+        transport = FakeTransport()
+        session_id = uuid4()
+        transport.enqueue_json(
+            [
+                {
+                    "encounter_id": "e-semantic-attribution",
+                    "session_id": str(session_id),
+                    "segment_timestamp_utc": _utc(2026, 4, 17, 12, 2).isoformat(),
+                    "state": EncounterState.COMPLETED.value,
+                    "active_arm": "arm_a",
+                    "semantic_gate": 1,
+                    "semantic_confidence": 0.83,
+                    "p90_intensity": 0.61,
+                    "gated_reward": 0.61,
+                    "n_frames_in_window": 120,
+                    "semantic_evaluation": {
+                        "reasoning": "cross_encoder_high_match",
+                        "is_match": True,
+                        "confidence_score": 0.83,
+                        "semantic_method": "cross_encoder",
+                        "semantic_method_version": "ce-v1",
+                    },
+                    "attribution": {
+                        "finality": "online_provisional",
+                        "soft_reward_candidate": 0.506,
+                        "au12_baseline_pre": 0.10,
+                        "au12_lift_p90": 0.51,
+                        "au12_lift_peak": 0.72,
+                        "au12_peak_latency_ms": 900.0,
+                        "sync_peak_corr": 0.37,
+                        "sync_peak_lag": 2,
+                        "outcome_link_lag_s": 44.0,
+                    },
+                }
+            ]
+        )
+        client = ApiClient("http://api.test", transport=transport)
+        [encounter] = client.list_session_encounters(session_id)
+
+        assert encounter.semantic_evaluation is not None
+        assert isinstance(encounter.semantic_evaluation, SemanticEvaluationSummary)
+        assert encounter.semantic_evaluation.reasoning == "cross_encoder_high_match"
+        assert encounter.semantic_evaluation.semantic_method == "cross_encoder"
+        assert encounter.semantic_evaluation.confidence_score == pytest.approx(0.83)
+        assert encounter.attribution is not None
+        assert isinstance(encounter.attribution, AttributionSummary)
+        assert encounter.attribution.finality == "online_provisional"
+        assert encounter.attribution.soft_reward_candidate == pytest.approx(0.506)
+        assert encounter.attribution.sync_peak_corr == pytest.approx(0.37)
+        assert encounter.attribution.outcome_link_lag_s == pytest.approx(44.0)
 
     def test_completed_encounter_round_trips_observational_acoustic(self) -> None:
         transport = FakeTransport()

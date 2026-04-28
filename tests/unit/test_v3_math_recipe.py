@@ -3,7 +3,7 @@ Tests for v3.0 Mathematical Recipe Alignment.
 
 Validates:
   - AU12Normalizer.compute_bounded_intensity() — tanh [0,1] output
-  - AU12Normalizer.compute_raw_ratio() — exposed for range normalization
+  - AU12Normalizer.compute_raw_ratio() — exposed as calibration telemetry only
   - Backward compatibility of compute_intensity() [0,5] clamp
   - Default alpha_scale = 6.0
   - Reward pipeline: stimulus windowing, P90 aggregation, semantic gate
@@ -258,25 +258,54 @@ class TestComputeReward:
         result = compute_reward(series, stimulus_time_s=15.0, is_match=True)
         assert 0.0 <= result.gated_reward <= 1.0
 
-    def test_insufficient_frames_returns_invalid(self) -> None:
-        """Too few frames in window → is_valid=False, reward=0.0."""
+    def test_sparse_non_empty_window_computes_p90(self) -> None:
+        """§7B — sparse non-empty windows compute P90 instead of invalidating."""
         series = [
             TimestampedAU12(timestamp_s=15.6, intensity=0.8),
             TimestampedAU12(timestamp_s=15.7, intensity=0.9),
         ]
         result = compute_reward(series, stimulus_time_s=15.0, is_match=True)
-        assert result.is_valid is False
-        assert result.gated_reward == 0.0
+        assert result.is_valid is True
+        assert result.n_frames_in_window == 2
+        assert result.p90_intensity == pytest.approx(0.89)
+        assert result.gated_reward == pytest.approx(0.89)
+        assert result.au12_window_series == [0.8, 0.9]
 
-    def test_range_normalization_with_x_max(self) -> None:
-        """Per-subject range normalization maps to subject's capacity."""
+    def test_empty_measurement_window_yields_zero_p90(self) -> None:
+        """§7B — zero-frame measurement windows yield P90=0.0, not invalidation."""
+        series = [
+            TimestampedAU12(timestamp_s=10.0, intensity=0.2),
+            TimestampedAU12(timestamp_s=12.0, intensity=0.4),
+        ]
+        result = compute_reward(series, stimulus_time_s=15.0, is_match=True)
+        assert result.is_valid is True
+        assert result.n_frames_in_window == 0
+        assert result.p90_intensity == 0.0
+        assert result.gated_reward == 0.0
+        assert result.semantic_gate == 1
+        assert result.au12_window_series == []
+        assert result.au12_baseline_pre == pytest.approx(0.3)
+
+    def test_x_max_and_confidence_diagnostics_do_not_scale_reward(self) -> None:
+        """§7B — x_max/confidence diagnostics cannot alter P90 or reward."""
         series = self._make_encounter(
             pre_stim_intensity=0.1,
             post_stim_intensity=0.5,
         )
-        result_raw = compute_reward(series, stimulus_time_s=15.0, is_match=True, x_max=None)
-        result_norm = compute_reward(series, stimulus_time_s=15.0, is_match=True, x_max=0.6)
-        assert result_norm.gated_reward > result_raw.gated_reward
+        result_base = compute_reward(series, stimulus_time_s=15.0, is_match=True)
+        result_diagnostics = compute_reward(
+            series,
+            stimulus_time_s=15.0,
+            is_match=True,
+            x_max=0.6,
+            confidence_score=0.01,
+            semantic_method="different-observational-method",
+        )
+        assert result_diagnostics == result_base
+        assert result_base.p90_intensity == pytest.approx(0.5)
+        assert result_base.gated_reward == pytest.approx(0.5)
+        assert result_base.au12_baseline_pre == pytest.approx(0.1)
+        assert result_base.baseline_b_neutral == result_base.au12_baseline_pre
 
     def test_reward_result_stores_series(self) -> None:
         """RewardResult includes AU12 window series for traceability."""

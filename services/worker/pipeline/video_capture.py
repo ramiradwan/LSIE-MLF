@@ -107,7 +107,7 @@ class VideoCapture:
             try:
                 # PyAV opens the IPC Pipe and reads MKV stream headers
                 # format=None lets PyAV auto-detect MKV from the pipe
-                container = av.open(
+                container = av.open(  # type: ignore[attr-defined]
                     self._pipe_path,
                     format=None,
                     options={"fflags": "nobuffer", "flags": "low_delay"},

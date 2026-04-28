@@ -167,3 +167,12 @@ class TestMain:
             main()
 
         mock_orch.run.assert_called_once()
+
+    def test_entrypoint_leaves_handoff_enqueue_to_orchestrator(self) -> None:
+        mock_task = MagicMock()
+
+        with patch("services.worker.tasks.inference.process_segment", mock_task):
+            refs = self._run_main()
+
+        refs["orchestrator"].run.assert_called_once()
+        mock_task.delay.assert_not_called()

@@ -21,6 +21,7 @@ from fastapi.testclient import TestClient
 from packages.schemas.operator_console import SessionLifecycleAccepted
 from services.api.routes import experiments as experiments_route
 from services.api.routes import sessions as sessions_route
+from services.api.services.session_lifecycle_service import _stable_session_id_for_action
 from services.worker.pipeline.orchestrator import SEGMENT_WINDOW_SECONDS, Orchestrator
 from services.worker.pipeline.replay_capture import (
     ORCHESTRATOR_AUDIO_SAMPLE_RATE_HZ,
@@ -130,7 +131,7 @@ class _FakeSessionLifecycleService:
         self._state = state
 
     def request_session_start(self, request: Any) -> SessionLifecycleAccepted:
-        session_id = uuid.uuid5(uuid.NAMESPACE_URL, f"baseline:{request.client_action_id}")
+        session_id = _stable_session_id_for_action(request.client_action_id)
         intent = {
             "action": "start",
             "session_id": str(session_id),
@@ -530,8 +531,8 @@ def _install_worker_seams(
                 "au12_series": list(kwargs["au12_series"]),
                 "stimulus_time_s": kwargs["stimulus_time_s"],
                 "is_match": kwargs["is_match"],
-                "confidence_score": kwargs.get("confidence_score", 0.0),
-                "x_max": kwargs.get("x_max"),
+                "confidence_score_present": "confidence_score" in kwargs,
+                "x_max_present": "x_max" in kwargs,
             }
         )
         return real_compute_reward(**kwargs)
@@ -885,11 +886,13 @@ def test_baseline_replay_e2e_proves_strong_arm_posterior_improves(
             abs=tolerance,
         )
         assert reward_call["is_match"] is bool(stimulus["expected_semantic_match"])
-        assert reward_call["confidence_score"] == pytest.approx(
+        assert reward_call["confidence_score_present"] is False
+        assert reward_call["x_max_present"] is False
+        assert metrics["semantic"]["confidence_score"] == pytest.approx(
             float(stimulus["expected_confidence_score"]),
             abs=tolerance,
         )
-        assert reward_call["x_max"] == stimulus["expected_x_max"]
+        assert metrics["_x_max"] == stimulus["expected_x_max"]
 
         au12_window = reward_mod.extract_stimulus_window(
             reward_call["au12_series"],

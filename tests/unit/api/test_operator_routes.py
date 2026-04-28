@@ -22,6 +22,7 @@ import pytest
 
 from packages.schemas.operator_console import (
     AcousticObservationalMetrics,
+    AttributionSummary,
     EncounterState,
     EncounterSummary,
     ExperimentDetail,
@@ -29,6 +30,7 @@ from packages.schemas.operator_console import (
     HealthState,
     ObservationalAcousticSummary,
     OverviewSnapshot,
+    SemanticEvaluationSummary,
     SessionPhysiologySnapshot,
     SessionSummary,
     StimulusAccepted,
@@ -209,6 +211,24 @@ class TestOperatorReadRoutes:
                 shimmer_mean_baseline=None,
                 shimmer_delta=None,
             ),
+            semantic_evaluation=SemanticEvaluationSummary(
+                reasoning="cross_encoder_high_match",
+                is_match=True,
+                confidence_score=0.83,
+                semantic_method="cross_encoder",
+                semantic_method_version="ce-v1.2.3",
+            ),
+            attribution=AttributionSummary(
+                finality="online_provisional",
+                soft_reward_candidate=0.59,
+                au12_baseline_pre=0.04,
+                au12_lift_p90=0.67,
+                au12_lift_peak=0.72,
+                au12_peak_latency_ms=240.0,
+                sync_peak_corr=0.41,
+                sync_peak_lag=1,
+                outcome_link_lag_s=12.0,
+            ),
         )
         svc = MagicMock()
         svc.list_encounters.return_value = [encounter]
@@ -239,6 +259,40 @@ class TestOperatorReadRoutes:
         assert result[0].observational_acoustic.jitter_mean_baseline is None
         assert result[0].observational_acoustic.shimmer_mean_measure == 0.027
         assert result[0].observational_acoustic.shimmer_delta is None
+        assert result[0].semantic_evaluation is not None
+        assert result[0].semantic_evaluation.reasoning == "cross_encoder_high_match"
+        assert result[0].semantic_evaluation.is_match is True
+        assert result[0].semantic_evaluation.confidence_score == 0.83
+        assert result[0].attribution is not None
+        assert result[0].attribution.finality == "online_provisional"
+        assert result[0].attribution.soft_reward_candidate == 0.59
+        assert result[0].attribution.sync_peak_lag == 1
+        assert isinstance(result[0].attribution.sync_peak_lag, int)
+        assert result[0].attribution.outcome_link_lag_s == 12.0
+
+    def test_list_encounters_returns_additive_null_semantic_attribution_fields(self) -> None:
+        sid = uuid.uuid4()
+        encounter = EncounterSummary(
+            encounter_id="enc-no-attribution",
+            session_id=sid,
+            segment_timestamp_utc=_now(),
+            state=EncounterState.COMPLETED,
+        )
+        svc = MagicMock()
+        svc.list_encounters.return_value = [encounter]
+
+        result = asyncio.run(
+            list_session_encounters(
+                session_id=sid,
+                limit=25,
+                before_utc=None,
+                service=svc,
+            )
+        )
+
+        assert result == [encounter]
+        assert result[0].semantic_evaluation is None
+        assert result[0].attribution is None
 
 
 # ----------------------------------------------------------------------

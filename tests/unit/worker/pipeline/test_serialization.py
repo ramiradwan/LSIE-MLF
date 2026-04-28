@@ -145,6 +145,59 @@ class TestSanitizeJsonPayload:
         result = sanitize_json_payload((float("nan"), 1.0, None))
         assert result == (None, 1.0, None)
 
+    def test_ineligible_physiological_context_is_omitted(self) -> None:
+        payload: dict[str, Any] = {
+            "session_id": "s1",
+            "_physiological_context": {"streamer": None, "operator": None},
+        }
+
+        sanitize_json_payload(payload)
+
+        assert "_physiological_context" not in payload
+
+    def test_empty_role_snapshot_is_not_serialized_as_empty_object(self) -> None:
+        payload: dict[str, Any] = {
+            "_physiological_context": {
+                "streamer": {},
+                "operator": {
+                    "rmssd_ms": None,
+                    "heart_rate_bpm": 70,
+                    "source_timestamp_utc": "2026-03-13T12:00:00Z",
+                    "freshness_s": 10.0,
+                    "is_stale": False,
+                    "provider": "oura",
+                    "source_kind": "ibi",
+                    "derivation_method": "server",
+                    "window_s": 300,
+                    "validity_ratio": 1.0,
+                    "is_valid": True,
+                },
+            }
+        }
+
+        sanitize_json_payload(payload)
+
+        context = payload["_physiological_context"]
+        assert context["streamer"] is None
+        assert context["operator"]["heart_rate_bpm"] == 70
+
+    def test_absent_bandit_optionals_are_pruned(self) -> None:
+        payload: dict[str, Any] = {
+            "_bandit_decision_snapshot": {
+                "selection_method": "thompson_sampling",
+                "sampled_theta_by_arm": None,
+                "decision_context_hash": "a" * 64,
+                "random_seed": None,
+            }
+        }
+
+        sanitize_json_payload(payload)
+
+        snapshot = payload["_bandit_decision_snapshot"]
+        assert "sampled_theta_by_arm" not in snapshot
+        assert snapshot["decision_context_hash"] == "a" * 64
+        assert "random_seed" not in snapshot
+
 
 class TestRoundTrip:
     """Encode then decode produces original bytes."""

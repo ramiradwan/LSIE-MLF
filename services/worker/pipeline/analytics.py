@@ -17,7 +17,7 @@ import os
 import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, ClassVar
 
 if TYPE_CHECKING:
     from psycopg2 import pool
@@ -240,9 +240,12 @@ class MetricsStore:
     Failure: buffer 1000 records, retry every 5s, overflow to CSV.
     """
 
+    _shared_attribution_buffer: ClassVar[list[Any]] = []
+
     def __init__(self) -> None:
         self._pool: pool.ThreadedConnectionPool | None = None
         self._buffer: list[dict[str, Any]] = []
+        self._attribution_buffer: list[Any] = MetricsStore._shared_attribution_buffer
         self._psycopg2: Any = None
 
     def connect(
@@ -691,6 +694,243 @@ class MetricsStore:
         if self._pool is not None:
             self._pool.closeall()
             self._pool = None
+
+    def persist_attribution_ledger(self, ledger: Any) -> None:
+        """§4.E.3 / §7E — Persist attribution ledger records idempotently.
+
+        All four ledger tables use deterministic UUID primary keys and
+        replay-safe ``INSERT ... ON CONFLICT`` upserts. Missing outcomes and
+        null linkage are represented by empty ``ledger.outcomes`` /
+        ``ledger.links`` collections and are therefore valid no-op states for
+        those tables.
+
+        §2.7 outage handling mirrors metric persistence for attribution writes:
+        unreachable database errors are buffered in memory up to DB_BUFFER_MAX,
+        retried/flushed after successful writes with DB_RETRY_INTERVAL spacing,
+        and overflowed to CSV rather than silently dropped. The attribution buffer
+        is process-level so per-task MetricsStore disposal cannot drop ledgers
+        that have not yet reached the CSV overflow threshold.
+        """
+        if ledger is None:
+            return
+
+        try:
+            self._write_attribution_ledger(ledger)
+            if self._attribution_buffer:
+                self._flush_attribution_buffer()
+        except Exception as exc:
+            if not self._is_db_error(exc):
+                raise
+            logger.warning(
+                "Attribution ledger write failed, buffering ledger (%d in buffer)",
+                len(self._attribution_buffer) + 1,
+            )
+            self._attribution_buffer.append(ledger)
+            if len(self._attribution_buffer) >= DB_BUFFER_MAX:
+                self._overflow_attribution_to_csv(self._attribution_buffer[:])
+                self._attribution_buffer.clear()
+
+    def _write_attribution_ledger(self, ledger: Any) -> None:
+        """Write one attribution ledger directly with replay-safe upserts."""
+        if ledger is None:
+            return
+
+        insert_event_sql = """
+    INSERT INTO attribution_event (
+        event_id, session_id, segment_id, event_type, event_time_utc,
+        stimulus_time_utc, selected_arm_id, expected_rule_text_hash,
+        semantic_method, semantic_method_version, semantic_p_match,
+        semantic_reason_code, reward_path_version,
+        bandit_decision_snapshot, evidence_flags, finality,
+        schema_version, created_at
+    ) VALUES (
+        %(event_id)s, %(session_id)s, %(segment_id)s, %(event_type)s,
+        %(event_time_utc)s, %(stimulus_time_utc)s, %(selected_arm_id)s,
+        %(expected_rule_text_hash)s, %(semantic_method)s,
+        %(semantic_method_version)s, %(semantic_p_match)s,
+        %(semantic_reason_code)s, %(reward_path_version)s,
+        %(bandit_decision_snapshot)s::jsonb, %(evidence_flags)s,
+        %(finality)s, %(schema_version)s, %(created_at)s
+    )
+    ON CONFLICT (event_id) DO UPDATE SET
+        session_id = EXCLUDED.session_id,
+        segment_id = EXCLUDED.segment_id,
+        event_type = EXCLUDED.event_type,
+        event_time_utc = EXCLUDED.event_time_utc,
+        stimulus_time_utc = EXCLUDED.stimulus_time_utc,
+        selected_arm_id = EXCLUDED.selected_arm_id,
+        expected_rule_text_hash = EXCLUDED.expected_rule_text_hash,
+        semantic_method = EXCLUDED.semantic_method,
+        semantic_method_version = EXCLUDED.semantic_method_version,
+        semantic_p_match = EXCLUDED.semantic_p_match,
+        semantic_reason_code = EXCLUDED.semantic_reason_code,
+        reward_path_version = EXCLUDED.reward_path_version,
+        bandit_decision_snapshot = EXCLUDED.bandit_decision_snapshot,
+        evidence_flags = EXCLUDED.evidence_flags,
+        finality = EXCLUDED.finality,
+        schema_version = EXCLUDED.schema_version
+"""
+        insert_outcome_sql = """
+    INSERT INTO outcome_event (
+        outcome_id, session_id, outcome_type, outcome_value,
+        outcome_time_utc, source_system, source_event_ref,
+        confidence, finality, schema_version, created_at
+    ) VALUES (
+        %(outcome_id)s, %(session_id)s, %(outcome_type)s,
+        %(outcome_value)s, %(outcome_time_utc)s, %(source_system)s,
+        %(source_event_ref)s, %(confidence)s, %(finality)s,
+        %(schema_version)s, %(created_at)s
+    )
+    ON CONFLICT (outcome_id) DO UPDATE SET
+        session_id = EXCLUDED.session_id,
+        outcome_type = EXCLUDED.outcome_type,
+        outcome_value = EXCLUDED.outcome_value,
+        outcome_time_utc = EXCLUDED.outcome_time_utc,
+        source_system = EXCLUDED.source_system,
+        source_event_ref = EXCLUDED.source_event_ref,
+        confidence = EXCLUDED.confidence,
+        finality = EXCLUDED.finality,
+        schema_version = EXCLUDED.schema_version
+"""
+        insert_link_sql = """
+    INSERT INTO event_outcome_link (
+        link_id, event_id, outcome_id, lag_s, horizon_s,
+        link_rule_version, eligibility_flags, finality,
+        schema_version, created_at
+    ) VALUES (
+        %(link_id)s, %(event_id)s, %(outcome_id)s, %(lag_s)s,
+        %(horizon_s)s, %(link_rule_version)s,
+        %(eligibility_flags)s, %(finality)s, %(schema_version)s,
+        %(created_at)s
+    )
+    ON CONFLICT (link_id) DO UPDATE SET
+        event_id = EXCLUDED.event_id,
+        outcome_id = EXCLUDED.outcome_id,
+        lag_s = EXCLUDED.lag_s,
+        horizon_s = EXCLUDED.horizon_s,
+        link_rule_version = EXCLUDED.link_rule_version,
+        eligibility_flags = EXCLUDED.eligibility_flags,
+        finality = EXCLUDED.finality,
+        schema_version = EXCLUDED.schema_version
+"""
+        insert_score_sql = """
+    INSERT INTO attribution_score (
+        score_id, event_id, outcome_id, attribution_method,
+        method_version, score_raw, score_normalized, confidence,
+        evidence_flags, finality, schema_version, created_at
+    ) VALUES (
+        %(score_id)s, %(event_id)s, %(outcome_id)s,
+        %(attribution_method)s, %(method_version)s, %(score_raw)s,
+        %(score_normalized)s, %(confidence)s, %(evidence_flags)s,
+        %(finality)s, %(schema_version)s, %(created_at)s
+    )
+    ON CONFLICT (score_id) DO UPDATE SET
+        event_id = EXCLUDED.event_id,
+        outcome_id = EXCLUDED.outcome_id,
+        attribution_method = EXCLUDED.attribution_method,
+        method_version = EXCLUDED.method_version,
+        score_raw = EXCLUDED.score_raw,
+        score_normalized = EXCLUDED.score_normalized,
+        confidence = EXCLUDED.confidence,
+        evidence_flags = EXCLUDED.evidence_flags,
+        finality = EXCLUDED.finality,
+        schema_version = EXCLUDED.schema_version
+"""
+
+        event_params = ledger.event.model_dump(mode="json")
+        event_params["bandit_decision_snapshot"] = json.dumps(
+            event_params["bandit_decision_snapshot"],
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        outcome_params = [outcome.model_dump(mode="json") for outcome in ledger.outcomes]
+        link_params = [link.model_dump(mode="json") for link in ledger.links]
+        score_params = [score.model_dump(mode="json") for score in ledger.scores]
+
+        psycopg2 = _import_psycopg2()
+        conn = self._get_conn()
+        try:
+            conn.set_isolation_level(psycopg2.extensions.ISOLATION_LEVEL_READ_COMMITTED)
+            with conn.cursor() as cur:
+                cur.execute(insert_event_sql, event_params)
+                for params in outcome_params:
+                    cur.execute(insert_outcome_sql, params)
+                for params in link_params:
+                    cur.execute(insert_link_sql, params)
+                for params in score_params:
+                    cur.execute(insert_score_sql, params)
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            self._put_conn(conn)
+
+    def _attribution_overflow_payload(self, ledger: Any) -> str:
+        """Serialize one buffered attribution ledger for CSV fallback replay."""
+        return json.dumps(
+            {
+                "event": ledger.event.model_dump(mode="json"),
+                "outcomes": [outcome.model_dump(mode="json") for outcome in ledger.outcomes],
+                "links": [link.model_dump(mode="json") for link in ledger.links],
+                "scores": [score.model_dump(mode="json") for score in ledger.scores],
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
+    def _overflow_attribution_to_csv(self, ledgers: list[Any]) -> None:
+        """Write attribution overflow ledgers to CSV fallback storage."""
+        fallback_dir = Path(CSV_FALLBACK_DIR)
+        fallback_dir.mkdir(parents=True, exist_ok=True)
+
+        timestamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S")
+        csv_path = fallback_dir / f"attribution_overflow_{timestamp}.csv"
+        fieldnames = ["record_type", "payload_json"]
+        with open(csv_path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            for ledger in ledgers:
+                writer.writerow(
+                    {
+                        "record_type": "attribution_ledger",
+                        "payload_json": self._attribution_overflow_payload(ledger),
+                    }
+                )
+
+        logger.error("Attribution overflow: wrote %d ledgers to %s", len(ledgers), csv_path)
+
+    def _flush_attribution_buffer(self) -> None:
+        """Retry buffered attribution ledgers, then overflow persistent failures."""
+        remaining: list[Any] = []
+        for ledger in self._attribution_buffer:
+            try:
+                self._write_attribution_ledger(ledger)
+            except Exception as exc:
+                if not self._is_db_error(exc):
+                    raise
+                remaining.append(ledger)
+
+        if remaining:
+            logger.warning(
+                "Attribution flush: %d ledgers failed, retrying in %ds",
+                len(remaining),
+                DB_RETRY_INTERVAL,
+            )
+            time.sleep(DB_RETRY_INTERVAL)
+            still_failing: list[Any] = []
+            for ledger in remaining:
+                try:
+                    self._write_attribution_ledger(ledger)
+                except Exception as exc:
+                    if not self._is_db_error(exc):
+                        raise
+                    still_failing.append(ledger)
+
+            if still_failing:
+                self._overflow_attribution_to_csv(still_failing)
+
+        self._attribution_buffer.clear()
 
 
 class ThompsonSamplingEngine:

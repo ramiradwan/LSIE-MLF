@@ -10,7 +10,7 @@ Design constraints:
   - No Pydantic construction here — that is the service layer's job.
   - No raw biometric media (§5): only derived analytics tables are touched
     (`sessions`, `metrics`, `encounter_log`, `experiments`, `physiology_log`,
-    `comodulation_log`).
+    `comodulation_log`, and the attribution ledger summary tables).
   - Keep functions small and composable — each answers one question the
     service layer needs.
 
@@ -18,8 +18,10 @@ Spec references:
   §2 step 7 — Parameterized INSERT/SELECT
   §4.E.1    — Encounter Log, experiment state
   §4.E.2    — Physiology persistence (per-role latest snapshot)
+  §4.E.3    — Attribution analytics persistence
   §7B       — Thompson Sampling arm posteriors (experiments table)
   §7C       — Co-Modulation Index rows (comodulation_log)
+  §7E       — Event→outcome attribution diagnostics
   §12       — Error-handling matrix (staleness heuristics used for alert synthesis)
 """
 
@@ -70,6 +72,88 @@ _ACOUSTIC_METRICS_LATERAL_SQL: str = ",\n            ".join(
         *[f"m.{column}" for column in _ACOUSTIC_METRICS_COLUMNS],
     ]
 )
+
+# §7E / §6.4 semantic-attribution projections are read additively from the
+# attribution ledger and pivoted onto the existing encounter aggregate rows.
+# Prefix the service-layer source keys to avoid colliding with legacy reward
+# fields such as encounter_log.semantic_gate and encounter_log.baseline_neutral.
+_SEMANTIC_ATTRIBUTION_SELECT_SQL: str = """
+        attr.semantic_reason_code AS semantic_reasoning,
+        CASE
+            WHEN attr.event_id IS NULL THEN NULL::boolean
+            ELSE (e.semantic_gate = 1)
+        END AS semantic_is_match,
+        attr.semantic_p_match AS semantic_confidence_score,
+        attr.semantic_method AS semantic_method,
+        attr.semantic_method_version AS semantic_method_version,
+        attr.finality AS attribution_finality,
+        attribution_scores.soft_reward_candidate,
+        CASE
+            WHEN attr.event_id IS NULL THEN NULL::double precision
+            ELSE e.baseline_neutral
+        END AS au12_baseline_pre,
+        attribution_scores.au12_lift_p90,
+        attribution_scores.au12_lift_peak,
+        attribution_scores.au12_peak_latency_ms,
+        attribution_scores.sync_peak_corr,
+        attribution_scores.sync_peak_lag,
+        outcome_link.lag_s AS outcome_link_lag_s
+""".strip()
+
+_ATTRIBUTION_EVENT_LATERAL_SQL: str = """
+    LEFT JOIN LATERAL (
+        SELECT
+            ae.event_id,
+            ae.semantic_reason_code,
+            ae.semantic_p_match,
+            ae.semantic_method,
+            ae.semantic_method_version,
+            ae.finality,
+            ae.created_at
+        FROM attribution_event ae
+        WHERE ae.session_id = e.session_id
+          AND ae.segment_id = e.segment_id
+          AND ae.event_type = 'greeting_interaction'
+        ORDER BY ae.created_at DESC, ae.event_id DESC
+        LIMIT 1
+    ) attr ON TRUE
+"""
+
+_ATTRIBUTION_SCORE_LATERAL_SQL: str = """
+    LEFT JOIN LATERAL (
+        SELECT
+            MAX(s.score_raw) FILTER (
+                WHERE s.attribution_method = 'soft_reward_candidate'
+            ) AS soft_reward_candidate,
+            MAX(s.score_raw) FILTER (
+                WHERE s.attribution_method = 'au12_lift_p90'
+            ) AS au12_lift_p90,
+            MAX(s.score_raw) FILTER (
+                WHERE s.attribution_method = 'au12_lift_peak'
+            ) AS au12_lift_peak,
+            MAX(s.score_raw) FILTER (
+                WHERE s.attribution_method = 'au12_peak_latency_ms'
+            ) AS au12_peak_latency_ms,
+            MAX(s.score_raw) FILTER (
+                WHERE s.attribution_method = 'sync_peak_corr'
+            ) AS sync_peak_corr,
+            MAX(s.score_raw) FILTER (
+                WHERE s.attribution_method = 'sync_peak_lag'
+            ) AS sync_peak_lag
+        FROM attribution_score s
+        WHERE s.event_id = attr.event_id
+    ) attribution_scores ON TRUE
+"""
+
+_OUTCOME_LINK_LATERAL_SQL: str = """
+    LEFT JOIN LATERAL (
+        SELECT link.lag_s
+        FROM event_outcome_link link
+        WHERE link.event_id = attr.event_id
+        ORDER BY link.created_at DESC, link.lag_s ASC
+        LIMIT 1
+    ) outcome_link ON TRUE
+"""
 
 # ----------------------------------------------------------------------
 # Sessions
@@ -175,7 +259,8 @@ _SESSION_ENCOUNTERS_SQL: str = f"""
         e.arm, e.timestamp_utc, e.gated_reward, e.p90_intensity,
         e.semantic_gate, e.is_valid, e.n_frames,
         e.baseline_neutral, e.stimulus_time, e.created_at,
-        {_ACOUSTIC_METRICS_SELECT_SQL}
+        {_ACOUSTIC_METRICS_SELECT_SQL},
+        {_SEMANTIC_ATTRIBUTION_SELECT_SQL}
     FROM encounter_log e
     LEFT JOIN LATERAL (
         SELECT
@@ -186,6 +271,9 @@ _SESSION_ENCOUNTERS_SQL: str = f"""
         ORDER BY m.created_at DESC, m.id DESC
         LIMIT 1
     ) acoustic ON TRUE
+    {_ATTRIBUTION_EVENT_LATERAL_SQL}
+    {_ATTRIBUTION_SCORE_LATERAL_SQL}
+    {_OUTCOME_LINK_LATERAL_SQL}
     WHERE e.session_id = %(session_id)s
       AND (%(before_utc)s::timestamptz IS NULL OR e.timestamp_utc < %(before_utc)s)
     ORDER BY e.timestamp_utc DESC
@@ -199,7 +287,8 @@ _LATEST_ENCOUNTER_SQL: str = f"""
         e.arm, e.timestamp_utc, e.gated_reward, e.p90_intensity,
         e.semantic_gate, e.is_valid, e.n_frames,
         e.baseline_neutral, e.stimulus_time, e.created_at,
-        {_ACOUSTIC_METRICS_SELECT_SQL}
+        {_ACOUSTIC_METRICS_SELECT_SQL},
+        {_SEMANTIC_ATTRIBUTION_SELECT_SQL}
     FROM encounter_log e
     LEFT JOIN LATERAL (
         SELECT
@@ -210,6 +299,9 @@ _LATEST_ENCOUNTER_SQL: str = f"""
         ORDER BY m.created_at DESC, m.id DESC
         LIMIT 1
     ) acoustic ON TRUE
+    {_ATTRIBUTION_EVENT_LATERAL_SQL}
+    {_ATTRIBUTION_SCORE_LATERAL_SQL}
+    {_OUTCOME_LINK_LATERAL_SQL}
     WHERE e.session_id = %(session_id)s
     ORDER BY e.timestamp_utc DESC
     LIMIT 1

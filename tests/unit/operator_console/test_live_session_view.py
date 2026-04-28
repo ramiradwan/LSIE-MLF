@@ -16,9 +16,11 @@ import pytest
 from PySide6.QtWidgets import QDialog
 
 from packages.schemas.operator_console import (
+    AttributionSummary,
     EncounterState,
     EncounterSummary,
     ObservationalAcousticSummary,
+    SemanticEvaluationSummary,
     SessionSummary,
     StimulusActionState,
     UiStatusKind,
@@ -70,6 +72,8 @@ def _encounter(
     frames: int | None = 150,
     session_id: UUID | None = None,
     observational_acoustic: ObservationalAcousticSummary | None = None,
+    semantic_evaluation: SemanticEvaluationSummary | None = None,
+    attribution: AttributionSummary | None = None,
     segment_timestamp_utc: datetime = _NOW,
 ) -> EncounterSummary:
     return EncounterSummary(
@@ -86,6 +90,8 @@ def _encounter(
         n_frames_in_window=frames,
         baseline_b_neutral=0.1,
         observational_acoustic=observational_acoustic,
+        semantic_evaluation=semantic_evaluation,
+        attribution=attribution,
     )
 
 
@@ -237,7 +243,32 @@ def test_live_session_view_detail_pane_shows_reward_explanation() -> None:
     view, store, vm = _build_view()
     session = _session()
     store.set_live_session(session)
-    store.set_encounters([_encounter("e1", session_id=session.session_id)])
+    store.set_encounters(
+        [
+            _encounter(
+                "e1",
+                session_id=session.session_id,
+                semantic_evaluation=SemanticEvaluationSummary(
+                    reasoning="cross_encoder_high_match",
+                    is_match=True,
+                    confidence_score=0.91,
+                    semantic_method="cross_encoder",
+                    semantic_method_version="ce-v1",
+                ),
+                attribution=AttributionSummary(
+                    finality="offline_final",
+                    soft_reward_candidate=0.77,
+                    au12_baseline_pre=0.10,
+                    au12_lift_p90=0.55,
+                    au12_lift_peak=0.70,
+                    au12_peak_latency_ms=1250.0,
+                    sync_peak_corr=0.401,
+                    sync_peak_lag=3,
+                    outcome_link_lag_s=15.0,
+                ),
+            )
+        ]
+    )
     vm.select_encounter("e1")
 
     detail = view._detail_panel
@@ -247,6 +278,20 @@ def test_live_session_view_detail_pane_shows_reward_explanation() -> None:
     assert "150" in detail._frames_card._primary.text()  # type: ignore[attr-defined]
     # Reward explanation sentence mentions the §7B inputs by name.
     assert "P90" in detail._explanation.text() or "p90" in detail._explanation.text().lower()  # type: ignore[attr-defined]
+    # v3.4 diagnostics render below reward/acoustics without changing reward cards.
+    assert detail._semantic_title.text() == "Semantic & Attribution (§8 / §7E)"  # type: ignore[attr-defined]
+    assert detail._semantic_empty.isHidden() is True  # type: ignore[attr-defined]
+    assert "local cross-encoder" in detail._semantic_method_pill.text()  # type: ignore[attr-defined]
+    assert detail._semantic_match_pill.text() == "match"  # type: ignore[attr-defined]
+    assert "Cross-encoder high-confidence match" in detail._semantic_reason_label.text()  # type: ignore[attr-defined]
+    assert detail._confidence_card._primary.text() == "p_match 91%"  # type: ignore[attr-defined]
+    assert "offline final" in detail._attribution_finality_pill.text()  # type: ignore[attr-defined]
+    assert detail._soft_reward_card._primary.text() == "r_t^soft 0.770"  # type: ignore[attr-defined]
+    assert "P90 lift 0.550" in detail._au12_lifts_card._primary.text()  # type: ignore[attr-defined]
+    assert detail._peak_latency_card._primary.text() == "1.25s"  # type: ignore[attr-defined]
+    assert "peak corr +0.401" in detail._synchrony_card._primary.text()  # type: ignore[attr-defined]
+    assert detail._outcome_link_lag_card._primary.text() == "lag_s 15.0s"  # type: ignore[attr-defined]
+    assert "no reward-path effect" in detail._semantic_observational_note.text()  # type: ignore[attr-defined]
 
 
 def test_live_session_view_detail_pane_renders_acoustic_metrics_and_explanation() -> None:
@@ -451,7 +496,22 @@ def test_live_session_view_acoustic_empty_state_without_error_banner() -> None:
     view, store, vm = _build_view()
     session = _session()
     store.set_live_session(session)
-    store.set_encounters([_encounter("e1", session_id=session.session_id)])
+    store.set_encounters(
+        [
+            _encounter(
+                "e1",
+                session_id=session.session_id,
+                semantic_evaluation=SemanticEvaluationSummary(
+                    reasoning="gray_band_llm_nonmatch",
+                    is_match=False,
+                    confidence_score=0.63,
+                    semantic_method="llm_gray_band",
+                    semantic_method_version="gray-v1",
+                ),
+                attribution=None,
+            )
+        ]
+    )
     vm.select_encounter("e1")
 
     detail = view._detail_panel
@@ -459,6 +519,12 @@ def test_live_session_view_acoustic_empty_state_without_error_banner() -> None:
     assert detail._acoustic_empty.isHidden() is False  # type: ignore[attr-defined]
     assert detail._acoustic_metrics_container.isHidden() is True  # type: ignore[attr-defined]
     assert view._error_banner.isHidden() is True  # type: ignore[attr-defined]
+    assert detail._semantic_empty.text() == "Attribution analytics absent for this encounter"  # type: ignore[attr-defined]
+    assert detail._semantic_empty.isHidden() is False  # type: ignore[attr-defined]
+    assert "LLM gray-band fallback" in detail._semantic_method_pill.text()  # type: ignore[attr-defined]
+    assert detail._semantic_match_pill.text() == "non-match"  # type: ignore[attr-defined]
+    assert detail._soft_reward_card.isHidden() is True  # type: ignore[attr-defined]
+    assert "no reward-path effect" in detail._semantic_observational_note.text()  # type: ignore[attr-defined]
 
 
 def test_live_session_view_detail_pane_flags_zero_frames() -> None:

@@ -28,6 +28,26 @@ def _get_inference_module() -> Any:
         return importlib.import_module(mod_name)
 
 
+def _semantic_result(
+    *,
+    is_match: bool = True,
+    confidence_score: float = 0.84,
+    reasoning: str = "cross_encoder_high_match",
+    semantic_method: str = "cross_encoder",
+    semantic_method_version: str = (
+        "lsie-greeting-cross-encoder-v1.0.0+semantic-greeting-calibration-v1.0.0"
+    ),
+) -> dict[str, Any]:
+    """Build a bounded semantic result with v3.4 method metadata."""
+    return {
+        "reasoning": reasoning,
+        "is_match": is_match,
+        "confidence_score": confidence_score,
+        "semantic_method": semantic_method,
+        "semantic_method_version": semantic_method_version,
+    }
+
+
 def _assert_null_acoustic_contract(payload: dict[str, Any]) -> None:
     """Assert the deterministic v3.3 no-audio/null-stimulus acoustic payload."""
     assert payload["f0_valid_measure"] is False
@@ -384,6 +404,123 @@ class TestProcessSegment:
                 assert result[key] == value, f"{label}: result[{key}]"
                 assert dispatched_metrics[key] == value, f"{label}: dispatch[{key}]"
 
+    def test_semantic_method_metadata_propagated_to_module_e(self) -> None:
+        """§2.6 / §8 — D→E enrichment adds metadata after scorer validation."""
+        mod = _get_inference_module()
+        mock_persist = MagicMock()
+        mock_engine = MagicMock()
+        mock_engine.transcribe.return_value = "Hello, welcome!"
+        mock_preprocessor = MagicMock()
+        mock_preprocessor.preprocess.return_value = "hello welcome"
+        canonical_scorer_payload = {
+            "reasoning": "cross_encoder_high_match",
+            "is_match": True,
+            "confidence_score": 0.72,
+        }
+        expected_downstream_payload = {
+            **canonical_scorer_payload,
+            "semantic_method": "cross_encoder",
+            "semantic_method_version": (
+                "lsie-greeting-cross-encoder-v1.0.0+semantic-greeting-calibration-v1.0.0"
+            ),
+        }
+        mock_semantic = MagicMock()
+        mock_semantic.evaluate.return_value = canonical_scorer_payload
+        mock_semantic.evaluate_shadow.return_value = None
+
+        with (
+            patch.object(mod, "persist_metrics", mock_persist),
+            patch("packages.ml_core.transcription.TranscriptionEngine", return_value=mock_engine),
+            patch(
+                "packages.ml_core.preprocessing.TextPreprocessor",
+                return_value=mock_preprocessor,
+            ),
+            patch("packages.ml_core.semantic.SemanticEvaluator", return_value=mock_semantic),
+            patch("subprocess.run"),
+            patch("os.remove"),
+            patch("tempfile.NamedTemporaryFile") as mock_tmpfile,
+        ):
+            mock_file = MagicMock()
+            mock_file.__enter__ = MagicMock(return_value=mock_file)
+            mock_file.__exit__ = MagicMock(return_value=False)
+            mock_file.name = "/tmp/test.raw"
+            mock_tmpfile.return_value = mock_file
+
+            result = mod.process_segment(MagicMock(), self._make_payload(_stimulus_time=None))
+
+        assert "semantic_method" not in canonical_scorer_payload
+        assert "semantic_method_version" not in canonical_scorer_payload
+        assert result["semantic"] == expected_downstream_payload
+        assert result["semantic"]["semantic_method"] == "cross_encoder"
+        assert result["semantic"]["semantic_method_version"] == (
+            "lsie-greeting-cross-encoder-v1.0.0+semantic-greeting-calibration-v1.0.0"
+        )
+        dispatched_metrics = mock_persist.delay.call_args.args[0]
+        assert dispatched_metrics["semantic"] == expected_downstream_payload
+        mock_semantic.evaluate.assert_called_once_with(
+            "Hello, welcome to the stream!",
+            "hello welcome",
+        )
+
+    def test_semantic_free_form_reasoning_is_bounded_and_shadow_is_separate(self) -> None:
+        """§8 / §8.6 — Legacy rationale text is bounded; shadow cannot mutate live."""
+        mod = _get_inference_module()
+        mock_persist = MagicMock()
+        mock_engine = MagicMock()
+        mock_engine.transcribe.return_value = "ambiguous greeting"
+        mock_preprocessor = MagicMock()
+        mock_preprocessor.preprocess.return_value = "ambiguous greeting"
+        mock_semantic = MagicMock()
+        mock_semantic.evaluate.return_value = {
+            "reasoning": "This legacy Azure rationale must not be forwarded.",
+            "is_match": False,
+            "confidence_score": 0.58,
+        }
+        mock_semantic.last_semantic_method = "llm_gray_band"
+        mock_semantic.last_semantic_method_version = "azure-openai:gpt-4o:2024-02-01"
+        mock_semantic.evaluate_shadow.return_value = {
+            "reasoning": "cross_encoder_high_match",
+            "is_match": True,
+            "confidence_score": 0.99,
+        }
+        mock_semantic.last_shadow_semantic_method = "cross_encoder"
+        mock_semantic.last_shadow_semantic_method_version = "shadow-v1"
+
+        with (
+            patch.object(mod, "persist_metrics", mock_persist),
+            patch("packages.ml_core.transcription.TranscriptionEngine", return_value=mock_engine),
+            patch(
+                "packages.ml_core.preprocessing.TextPreprocessor",
+                return_value=mock_preprocessor,
+            ),
+            patch("packages.ml_core.semantic.SemanticEvaluator", return_value=mock_semantic),
+            patch("subprocess.run"),
+            patch("os.remove"),
+            patch("tempfile.NamedTemporaryFile") as mock_tmpfile,
+        ):
+            mock_file = MagicMock()
+            mock_file.__enter__ = MagicMock(return_value=mock_file)
+            mock_file.__exit__ = MagicMock(return_value=False)
+            mock_file.name = "/tmp/test.raw"
+            mock_tmpfile.return_value = mock_file
+
+            result = mod.process_segment(MagicMock(), self._make_payload(_stimulus_time=None))
+
+        assert result["semantic"]["reasoning"] == "gray_band_llm_nonmatch"
+        assert result["semantic"]["is_match"] is False
+        assert result["semantic"]["confidence_score"] == 0.58
+        assert result["semantic"]["semantic_method"] == "llm_gray_band"
+        assert result["semantic"]["semantic_method_version"] == "azure-openai:gpt-4o:2024-02-01"
+        assert result["semantic_shadow"]["is_match"] is True
+        assert result["semantic_shadow"]["confidence_score"] == 0.99
+        assert result["semantic_shadow"]["semantic_method"] == "cross_encoder"
+        assert result["semantic_shadow"]["semantic_method_version"] == "shadow-v1"
+        dispatched_metrics = mock_persist.delay.call_args.args[0]
+        assert dispatched_metrics["semantic"]["is_match"] is False
+        assert dispatched_metrics["semantic"]["semantic_method"] == "llm_gray_band"
+        assert dispatched_metrics["semantic_shadow"]["is_match"] is True
+        assert dispatched_metrics["semantic_shadow"]["semantic_method_version"] == "shadow-v1"
+
     def test_no_frame_skips_au12(self) -> None:
         """§4.D contract — No AU12 when frame data missing."""
         mod = _get_inference_module()
@@ -541,6 +678,29 @@ class TestProcessSegment:
         ):
             assert forbidden_field not in payload
 
+    def test_semantic_fallback_error_sidecar_metadata_attached(self) -> None:
+        """§8 — Fallback-error attribution is attached only at D→E enrichment."""
+        mod = _get_inference_module()
+        canonical_scorer_payload = {
+            "reasoning": "semantic_error",
+            "is_match": False,
+            "confidence_score": 0.0,
+        }
+
+        normalized = mod._normalize_semantic_result(
+            canonical_scorer_payload,
+            semantic_method="llm_gray_band",
+            semantic_method_version="azure-openai:gpt-4o:2024-02-01",
+        )
+
+        assert "semantic_method" not in canonical_scorer_payload
+        assert "semantic_method_version" not in canonical_scorer_payload
+        assert normalized == {
+            **canonical_scorer_payload,
+            "semantic_method": "llm_gray_band",
+            "semantic_method_version": "azure-openai:gpt-4o:2024-02-01",
+        }
+
 
 class TestPersistMetrics:
     """§2 step 7 / §4.E — Module E metrics persistence."""
@@ -625,7 +785,7 @@ class TestPersistMetrics:
             "session_id": "test-session",
             "segment_id": "seg-reward",
             "timestamp_utc": "2026-03-13T12:00:00+00:00",
-            "semantic": {"is_match": True, "confidence_score": 0.84},
+            "semantic": _semantic_result(is_match=True, confidence_score=0.84),
             "_active_arm": "arm-a",
             "_experiment_id": "exp-1",
             "_au12_series": [
@@ -693,15 +853,11 @@ class TestPersistMetrics:
             "au12_series": expected_series,
             "stimulus_time_s": 100.0,
             "is_match": True,
-            "confidence_score": 0.84,
-            "x_max": None,
         }
         expected_reward = real_compute_reward(
             au12_series=expected_series,
             stimulus_time_s=100.0,
             is_match=True,
-            confidence_score=0.84,
-            x_max=None,
         )
 
         with (
@@ -761,15 +917,11 @@ class TestPersistMetrics:
             "au12_series": expected_series,
             "stimulus_time_s": 100.0,
             "is_match": False,
-            "confidence_score": 0.84,
-            "x_max": None,
         }
         expected_reward = real_compute_reward(
             au12_series=expected_series,
             stimulus_time_s=100.0,
             is_match=False,
-            confidence_score=0.84,
-            x_max=None,
         )
         assert expected_reward.gated_reward == 0.0
         assert expected_reward.semantic_gate == 0

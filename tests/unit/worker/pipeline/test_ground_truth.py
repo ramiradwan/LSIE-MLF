@@ -198,3 +198,65 @@ class TestGroundTruthIngester:
 
         # maxlen=3 means oldest events evicted
         assert len(ingester.event_buffer) <= 3
+
+    def test_creator_follow_event_stages_canonical_attribution_outcome(self) -> None:
+        """§7E.2 — Follow events stage canonical creator_follow outcome inputs."""
+        ingester = GroundTruthIngester(unique_id="testuser", signer=MockSigner())
+        event: dict[str, Any] = {
+            "uniqueId": "testuser",
+            "event_type": "follow",
+            "payload": {"event_id": "follow-msg-1"},
+        }
+
+        asyncio.run(ingester._handle_event(event))
+
+        assert len(ingester.event_buffer) == 1
+        staged = ingester.event_buffer[0]
+        outcome = staged["_attribution_outcome"]
+        assert outcome == {
+            "session_id": None,
+            "outcome_type": "creator_follow",
+            "outcome_value": 1.0,
+            "outcome_time_utc": staged["timestamp_utc"],
+            "source_system": "tiktok_webcast",
+            "source_event_ref": "follow-msg-1",
+            "confidence": 1.0,
+        }
+
+    def test_non_follow_event_has_no_attribution_outcome_and_does_not_raise(self) -> None:
+        """§7E.2 — Missing outcomes are valid staged-event state, not worker failure."""
+        ingester = GroundTruthIngester(unique_id="fallback_user", signer=MockSigner())
+        event: dict[str, Any] = {"event_type": "chat", "payload": {"msg": "hi"}}
+
+        asyncio.run(ingester._handle_event(event))
+
+        staged = ingester.event_buffer[0]
+        assert staged["event_type"] == "chat"
+        assert "_attribution_outcome" not in staged
+
+    def test_action_combo_carries_creator_follow_outcomes(self) -> None:
+        """§7E.2 — Combo events forward normalized outcomes for Module E linkage."""
+        ingester = GroundTruthIngester(unique_id="testuser", signer=MockSigner())
+        follow_event: dict[str, Any] = {
+            "event_type": "creator_follow",
+            "payload": {"message_id": "follow-msg-2"},
+        }
+        gift_event: dict[str, Any] = {"event_type": "gift", "payload": {"gift_id": 123}}
+
+        asyncio.run(ingester._handle_event(follow_event))
+        asyncio.run(ingester._handle_event(gift_event))
+
+        combo_events = [e for e in ingester.event_buffer if e.get("event_type") == "Action_Combo"]
+        assert len(combo_events) == 1
+        combo = combo_events[0]
+        assert combo["_outcome_events"] == [
+            {
+                "session_id": None,
+                "outcome_type": "creator_follow",
+                "outcome_value": 1.0,
+                "outcome_time_utc": combo["payload"]["events"][0]["timestamp_utc"],
+                "source_system": "tiktok_webcast",
+                "source_event_ref": "follow-msg-2",
+                "confidence": 1.0,
+            }
+        ]

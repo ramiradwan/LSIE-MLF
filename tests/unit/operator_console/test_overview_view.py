@@ -16,6 +16,7 @@ from packages.schemas.operator_console import (
     AlertEvent,
     AlertKind,
     AlertSeverity,
+    AttributionSummary,
     EncounterState,
     ExperimentSummary,
     HealthSnapshot,
@@ -24,6 +25,7 @@ from packages.schemas.operator_console import (
     LatestEncounterSummary,
     OverviewSnapshot,
     PhysiologyCurrentSnapshot,
+    SemanticEvaluationSummary,
     SessionPhysiologySnapshot,
     SessionSummary,
 )
@@ -61,6 +63,14 @@ def _snap_with_session(session: SessionSummary) -> OverviewSnapshot:
             p90_intensity=0.5,
             gated_reward=0.5,
             n_frames_in_window=150,
+            semantic_evaluation=SemanticEvaluationSummary(
+                reasoning="cross_encoder_high_match",
+                is_match=True,
+                confidence_score=0.91,
+                semantic_method="cross_encoder",
+                semantic_method_version="ce-v1",
+            ),
+            attribution=AttributionSummary(finality="online_provisional"),
         ),
         experiment_summary=ExperimentSummary(
             experiment_id="exp1",
@@ -116,8 +126,12 @@ def test_overview_view_populates_all_cards_from_snapshot() -> None:
     assert "ok" in view._health_card._primary.text()  # type: ignore[attr-defined]
     # Physiology card reads live when an RMSSD value is present.
     assert view._physiology_card._primary.text() == "Live"  # type: ignore[attr-defined]
-    # Latest encounter card surfaces the gated reward.
+    # Latest encounter card surfaces the gated reward plus compact §8/§7E summary.
+    latest_secondary = view._latest_encounter_card._secondary.text()  # type: ignore[attr-defined]
     assert "reward" in view._latest_encounter_card._primary.text()  # type: ignore[attr-defined]
+    assert "semantic match" in latest_secondary
+    assert "p_match 91%" in latest_secondary
+    assert "attribution online provisional" in latest_secondary
 
 
 def test_overview_view_attention_card_counts_alerts() -> None:

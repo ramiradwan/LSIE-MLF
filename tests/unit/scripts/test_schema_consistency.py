@@ -22,6 +22,14 @@ from uuid import UUID
 import pytest
 from pydantic import BaseModel, Field
 
+from packages.schemas.attribution import (
+    AttributionEvent,
+    AttributionScore,
+    EventOutcomeLink,
+    OutcomeEvent,
+)
+from packages.schemas.inference_handoff import physiological_sample_event_schema
+from packages.schemas.physiology import PhysiologicalChunkEvent
 from scripts.check_schema_consistency import (
     DEFAULT_REGISTRY,
     EntityMapping,
@@ -659,3 +667,44 @@ class TestDefaultRegistry:
                 f"Entity {mapping.name!r} has only one source — drop it "
                 f"from the registry or add a second source."
             )
+
+    def test_physiological_chunk_event_schema_requires_event_type(self) -> None:
+        schema = PhysiologicalChunkEvent.model_json_schema()
+        exported_schema = physiological_sample_event_schema
+
+        assert "event_type" in schema["required"]
+        assert "event_type" in exported_schema["required"]
+        event_entity = parse_json_schema(schema, name="PhysiologicalChunkEvent")
+        assert event_entity.fields["event_type"] == FieldSpec(
+            "event_type",
+            "string",
+            False,
+        )
+
+    def test_attribution_models_are_loadable_for_schema_consistency(self) -> None:
+        attribution_models = (
+            AttributionEvent,
+            OutcomeEvent,
+            EventOutcomeLink,
+            AttributionScore,
+        )
+
+        for model in attribution_models:
+            entity = pydantic_to_entity(model, name=model.__name__)
+            assert "schema_version" in entity.fields
+            assert "finality" in entity.fields
+            assert "created_at" in entity.fields
+
+        event_entity = pydantic_to_entity(AttributionEvent, name="AttributionEvent")
+        assert event_entity.fields["event_id"] == FieldSpec("event_id", "uuid", False)
+        assert event_entity.fields["bandit_decision_snapshot"] == FieldSpec(
+            "bandit_decision_snapshot", "object", False
+        )
+
+    def test_attribution_models_are_exported_from_schema_package(self) -> None:
+        import packages.schemas as schema_exports
+
+        assert schema_exports.AttributionEvent is AttributionEvent
+        assert schema_exports.OutcomeEvent is OutcomeEvent
+        assert schema_exports.EventOutcomeLink is EventOutcomeLink
+        assert schema_exports.AttributionScore is AttributionScore

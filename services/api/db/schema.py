@@ -1,165 +1,39 @@
 """
-Database Schema — §5.2 Data Classification / §11 Variable Extraction Matrix
+Database Schema Bootstrap — §5.2 Data Classification / §11 Variable Extraction Matrix
 
-SQL table definitions for the Persistent Store (PostgreSQL).
-Scalar analytical fields use their §11-defined SQL types;
-floating-point metrics use DOUBLE PRECISION, integral gates/counts retain
-INTEGER or BOOLEAN, and timestamps use TIMESTAMPTZ (§2.7).
+Canonical PostgreSQL bootstrap SQL for the Persistent Store. The API bootstrap
+surface mirrors the SQL files mounted into the postgres container so fresh
+and application-driven initialization paths share one deterministic order.
 """
 
 from __future__ import annotations
 
+from pathlib import Path
+
 # §5.2 — Permanent Analytical Storage tier
-# Only anonymized analytical metrics are persisted.
+# Only anonymized analytical metrics and derived/versioned attribution
+# artifacts are persisted.
 
-SCHEMA_SQL: str = """
--- Sessions table
-CREATE TABLE IF NOT EXISTS sessions (
-    session_id      UUID PRIMARY KEY,
-    stream_url      TEXT NOT NULL,
-    started_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    ended_at        TIMESTAMPTZ
-);
+_SQL_DIR = Path(__file__).resolve().parents[3] / "data" / "sql"
 
--- §11 — AU12 Intensity Score, Vocal Pitch, Jitter, Shimmer
-CREATE TABLE IF NOT EXISTS metrics (
-    id              BIGSERIAL PRIMARY KEY,
-    session_id      UUID NOT NULL REFERENCES sessions(session_id),
-    segment_id      TEXT NOT NULL,
-    timestamp_utc   TIMESTAMPTZ NOT NULL,
-    au12_intensity  DOUBLE PRECISION,
-    pitch_f0        DOUBLE PRECISION,
-    jitter          DOUBLE PRECISION,
-    shimmer         DOUBLE PRECISION,
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
+# Keep this tuple explicit: PostgreSQL's docker-entrypoint processes the same
+# file names alphabetically, while API-side bootstrap consumers should not rely
+# on filesystem glob ordering. 05-attribution.sql is intentionally loaded
+# immediately after the v3.3/v3.4 metrics/acoustics rollout migration.
+SQL_BOOTSTRAP_FILES: tuple[Path, ...] = (
+    _SQL_DIR / "01-schema.sql",
+    _SQL_DIR / "02-seed-experiments.sql",
+    _SQL_DIR / "03-encounter-log.sql",
+    _SQL_DIR / "03-physiology.sql",
+    _SQL_DIR / "04-metrics-observational-acoustics.sql",
+    _SQL_DIR / "05-attribution.sql",
+)
 
--- §11 — ASR Transcription
-CREATE TABLE IF NOT EXISTS transcripts (
-    id              BIGSERIAL PRIMARY KEY,
-    session_id      UUID NOT NULL REFERENCES sessions(session_id),
-    segment_id      TEXT NOT NULL,
-    timestamp_utc   TIMESTAMPTZ NOT NULL,
-    text            TEXT NOT NULL,
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
 
--- §11 — Semantic Match (Azure OpenAI evaluation)
-CREATE TABLE IF NOT EXISTS evaluations (
-    id              BIGSERIAL PRIMARY KEY,
-    session_id      UUID NOT NULL REFERENCES sessions(session_id),
-    segment_id      TEXT NOT NULL,
-    timestamp_utc   TIMESTAMPTZ NOT NULL,
-    reasoning       TEXT,
-    is_match        BOOLEAN,
-    confidence      DOUBLE PRECISION,
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
+def _load_bootstrap_sql(files: tuple[Path, ...] = SQL_BOOTSTRAP_FILES) -> str:
+    """Load schema bootstrap SQL once in deterministic canonical order."""
 
--- §11 — Action Combo Trigger (ground truth events)
-CREATE TABLE IF NOT EXISTS events (
-    id              BIGSERIAL PRIMARY KEY,
-    session_id      UUID NOT NULL REFERENCES sessions(session_id),
-    unique_id       TEXT NOT NULL,
-    event_type      TEXT NOT NULL,
-    timestamp_utc   TIMESTAMPTZ NOT NULL,
-    gift_value      INTEGER,
-    is_combo        BOOLEAN DEFAULT FALSE,
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
+    return "\n\n".join(path.read_text(encoding="utf-8").rstrip() for path in files) + "\n"
 
--- §11 — Evaluation Variance (Thompson Sampling)
-CREATE TABLE IF NOT EXISTS experiments (
-    id              BIGSERIAL PRIMARY KEY,
-    experiment_id   TEXT NOT NULL,
-    label           TEXT,
-    arm             TEXT NOT NULL,
-    greeting_text   TEXT,
-    alpha_param     DOUBLE PRECISION NOT NULL DEFAULT 1.0,
-    beta_param      DOUBLE PRECISION NOT NULL DEFAULT 1.0,
-    enabled         BOOLEAN NOT NULL DEFAULT TRUE,
-    end_dated_at    TIMESTAMPTZ DEFAULT NULL,
-    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
 
--- §4.E.1 / §11 — Encounter Audit Log (reward computation trace)
-CREATE TABLE IF NOT EXISTS encounter_log (
-    id                  BIGSERIAL PRIMARY KEY,
-    session_id          UUID NOT NULL REFERENCES sessions(session_id),
-    segment_id          TEXT NOT NULL,
-    experiment_id       TEXT NOT NULL,
-    arm                 TEXT NOT NULL,
-    timestamp_utc       TIMESTAMPTZ NOT NULL,
-    gated_reward        DOUBLE PRECISION NOT NULL,
-    p90_intensity       DOUBLE PRECISION NOT NULL,
-    semantic_gate       INTEGER NOT NULL,
-    is_valid            BOOLEAN NOT NULL,
-    n_frames            INTEGER NOT NULL,
-    baseline_neutral    DOUBLE PRECISION,
-    stimulus_time       DOUBLE PRECISION,
-    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
--- §11 — External Context Metadata
-CREATE TABLE IF NOT EXISTS context (
-    id              BIGSERIAL PRIMARY KEY,
-    session_id      UUID REFERENCES sessions(session_id),
-    source_url      TEXT NOT NULL,
-    scraped_at_utc  TIMESTAMPTZ NOT NULL,
-    data            JSONB NOT NULL,
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
--- §4.E.2 / §7C — Per-segment physiological snapshot log
--- SPEC-AMEND-009 writer contract (§4.C.4) guarantees source_kind,
--- derivation_method, window_s, validity_ratio, and is_valid are always
--- populated on insert; Pydantic PhysiologicalSnapshot enforces the same.
--- The columns are therefore declared NOT NULL on both the write contract
--- and the storage contract.
-CREATE TABLE IF NOT EXISTS physiology_log (
-    id                      BIGSERIAL PRIMARY KEY,
-    session_id              UUID NOT NULL REFERENCES sessions(session_id),
-    segment_id              TEXT NOT NULL,
-    subject_role            TEXT NOT NULL CHECK (subject_role IN ('streamer', 'operator')),
-    rmssd_ms                DOUBLE PRECISION,
-    heart_rate_bpm          INTEGER,
-    freshness_s             DOUBLE PRECISION NOT NULL,
-    is_stale                BOOLEAN NOT NULL,
-    provider                TEXT NOT NULL,
-    source_kind             TEXT NOT NULL CHECK (source_kind IN ('ibi','session')),
-    derivation_method       TEXT NOT NULL,
-    window_s                INTEGER NOT NULL CHECK (window_s > 0),
-    validity_ratio          DOUBLE PRECISION NOT NULL CHECK (validity_ratio BETWEEN 0.0 AND 1.0),
-    is_valid                BOOLEAN NOT NULL,
-    source_timestamp_utc    TIMESTAMPTZ NOT NULL,
-    created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
--- §7C — Co-modulation analytics log
-CREATE TABLE IF NOT EXISTS comodulation_log (
-    id                      BIGSERIAL PRIMARY KEY,
-    session_id              UUID NOT NULL REFERENCES sessions(session_id),
-    window_start_utc        TIMESTAMPTZ NOT NULL,
-    window_end_utc          TIMESTAMPTZ NOT NULL,
-    window_minutes          INTEGER NOT NULL,
-    co_modulation_index     DOUBLE PRECISION,
-    n_paired_observations   INTEGER NOT NULL,
-    coverage_ratio          DOUBLE PRECISION NOT NULL,
-    streamer_rmssd_mean     DOUBLE PRECISION,
-    operator_rmssd_mean     DOUBLE PRECISION,
-    created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW()
-);
-
--- Indexes
-CREATE INDEX IF NOT EXISTS idx_metrics_session ON metrics(session_id, timestamp_utc);
-CREATE INDEX IF NOT EXISTS idx_transcripts_session ON transcripts(session_id, timestamp_utc);
-CREATE INDEX IF NOT EXISTS idx_evaluations_session ON evaluations(session_id, timestamp_utc);
-CREATE INDEX IF NOT EXISTS idx_events_session ON events(session_id, timestamp_utc);
-CREATE INDEX IF NOT EXISTS idx_experiments_lookup ON experiments(experiment_id, arm);
-CREATE INDEX IF NOT EXISTS idx_encounter_log_experiment ON encounter_log(experiment_id, arm);
-CREATE INDEX IF NOT EXISTS idx_encounter_log_session ON encounter_log(session_id, timestamp_utc);
-CREATE INDEX IF NOT EXISTS idx_physiology_session
-    ON physiology_log(session_id, subject_role, created_at);
-CREATE INDEX IF NOT EXISTS idx_physiology_segment ON physiology_log(session_id, segment_id);
-CREATE INDEX IF NOT EXISTS idx_comod_session ON comodulation_log(session_id, window_end_utc);
-"""
+SCHEMA_SQL: str = _load_bootstrap_sql()
