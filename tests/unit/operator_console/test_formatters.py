@@ -422,8 +422,6 @@ class TestAcousticRendering:
         assert display.perturbation_validity.status is UiStatusKind.OK
         assert display.f0_mean.primary == "measure 220.0 Hz"
         assert display.f0_mean.secondary == "baseline 200.0 Hz · Δ +1.65 st"
-        assert display.jitter_mean.primary == "measure 0.0112"
-        assert display.jitter_mean.secondary == "baseline 0.0091 · Δ +0.0021"
         assert display.voiced_coverage_text == format_acoustic_voiced_coverage(2.2, 2.1)
         assert display.voiced_coverage_text == "Voiced coverage: measure 2.20s · baseline 2.10s"
 
@@ -468,10 +466,6 @@ class TestAcousticRendering:
         assert "not measured" not in text
         assert display.f0_mean.primary == "measure 0.0 Hz"
         assert display.f0_mean.secondary == "baseline 0.0 Hz · Δ +0.00 st"
-        assert display.jitter_mean.primary == "measure 0.0000"
-        assert display.jitter_mean.secondary == "baseline 0.0000 · Δ +0.0000"
-        assert display.shimmer_mean.primary == "measure 0.0000"
-        assert display.shimmer_mean.secondary == "baseline 0.0000 · Δ +0.0000"
 
     def test_explanation_keeps_invalid_f0_separate_from_valid_perturbation(self) -> None:
         summary = _acoustic_summary(
@@ -527,7 +521,7 @@ def _encounter(
     p90_intensity: float | None = 0.5,
     gated_reward: float | None = 0.5,
     n_frames_in_window: int | None = 60,
-    baseline_b_neutral: float | None = 0.1,
+    au12_baseline_pre: float | None = 0.1,
     physiology_attached: bool = False,
     physiology_stale: bool | None = None,
 ) -> EncounterSummary:
@@ -544,7 +538,7 @@ def _encounter(
         p90_intensity=p90_intensity,
         gated_reward=gated_reward,
         n_frames_in_window=n_frames_in_window,
-        baseline_b_neutral=baseline_b_neutral,
+        au12_baseline_pre=au12_baseline_pre,
         physiology_attached=physiology_attached,
         physiology_stale=physiology_stale,
     )

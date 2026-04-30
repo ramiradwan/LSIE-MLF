@@ -1,4 +1,4 @@
-"""Subsystem health table model — Phase 7.
+"""Subsystem health table model.
 
 Backs the Health page's subsystem rollup. §12 distinguishes
 degraded-but-recovering states (ADB drift freeze/reset, FFmpeg restart,
@@ -13,7 +13,6 @@ Spec references:
                    paths (network disconnects, hardware loss, worker
                    crashes, queue overload)
   §4.E.1         — Health operator surface
-  SPEC-AMEND-008 — PySide6 Operator Console
 """
 
 from __future__ import annotations

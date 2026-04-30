@@ -2,12 +2,11 @@
 Stimulus Endpoint — §4.E.1 Operator Intervention
 
 REST endpoint for the operator to trigger greeting line injection.
-Publishes to the Redis "stimulus:inject" channel, which the orchestrator's
-background listener picks up to call record_stimulus_injection().
+Publishes to the Message Broker "stimulus:inject" channel; the
+Orchestrator Container listener then calls record_stimulus_injection().
 
-Gap 5 fix: provides the mechanical trigger that was missing between
-the operator's decision to send the greeting and the orchestrator's
-record_stimulus_injection() method.
+Provides the REST bridge from the operator's stimulus decision to Module C
+record_stimulus_injection().
 """
 
 from __future__ import annotations
@@ -25,21 +24,22 @@ logger = logging.getLogger(__name__)
 @router.post("/stimulus")
 async def trigger_stimulus() -> dict[str, Any]:
     """
-    Trigger stimulus injection on the running orchestrator.
+    Trigger stimulus injection through the Message Broker.
 
     §4.E.1 — The operator calls this endpoint when they send the greeting
     line into the live stream chat. This ends the AU12 calibration phase
     and begins the measurement window for the reward pipeline.
 
-    The trigger is delivered via Redis pub/sub to the orchestrator process
-    (which runs in a separate container). The orchestrator's background
-    listener calls record_stimulus_injection() on receipt.
+    The API Server publishes the trigger to the Message Broker. The
+    Orchestrator Container listener receives it and calls
+    record_stimulus_injection().
 
     Returns:
-        JSON with status and number of Redis subscribers that received the message.
+        JSON with status and number of Message Broker subscribers that
+        received the message.
 
     Raises:
-        HTTPException 503: If Redis is unavailable.
+        HTTPException 503: If the Message Broker is unavailable.
     """
     redis_url = os.environ.get("REDIS_URL", "redis://redis:6379/0")
 

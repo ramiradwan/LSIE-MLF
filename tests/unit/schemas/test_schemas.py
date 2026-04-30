@@ -86,7 +86,6 @@ def _handoff_payload_data(
         "_expected_greeting": "Say hello to the creator",
         "_stimulus_time": None,
         "_au12_series": [{"timestamp_s": 0.0, "intensity": 0.62}],
-        "_x_max": 0.91,
         "_bandit_decision_snapshot": _bandit_snapshot_data(sample_timestamp),
     }
     payload.update(overrides)
@@ -153,7 +152,6 @@ class TestInferenceHandoffPayload:
             "_expected_greeting",
             "_stimulus_time",
             "_au12_series",
-            "_x_max",
             "_bandit_decision_snapshot",
         ):
             assert field in properties
@@ -281,9 +279,6 @@ class TestInferenceHandoffPayload:
             "shimmer_mean_measure",
             "shimmer_mean_baseline",
             "shimmer_delta",
-            "pitch_f0",
-            "jitter",
-            "shimmer",
         ):
             assert field not in properties
 
@@ -312,13 +307,13 @@ class TestSemanticEvaluationResult:
                 confidence_score=0.95,
             )
 
-    def test_extra_rationale_fields_rejected(self) -> None:
+    def test_extra_noncanonical_fields_rejected(self) -> None:
         with pytest.raises(ValidationError):
             SemanticEvaluationResult(  # type: ignore[call-arg]
                 reasoning="cross_encoder_high_match",
                 is_match=True,
                 confidence_score=0.5,
-                rationale_text="should fail",
+                explanatory_text="should fail",
             )
 
     def test_confidence_out_of_range(self) -> None:

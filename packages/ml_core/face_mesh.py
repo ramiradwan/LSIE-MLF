@@ -1,8 +1,10 @@
 """
-Face Mesh — §4.D.2 Computer Vision
+MediaPipe Face Mesh adapter for Module D video frames (§4.D.2).
 
-MediaPipe Face Mesh generating a 478-vertex 3D landmark mesh.
-Uses Procrustes Analysis to construct a normalized metric face space.
+The module lazy-loads MediaPipe Face Mesh, converts BGR frames to RGB, and
+returns normalized 478-point landmark arrays consumed by AU12 geometry. It does
+not compute AU12, track identities, persist frames, or synthesize facial metrics
+when no face is detected.
 """
 
 from __future__ import annotations
@@ -16,10 +18,12 @@ import numpy.typing as npt
 
 class FaceMeshProcessor:
     """
-    §4.D.2 — MediaPipe Face Mesh inference.
+    Extract normalized face landmarks from video frames.
 
-    Processes raw video frames and returns 478-vertex 3D landmark arrays.
-    Missing face returns null facial metrics (§4.D contract failure mode).
+    Accepts one BGR ``numpy`` frame at a time, initializes MediaPipe Face Mesh
+    on first use, and produces a ``(478, 3)`` floating-point landmark array or
+    ``None`` when no face is detected. It does not retain raw frames, compute
+    AU12 intensity, or mask/recover missing faces.
     """
 
     def __init__(self) -> None:

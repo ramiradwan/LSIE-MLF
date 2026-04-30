@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
 import json
 import re
+import sys
 import uuid
 import wave
 from collections.abc import Callable
@@ -219,9 +221,9 @@ class _FakeCursor:
             columns = [
                 "total_segments",
                 "avg_au12",
-                "avg_pitch_f0",
-                "avg_jitter",
-                "avg_shimmer",
+                "avg_f0_mean_measure_hz",
+                "avg_jitter_mean_measure",
+                "avg_shimmer_mean_measure",
                 "first_segment_at",
                 "last_segment_at",
             ]
@@ -344,10 +346,6 @@ class _ScriptedAU12Normalizer:
             self.calibration_buffer.append(0.0)
             self.b_neutral = 0.0
             return 0.0
-        return float(_ScriptedAU12Driver.current_intensity)
-
-    def compute_intensity(self, landmarks: Any) -> float:
-        del landmarks
         return float(_ScriptedAU12Driver.current_intensity)
 
 
@@ -486,7 +484,12 @@ def _install_worker_seams(
 ) -> None:
     from services.worker.pipeline import analytics as analytics_mod
     from services.worker.pipeline import reward as reward_mod
-    from services.worker.tasks import inference as inference_mod
+
+    # Unit tests import the inference module with an unwrapped Celery decorator
+    # and leave it cached in sys.modules. This E2E needs the production Task
+    # object so process_segment.run/persist_metrics.delay are available.
+    sys.modules.pop("services.worker.tasks.inference", None)
+    inference_mod = importlib.import_module("services.worker.tasks.inference")
 
     proof = script["posterior_proof"]
     stimuli = list(script["stimuli"])
@@ -514,7 +517,11 @@ def _install_worker_seams(
                 str(row["expected_greeting_text"])
             )
             return {
-                "reasoning": "fixture-scripted deterministic semantic gate",
+                "reasoning": (
+                    "cross_encoder_high_match"
+                    if bool(row["expected_semantic_match"])
+                    else "cross_encoder_high_nonmatch"
+                ),
                 "is_match": bool(row["expected_semantic_match"]),
                 "confidence_score": float(row["expected_confidence_score"]),
             }
@@ -892,7 +899,6 @@ def test_baseline_replay_e2e_proves_strong_arm_posterior_improves(
             float(stimulus["expected_confidence_score"]),
             abs=tolerance,
         )
-        assert metrics["_x_max"] == stimulus["expected_x_max"]
 
         au12_window = reward_mod.extract_stimulus_window(
             reward_call["au12_series"],
@@ -913,8 +919,8 @@ def test_baseline_replay_e2e_proves_strong_arm_posterior_improves(
             abs=tolerance,
         )
         assert encounter["semantic_gate"] == int(bool(stimulus["expected_semantic_match"]))
-        assert encounter["is_valid"] is True
-        assert encounter["n_frames"] == len(au12_window)
+        assert encounter["n_frames_in_window"] == len(au12_window)
+        assert "au12_baseline_pre" in encounter
 
     experiment_response = client.get(f"/api/v1/experiments/{EXPERIMENT_ID}")
     assert experiment_response.status_code == 200

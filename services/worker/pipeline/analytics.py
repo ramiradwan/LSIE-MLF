@@ -1,11 +1,14 @@
 """
-Experimentation & Analytics — §4.E Module E
+Module E persistence and Thompson Sampling analytics (§4.E).
 
-Aggregates inference metrics, persists to Persistent Store,
-and runs adaptive experimentation via Thompson Sampling.
+Aggregates Module D inference metrics, writes derived outputs to the Persistent
+Store, persists physiology/co-modulation and §7E attribution records, and applies
+Thompson Sampling posterior updates for §7B rewards.
 
-§2 step 7 — Parameterized INSERT, DOUBLE PRECISION, TIMESTAMPTZ.
-§12.5 Module E — Buffer 1000 records, retry every 5s, CSV fallback.
+Persistent Store writes use parameterized SQL with DOUBLE PRECISION and
+TIMESTAMPTZ fields where required (§2 step 7). On write failure, records are
+buffered up to the configured in-memory limit and persistent failures overflow
+to CSV (§12.5).
 """
 
 from __future__ import annotations
@@ -39,9 +42,6 @@ _METRICS_REQUIRED_FIELDS: tuple[str, ...] = (
 
 _METRICS_OPTIONAL_FIELDS: tuple[str, ...] = (
     "au12_intensity",
-    "pitch_f0",
-    "jitter",
-    "shimmer",
     "f0_valid_measure",
     "f0_valid_baseline",
     "perturbation_valid_measure",
@@ -71,7 +71,7 @@ _METRICS_OVERFLOW_CORE_FIELDS: tuple[str, ...] = (
 _INSERT_METRICS_SQL: str = """
     INSERT INTO metrics (
         session_id, segment_id, timestamp_utc,
-        au12_intensity, pitch_f0, jitter, shimmer,
+        au12_intensity,
         f0_valid_measure, f0_valid_baseline,
         perturbation_valid_measure, perturbation_valid_baseline,
         voiced_coverage_measure_s, voiced_coverage_baseline_s,
@@ -81,7 +81,7 @@ _INSERT_METRICS_SQL: str = """
     )
     VALUES (
         %(session_id)s, %(segment_id)s, %(timestamp_utc)s,
-        %(au12_intensity)s, %(pitch_f0)s, %(jitter)s, %(shimmer)s,
+        %(au12_intensity)s,
         %(f0_valid_measure)s, %(f0_valid_baseline)s,
         %(perturbation_valid_measure)s, %(perturbation_valid_baseline)s,
         %(voiced_coverage_measure_s)s, %(voiced_coverage_baseline_s)s,
@@ -220,7 +220,7 @@ _UPDATE_ARM_SQL: str = """
 
 
 def _import_psycopg2() -> Any:
-    """Lazy import psycopg2 — only available inside worker/api containers."""
+    """Lazy import psycopg2 for ML Worker and API Server containers."""
     import psycopg2 as _psycopg2
 
     return _psycopg2
@@ -228,16 +228,18 @@ def _import_psycopg2() -> Any:
 
 class MetricsStore:
     """
-    §4.E / §2 step 7 — Persistent Store interface.
+    §4.E / §2 step 7 — Persistent Store interface for Module E.
 
-    Uses psycopg2-binary connection pool. SQL INSERT with parameterized
-    queries storing metrics as DOUBLE PRECISION and timestamps as TIMESTAMPTZ.
+    Uses a psycopg2-binary connection pool and parameterized SQL to write
+    metrics, transcripts, evaluations, physiology/co-modulation analytics,
+    attribution ledger records, and Thompson Sampling posterior updates.
 
     Isolation levels (§2 step 7):
       - SERIALIZABLE for experiment updates
-      - READ COMMITTED for metric inserts
+      - READ COMMITTED for metric inserts and derived analytics writes
 
-    Failure: buffer 1000 records, retry every 5s, overflow to CSV.
+    On write failure, records are buffered up to the configured in-memory limit
+    and persistent failures overflow to CSV (§12.5).
     """
 
     _shared_attribution_buffer: ClassVar[list[Any]] = []
@@ -283,7 +285,7 @@ class MetricsStore:
             self._pool.putconn(conn)
 
     def _is_db_error(self, exc: BaseException) -> bool:
-        """Check if exception is a psycopg2 DB error or RuntimeError."""
+        """Check for psycopg2 connection errors or RuntimeError."""
         if isinstance(exc, RuntimeError):
             return True
         if self._psycopg2 is not None:
@@ -319,7 +321,7 @@ class MetricsStore:
 
     def _write_single(self, metrics: dict[str, Any]) -> None:
         """
-        Write a single metrics record to the database.
+        Write a single metrics record to the Persistent Store.
 
         §2 step 7 — READ COMMITTED isolation for metric inserts.
         """
@@ -351,7 +353,7 @@ class MetricsStore:
                             "timestamp_utc": metrics["timestamp_utc"],
                             "reasoning": semantic.get("reasoning"),
                             "is_match": semantic.get("is_match"),
-                            "confidence": semantic.get("confidence"),
+                            "confidence": semantic.get("confidence_score"),
                         },
                     )
 
@@ -364,7 +366,7 @@ class MetricsStore:
 
     def _flush_buffer(self) -> None:
         """
-        Flush buffered records to the database or CSV fallback.
+        Flush buffered records to the Persistent Store or CSV fallback.
 
         §12.5.1 Module E — retry every 5s, overflow to CSV on persistent failure.
         """
@@ -402,7 +404,7 @@ class MetricsStore:
         """
         Write overflow records to CSV fallback storage.
 
-        §12.5.4 Module E — CSV fallback when DB is unreachable.
+        §12.5.4 Module E — CSV fallback when the Persistent Store is unreachable.
         """
         fallback_dir = Path(CSV_FALLBACK_DIR)
         fallback_dir.mkdir(parents=True, exist_ok=True)
@@ -448,7 +450,7 @@ class MetricsStore:
             self._put_conn(conn)
 
     def get_experiment_arm(self, experiment_id: str, arm: str) -> dict[str, Any] | None:
-        """Fetch one arm row without scheduler-status filtering."""
+        """Fetch one arm record without scheduler-status filtering."""
         conn = self._get_conn()
         try:
             with conn.cursor() as cur:
@@ -705,11 +707,12 @@ class MetricsStore:
         those tables.
 
         §2.7 outage handling mirrors metric persistence for attribution writes:
-        unreachable database errors are buffered in memory up to DB_BUFFER_MAX,
-        retried/flushed after successful writes with DB_RETRY_INTERVAL spacing,
-        and overflowed to CSV rather than silently dropped. The attribution buffer
-        is process-level so per-task MetricsStore disposal cannot drop ledgers
-        that have not yet reached the CSV overflow threshold.
+        unreachable Persistent Store errors are buffered in memory up to the
+        configured in-memory limit, retried/flushed after successful writes with
+        the configured retry spacing, and overflowed to CSV rather than silently
+        dropped. The attribution buffer is process-level so per-task MetricsStore
+        disposal cannot drop ledgers that have not yet reached the CSV overflow
+        threshold.
         """
         if ledger is None:
             return
@@ -935,15 +938,12 @@ class MetricsStore:
 
 class ThompsonSamplingEngine:
     """
-    §4.E.1 — Adaptive experimentation using Thompson Sampling.
+    §4.E.1 — Thompson Sampling arm selection and posterior updates.
 
-    Dynamically evaluates greeting rules and behavioral prompts.
-    Experiment state persisted to Persistent Store via MetricsStore.
-
-    Uses SciPy Beta distributions:
-      - select_arm(): sample from Beta(alpha, beta) for each arm, pick max
-      - update(): fractional Beta-Bernoulli update α += r_t, β += (1 − r_t)
-        for continuous rewards in [0,1]
+    Reads scheduler-eligible arms through MetricsStore, samples Beta(alpha,
+    beta) for arm selection, and applies fractional Beta-Bernoulli updates for
+    bounded rewards in [0, 1]. MetricsStore performs Persistent Store access;
+    this class does not run inference or compute rewards.
     """
 
     def __init__(self, store: MetricsStore) -> None:

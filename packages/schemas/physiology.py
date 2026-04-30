@@ -1,5 +1,5 @@
 """
-Physiological Schemas — §6 (v3.2 amendment), §4.C.4, §0.3
+Physiological Schemas — §6.2, §6.3, §4.C.4, §0.3
 
 Pydantic models for normalized physiological telemetry transport and
 the per-subject context snapshot attached to InferenceHandoffPayload.
@@ -17,8 +17,8 @@ Design constraints:
 Spec references:
   §6     — InferenceHandoffPayload interface contract
   §4.C.4 — Physiological State Buffer
-  §0.3   — Canonical terms: Physiological Chunk Event, Physiological
-           Context, subject_role
+  §0.3   — Canonical terms: PhysiologicalChunkEvent, Physiological Context,
+           subject_role
   §5     — Data governance: raw payloads are Transient Data
 """
 

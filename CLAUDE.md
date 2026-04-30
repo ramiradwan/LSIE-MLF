@@ -10,11 +10,34 @@ Dependabot handling rules (auto-merge eligibility, human-review impact analysis,
 
 ## Canonical names (§0.3) — MUST use only these identifiers in all code and config
 
-IPC Pipe, Ephemeral Vault, InferenceHandoffPayload, ML Worker, API Server, Message Broker, Persistent Store, Capture Container, Physiological Chunk Event, Physiological Context, Physiological State Buffer, subject_role, Co-Modulation Index
+- API Server — FastAPI application process that serves REST endpoints on port 8000.
+- ML Worker — Celery consumer process that executes GPU-bound ML inference tasks.
+- Message Broker — Redis in-memory store that brokers Celery dispatch between the API Server and ML Worker.
+- Persistent Store — PostgreSQL relational store for analytical metrics and experiment state.
+- Capture Container — privileged Docker container for physical USB I/O and raw audio-visual stream extraction.
+- Orchestrator Container — Module C orchestration-loop container that produces tasks consumed by the ML Worker.
+- IPC Pipe — POSIX filesystem IPC transport under `/tmp/ipc/` for Capture Container to Orchestrator Container media transfer.
+- Ephemeral Vault — AES-256-GCM short-lived raw-media buffer regime with mandatory 24-hour secure deletion.
+- InferenceHandoffPayload — JSON Schema/Pydantic contract for Module C→D and Module D→E exchange.
+- PhysiologicalChunkEvent — normalized wearable telemetry chunk record emitted by hydration and drained by the Orchestrator Container.
+- Physiological Context — per-subject physiological snapshot attached to each eligible `InferenceHandoffPayload` segment.
+- Physiological State Buffer — in-memory rolling buffer keyed by `subject_role` for deriving physiological snapshots.
+- subject_role — role discriminator for physiological data, currently `streamer` or `operator`.
+- Co-Modulation Index — rolling Pearson correlation between time-aligned valid streamer/operator RMSSD sequences.
+- segment_id — deterministic SHA-256 identifier derived from stable segment identity fields.
+- BanditDecisionSnapshot — deterministic pre-update Thompson Sampling decision record attached for downstream attribution and evaluation.
+- AttributionEvent — canonical Module E record for a stimulus-linked interaction eligible for event→outcome attribution.
+- OutcomeEvent — canonical Module E record for a delayed downstream outcome such as `creator_follow`.
+- EventOutcomeLink — canonical Module E record linking an `AttributionEvent` to an eligible `OutcomeEvent` under a versioned rule.
+- AttributionScore — canonical Module E record for method-specific attribution or observational score values.
+- semantic_method — canonical field naming the deterministic semantic scoring method used for an attribution record.
+- semantic_method_version — canonical field naming the version of the active deterministic semantic method.
+- bounded_reason_code — bounded semantic reason-code value; never persist unbounded semantic rationales.
+- soft_reward_candidate — observational §7E soft semantic reward candidate persisted only for attribution scoring.
 
 ## Stack
 
-Python 3.11.x only (3.12+ breaks CTranslate2). FastAPI (api container), Celery (worker container), Redis (broker), PostgreSQL (store). CUDA ≥12 + cuDNN ≥8 in worker (SPEC-AMEND-001). All Pydantic models in `packages/schemas/`. All ML utilities in `packages/ml_core/`.
+Python 3.11.x only (3.12+ breaks CTranslate2). API Server (FastAPI), ML Worker (Celery consumer), Message Broker (Redis), and Persistent Store (PostgreSQL). CUDA ≥12 + cuDNN ≥8 in the ML Worker (SPEC-AMEND-001). All Pydantic models in `packages/schemas/`. All ML utilities in `packages/ml_core/`.
 
 ## Hard rules
 
@@ -36,5 +59,6 @@ pytest tests/ -x -q
 # Docker topology
 docker compose config --quiet
 # Canonical name audit — must return 0 results
-grep -rn "Celery node\|GPU worker\|inference worker\|task queue\|FIFO\|named pipe\|24-hour vault" services/ packages/ | grep -vP ':\s*#|"""' || true
+# Run .claude/commands/audit.md item 15 exactly: use its grep -rnE pattern
+# against services/ packages/ scripts/ and do not filter comments or docstrings.
 ```

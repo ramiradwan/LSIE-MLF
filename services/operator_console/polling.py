@@ -1,11 +1,11 @@
 """
-Polling coordinator — Phase 4 of the Operator Console cycle.
+Polling coordinator.
 
 Single authority over the console's polling job lifecycle. Views and
 viewmodels never talk to `ApiClient` directly; they read from
 `OperatorStore`, and the coordinator is the only thing that drives
-store mutations in response to network fetches. This separation is
-what lets Phase 5+ build widgets that are pure presentation.
+store mutations in response to network fetches. This separation keeps
+widgets as pure presentation components.
 
 Design notes:
   - One `PollingWorker` + one `QThread` per job. Workers move to their
@@ -29,7 +29,6 @@ Spec references:
   §4.E.1         — operator-facing aggregate and experiment admin endpoints
   §12            — retryable vs non-retryable errors flow through the
                    store's per-scope error signal
-  SPEC-AMEND-008 — PySide6 Operator Console
 """
 
 from __future__ import annotations
@@ -479,7 +478,7 @@ class PollingCoordinator(QObject):
             # Health rollup — HEALTH route.
             PollJobSpec(JOB_HEALTH, cfg.health_poll_ms, AppRoute.HEALTH),
             # Alerts — always on; attention queue must stay current on
-            # every page, per SPEC-AMEND-008's multi-page layout.
+            # every page, per the §4.E.1 multi-page layout.
             PollJobSpec(JOB_ALERTS, cfg.alerts_poll_ms, route_scoped=None),
         ]
         return {spec.name: spec for spec in specs}
@@ -583,20 +582,20 @@ class PollingCoordinator(QObject):
         Qt gives us against a Python thread blocked in C-level
         network I/O.
         """
-        # Phase 1: shared graceful window. Enough for an idle worker
+        # Step 1: shared graceful window. Enough for an idle worker
         # to process its queued stop slot and exit on its own.
         graceful_deadline = monotonic() + 0.5
         for handle in self._orphan_jobs:
             remaining_ms = int(max(0.0, graceful_deadline - monotonic()) * 1000)
             if remaining_ms > 0:
                 handle.thread.wait(remaining_ms)
-        # Phase 2: fire terminate on every still-running thread in a
+        # Step 2: fire terminate on every still-running thread in a
         # single batch so they die concurrently. `terminate()` is
         # async on Windows, so don't pair each one with its own wait.
         stuck = [h for h in self._orphan_jobs if h.thread.isRunning()]
         for handle in stuck:
             handle.thread.terminate()
-        # Phase 3: shared short wait for the terminated threads to
+        # Step 3: shared short wait for the terminated threads to
         # actually clear. ~300ms total is plenty for a TerminateThread
         # call to settle.
         terminate_deadline = monotonic() + 0.3
@@ -622,9 +621,9 @@ class PollingCoordinator(QObject):
         message = str(error) if not isinstance(error, ApiError) else error.message
         # Non-retryable errors are the ones worth surfacing on the card
         # immediately; retryable errors (URLError/Timeout/5xx) get the
-        # same treatment for v1 — Phase 6 can add a grace-period
-        # suppression if needed. Either way the error_changed signal
-        # carries the job/scope so the UI can attribute it correctly.
+        # same treatment; add a grace-period suppression here if needed.
+        # Either way the error_changed signal carries the job/scope so
+        # the UI can attribute it correctly.
         self._store.set_error(job_name, message)
         self.job_failed.emit(job_name, message)
 

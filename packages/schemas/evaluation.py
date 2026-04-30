@@ -1,10 +1,11 @@
 """
-Semantic Evaluation Schema — §8.3 Expected Output Schema
+Canonical semantic-evaluation payload contract (§8.3).
 
-Pydantic model for the canonical deterministic semantic scorer payload. v3.4
-keeps this scorer contract to the three §8.3 fields; D→E transport metadata
-(``semantic_method`` and ``semantic_method_version``) is attached only after
-canonical scorer validation.
+The module defines the bounded reason-code and scorer-method vocabularies plus
+the strict Pydantic model for semantic evaluation output. It accepts only the
+three canonical scorer fields and leaves method/version transport metadata to
+downstream enrichment; it does not persist unbounded semantic rationales or
+alter the §7B reward path (§8.6).
 """
 
 from __future__ import annotations
@@ -33,27 +34,27 @@ SEMANTIC_REASON_CODES: tuple[str, ...] = (
     "semantic_error",
 )
 
-SemanticMethod = Literal["cross_encoder", "llm_gray_band", "azure_llm_legacy"]
+SemanticMethod = Literal["cross_encoder", "llm_gray_band"]
 
 SEMANTIC_METHODS: tuple[str, ...] = (
     "cross_encoder",
     "llm_gray_band",
-    "azure_llm_legacy",
 )
 
 
 class SemanticEvaluationResult(BaseModel):
     """
-    §8.3 — Expected semantic evaluation JSON output contract.
+    Validate the canonical §8.3 semantic scorer response.
 
-    The ``reasoning`` field is a bounded reason code, not free-form rationale.
-    ``extra='forbid'`` keeps the canonical scorer payload limited to the exact
-    §8.3 fields. Downstream D→E metadata is appended after this validation step.
+    Accepts a bounded reason code, binary match gate, and [0, 1] confidence
+    score and produces a strict Pydantic payload for Module D. It does not
+    include transport metadata, free-form reasoning text, or reward-modulating
+    probability fields.
     """
 
     reasoning: SemanticReasonCode = Field(
         ...,
-        description="Bounded semantic reason code; not a free-form rationale.",
+        description="Bounded semantic reason code.",
     )
     is_match: bool = Field(
         ..., description="Whether the utterance matches the expected greeting rule."

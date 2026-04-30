@@ -1,9 +1,9 @@
 """
-Operator Console aggregate routes — `/api/v1/operator/*` (Phase 2).
+Operator Console aggregate routes — `/api/v1/operator/*`.
 
 These endpoints fan in the data the PySide6 Operator Console needs and
 fan out a single write surface for stimulus submission. Response models
-are Phase-1 DTOs from `packages.schemas.operator_console`; the heavy
+are DTOs from `packages.schemas.operator_console`; the heavy
 lifting lives in `OperatorReadService`/`OperatorActionService` so the
 route layer stays thin.
 
@@ -27,7 +27,6 @@ Spec references:
   §7B        — Thompson Sampling reward fields.
   §7C        — Co-Modulation Index (null-valid).
   §12        — Error-handling matrix.
-  SPEC-AMEND-008 — PySide6 Operator Console replaces Streamlit.
 """
 
 from __future__ import annotations

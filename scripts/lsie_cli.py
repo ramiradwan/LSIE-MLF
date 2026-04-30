@@ -1,7 +1,7 @@
 """Operator CLI — §4.E.1, §4.C, §2 step 7.
 
 Typer-based command-line interface wrapping the LSIE-MLF REST API.
-All data access goes through the FastAPI server; the CLI never talks
+All data access goes through the API Server; the CLI never talks
 to Postgres or Redis directly (§2 step 7).
 
 Entry point: ``python -m scripts <group> <command> [options]``
@@ -203,9 +203,9 @@ def session_status(session_id: str = typer.Argument(..., help="Session identifie
     console.print("")
     console.print(f"Segments:    {summary.get('total_segments', 0)}")
     console.print(f"Avg AU12:    {_fmt_float(summary.get('avg_au12'))}")
-    console.print(f"Avg Pitch:   {_fmt_float(summary.get('avg_pitch_f0'))} Hz")
-    console.print(f"Avg Jitter:  {_fmt_float(summary.get('avg_jitter'))}")
-    console.print(f"Avg Shimmer: {_fmt_float(summary.get('avg_shimmer'))}")
+    console.print(f"Avg F0 (measure): {_fmt_float(summary.get('avg_f0_mean_measure_hz'))} Hz")
+    console.print(f"Avg Jitter (measure):  {_fmt_float(summary.get('avg_jitter_mean_measure'))}")
+    console.print(f"Avg Shimmer (measure): {_fmt_float(summary.get('avg_shimmer_mean_measure'))}")
     console.print(
         f"Time range:  {summary.get('first_segment_at', '?')} → "
         f"{summary.get('last_segment_at', '?')}"
@@ -256,7 +256,11 @@ def experiment_show(
 def encounter_list(
     experiment: str | None = typer.Option(None, "--experiment", help="Filter by experiment_id"),
     arm: str | None = typer.Option(None, "--arm", help="Filter by arm"),
-    valid_only: bool = typer.Option(False, "--valid-only", help="Only is_valid=TRUE rows"),
+    valid_only: bool = typer.Option(
+        False,
+        "--valid-only",
+        help="Only encounters with measurement-window AU12 frames",
+    ),
     limit: int = typer.Option(100, "--limit", min=1, max=1000),
 ) -> None:
     """GET /api/v1/encounters — list encounter log entries."""
@@ -280,8 +284,8 @@ def encounter_list(
             "gated_reward",
             "p90_intensity",
             "semantic_gate",
-            "is_valid",
-            "n_frames",
+            "n_frames_in_window",
+            "au12_baseline_pre",
         ],
     )
 
@@ -325,9 +329,21 @@ def metrics_au12(session_id: str = typer.Argument(..., help="Session identifier"
 
 @metrics_app.command("acoustic")
 def metrics_acoustic(session_id: str = typer.Argument(..., help="Session identifier")) -> None:
-    """GET /api/v1/metrics/{session_id}/acoustic — pitch/jitter/shimmer series."""
+    """GET /api/v1/metrics/{session_id}/acoustic — canonical §7D acoustic series."""
     rows = _api_get(f"/api/v1/metrics/{session_id}/acoustic")
-    _render_table(rows, ["segment_id", "timestamp_utc", "pitch_f0", "jitter", "shimmer"])
+    _render_table(
+        rows,
+        [
+            "segment_id",
+            "timestamp_utc",
+            "f0_mean_measure_hz",
+            "jitter_mean_measure",
+            "shimmer_mean_measure",
+            "f0_delta_semitones",
+            "jitter_delta",
+            "shimmer_delta",
+        ],
+    )
 
 
 # ---------------------------------------------------------------------------

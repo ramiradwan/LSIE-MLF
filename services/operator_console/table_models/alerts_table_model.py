@@ -1,4 +1,4 @@
-"""Alerts table model — Phase 7.
+"""Alerts table model.
 
 Backs the attention queue surfaces (Overview card + Health page feed).
 Carries both `set_rows` (for full-refresh semantics) and `append_rows`
@@ -13,7 +13,6 @@ Spec references:
   §12            — subsystem state transitions, physiology staleness,
                    stimulus lifecycle failures, data gaps
   §4.E.1         — Health / attention-queue operator surfaces
-  SPEC-AMEND-008 — PySide6 Operator Console
 """
 
 from __future__ import annotations

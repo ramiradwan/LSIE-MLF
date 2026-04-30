@@ -1,51 +1,13 @@
 """
-Operator Console shared contracts — Phase 1 of the Operator Console cycle.
+Shared Pydantic contracts for API Server ↔ Operator Console payloads.
 
-A single pure-contract module for the read/action payloads that cross the
-API Server ↔ Operator Console boundary. Every type here is consumed by:
-
-  * `services/api/routes/operator.py` and the matching services (Phase 2)
-  * `services/operator_console/api_client.py` response validation (Phase 3)
-  * The store, viewmodels, and table models (Phases 4, 7, 8)
-
-Design constraints (from `docs/artifacts/operator_console_checklist.md` §1):
-  - No backend imports, no ORM, no raw biometric media. §5 data governance
-    forbids persistence of raw facial/voice/wearable data; the operator
-    surfaces only derived analytics.
-  - Every timestamp field is validated UTC-aware. Drift-corrected UTC is the
-    authoritative clock used by §4.C stimulus bookkeeping and §7B reward
-    windows, so the operator console never accepts a naive datetime.
-  - Names are operator-facing and stable. Reward-explanation fields trace
-    directly to §7B's gated reward `r_t = P90_AU12 × G_semantic` so the
-    console can show operators exactly what the pipeline used.
-  - Co-modulation nullness is first-class: §7C defines a null result as a
-    valid outcome when insufficient aligned non-stale pairs exist. The
-    `null_reason` field surfaces the reason rather than swallowing it.
-  - Degraded-but-recovering subsystem states (§12 error matrix — ADB drift
-    freeze/reset, FFmpeg restart, Azure retry-then-null, DB buffer/retry)
-    must read distinct from generic errors, so `HealthSubsystemStatus`
-    carries `recovery_mode` and `operator_action_hint`.
-  - Stimulus idempotency (§4.C authoritative stimulus lifecycle) is carried
-    by `StimulusRequest.client_action_id` — the dedup key the API Server
-    uses to collapse accidental double-submits.
-
-Spec references:
-  §4.C       — Orchestrator `_active_arm`, `_expected_greeting`, authoritative
-               `_stimulus_time`
-  §4.C.4     — Physiological State Buffer freshness / staleness semantics
-  §4.E.1     — Operator-facing execution details (the retired Streamlit
-               surface is replaced by the PySide6 Operator Console per
-               SPEC-AMEND-008)
-  §4.E.2     — Physiology persistence (rmssd_ms, heart_rate_bpm, provider,
-               source_timestamp_utc)
-  §7B        — Thompson Sampling reward: r_t = p90_intensity × semantic_gate
-  §7C        — Co-Modulation Index, rolling Pearson; null-valid
-  §7E        — Event→outcome attribution diagnostics (operator readback only)
-  §12        — Error-handling matrix (degraded/recovering subsystem states)
-  §0.3       — Canonical terms: subject_role, Physiological State Buffer,
-               Co-Modulation Index, API Server
-  SPEC-AMEND-007 — v3.1 physiology transport
-  SPEC-AMEND-008 — PySide6 Operator Console replaces Streamlit
+This module validates derived read/action DTOs used by operator routes, clients,
+stores, viewmodels, and table models. It enforces UTC-aware timestamps, canonical
+operator terminology (§0, §13.15), raw-media exclusion under §5 data governance,
+§7B reward-explanation fields, §7C null-valid co-modulation, §7E attribution
+readbacks, and §12 health/recovery states. It has no backend/ORM imports,
+persists no biometric media, and does not compute rewards or mutate pipeline
+state.
 """
 
 from __future__ import annotations
@@ -189,11 +151,12 @@ def _require_utc(value: datetime | None) -> datetime | None:
 
 
 class OperatorConsoleModel(PydanticBaseModel):
-    """Shared DTO base class.
+    """
+    Shared base for operator-console DTOs.
 
-    `None` must survive as JSON `null`, while NaN/Infinity placeholders are
-    explicitly rejected so the operator-facing contracts never emit lossy or
-    non-standard numeric sentinels.
+    Accepts fields declared by subclasses and produces Pydantic models that
+    reject NaN/Infinity while preserving explicit ``None`` as JSON ``null``. It
+    does not import backend services, persist data, or infer missing analytics.
     """
 
     model_config = ConfigDict(allow_inf_nan=False, ser_json_inf_nan="null")
@@ -240,9 +203,9 @@ class ObservationalAcousticSummary(OperatorConsoleModel):
 class SemanticEvaluationSummary(OperatorConsoleModel):
     """Bounded §7E semantic attribution readback for encounter aggregates.
 
-    `reasoning` is the bounded reason code persisted on the attribution event,
-    not a free-form rationale. The confidence/probability and method metadata
-    are observational readbacks and do not change the §7B reward path.
+    `reasoning` is the bounded reason code persisted on the AttributionEvent.
+    The confidence/probability and method metadata are observational readbacks
+    and do not change the §7B reward path.
     """
 
     reasoning: str | None = None
@@ -270,29 +233,6 @@ class AttributionSummary(OperatorConsoleModel):
     sync_peak_corr: float | None = Field(default=None, ge=-1.0, le=1.0)
     sync_peak_lag: int | None = Field(default=None, ge=0)
     outcome_link_lag_s: float | None = Field(default=None, ge=0.0)
-
-
-class AcousticObservationalMetrics(OperatorConsoleModel):
-    """Deprecated compatibility DTO for the legacy operator acoustic field."""
-
-    pitch_f0: float | None = Field(default=None, deprecated=True)
-    jitter: float | None = Field(default=None, deprecated=True)
-    shimmer: float | None = Field(default=None, deprecated=True)
-    f0_valid_measure: bool = False
-    f0_valid_baseline: bool = False
-    perturbation_valid_measure: bool = False
-    perturbation_valid_baseline: bool = False
-    voiced_coverage_measure_s: float = Field(default=0.0, ge=0.0)
-    voiced_coverage_baseline_s: float = Field(default=0.0, ge=0.0)
-    f0_mean_measure_hz: float | None = Field(default=None, ge=0.0)
-    f0_mean_baseline_hz: float | None = Field(default=None, ge=0.0)
-    f0_delta_semitones: float | None = None
-    jitter_mean_measure: float | None = Field(default=None, ge=0.0)
-    jitter_mean_baseline: float | None = Field(default=None, ge=0.0)
-    jitter_delta: float | None = None
-    shimmer_mean_measure: float | None = Field(default=None, ge=0.0)
-    shimmer_mean_baseline: float | None = Field(default=None, ge=0.0)
-    shimmer_delta: float | None = None
 
 
 class SessionSummary(OperatorConsoleModel):
@@ -333,7 +273,7 @@ class EncounterSummary(OperatorConsoleModel):
     """Per-segment encounter row with full §7B reward explanation.
 
     The reward-explanation fields (`p90_intensity`, `semantic_gate`,
-    `gated_reward`, `n_frames_in_window`, `baseline_b_neutral`) are the
+    `gated_reward`, `n_frames_in_window`, `au12_baseline_pre`) are the
     exact inputs the pipeline uses — exposing them is what makes the
     Live Session page operator-trustable.
     """
@@ -350,8 +290,7 @@ class EncounterSummary(OperatorConsoleModel):
     p90_intensity: float | None = None
     gated_reward: float | None = None
     n_frames_in_window: int | None = Field(default=None, ge=0)
-    baseline_b_neutral: float | None = None
-    acoustic: AcousticObservationalMetrics | None = None
+    au12_baseline_pre: float | None = None
     observational_acoustic: ObservationalAcousticSummary | None = None
     semantic_evaluation: SemanticEvaluationSummary | None = None
     attribution: AttributionSummary | None = None
@@ -383,7 +322,6 @@ class LatestEncounterSummary(OperatorConsoleModel):
     p90_intensity: float | None = None
     gated_reward: float | None = None
     n_frames_in_window: int | None = Field(default=None, ge=0)
-    acoustic: AcousticObservationalMetrics | None = None
     observational_acoustic: ObservationalAcousticSummary | None = None
     semantic_evaluation: SemanticEvaluationSummary | None = None
     attribution: AttributionSummary | None = None
@@ -445,7 +383,7 @@ class ExperimentDetail(OperatorConsoleModel):
     """Full experiment readback for the Experiments page.
 
     `last_update_summary` is a pre-formatted human-readable line — the
-    formatter lives in Phase 3 (`services/operator_console/formatters.py`)
+    formatter lives in `services/operator_console/formatters.py`
     so the route layer is free of string building.
     """
 

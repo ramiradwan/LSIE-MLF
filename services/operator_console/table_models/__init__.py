@@ -1,7 +1,7 @@
-"""Qt item models for the Operator Console tabular surfaces — Phase 7.
+"""Qt item models for the Operator Console tabular surfaces.
 
 Each model is a thin `QAbstractTableModel` subclass bound to a specific
-Phase-1 DTO list. Models hold no business logic and no network code —
+DTO list. Models hold no business logic and no network code —
 they are purely the Qt-side adaptor between store state and a view's
 `QTableView`. Formatting for display cells flows through
 `services.operator_console.formatters` so the operator vocabulary stays
@@ -12,7 +12,6 @@ Spec references:
   §7B            — Thompson Sampling reward = p90_intensity × semantic_gate
   §7C            — Co-Modulation Index null-valid
   §12            — subsystem recovery-mode vs error distinction
-  SPEC-AMEND-008 — PySide6 Operator Console
 """
 
 from __future__ import annotations

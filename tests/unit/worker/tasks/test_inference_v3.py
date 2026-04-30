@@ -58,9 +58,6 @@ def _assert_null_acoustic_contract(payload: dict[str, Any]) -> None:
     assert payload["shimmer_mean_measure"] is None
     assert payload["shimmer_mean_baseline"] is None
     assert payload["shimmer_delta"] is None
-    assert payload.get("pitch_f0") is None
-    assert payload.get("jitter") is None
-    assert payload.get("shimmer") is None
 
 
 class TestForwardFields:
@@ -75,7 +72,6 @@ class TestForwardFields:
             "_expected_greeting": "Hello, welcome!",
             "_au12_series": [{"timestamp_s": 0.0, "intensity": 0.5}],
             "_stimulus_time": 15.0,
-            "_x_max": 0.8,
         }
         payload = _make_payload(**forward_data)
         mock_persist = MagicMock()
@@ -111,7 +107,6 @@ class TestForwardFields:
         assert "_expected_greeting" not in result
         assert "_au12_series" not in result
         assert "_stimulus_time" not in result
-        assert "_x_max" not in result
         _assert_null_acoustic_contract(result)
 
     def test_partial_forward_fields(self) -> None:
@@ -132,7 +127,6 @@ class TestForwardFields:
         assert result["_stimulus_time"] == 10.0
         assert "_expected_greeting" not in result
         assert "_au12_series" not in result
-        assert "_x_max" not in result
         _assert_null_acoustic_contract(result)
 
 
@@ -212,8 +206,8 @@ class TestBase64Decode:
             # (bytes is not str, so decode is a no-op) and be written as-is
             mock_file.write.assert_called_once_with(raw_audio)
 
-    def test_semantic_shadow_observational_payload_never_overrides_live(self) -> None:
-        """§8.6 — v3 handoff enriches live/shadow payloads without interference."""
+    def test_semantic_payload_contains_only_live_channel(self) -> None:
+        """§8 — v3 handoff enriches only the live semantic payload."""
         mod = _get_inference_module()
         raw_audio = b"\x00\x01" * 1600
         b64_audio = base64.b64encode(raw_audio).decode("ascii")
@@ -234,19 +228,8 @@ class TestBase64Decode:
             "semantic_method": "cross_encoder",
             "semantic_method_version": method_version,
         }
-        shadow_semantic = {
-            "reasoning": "cross_encoder_high_match",
-            "is_match": True,
-            "confidence_score": 0.99,
-        }
-        expected_shadow_semantic = {
-            **shadow_semantic,
-            "semantic_method": "cross_encoder",
-            "semantic_method_version": method_version,
-        }
         mock_semantic = MagicMock()
         mock_semantic.evaluate.return_value = live_semantic
-        mock_semantic.evaluate_shadow.return_value = shadow_semantic
 
         with (
             patch.object(mod, "persist_metrics", mock_persist),
@@ -271,12 +254,18 @@ class TestBase64Decode:
         assert "semantic_method" not in live_semantic
         assert "semantic_method_version" not in live_semantic
         assert result["semantic"] == expected_live_semantic
-        assert result["semantic_shadow"] == expected_shadow_semantic
+        assert set(result["semantic"]) == {
+            "reasoning",
+            "is_match",
+            "confidence_score",
+            "semantic_method",
+            "semantic_method_version",
+        }
         assert result["semantic"]["is_match"] is False
         assert result["semantic"]["confidence_score"] == 0.57
         dispatched = mock_persist.delay.call_args.args[0]
         assert dispatched["semantic"] == expected_live_semantic
-        assert dispatched["semantic_shadow"] == expected_shadow_semantic
+        assert set(dispatched["semantic"]) == set(result["semantic"])
 
 
 class TestPersistMetricsRewardInvariance:
@@ -300,7 +289,6 @@ class TestPersistMetricsRewardInvariance:
             "_expected_greeting": "hello welcome",
             "_stimulus_time": 100.0,
             "stimulus_time_utc": "2026-03-13T12:00:00+00:00",
-            "_x_max": None,
             "_bandit_decision_snapshot": {
                 "selection_method": "thompson_sampling",
                 "selection_time_utc": "2026-03-13T12:00:00+00:00",
@@ -345,17 +333,9 @@ class TestPersistMetricsRewardInvariance:
                 "reasoning": "gray_band_llm_match",
                 "is_match": True,
                 "confidence_score": 0.99,
-                "semantic_method": "azure_llm_legacy",
+                "semantic_method": "llm_gray_band",
                 "semantic_method_version": "fallback-v9",
             },
-            "semantic_shadow": {
-                "reasoning": "shadow_nonmatch",
-                "is_match": False,
-                "confidence_score": 0.01,
-                "semantic_method": "candidate_shadow_method",
-                "semantic_method_version": "shadow-v2",
-            },
-            "_x_max": 0.99,
             "_physiological_context": {
                 "streamer": {
                     "rmssd_ms": 88.0,
@@ -402,9 +382,6 @@ class TestPersistMetricsRewardInvariance:
             "shimmer_mean_measure": 0.08,
             "shimmer_mean_baseline": 0.02,
             "shimmer_delta": 0.06,
-            "pitch_f0": 260.0,
-            "jitter": 0.04,
-            "shimmer": 0.08,
             "_bandit_decision_snapshot": {
                 "selection_method": "thompson_sampling",
                 "selection_time_utc": "2026-03-13T12:00:00+00:00",
@@ -451,7 +428,6 @@ class TestPersistMetricsRewardInvariance:
             gated_reward=0.37,
             p90_intensity=0.91,
             semantic_gate=1,
-            is_valid=False,
             n_frames_in_window=0,
             au12_baseline_pre=None,
         )
@@ -526,20 +502,17 @@ class TestPersistMetricsRewardInvariance:
         assert reward_results[0] == reward_results[1]
         # Differential payload equality check: the serialized RewardResult is
         # identical even though semantic confidence/method, physiology,
-        # co-modulation, acoustics, attribution, shadow semantic, and _x_max differ.
+        # co-modulation, acoustics, and attribution differ.
         assert asdict(reward_results[0]) == asdict(reward_results[1])
         assert "au12_baseline_pre" in asdict(reward_results[0])
-        assert "baseline_b_neutral" not in asdict(reward_results[0])
 
         for reward_call in mock_compute_reward.call_args_list:
             assert set(reward_call.kwargs) == {"au12_series", "stimulus_time_s", "is_match"}
             assert reward_call.kwargs["is_match"] is True
             assert "confidence_score" not in reward_call.kwargs
             assert "semantic_method" not in reward_call.kwargs
-            assert "semantic_shadow" not in reward_call.kwargs
             assert "_physiological_context" not in reward_call.kwargs
             assert "co_modulation_index" not in reward_call.kwargs
-            assert "pitch_f0" not in reward_call.kwargs
             assert "attribution_score" not in reward_call.kwargs
             assert "x_max" not in reward_call.kwargs
 
@@ -551,13 +524,15 @@ class TestPersistMetricsRewardInvariance:
 
         persisted_differential = mock_store.insert_metrics.call_args_list[1].args[0]
         assert persisted_differential["semantic"]["confidence_score"] == 0.99
-        assert persisted_differential["semantic"]["semantic_method"] == "azure_llm_legacy"
-        assert (
-            persisted_differential["semantic_shadow"]["semantic_method"]
-            == "candidate_shadow_method"
-        )
+        assert persisted_differential["semantic"]["semantic_method"] == "llm_gray_band"
+        assert set(persisted_differential["semantic"]) == {
+            "reasoning",
+            "is_match",
+            "confidence_score",
+            "semantic_method",
+            "semantic_method_version",
+        }
         assert persisted_differential["_physiological_context"]["streamer"]["rmssd_ms"] == 88.0
-        assert persisted_differential["pitch_f0"] == 260.0
         assert persisted_differential["attribution_score"]["soft_reward_candidate"] == 0.99
 
         assert mock_store.persist_attribution_ledger.call_count == 2
@@ -569,7 +544,7 @@ class TestPersistMetricsRewardInvariance:
         assert base_ledger.outcomes == ()
         assert base_ledger.links == ()
         assert {score.outcome_id for score in base_ledger.scores} == {None}
-        assert differential_ledger.event.semantic_method == "azure_llm_legacy"
+        assert differential_ledger.event.semantic_method == "llm_gray_band"
         assert differential_ledger.event.semantic_method_version == "fallback-v9"
         assert len(differential_ledger.outcomes) == 1
         assert len(differential_ledger.links) == 1

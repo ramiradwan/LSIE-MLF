@@ -52,9 +52,8 @@ class TestListEncounters:
                 "gated_reward",
                 "p90_intensity",
                 "semantic_gate",
-                "is_valid",
-                "n_frames",
-                "baseline_neutral",
+                "n_frames_in_window",
+                "au12_baseline_pre",
                 "stimulus_time",
                 "created_at",
             ],
@@ -69,7 +68,6 @@ class TestListEncounters:
                     0.72,
                     0.81,
                     1,
-                    True,
                     130,
                     0.12,
                     3.5,
@@ -101,10 +99,10 @@ class TestListEncounters:
         assert result[0]["gated_reward"] == 0.72
         assert result[0]["p90_intensity"] == 0.81
         assert result[0]["semantic_gate"] == 1
-        assert result[0]["n_frames"] == 130
+        assert result[0]["n_frames_in_window"] == 130
 
     def test_row_serializer_preserves_additive_semantic_attribution_columns(self) -> None:
-        """Pass-through serialization keeps legacy fields plus additive readbacks."""
+        """Pass-through serialization keeps canonical fields plus additive readbacks."""
         cursor = _make_mock_cursor(
             [
                 "id",
@@ -191,7 +189,7 @@ class TestListEncounters:
         assert call_args[0][1]["arm"] == "warm_welcome"
 
     def test_valid_only_filter(self) -> None:
-        """valid_only=True adds the is_valid condition."""
+        """valid_only=True adds the canonical frame-window condition."""
         mock_conn = MagicMock()
         mock_cursor = _make_mock_cursor(["id"], [])
         mock_conn.cursor.return_value = mock_cursor
@@ -213,7 +211,7 @@ class TestListEncounters:
             )
 
         call_args = mock_cursor.execute.call_args
-        assert "e.is_valid = TRUE" in call_args[0][0]
+        assert "e.n_frames_in_window > 0" in call_args[0][0]
 
     def test_connection_returned(self) -> None:
         """Connection returned to pool after query."""

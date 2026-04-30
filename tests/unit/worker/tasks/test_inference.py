@@ -65,10 +65,6 @@ def _assert_null_acoustic_contract(payload: dict[str, Any]) -> None:
     assert payload["shimmer_mean_measure"] is None
     assert payload["shimmer_mean_baseline"] is None
     assert payload["shimmer_delta"] is None
-    # Legacy scalar compatibility fields remain optional/deprecated.
-    assert payload.get("pitch_f0") is None
-    assert payload.get("jitter") is None
-    assert payload.get("shimmer") is None
 
 
 class TestProcessSegment:
@@ -183,9 +179,6 @@ class TestProcessSegment:
         mock_engine.transcribe.return_value = ""
         mock_acoustic = MagicMock()
         mock_acoustic.analyze.return_value = AcousticMetrics(
-            pitch_f0=210.0,
-            jitter=0.01,
-            shimmer=0.02,
             f0_valid_measure=True,
             f0_valid_baseline=True,
             perturbation_valid_measure=True,
@@ -235,14 +228,8 @@ class TestProcessSegment:
         assert result["f0_mean_baseline_hz"] == 180.0
         assert result["jitter_mean_measure"] == 0.011
         assert result["shimmer_mean_measure"] == 0.021
-        assert result["pitch_f0"] == 210.0
-        assert result["jitter"] == 0.01
-        assert result["shimmer"] == 0.02
         dispatched_metrics = mock_persist.delay.call_args.args[0]
         assert dispatched_metrics["f0_valid_measure"] is True
-        assert dispatched_metrics["pitch_f0"] == 210.0
-        assert dispatched_metrics["jitter"] == 0.01
-        assert dispatched_metrics["shimmer"] == 0.02
 
     def test_acoustic_invalidity_returns_default_payload_without_failure(self) -> None:
         """§4.D.contract / §12.4 — local acoustic failures degrade to false/null outputs."""
@@ -300,17 +287,11 @@ class TestProcessSegment:
                     "shimmer_mean_measure": None,
                     "shimmer_mean_baseline": None,
                     "shimmer_delta": None,
-                    "pitch_f0": None,
-                    "jitter": None,
-                    "shimmer": None,
                 },
             ),
             (
                 "sparse_voicing",
                 AcousticMetrics(
-                    pitch_f0=205.0,
-                    jitter=0.011,
-                    shimmer=0.019,
                     voiced_coverage_measure_s=0.6,
                     voiced_coverage_baseline_s=0.8,
                 ),
@@ -330,17 +311,11 @@ class TestProcessSegment:
                     "shimmer_mean_measure": None,
                     "shimmer_mean_baseline": None,
                     "shimmer_delta": None,
-                    "pitch_f0": 205.0,
-                    "jitter": 0.011,
-                    "shimmer": 0.019,
                 },
             ),
             (
                 "perturbation_invalidity",
                 AcousticMetrics(
-                    pitch_f0=210.0,
-                    jitter=0.010,
-                    shimmer=0.020,
                     f0_valid_measure=True,
                     f0_valid_baseline=True,
                     voiced_coverage_measure_s=2.4,
@@ -365,9 +340,6 @@ class TestProcessSegment:
                     "shimmer_mean_measure": None,
                     "shimmer_mean_baseline": None,
                     "shimmer_delta": None,
-                    "pitch_f0": 210.0,
-                    "jitter": 0.010,
-                    "shimmer": 0.020,
                 },
             ),
         ]
@@ -426,7 +398,6 @@ class TestProcessSegment:
         }
         mock_semantic = MagicMock()
         mock_semantic.evaluate.return_value = canonical_scorer_payload
-        mock_semantic.evaluate_shadow.return_value = None
 
         with (
             patch.object(mod, "persist_metrics", mock_persist),
@@ -462,8 +433,8 @@ class TestProcessSegment:
             "hello welcome",
         )
 
-    def test_semantic_free_form_reasoning_is_bounded_and_shadow_is_separate(self) -> None:
-        """§8 / §8.6 — Legacy rationale text is bounded; shadow cannot mutate live."""
+    def test_semantic_unbounded_reasoning_becomes_error(self) -> None:
+        """§8 — non-canonical semantic text is not forwarded."""
         mod = _get_inference_module()
         mock_persist = MagicMock()
         mock_engine = MagicMock()
@@ -472,19 +443,12 @@ class TestProcessSegment:
         mock_preprocessor.preprocess.return_value = "ambiguous greeting"
         mock_semantic = MagicMock()
         mock_semantic.evaluate.return_value = {
-            "reasoning": "This legacy Azure rationale must not be forwarded.",
+            "reasoning": "This unbounded semantic text must not be forwarded.",
             "is_match": False,
             "confidence_score": 0.58,
         }
         mock_semantic.last_semantic_method = "llm_gray_band"
-        mock_semantic.last_semantic_method_version = "azure-openai:gpt-4o:2024-02-01"
-        mock_semantic.evaluate_shadow.return_value = {
-            "reasoning": "cross_encoder_high_match",
-            "is_match": True,
-            "confidence_score": 0.99,
-        }
-        mock_semantic.last_shadow_semantic_method = "cross_encoder"
-        mock_semantic.last_shadow_semantic_method_version = "shadow-v1"
+        mock_semantic.last_semantic_method_version = "llm-gray-band-v1"
 
         with (
             patch.object(mod, "persist_metrics", mock_persist),
@@ -506,20 +470,22 @@ class TestProcessSegment:
 
             result = mod.process_segment(MagicMock(), self._make_payload(_stimulus_time=None))
 
-        assert result["semantic"]["reasoning"] == "gray_band_llm_nonmatch"
+        assert result["semantic"]["reasoning"] == "semantic_error"
         assert result["semantic"]["is_match"] is False
         assert result["semantic"]["confidence_score"] == 0.58
         assert result["semantic"]["semantic_method"] == "llm_gray_band"
-        assert result["semantic"]["semantic_method_version"] == "azure-openai:gpt-4o:2024-02-01"
-        assert result["semantic_shadow"]["is_match"] is True
-        assert result["semantic_shadow"]["confidence_score"] == 0.99
-        assert result["semantic_shadow"]["semantic_method"] == "cross_encoder"
-        assert result["semantic_shadow"]["semantic_method_version"] == "shadow-v1"
+        assert result["semantic"]["semantic_method_version"] == "llm-gray-band-v1"
+        assert set(result["semantic"]) == {
+            "reasoning",
+            "is_match",
+            "confidence_score",
+            "semantic_method",
+            "semantic_method_version",
+        }
         dispatched_metrics = mock_persist.delay.call_args.args[0]
         assert dispatched_metrics["semantic"]["is_match"] is False
         assert dispatched_metrics["semantic"]["semantic_method"] == "llm_gray_band"
-        assert dispatched_metrics["semantic_shadow"]["is_match"] is True
-        assert dispatched_metrics["semantic_shadow"]["semantic_method_version"] == "shadow-v1"
+        assert set(dispatched_metrics["semantic"]) == set(result["semantic"])
 
     def test_no_frame_skips_au12(self) -> None:
         """§4.D contract — No AU12 when frame data missing."""
@@ -607,9 +573,6 @@ class TestProcessSegment:
         mock_engine.transcribe.return_value = "hello"
         mock_acoustic = MagicMock()
         mock_acoustic.analyze.return_value = AcousticMetrics(
-            pitch_f0=float("nan"),
-            jitter=float("inf"),
-            shimmer=float("-inf"),
             voiced_coverage_measure_s=float("nan"),
             voiced_coverage_baseline_s=float("inf"),
             f0_mean_measure_hz=float("nan"),
@@ -664,9 +627,6 @@ class TestProcessSegment:
             "shimmer_mean_measure",
             "shimmer_mean_baseline",
             "shimmer_delta",
-            "pitch_f0",
-            "jitter",
-            "shimmer",
         )
         for forbidden_field in (
             "gated_reward",
@@ -768,15 +728,11 @@ class TestPersistMetrics:
                 {
                     "session_id": "test-id",
                     "segment_id": "seg-001",
-                    "pitch_f0": float("nan"),
-                    "jitter": float("inf"),
                     "semantic": {"confidence_score": float("nan")},
                 },
             )
 
         inserted = mock_store.insert_metrics.call_args.args[0]
-        assert inserted["pitch_f0"] is None
-        assert inserted["jitter"] is None
         assert inserted["semantic"]["confidence_score"] is None
 
     def _make_reward_metrics(self, **overrides: Any) -> dict[str, Any]:
@@ -806,7 +762,6 @@ class TestPersistMetrics:
                 {"timestamp_s": 103.8, "intensity": 0.64},
             ],
             "_stimulus_time": 100.0,
-            "_x_max": None,
         }
         base.update(overrides)
         return base
@@ -829,9 +784,6 @@ class TestPersistMetrics:
             "shimmer_mean_measure": 0.021,
             "shimmer_mean_baseline": 0.018,
             "shimmer_delta": 0.003,
-            "pitch_f0": 210.0,
-            "jitter": 0.010,
-            "shimmer": 0.020,
         }
         payload.update(overrides)
         return payload
@@ -905,7 +857,6 @@ class TestPersistMetrics:
             f0_delta_semitones=9.9,
             jitter_delta=0.25,
             shimmer_delta=0.5,
-            pitch_f0=420.0,
         )
         metrics_with_acoustics = {**base_metrics, **acoustic_payload}
 

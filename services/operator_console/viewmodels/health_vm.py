@@ -1,4 +1,4 @@
-"""Health page viewmodel — Phase 8.
+"""Health page viewmodel.
 
 Owns two tables: the subsystem rollup (§12 states with recovery-mode
 and operator-action hints) and the alerts feed. Keeping them separate
@@ -13,7 +13,6 @@ Spec references:
   §4.E.1         — Health operator surface
   §12            — error-handling matrix, including
                    degraded-but-recovering paths
-  SPEC-AMEND-008 — PySide6 Operator Console
 """
 
 from __future__ import annotations

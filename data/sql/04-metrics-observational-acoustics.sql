@@ -1,18 +1,23 @@
 -- =============================================================================
--- LSIE-MLF Observational Acoustic Metrics Rollout Migration
+-- LSIE-MLF Observational Acoustic Metrics Canonicalization Migration
 --
--- §2.7 / §11.4 / §13.23 — Add the canonical §7D observational acoustic
--- columns to the metrics table for already-initialized environments.
+-- §2.7 / §11.4 / §13.23 — Ensure already-initialized metrics tables expose
+-- only the canonical §7D observational acoustic columns.
 --
 -- Safe rollout rules:
---   - additive only; no destructive schema changes
---   - legacy pitch_f0 / jitter / shimmer columns remain in place
+--   - drop retired legacy scalar acoustic columns in place; historical values
+--     are not archived by policy
 --   - mean/delta analytics remain nullable; no NOT NULL and no defaults
 --   - persist only anonymized analytical outputs, never raw audio,
 --     waveform arrays, embeddings, or reconstructive voiceprint data
 --
--- Idempotent by design via ADD COLUMN IF NOT EXISTS.
+-- Idempotent by design via DROP/ADD COLUMN IF EXISTS/IF NOT EXISTS.
 -- =============================================================================
+
+ALTER TABLE metrics
+    DROP COLUMN IF EXISTS pitch_f0,
+    DROP COLUMN IF EXISTS jitter,
+    DROP COLUMN IF EXISTS shimmer;
 
 ALTER TABLE metrics
     ADD COLUMN IF NOT EXISTS f0_valid_measure BOOLEAN;

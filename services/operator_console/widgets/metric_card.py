@@ -11,7 +11,6 @@ DTOs into those strings (see `formatters.py`).
 Spec references:
   §4.E.1         — operator-facing overview page
   §7B            — reward-explanation card on the Live Session surface
-  SPEC-AMEND-008 — PySide6 Operator Console
 """
 
 from __future__ import annotations

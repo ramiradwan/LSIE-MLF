@@ -85,7 +85,7 @@ def sanitize_json_payload(payload: Any) -> Any:
 
     Handoff-specific optional objects are normalized while traversing dicts:
     an ineligible ``_physiological_context`` is removed instead of serialized
-    as ``{}`` or as a null-only role wrapper, and absent bandit snapshot
+    as ``{}`` or as a null-only role wrapper, and absent BanditDecisionSnapshot
     optionals are omitted rather than emitted as explicit ``null`` members.
 
     Dicts and lists are mutated in place and returned for convenience.

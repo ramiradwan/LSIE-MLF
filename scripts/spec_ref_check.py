@@ -1,27 +1,26 @@
 #!/usr/bin/env python3
 """
-spec_ref_check.py — Resolve, index, and validate spec references (v3/v3.1/v3.2 schema)
-==================================================================================
+spec_ref_check.py — Resolve, index, and validate spec references
+================================================================
 
-Auto-generates a spec_ref index from the content.json payload embedded in tech-spec,
-then scans the project for all spec_ref usage and reports which refs resolve,
-which don't, which indexed content paths are broken, and which content paths
-have no ref pointing at them.
+Auto-generates a spec_ref index from the content.json payload embedded in the
+currently committed tech-spec PDF, then scans the project for all spec_ref usage
+and reports which refs resolve, which don't, which indexed content paths are
+broken, and which content paths have no ref pointing at them.
 
 The content.json can be loaded from three sources (tried in order):
-  1. Extracted directly from the authoritative PDF (embedded as a
-     PDF/A-3 meta-attachment named "content.json")
-  2. A standalone content.json file on disk
-  3. Auto-detected at docs/content.json in the repo root
+  1. An explicit PDF passed with --from-pdf
+  2. An explicit standalone content.json file passed with --content
+  3. The single docs/tech-spec-v*.pdf file discovered in the repo root
 
 The index is built in two layers:
   1. STRUCTURAL (auto-generated): Walks the payload and infers refs from
      section_number fields, module_id letters, subsection numbers, array
      indices mapped to conventional numbering, and math topic structure.
-  2. EXPLICIT (from schema): If sections contain spec_refs arrays
-     (the v3 SpecRef model), those override structural heuristics.
+  2. EXPLICIT (from schema): If sections contain spec_refs arrays, those
+     override structural heuristics.
 
-This version also validates that indexed content_path targets actually resolve
+This script also validates that indexed content_path targets actually resolve
 against the loaded content payload, including selector-style paths such as:
   - core_modules.modules[module_id=B]
   - core_modules.modules[module_id=B].subsections[number=4.B.2]
@@ -32,11 +31,12 @@ Usage:
     python scripts/spec_ref_check.py --validate
     python scripts/spec_ref_check.py --resolve "7A.4"
     python scripts/spec_ref_check.py --resolve "4.A.1"
-    python scripts/spec_ref_check.py --from-pdf docs/tech-spec-v3.2.pdf --validate
-    python scripts/spec_ref_check.py --from-pdf docs/tech-spec-v3.2.pdf --extract > content.json
+    python scripts/spec_ref_check.py --extract > docs/content.json
+    python scripts/spec_ref_check.py --from-pdf docs/tech-spec-v*.pdf --extract > docs/content.json
 
-Dependencies: None for core functionality. PyMuPDF (fitz) required
-only for --from-pdf extraction.
+Dependencies: PyMuPDF (fitz) is used for PDF attachment extraction when
+available. A built-in FlateDecode fallback handles the committed spec PDF in
+environments where PyMuPDF is unavailable.
 """
 
 from __future__ import annotations
@@ -46,7 +46,7 @@ import json
 import re
 import sys
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 
 # =====================================================================
@@ -56,16 +56,59 @@ from typing import Any
 
 def extract_content_from_pdf(pdf_path: Path) -> dict[str, Any]:
     """Extract content.json from a PDF/A-3 meta-attachment."""
-    try:
-        import fitz
-    except ImportError as exc:
-        raise ImportError(
-            "PyMuPDF (fitz) is required for PDF extraction. "
-            "Install with: pip install pymupdf"
-        ) from exc
-
     if not pdf_path.is_file():
         raise FileNotFoundError(f"PDF not found: {pdf_path}")
+
+    def _extract_with_stream_scan() -> dict[str, Any]:
+        """Fallback extractor for the committed spec PDF when PyMuPDF is absent."""
+        import zlib
+
+        raw_pdf = pdf_path.read_bytes()
+        errors: list[str] = []
+
+        for marker in re.finditer(rb"/Type\s*/EmbeddedFile", raw_pdf):
+            stream_marker = raw_pdf.find(b"stream", marker.end())
+            endobj_marker = raw_pdf.find(b"endobj", marker.end())
+            if stream_marker == -1 or (endobj_marker != -1 and stream_marker > endobj_marker):
+                continue
+
+            header_start = raw_pdf.rfind(b"<<", 0, marker.start())
+            if header_start == -1:
+                header_start = marker.start()
+            header = raw_pdf[header_start:stream_marker]
+            if b"application#2Fjson" not in header and b"application/json" not in header:
+                continue
+
+            length_match = re.search(rb"/Length\s+(\d+)", header)
+            if not length_match:
+                errors.append("embedded JSON stream is missing /Length")
+                continue
+
+            stream_start = stream_marker + len(b"stream")
+            if raw_pdf[stream_start:stream_start + 2] == b"\r\n":
+                stream_start += 2
+            elif raw_pdf[stream_start:stream_start + 1] == b"\n":
+                stream_start += 1
+
+            length = int(length_match.group(1))
+            raw_bytes = raw_pdf[stream_start:stream_start + length]
+            try:
+                if b"/FlateDecode" in header:
+                    raw_bytes = zlib.decompress(raw_bytes)
+                loaded = json.loads(raw_bytes.decode("utf-8"))
+                if not isinstance(loaded, dict):
+                    raise ValueError("embedded JSON content is not an object")
+                return cast(dict[str, Any], loaded)
+            except (json.JSONDecodeError, UnicodeDecodeError, ValueError, zlib.error) as exc:
+                errors.append(str(exc))
+
+        detail = f" Errors: {'; '.join(errors)}" if errors else ""
+        raise ValueError(f"No embedded JSON content stream found in {pdf_path}.{detail}")
+
+    try:
+        import fitz
+    except ImportError:
+        return _extract_with_stream_scan()
 
     doc = fitz.open(str(pdf_path))
     try:
@@ -96,7 +139,10 @@ def extract_content_from_pdf(pdf_path: Path) -> dict[str, Any]:
         doc.close()
 
     try:
-        return json.loads(raw_bytes.decode("utf-8"))
+        loaded = json.loads(raw_bytes.decode("utf-8"))
+        if not isinstance(loaded, dict):
+            raise ValueError("embedded content.json is not an object")
+        return cast(dict[str, Any], loaded)
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
         raise ValueError(f"Failed to parse {target_name} from PDF: {exc}") from exc
 
@@ -122,22 +168,33 @@ def load_content(
     content_path: Path | None = None,
     repo_root: Path = Path("."),
 ) -> dict[str, Any]:
-    """Load content.json from the best available source."""
+    """Load content.json from an explicit source or the single committed spec PDF."""
     if pdf_path:
         return extract_content_from_pdf(pdf_path)
 
-    if content_path and content_path.is_file():
+    if content_path:
+        if not content_path.is_file():
+            raise FileNotFoundError(f"content.json not found: {content_path}")
         with open(content_path, encoding="utf-8") as f:
-            return json.load(f)
+            loaded = json.load(f)
+        if not isinstance(loaded, dict):
+            raise ValueError(f"content.json is not an object: {content_path}")
+        return cast(dict[str, Any], loaded)
 
-    auto = find_content_json(repo_root)
-    if auto:
-        with open(auto, encoding="utf-8") as f:
-            return json.load(f)
+    spec_pdfs = sorted((repo_root / "docs").glob("tech-spec-v*.pdf"))
+    if len(spec_pdfs) == 1:
+        return extract_content_from_pdf(spec_pdfs[0])
 
-    raise FileNotFoundError(
-        f"No content.json found. Searched: --from-pdf, --content, "
-        f"{repo_root}/docs/content.json, {repo_root}/content.json"
+    if not spec_pdfs:
+        raise FileNotFoundError(
+            f"No spec PDF found. Expected exactly one match for "
+            f"{repo_root}/docs/tech-spec-v*.pdf, or pass --from-pdf/--content."
+        )
+
+    matches = ", ".join(str(path.relative_to(repo_root)) for path in spec_pdfs)
+    raise FileExistsError(
+        f"Expected exactly one docs/tech-spec-v*.pdf match; found {len(spec_pdfs)}: "
+        f"{matches}"
     )
 
 
@@ -635,13 +692,16 @@ def expand_ref_range(start: str, end: str) -> list[str]:
       13.17 -> 13.21
       7C.2  -> 7C.5
       12    -> 15
+      11.5.13 -> 14  (abbreviated end means 11.5.14)
 
     Falls back to [start, end] when the range shape is unsupported.
     """
     s_parts = start.split(".")
     e_parts = end.split(".")
 
-    if len(s_parts) != len(e_parts):
+    if len(e_parts) == 1 and len(s_parts) > 1:
+        e_parts = [*s_parts[:-1], e_parts[0]]
+    elif len(s_parts) != len(e_parts):
         return [start, end]
 
     if s_parts[:-1] != e_parts[:-1]:
@@ -815,7 +875,7 @@ def main() -> int:
     parser.add_argument(
         "--extract",
         action="store_true",
-        help="Extract content.json from PDF to stdout.",
+        help="Extract content.json from the single committed spec PDF to stdout.",
     )
     args = parser.parse_args()
 
@@ -826,10 +886,11 @@ def main() -> int:
     repo_root = args.repo.resolve()
 
     if args.extract:
-        if not args.from_pdf:
-            print("ERROR: --extract requires --from-pdf", file=sys.stderr)
+        try:
+            spec = load_content(args.from_pdf, None, repo_root)
+        except (FileNotFoundError, FileExistsError, ValueError, ImportError) as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
             return 1
-        spec = extract_content_from_pdf(args.from_pdf)
         # The extracted spec contains characters outside cp1252 (e.g.
         # U+2011 NON-BREAKING HYPHEN). On Windows the default stdout
         # encoding is cp1252, so a plain print() raises
@@ -845,7 +906,7 @@ def main() -> int:
 
     try:
         spec = load_content(args.from_pdf, args.content, repo_root)
-    except (FileNotFoundError, ValueError, ImportError) as exc:
+    except (FileNotFoundError, FileExistsError, ValueError, ImportError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 1
 

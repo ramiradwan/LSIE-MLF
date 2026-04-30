@@ -1,4 +1,4 @@
-"""Sessions (recent) table model — Phase 7.
+"""Sessions (recent) table model.
 
 Backs the Sessions page's history table. Columns surface the session
 identity, current status, which arm/experiment was running, the latest
@@ -7,7 +7,6 @@ reward, and duration so the operator can pick a row to drill into.
 Spec references:
   §4.E.1         — Sessions / history operator surface
   §7B            — latest_reward readback
-  SPEC-AMEND-008 — PySide6 Operator Console
 """
 
 from __future__ import annotations

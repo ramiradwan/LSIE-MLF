@@ -12,7 +12,7 @@ into memory-view objects cast to numpy arrays — zero disk I/O.
 §5.2 — Transient Data tier: raw video frames exist only in volatile
 memory during active processing. No persistence.
 
-Architecture rationale (from Stage 2 Deployment Research):
+Architecture notes (from Stage 2 Deployment Research):
   - PyAV bypasses subprocess overhead by binding directly to FFmpeg's
     C libraries (libavformat, libavcodec)
   - MKV is a streaming container (no seek required), safe for IPC Pipes

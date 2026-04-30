@@ -12,7 +12,7 @@ The codebase carries four overlapping schema sources that drift independently:
 1. **Pydantic models** in `packages/schemas/` — runtime payload validation (`InferenceHandoffPayload`, `PhysiologicalSnapshot`, `SemanticEvaluationResult`, etc.).
 2. **PostgreSQL DDL** in `data/sql/*.sql` — mounted into the Persistent Store via `docker-entrypoint-initdb.d/`.
 3. **Python DDL string** `services.api.db.schema.SCHEMA_SQL` — the API Server's bootstrap path.
-4. **JSON Schema blocks** under `interface_contracts.schemas` in `docs/artifacts/content.json` — the spec contract surface that the review agent loads.
+4. **JSON Schema blocks** under `interface_contracts.schemas` in `docs/content.json` — the extracted spec contract surface that the review agent loads.
 
 A field rename in one source without the other three causes silent drift. The script normalizes all four onto a common `{name, canonical_type, nullable}` representation and reports any divergence.
 
@@ -22,7 +22,7 @@ Run the script:
 
 - Before committing any change under `packages/schemas/`, `data/sql/`, or `services/api/db/schema.py`.
 - Before merging a PR that touches any of those paths.
-- After regenerating `docs/artifacts/content.json` from the signed PDF (`scripts/spec_ref_check.py --from-pdf docs/tech-spec-v3.2.pdf --extract`).
+- After regenerating `docs/content.json` from the signed PDF (`python scripts/spec_ref_check.py --extract > docs/content.json`).
 - As Standing Post-Merge Chore #3 in the playbook (Schema-Code Consistency Verification).
 - As CI gate step 7 in `scripts/check.sh` (already wired — non-zero exit fails the local check suite).
 
@@ -103,6 +103,6 @@ At least two of the three source identifiers must be non-`None` — otherwise th
 - Script: `scripts/check_schema_consistency.py`
 - Tests: `tests/unit/scripts/test_schema_consistency.py`
 - CI gate: `scripts/check.sh` step 7
-- Source-of-truth schemas: `packages/schemas/`, `data/sql/`, `services/api/db/schema.py`, `docs/artifacts/content.json`
+- Source-of-truth schemas: `packages/schemas/`, `data/sql/`, `services/api/db/schema.py`, `docs/content.json`
 - Spec contract: `docs/SPEC_REFERENCE.md` §6 (Interface Contracts)
 - Post-merge chore: see `post-merge-playbook` skill, Standing Chore #3

@@ -107,10 +107,8 @@ def test_persist_metrics_keeps_reward_pipeline_unchanged() -> None:
         gated_reward=0.75,
         p90_intensity=0.75,
         semantic_gate=1,
-        is_valid=True,
         n_frames_in_window=12,
-        baseline_b_neutral=0.1,
-        au12_window_series=[0.2, 0.5],
+        au12_baseline_pre=0.1,
     )
     expected_series = [
         TimestampedAU12(timestamp_s=100.5, intensity=0.2),
@@ -131,7 +129,6 @@ def test_persist_metrics_keeps_reward_pipeline_unchanged() -> None:
             {"timestamp_s": 101.0, "intensity": 0.5},
         ],
         "_stimulus_time": 100.0,
-        "_x_max": 0.9,
     }
     streamer_snapshot = {
         "rmssd_ms": None,

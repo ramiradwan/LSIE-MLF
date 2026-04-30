@@ -4,7 +4,6 @@ Tests for v3.0 Mathematical Recipe Alignment.
 Validates:
   - AU12Normalizer.compute_bounded_intensity() — tanh [0,1] output
   - AU12Normalizer.compute_raw_ratio() — exposed as calibration telemetry only
-  - Backward compatibility of compute_intensity() [0,5] clamp
   - Default alpha_scale = 6.0
   - Reward pipeline: stimulus windowing, P90 aggregation, semantic gate
   - ThompsonSamplingEngine fractional update
@@ -111,15 +110,6 @@ class TestAU12NormalizerV3:
         lm = np.zeros((478, 3), dtype=np.float64)
         ratio = norm.compute_raw_ratio(lm)
         assert ratio is None
-
-    def test_backward_compat_compute_intensity_clamps_five(self) -> None:
-        """Backward compat — compute_intensity still clamps to [0, 5]."""
-        norm = AU12Normalizer(alpha=6.0)
-        norm.b_neutral = 0.0
-        norm.calibration_buffer = [0.0]
-        extreme = _make_landmarks(mouth_width=1.0)
-        score = norm.compute_intensity(extreme)
-        assert score <= 5.0
 
     def test_calibration_returns_zero_bounded(self) -> None:
         """§7A.4 — Calibration returns 0.0 for both output methods."""
@@ -249,7 +239,6 @@ class TestComputeReward:
         series = self._make_encounter(post_stim_intensity=0.7)
         result = compute_reward(series, stimulus_time_s=15.0, is_match=True)
         assert result.gated_reward > 0.0
-        assert result.is_valid is True
         assert result.semantic_gate == 1
 
     def test_reward_bounded_zero_one(self) -> None:
@@ -265,11 +254,9 @@ class TestComputeReward:
             TimestampedAU12(timestamp_s=15.7, intensity=0.9),
         ]
         result = compute_reward(series, stimulus_time_s=15.0, is_match=True)
-        assert result.is_valid is True
         assert result.n_frames_in_window == 2
         assert result.p90_intensity == pytest.approx(0.89)
         assert result.gated_reward == pytest.approx(0.89)
-        assert result.au12_window_series == [0.8, 0.9]
 
     def test_empty_measurement_window_yields_zero_p90(self) -> None:
         """§7B — zero-frame measurement windows yield P90=0.0, not invalidation."""
@@ -278,41 +265,29 @@ class TestComputeReward:
             TimestampedAU12(timestamp_s=12.0, intensity=0.4),
         ]
         result = compute_reward(series, stimulus_time_s=15.0, is_match=True)
-        assert result.is_valid is True
         assert result.n_frames_in_window == 0
         assert result.p90_intensity == 0.0
         assert result.gated_reward == 0.0
         assert result.semantic_gate == 1
-        assert result.au12_window_series == []
         assert result.au12_baseline_pre == pytest.approx(0.3)
 
-    def test_x_max_and_confidence_diagnostics_do_not_scale_reward(self) -> None:
-        """§7B — x_max/confidence diagnostics cannot alter P90 or reward."""
+    def test_reward_result_exposes_canonical_fields_only(self) -> None:
+        """§7B — RewardResult has the canonical five-field surface."""
         series = self._make_encounter(
             pre_stim_intensity=0.1,
             post_stim_intensity=0.5,
         )
-        result_base = compute_reward(series, stimulus_time_s=15.0, is_match=True)
-        result_diagnostics = compute_reward(
-            series,
-            stimulus_time_s=15.0,
-            is_match=True,
-            x_max=0.6,
-            confidence_score=0.01,
-            semantic_method="different-observational-method",
-        )
-        assert result_diagnostics == result_base
-        assert result_base.p90_intensity == pytest.approx(0.5)
-        assert result_base.gated_reward == pytest.approx(0.5)
-        assert result_base.au12_baseline_pre == pytest.approx(0.1)
-        assert result_base.baseline_b_neutral == result_base.au12_baseline_pre
-
-    def test_reward_result_stores_series(self) -> None:
-        """RewardResult includes AU12 window series for traceability."""
-        series = self._make_encounter(post_stim_intensity=0.6)
         result = compute_reward(series, stimulus_time_s=15.0, is_match=True)
-        assert len(result.au12_window_series) > 0
-        assert result.n_frames_in_window == len(result.au12_window_series)
+        assert set(result.__dataclass_fields__) == {
+            "gated_reward",
+            "p90_intensity",
+            "semantic_gate",
+            "n_frames_in_window",
+            "au12_baseline_pre",
+        }
+        assert result.p90_intensity == pytest.approx(0.5)
+        assert result.gated_reward == pytest.approx(0.5)
+        assert result.au12_baseline_pre == pytest.approx(0.1)
 
 
 # ─────────────────────────────────────────────────────────────────────

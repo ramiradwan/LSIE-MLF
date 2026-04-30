@@ -21,7 +21,6 @@ Spec references:
   §7B            — reward-explanation surfacing on Latest Encounter card
   §7C            — Co-Modulation Index null-valid rendering
   §12            — attention queue fed by the alert feed
-  SPEC-AMEND-008 — PySide6 Operator Console
 """
 
 from __future__ import annotations
@@ -67,7 +66,7 @@ from services.operator_console.widgets.metric_card import MetricCard
 from services.operator_console.widgets.section_header import SectionHeader
 
 # Cap on the attention queue length on the Overview — the full alert
-# timeline lives on the Health page (Phase 10). Keeping the overview
+# timeline lives on the Health page. Keeping the overview
 # tight means the operator sees the top items and clicks through when
 # they need history.
 _ATTENTION_MAX: int = 8

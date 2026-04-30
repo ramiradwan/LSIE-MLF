@@ -1,8 +1,8 @@
 """
-Typed REST client for the LSIE-MLF Operator Console — Phase 3.
+Typed REST client for the LSIE-MLF Operator Console.
 
 This module is the single network boundary for the console. Every
-response is validated into a Phase-1 Pydantic DTO from
+response is validated into a Pydantic DTO from
 `packages.schemas.operator_console`; no `dict[str, Any]` crosses back
 into the UI. `Transport` is a narrow Protocol so callers can swap in a
 fake in unit tests without monkey-patching `urlopen`, and so we can
@@ -13,14 +13,13 @@ Errors are surfaced as `ApiError` — never `SystemExit` — because the
 console is a long-running UI and a failed call must not kill the app.
 `ApiError.retryable` is set by the transport based on whether the
 failure is transient (connection refused, timeout, 5xx) or permanent
-(4xx client errors, validation failures). The polling layer in Phase 4
-uses this flag to decide between a silent retry and a surfaced alert.
+(4xx client errors, validation failures). The polling layer uses this
+flag to decide between a silent retry and a surfaced alert.
 
 Spec references:
   §4.C           — stimulus lifecycle / authoritative stimulus_time
   §4.E.1         — operator-facing aggregate endpoints
   §12            — error-handling matrix (retry semantics)
-  SPEC-AMEND-008 — PySide6 Operator Console
 """
 
 from __future__ import annotations
@@ -182,7 +181,7 @@ def _parse_error_body(exc: HTTPError) -> str:
 
 
 # ----------------------------------------------------------------------
-# ApiClient — typed methods returning Phase-1 DTOs
+# ApiClient — typed methods returning validated DTOs
 # ----------------------------------------------------------------------
 
 

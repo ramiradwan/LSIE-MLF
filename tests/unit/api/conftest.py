@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import sys
 from collections.abc import Callable
+from importlib.util import find_spec
 from types import ModuleType, SimpleNamespace
 from typing import Any, TypeAlias
 from unittest.mock import MagicMock
@@ -15,7 +16,19 @@ from unittest.mock import MagicMock
 Handler: TypeAlias = Callable[..., Any]
 RouteDecorator: TypeAlias = Callable[[Handler], Handler]
 
-# --- Mock FastAPI before any API import ---
+# --- Mock FastAPI before any API import when the dependency is unavailable ---
+# The scoped unit tests can run with a shim in minimal environments, but the
+# full unit+integration CI scope installs real FastAPI and later integration
+# tests require its dependency override/TestClient behavior. Prefer the real
+# dependency when importable so this subtree conftest does not poison
+# sys.modules for unrelated integration collection.
+_real_fastapi_available = (
+    find_spec("fastapi") is not None
+    and find_spec("fastapi.middleware") is not None
+    and find_spec("fastapi.middleware.cors") is not None
+    and find_spec("fastapi.testclient") is not None
+)
+
 _mock_fastapi: Any = ModuleType("fastapi")
 
 
@@ -168,28 +181,27 @@ _mock_fastapi.Body = body
 _mock_fastapi.Depends = depends
 _mock_fastapi.Header = header
 
-sys.modules.setdefault("fastapi", _mock_fastapi)
+if not _real_fastapi_available:
+    sys.modules.setdefault("fastapi", _mock_fastapi)
 
-# Optional FastAPI submodules sometimes imported by main.py/tests.
-_mock_fastapi_middleware: Any = ModuleType("fastapi.middleware")
-_mock_fastapi_middleware_cors: Any = ModuleType("fastapi.middleware.cors")
+    # Optional FastAPI submodules sometimes imported by main.py/tests.
+    _mock_fastapi_middleware: Any = ModuleType("fastapi.middleware")
+    _mock_fastapi_middleware_cors: Any = ModuleType("fastapi.middleware.cors")
 
+    class CORSMiddleware:
+        """Placeholder CORSMiddleware for app.add_middleware()."""
 
-class CORSMiddleware:
-    """Placeholder CORSMiddleware for app.add_middleware()."""
+        pass
 
-    pass
+    _mock_fastapi_middleware_cors.CORSMiddleware = CORSMiddleware
 
+    sys.modules.setdefault("fastapi.middleware", _mock_fastapi_middleware)
+    sys.modules.setdefault("fastapi.middleware.cors", _mock_fastapi_middleware_cors)
 
-_mock_fastapi_middleware_cors.CORSMiddleware = CORSMiddleware
-
-sys.modules.setdefault("fastapi.middleware", _mock_fastapi_middleware)
-sys.modules.setdefault("fastapi.middleware.cors", _mock_fastapi_middleware_cors)
-
-# Optional placeholder if any test imports fastapi.testclient.
-_mock_fastapi_testclient: Any = ModuleType("fastapi.testclient")
-_mock_fastapi_testclient.TestClient = MagicMock
-sys.modules.setdefault("fastapi.testclient", _mock_fastapi_testclient)
+    # Optional placeholder if any test imports fastapi.testclient.
+    _mock_fastapi_testclient: Any = ModuleType("fastapi.testclient")
+    _mock_fastapi_testclient.TestClient = MagicMock
+    sys.modules.setdefault("fastapi.testclient", _mock_fastapi_testclient)
 
 # --- Mock psycopg2 ---
 _mock_pg: Any = MagicMock()

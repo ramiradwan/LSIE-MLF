@@ -1,22 +1,12 @@
 """
-AU12 Normalizer — §7 Mathematical Specifications (AU12)
+AU12 bounded intensity utilities for the §7A reward signal.
 
-Computes Action Unit 12 (Lip Corner Puller) intensity from MediaPipe
-478-vertex 3D facial landmarks. Geometric normalization uses interocular
-distance (IOD) as a scale-invariant reference in full 3D Euclidean space.
-
-v2.0 Corrections: landmark indexing via landmarks[i], epsilon guard for
-IOD→0, output hard-clamped to 5.0, full type annotations.
-
-v3.0 — Mathematical Recipe Alignment:
-  - Default alpha_scale changed from 5.0 → 6.0 (§7A.4, FACS-anchored
-    derivation: 95th percentile Duchenne deviation ≈0.15 maps to 0.90).
-  - Added compute_bounded_intensity() returning [0.0, 1.0] via tanh
-    soft-saturation for fractional Beta-Bernoulli Thompson Sampling.
-  - Added compute_raw_ratio() exposing the raw D_mouth/IOD ratio for
-    per-subject range normalization in the reward pipeline.
-  - Original compute_intensity() retained with [0.0, 5.0] clamp for
-    backward compatibility with existing dashboard and metrics persistence.
+The module converts MediaPipe 478-landmark frames into scale-normalized
+lip-corner motion using interocular distance, maintains a neutral baseline,
+and emits tanh-bounded [0, 1] AU12 values for the §7B fractional reward
+pipeline. It follows the canonical AU12 names and alpha-scale convention in
+§7A.1/§7A.4 and §13.15; it does not perform face detection or posterior
+updates.
 """
 
 from __future__ import annotations
@@ -34,25 +24,20 @@ logger = logging.getLogger(__name__)
 # §7A.5 — Epsilon guard to avoid division by zero when IOD approaches zero.
 EPSILON: float = 1e-6
 
-# v3.0 — Default alpha_scale derived from FACS-anchored calibration:
-#   α_scale = 0.90 / 0.15 = 6.0
-#   (95th percentile Duchenne D_mouth/IOD deviation maps to 0.90)
-#   Convergence of percentile-based and FACS-intensity-based derivations
-#   validates 6.0 as the central estimate (acceptable range: 5.0–8.0).
+# §7A.1 — 6.0 maps a Duchenne-scale ratio deviation to the bounded reward range.
 DEFAULT_ALPHA_SCALE: float = 6.0
 
 
 class AU12Normalizer:
     """
-    §7A.4–7A.5 — AU12 intensity scorer.
+    Compute baseline-normalized AU12 intensity from one face landmark stream.
 
-    Calibration phase computes a neutral baseline B_neutral from rolling
-    average of D_mouth / IOD. Inference phase returns a FACS score via
-    one of two output methods:
-
-      - compute_intensity(): returns [0.0, 5.0] (hard-clamp, backward compat)
-      - compute_bounded_intensity(): returns [0.0, 1.0] (tanh soft-saturation,
-        for fractional Beta-Bernoulli Thompson Sampling reward pipeline)
+    Accepts MediaPipe Face Mesh landmark arrays shaped (478, 3), with optional
+    calibration calls used to build ``B_neutral`` from ``D_mouth / IOD``. Produces
+    raw calibration ratios and tanh-bounded intensities in [0.0, 1.0] using the
+    §7A.4 alpha-scale mapping (default 6.0; ~0.15 deviation maps to ~0.90 before
+    bounding). It does not detect faces, smooth frames, persist calibration state,
+    or update Thompson Sampling posteriors.
 
     Args:
         alpha: Empirical linear projection multiplier (default 6.0).
@@ -106,9 +91,6 @@ class AU12Normalizer:
         """
         Compute the raw D_mouth/IOD ratio without baseline subtraction.
 
-        Exposed as per-subject calibration telemetry/diagnostics. §7B live
-        reward uses bounded AU12 intensity directly and does not normalize by x_max.
-
         §7A.3 — IOD derivation
         §7A.4 — D_mouth / IOD ratio
 
@@ -121,49 +103,6 @@ class AU12Normalizer:
         iod, d_mouth = geom
         return d_mouth / iod
 
-    def compute_intensity(
-        self,
-        landmarks: npt.NDArray[np.floating[Any]],
-        is_calibrating: bool = False,
-    ) -> float:
-        """
-        Compute AU12 intensity from a (478, 3) landmark array.
-
-        §7A.2 — Landmark extraction
-        §7A.3 — IOD derivation
-        §7A.4 — Distance, baseline calibration, and scoring
-
-        Args:
-            landmarks: MediaPipe Face Mesh output, shape (478, 3).
-            is_calibrating: If True, accumulate baseline and return 0.0.
-
-        Returns:
-            AU12 FACS score clamped to [0.0, 5.0].
-
-        Raises:
-            ValueError: If baseline has not been calibrated before inference.
-        """
-        geom = self._extract_geometry(landmarks)
-        if geom is None:
-            return 0.0
-
-        iod, d_mouth = geom
-        ratio: float = d_mouth / iod
-
-        if is_calibrating:
-            self._update_calibration(ratio)
-            return 0.0
-
-        # §7A.5 — Inference requires a calibrated baseline
-        if self.b_neutral is None:
-            raise ValueError("Baseline not calibrated")
-
-        # §7A.4 — FACS score: linear projection from baseline deviation
-        score: float = self.alpha * (ratio - self.b_neutral)
-
-        # §7A.5 — Hard-clamp to [0.0, 5.0] (backward compatible)
-        return float(min(max(score, 0.0), 5.0))
-
     def compute_bounded_intensity(
         self,
         landmarks: npt.NDArray[np.floating[Any]],
@@ -172,21 +111,9 @@ class AU12Normalizer:
         """
         Compute AU12 intensity bounded to [0.0, 1.0] via tanh soft-saturation.
 
-        v3.0 — This is the output method for the fractional Beta-Bernoulli
-        Thompson Sampling reward pipeline. The tanh function provides a
-        continuous gradient at the boundaries, avoiding the hard discontinuity
-        of min/max clamping that would corrupt posterior updates near 0 or 1.
-
-        Mathematical derivation (Formalizing TS for LSIE-MLF v2.0, §Geometric
-        Calibration):
+        Mathematical derivation:
             raw_deviation = D_mouth/IOD - B_neutral
             bounded_score = tanh(α_scale × max(0, raw_deviation))
-
-        The max(0, ·) ensures negative deviations (mouth narrower than
-        baseline) map to 0.0. The tanh maps [0, +∞) → [0, 1), with
-        α_scale = 6.0 placing a Duchenne smile (deviation ≈ 0.15) at
-        tanh(6.0 × 0.15) = tanh(0.9) ≈ 0.72, and laughter (deviation ≈ 0.20)
-        at tanh(1.2) ≈ 0.83.
 
         Args:
             landmarks: MediaPipe Face Mesh output, shape (478, 3).
@@ -214,10 +141,7 @@ class AU12Normalizer:
             if self.b_neutral is None:
                 raise ValueError("Baseline not calibrated")
 
-            # v3.0 — Baseline-subtracted deviation, floored at zero
             deviation: float = max(0.0, ratio - self.b_neutral)
-
-            # v3.0 — tanh soft-saturation: continuous gradient, maps to [0, 1)
             return float(math.tanh(self.alpha * deviation))
         finally:
             logger.debug(

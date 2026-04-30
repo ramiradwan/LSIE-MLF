@@ -79,9 +79,6 @@ def sample_metrics() -> dict[str, Any]:
         "segment_id": "seg-001",
         "timestamp_utc": "2026-03-13T12:00:00+00:00",
         "au12_intensity": 2.5,
-        "pitch_f0": 180.0,
-        "jitter": 0.02,
-        "shimmer": 0.05,
         "f0_valid_measure": False,
         "f0_valid_baseline": True,
         "perturbation_valid_measure": False,
@@ -99,9 +96,9 @@ def sample_metrics() -> dict[str, Any]:
         "shimmer_delta": None,
         "transcription": "hello world",
         "semantic": {
-            "reasoning": "greeting detected",
+            "reasoning": "cross_encoder_high_match",
             "is_match": True,
-            "confidence": 0.95,
+            "confidence_score": 0.95,
         },
     }
 
@@ -148,6 +145,9 @@ class TestMetricsStore:
         assert metrics_params["f0_valid_baseline"] is True
         assert metrics_params["f0_mean_measure_hz"] is None
         assert metrics_params["jitter_mean_measure"] is None
+        _, evaluation_params = cursor.execute.call_args_list[2].args
+        assert evaluation_params["confidence"] == pytest.approx(0.95)
+        assert "confidence" not in sample_metrics["semantic"]
         mock_conn.commit.assert_called_once()
 
     def test_insert_metrics_sets_read_committed(
@@ -332,9 +332,6 @@ class TestMetricsStore:
         mock_engine.transcribe.return_value = ""
         mock_acoustic = MagicMock()
         mock_acoustic.analyze.return_value = AcousticMetrics(
-            pitch_f0=210.0,
-            jitter=0.01,
-            shimmer=0.02,
             f0_valid_measure=True,
             f0_valid_baseline=True,
             perturbation_valid_measure=True,
@@ -424,9 +421,6 @@ class TestMetricsStore:
         assert tuple(metrics_params.keys()) == _METRICS_DB_FIELDS
         for field in canonical_fields:
             assert metrics_params[field] == dispatched_metrics[field]
-        assert metrics_params["pitch_f0"] == pytest.approx(210.0)
-        assert metrics_params["jitter"] == pytest.approx(0.01)
-        assert metrics_params["shimmer"] == pytest.approx(0.02)
         assert "raw_audio" not in metrics_params
         assert "voiceprint_embedding" not in metrics_params
         assert "reconstructive_voiceprint" not in metrics_params
@@ -446,9 +440,6 @@ class TestMetricsStore:
         mock_engine.transcribe.return_value = ""
         mock_acoustic = MagicMock()
         mock_acoustic.analyze.return_value = AcousticMetrics(
-            pitch_f0=180.0,
-            jitter=0.02,
-            shimmer=0.05,
             f0_valid_measure=False,
             f0_valid_baseline=True,
             perturbation_valid_measure=False,
@@ -524,16 +515,13 @@ class TestMetricsStore:
         assert metrics_params["shimmer_mean_measure"] is None
         assert metrics_params["shimmer_mean_baseline"] == pytest.approx(0.025)
         assert metrics_params["shimmer_delta"] is None
-        assert metrics_params["pitch_f0"] == pytest.approx(180.0)
-        assert metrics_params["jitter"] == pytest.approx(0.02)
-        assert metrics_params["shimmer"] == pytest.approx(0.05)
         mock_conn.commit.assert_called_once()
 
     def test_encounter_log_persists_canonical_au12_baseline_pre(
         self,
         mock_conn: MagicMock,
     ) -> None:
-        """§7B/§11.5.6 — persistence maps au12_baseline_pre to legacy column."""
+        """§7B/§11.5.6 — persistence uses canonical au12_baseline_pre."""
         mod = self._get_inference_module()
         from services.worker.pipeline.reward import RewardResult
 
@@ -541,7 +529,6 @@ class TestMetricsStore:
             gated_reward=0.42,
             p90_intensity=0.42,
             semantic_gate=1,
-            is_valid=True,
             n_frames_in_window=12,
             au12_baseline_pre=0.123,
         )
@@ -563,9 +550,22 @@ class TestMetricsStore:
         )
 
         cursor = mock_conn.cursor.return_value.__enter__.return_value
-        _, params = cursor.execute.call_args.args
-        assert params["baseline_neutral"] == pytest.approx(reward_result.au12_baseline_pre)
-        assert reward_result.baseline_b_neutral == reward_result.au12_baseline_pre
+        sql, params = cursor.execute.call_args.args
+        assert "au12_baseline_pre" in sql
+        assert params["au12_baseline_pre"] == pytest.approx(reward_result.au12_baseline_pre)
+        assert set(params) == {
+            "session_id",
+            "segment_id",
+            "experiment_id",
+            "arm",
+            "timestamp_utc",
+            "gated_reward",
+            "p90_intensity",
+            "semantic_gate",
+            "n_frames_in_window",
+            "au12_baseline_pre",
+            "stimulus_time",
+        }
         mock_conn.commit.assert_called_once()
         store._put_conn.assert_called_once_with(mock_conn)
 
@@ -641,7 +641,6 @@ class TestMetricsStore:
             gated_reward=0.5,
             p90_intensity=0.5,
             semantic_gate=1,
-            is_valid=True,
             n_frames_in_window=3,
             au12_baseline_pre=0.11,
         )
@@ -782,7 +781,6 @@ class TestMetricsStore:
             gated_reward=0.0,
             p90_intensity=0.0,
             semantic_gate=1,
-            is_valid=False,
             n_frames_in_window=0,
             au12_baseline_pre=None,
         )
@@ -880,7 +878,6 @@ class TestMetricsStore:
             gated_reward=0.5,
             p90_intensity=0.5,
             semantic_gate=1,
-            is_valid=True,
             n_frames_in_window=3,
             au12_baseline_pre=0.11,
         )

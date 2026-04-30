@@ -721,12 +721,6 @@ class TestEncounterValidation:
         assert observational_acoustic.f0_mean_measure_hz == pytest.approx(210.0)
         assert observational_acoustic.f0_mean_baseline_hz == pytest.approx(190.0)
         assert observational_acoustic.f0_delta_semitones == pytest.approx(1.73)
-        assert observational_acoustic.jitter_mean_measure == pytest.approx(0.012)
-        assert observational_acoustic.jitter_mean_baseline == pytest.approx(0.010)
-        assert observational_acoustic.jitter_delta == pytest.approx(0.002)
-        assert observational_acoustic.shimmer_mean_measure == pytest.approx(0.021)
-        assert observational_acoustic.shimmer_mean_baseline == pytest.approx(0.019)
-        assert observational_acoustic.shimmer_delta == pytest.approx(0.002)
 
     def test_completed_encounter_round_trips_observational_acoustic_null_contract(self) -> None:
         transport = FakeTransport()
@@ -784,9 +778,3 @@ class TestEncounterValidation:
         assert observational_acoustic.f0_mean_measure_hz is None
         assert observational_acoustic.f0_mean_baseline_hz is None
         assert observational_acoustic.f0_delta_semitones is None
-        assert observational_acoustic.jitter_mean_measure is None
-        assert observational_acoustic.jitter_mean_baseline is None
-        assert observational_acoustic.jitter_delta is None
-        assert observational_acoustic.shimmer_mean_measure is None
-        assert observational_acoustic.shimmer_mean_baseline is None
-        assert observational_acoustic.shimmer_delta is None

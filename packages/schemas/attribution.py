@@ -1,9 +1,10 @@
-"""Attribution ledger schemas — §6.4 v3.4 contracts.
+"""Strict Pydantic schemas for deterministic attribution ledger records (§6.4).
 
-These models define typed Pydantic contracts for deterministic attribution
-ledger records. Identifier fields document their replay-stable UUIDv5
-semantics, but this module intentionally does not generate identifiers or
-audit timestamps at runtime; producing services must supply those values.
+The module models BanditDecisionSnapshot records, AttributionEvent records,
+OutcomeEvent records, EventOutcomeLink records, and AttributionScore records
+using canonical terminology (§0, §13.15). Producers must
+supply replay-stable identifiers and audit timestamps; these schemas validate
+shape and constraints but do not generate IDs, query storage, or update rewards.
 """
 
 from __future__ import annotations
@@ -44,20 +45,39 @@ def _ensure_unique(values: list[str], field_name: str) -> list[str]:
 
 
 class AttributionBaseModel(BaseModel):
-    """Shared strict configuration for §6.4 attribution contracts."""
+    """
+    Shared strict base for attribution ledger schemas.
+
+    Accepts Pydantic field definitions from subclasses and produces models that
+    forbid unexpected keys. It does not add identity generation, timestamps, or
+    persistence behavior.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
 
 class ArmPosterior(AttributionBaseModel):
-    """Posterior parameters for one candidate bandit arm."""
+    """
+    Validate posterior parameters for one Thompson Sampling arm.
+
+    Accepts positive alpha and beta values and produces a strict nested snapshot
+    object. It does not sample arms or update posteriors.
+    """
 
     alpha: float = Field(..., gt=0.0)
     beta: float = Field(..., gt=0.0)
 
 
 class BanditDecisionSnapshot(AttributionBaseModel):
-    """§6.4 / §6.1 — Pre-update Thompson Sampling selection snapshot."""
+    """
+    Validate the pre-update Thompson Sampling BanditDecisionSnapshot (§6.4 / §6.1).
+
+    Accepts selection metadata, selected/candidate arm IDs, posterior parameters,
+    optional sampled theta values, and the expected greeting captured at arm
+    selection time. Produces a replayable decision record for handoff and
+    attribution; it does not perform selection, update posteriors, or compute
+    rewards.
+    """
 
     selection_method: BanditSelectionMethod
     selection_time_utc: datetime
@@ -89,7 +109,14 @@ class BanditDecisionSnapshot(AttributionBaseModel):
 
 
 class AttributionEvent(AttributionBaseModel):
-    """§6.4.1 — Greeting interaction event record for attribution analytics."""
+    """
+    Validate a greeting-interaction AttributionEvent record (§6.4.1).
+
+    Accepts caller-provided event identity, segment/session context, semantic
+    summary, reward-path version, evidence flags, finality, schema version, and
+    creation time. Produces a strict ledger event model; it does not hash rule
+    text, build UUIDs, or mutate the reward path.
+    """
 
     event_id: UUID = Field(
         ...,
@@ -124,7 +151,14 @@ class AttributionEvent(AttributionBaseModel):
 
 
 class OutcomeEvent(AttributionBaseModel):
-    """§6.4.2 — Delayed downstream outcome record."""
+    """
+    Validate a delayed downstream outcome record (§6.4.2).
+
+    Accepts caller-provided outcome identity, session context, outcome type/value,
+    source metadata, confidence, finality, schema version, and creation time.
+    Produces a strict ledger outcome model; it does not discover outcomes or link
+    them to events.
+    """
 
     outcome_id: UUID = Field(
         ...,
@@ -148,7 +182,14 @@ class OutcomeEvent(AttributionBaseModel):
 
 
 class EventOutcomeLink(AttributionBaseModel):
-    """§6.4.3 — Deterministic event→outcome eligibility link record."""
+    """
+    Validate a deterministic event-to-outcome eligibility link (§6.4.3).
+
+    Accepts caller-provided link identity, event/outcome IDs, non-negative lag,
+    horizon, link-rule version, eligibility flags, finality, schema version, and
+    creation time. Produces a strict link model; it does not score attribution or
+    create OutcomeEvent records.
+    """
 
     link_id: UUID = Field(
         ...,
@@ -175,7 +216,14 @@ class EventOutcomeLink(AttributionBaseModel):
 
 
 class AttributionScore(AttributionBaseModel):
-    """§6.4.4 — Method-specific attribution score record."""
+    """
+    Validate a method-specific AttributionScore record (§6.4.4).
+
+    Accepts caller-provided score identity, related event/outcome IDs, method
+    metadata, raw/normalized scores, confidence, evidence flags, finality, schema
+    version, and creation time. Produces a strict score model; it does not compute
+    the score or alter Thompson Sampling updates.
+    """
 
     score_id: UUID = Field(
         ...,
@@ -183,7 +231,7 @@ class AttributionScore(AttributionBaseModel):
             "Caller-provided deterministic UUIDv5 derived from event_id, "
             "outcome_id, attribution_method, and method_version; finality "
             "is a mutable lifecycle field so replay/finalization can upsert "
-            "the same score row."
+            "the same AttributionScore row."
         ),
     )
     event_id: UUID

@@ -7,7 +7,7 @@ Module E pipeline.
 
 §2 step 7 — Parameterized queries only. No joins into raw media.
 §7C       — Returns null co_modulation_index when insufficient aligned
-            non-stale pairs exist for the window (preserved from DB).
+            non-stale pairs exist for the window (preserved from Persistent Store).
 """
 
 from __future__ import annotations
@@ -58,7 +58,7 @@ async def get_comodulation(
 
     Rows are ordered newest-first. A null ``co_modulation_index`` value
     is preserved verbatim — the Module E writer emits null when the
-    5-minute window contains too few aligned non-stale observations
+    rolling window contains too few aligned non-stale observations
     (§7C semantics).
 
     Args:

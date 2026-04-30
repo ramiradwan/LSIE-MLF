@@ -8,7 +8,6 @@ Spec references:
   §12            — subsystem alert categories drive the §12-aligned
                    severity palette
   §4.E.1         — operator-facing attention queue
-  SPEC-AMEND-008 — PySide6 Operator Console
 """
 
 from __future__ import annotations

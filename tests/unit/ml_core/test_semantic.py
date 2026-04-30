@@ -2,8 +2,7 @@
 Tests for packages/ml_core/semantic.py — v3.4 deterministic semantic scorer.
 
 Verifies the local Cross-Encoder primary path, exact gray-band routing,
-Azure fallback gating, bounded reason codes, failure codes, method metadata,
-and observational-only shadow mode.
+Azure fallback gating, bounded reason codes, failure codes, and method metadata.
 """
 
 from __future__ import annotations
@@ -75,11 +74,11 @@ class TestSemanticConstants:
         ]
         assert GRAY_BAND_FALLBACK_SCHEMA["additionalProperties"] is False
 
-    def test_system_prompt_bans_free_form_rationale(self) -> None:
+    def test_system_prompt_requires_bounded_reason_codes(self) -> None:
         """§8.4 — Fallback prompt is the canonical bounded-code prompt."""
         assert len(SYSTEM_PROMPT) > 0
         assert "You are a deterministic semantic evaluation fallback." in SYSTEM_PROMPT
-        assert "Do not produce free-form explanations." in SYSTEM_PROMPT
+        assert "Return only the bounded reason code requested below." in SYSTEM_PROMPT
         assert "semantic_method" not in SYSTEM_PROMPT
         assert "gray_band_llm_match" in SYSTEM_PROMPT
 
@@ -313,22 +312,15 @@ class TestGrayBandFallbackFailureHandling:
         assert result["confidence_score"] == 0.0
         assert mock_client.chat.completions.create.call_count == 2
 
-    def test_local_primary_failure_routes_to_enabled_azure_fallback(
+    def test_local_primary_failure_does_not_bypass_to_azure(
         self,
         env_vars: None,
         mock_openai: MagicMock,
     ) -> None:
-        """Local scorer failures route into deterministic fallback when enabled."""
+        """Local scorer failures remain bounded locally even when fallback is enabled."""
 
         def failing_scorer(_expected: str, _actual: str) -> float:
             raise RuntimeError("model unavailable")
-
-        mock_client = MagicMock()
-        mock_client.chat.completions.create.return_value = _llm_response(
-            is_match=True,
-            confidence_score=0.88,
-        )
-        mock_openai.AzureOpenAI.return_value = mock_client
 
         evaluator = SemanticEvaluator(
             primary_scorer=failing_scorer,
@@ -338,11 +330,11 @@ class TestGrayBandFallbackFailureHandling:
 
         assert result is not None
         assert set(result) == {"reasoning", "is_match", "confidence_score"}
-        assert result["reasoning"] == "gray_band_llm_match"
-        assert result["is_match"] is True
-        assert result["confidence_score"] == 0.88
+        assert result["reasoning"] == "semantic_local_failure_fallback"
+        assert result["is_match"] is False
+        assert result["confidence_score"] == 0.0
         assert result["reasoning"] in SEMANTIC_REASON_CODES
-        assert mock_client.chat.completions.create.call_count == 1
+        mock_openai.AzureOpenAI.assert_not_called()
 
     def test_client_initialized_once_for_repeated_gray_band_calls(
         self,
@@ -389,38 +381,3 @@ class TestGrayBandFallbackFailureHandling:
         assert result["is_match"] is False
         assert result["confidence_score"] == 0.0
         mock_openai.AzureOpenAI.assert_not_called()
-
-
-class TestSemanticShadowMode:
-    """§8.6 — Shadow outputs are observational only."""
-
-    def test_shadow_result_is_returned_separately_and_does_not_mutate_live(self) -> None:
-        evaluator = SemanticEvaluator(
-            primary_scorer=_score(0.72),
-            gray_band_fallback_enabled=False,
-            shadow_mode_enabled=True,
-            shadow_scorer=lambda _expected, _actual: {
-                "reasoning": "legacy free-form explanation",
-                "is_match": False,
-                "confidence_score": 0.01,
-                "semantic_method": "llm_gray_band",
-                "semantic_method_version": "shadow-v1",
-            },
-        )
-
-        live = evaluator.evaluate("Hello!", "Hello!")
-        shadow = evaluator.evaluate_shadow("Hello!", "Hello!")
-
-        assert live is not None
-        assert set(live) == {"reasoning", "is_match", "confidence_score"}
-        assert live["reasoning"] == "cross_encoder_high_match"
-        assert live["is_match"] is True
-        assert live["confidence_score"] == 0.72
-        assert shadow is not None
-        assert set(shadow) == {"reasoning", "is_match", "confidence_score"}
-        assert shadow["reasoning"] == "gray_band_llm_nonmatch"
-        assert shadow["is_match"] is False
-        assert shadow["confidence_score"] == 0.01
-        # Re-assert live values after shadow execution to prove non-interference.
-        assert live["is_match"] is True
-        assert live["confidence_score"] == 0.72

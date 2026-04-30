@@ -6,10 +6,10 @@ Focus:
   * §12 recovery_mode + operator_action_hint populated for degraded /
     recovering states only.
   * §7B reward-explanation fields (`p90_intensity`, `semantic_gate`,
-    `gated_reward`, `n_frames_in_window`, `baseline_b_neutral`)
+    `gated_reward`, `n_frames_in_window`, `au12_baseline_pre`)
     flow cleanly onto `EncounterSummary` / `LatestEncounterSummary`.
   * §4.C encounter state derivation (`REJECTED_GATE_CLOSED` when
-    `semantic_gate = 0`, `REJECTED_NO_FRAMES` when n_frames = 0).
+    `semantic_gate = 0`, `REJECTED_NO_FRAMES` when n_frames_in_window = 0).
   * Alert synthesis from physio staleness / recently ended sessions.
 """
 
@@ -499,18 +499,14 @@ _ENC_COLS = [
     "gated_reward",
     "p90_intensity",
     "semantic_gate",
-    "is_valid",
-    "n_frames",
-    "baseline_neutral",
+    "n_frames_in_window",
+    "au12_baseline_pre",
     "stimulus_time",
     "created_at",
 ]
 
 _ACOUSTIC_COLS = [
     "metrics_row_id",
-    "pitch_f0",
-    "jitter",
-    "shimmer",
     "f0_valid_measure",
     "f0_valid_baseline",
     "perturbation_valid_measure",
@@ -536,7 +532,7 @@ _SEMANTIC_ATTRIBUTION_COLS = [
     "semantic_method_version",
     "attribution_finality",
     "soft_reward_candidate",
-    "au12_baseline_pre",
+    "attribution_au12_baseline_pre",
     "au12_lift_p90",
     "au12_lift_peak",
     "au12_peak_latency_ms",
@@ -570,7 +566,6 @@ class TestEncounterExplanation:
                             0.88,
                             0.88,
                             1,
-                            True,
                             120,
                             0.1,
                             stim_epoch,
@@ -593,11 +588,10 @@ class TestEncounterExplanation:
         assert enc.p90_intensity == 0.88
         assert enc.gated_reward == 0.88
         assert enc.n_frames_in_window == 120
-        assert enc.baseline_b_neutral == 0.1
+        assert enc.au12_baseline_pre == 0.1
         assert enc.active_arm == "warm_welcome"
         assert enc.stimulus_time_utc is not None
         assert enc.stimulus_time_utc.tzinfo is UTC
-        assert enc.acoustic is None
         assert enc.observational_acoustic is None
         assert enc.semantic_evaluation is None
         assert enc.attribution is None
@@ -622,15 +616,11 @@ class TestEncounterExplanation:
                             0.91,
                             0.91,
                             1,
-                            True,
                             150,
                             0.05,
                             stim_epoch,
                             ts,
                             101,
-                            215.5,
-                            0.018,
-                            0.027,
                             True,
                             False,
                             True,
@@ -656,11 +646,8 @@ class TestEncounterExplanation:
         import uuid
 
         [enc] = svc.list_encounters(uuid.UUID(session_id), limit=10)
-        assert enc.acoustic is not None
-        acoustic = enc.acoustic
-        assert acoustic.pitch_f0 == 215.5
-        assert acoustic.jitter == 0.018
-        assert acoustic.shimmer == 0.027
+        assert enc.observational_acoustic is not None
+        acoustic = enc.observational_acoustic
         assert acoustic.f0_valid_measure is True
         assert isinstance(acoustic.f0_valid_measure, bool)
         assert acoustic.f0_valid_baseline is False
@@ -672,12 +659,6 @@ class TestEncounterExplanation:
         assert acoustic.f0_mean_measure_hz == 215.5
         assert acoustic.f0_mean_baseline_hz is None
         assert acoustic.f0_delta_semitones is None
-        assert acoustic.jitter_mean_measure == 0.018
-        assert acoustic.jitter_mean_baseline is None
-        assert acoustic.jitter_delta is None
-        assert acoustic.shimmer_mean_measure == 0.027
-        assert acoustic.shimmer_mean_baseline is None
-        assert acoustic.shimmer_delta is None
         assert enc.observational_acoustic is not None
         assert enc.observational_acoustic.f0_valid_measure is True
         assert enc.observational_acoustic.f0_valid_baseline is False
@@ -688,12 +669,6 @@ class TestEncounterExplanation:
         assert enc.observational_acoustic.f0_mean_measure_hz == 215.5
         assert enc.observational_acoustic.f0_mean_baseline_hz is None
         assert enc.observational_acoustic.f0_delta_semitones is None
-        assert enc.observational_acoustic.jitter_mean_measure == 0.018
-        assert enc.observational_acoustic.jitter_mean_baseline is None
-        assert enc.observational_acoustic.jitter_delta is None
-        assert enc.observational_acoustic.shimmer_mean_measure == 0.027
-        assert enc.observational_acoustic.shimmer_mean_baseline is None
-        assert enc.observational_acoustic.shimmer_delta is None
 
     def test_latest_encounter_projection_preserves_acoustic_bool_and_null_defaults(self) -> None:
         svc = _service(_cursor([]))
@@ -709,15 +684,11 @@ class TestEncounterExplanation:
                 "gated_reward": 0.0,
                 "p90_intensity": 0.0,
                 "semantic_gate": 0,
-                "is_valid": False,
-                "n_frames": 0,
-                "baseline_neutral": None,
+                "n_frames_in_window": 0,
+                "au12_baseline_pre": None,
                 "stimulus_time": None,
                 "created_at": ts,
                 "metrics_row_id": 202,
-                "pitch_f0": None,
-                "jitter": None,
-                "shimmer": None,
                 "f0_valid_measure": None,
                 "f0_valid_baseline": None,
                 "perturbation_valid_measure": None,
@@ -736,29 +707,17 @@ class TestEncounterExplanation:
             }
         )
         assert latest is not None
-        assert latest.acoustic is not None
-        acoustic = latest.acoustic
-        assert acoustic.pitch_f0 is None
-        assert acoustic.jitter is None
-        assert acoustic.shimmer is None
-        assert acoustic.f0_valid_measure is False
-        assert isinstance(acoustic.f0_valid_measure, bool)
-        assert acoustic.f0_valid_baseline is False
-        assert isinstance(acoustic.f0_valid_baseline, bool)
-        assert acoustic.perturbation_valid_measure is False
-        assert acoustic.perturbation_valid_baseline is False
-        assert acoustic.voiced_coverage_measure_s == 0.0
-        assert acoustic.voiced_coverage_baseline_s == 0.0
+        assert latest.observational_acoustic is not None
+        acoustic = latest.observational_acoustic
+        assert acoustic.f0_valid_measure is None
+        assert acoustic.f0_valid_baseline is None
+        assert acoustic.perturbation_valid_measure is None
+        assert acoustic.perturbation_valid_baseline is None
+        assert acoustic.voiced_coverage_measure_s is None
+        assert acoustic.voiced_coverage_baseline_s is None
         assert acoustic.f0_mean_measure_hz is None
         assert acoustic.f0_mean_baseline_hz is None
         assert acoustic.f0_delta_semitones is None
-        assert acoustic.jitter_mean_measure is None
-        assert acoustic.jitter_mean_baseline is None
-        assert acoustic.jitter_delta is None
-        assert acoustic.shimmer_mean_measure is None
-        assert acoustic.shimmer_mean_baseline is None
-        assert acoustic.shimmer_delta is None
-        assert latest.observational_acoustic is None
         assert latest.semantic_evaluation is None
         assert latest.attribution is None
 
@@ -776,15 +735,11 @@ class TestEncounterExplanation:
                 "gated_reward": 0.0,
                 "p90_intensity": 0.0,
                 "semantic_gate": 0,
-                "is_valid": False,
-                "n_frames": 0,
-                "baseline_neutral": 0.0,
+                "n_frames_in_window": 0,
+                "au12_baseline_pre": 0.0,
                 "stimulus_time": None,
                 "created_at": ts,
                 "metrics_row_id": None,
-                "pitch_f0": None,
-                "jitter": None,
-                "shimmer": None,
                 "f0_valid_measure": None,
                 "f0_valid_baseline": None,
                 "perturbation_valid_measure": None,
@@ -807,7 +762,7 @@ class TestEncounterExplanation:
                 "semantic_method_version": "ce-v1.2.3",
                 "attribution_finality": "online_provisional",
                 "soft_reward_candidate": 0.0,
-                "au12_baseline_pre": 0.0,
+                "attribution_au12_baseline_pre": 0.0,
                 "au12_lift_p90": 0.0,
                 "au12_lift_peak": 0.0,
                 "au12_peak_latency_ms": 0.0,
@@ -850,9 +805,8 @@ class TestEncounterExplanation:
                 "gated_reward": 0.81,
                 "p90_intensity": 0.9,
                 "semantic_gate": 1,
-                "is_valid": True,
-                "n_frames": 160,
-                "baseline_neutral": 0.12,
+                "n_frames_in_window": 160,
+                "au12_baseline_pre": 0.12,
                 "stimulus_time": ts.timestamp(),
                 "created_at": ts,
                 "semantic_reasoning": "cross_encoder_high_match",
@@ -862,7 +816,7 @@ class TestEncounterExplanation:
                 "semantic_method_version": "ce-v1.2.3",
                 "attribution_finality": "offline_final",
                 "soft_reward_candidate": 0.72,
-                "au12_baseline_pre": 0.12,
+                "attribution_au12_baseline_pre": 0.12,
                 "au12_lift_p90": 0.63,
                 "au12_lift_peak": 0.7,
                 "au12_peak_latency_ms": 250.0,
@@ -924,7 +878,6 @@ class TestEncounterExplanation:
                             0.0,
                             0.75,
                             0,
-                            False,
                             130,
                             0.1,
                             None,
@@ -963,7 +916,6 @@ class TestEncounterExplanation:
                             0.0,
                             0.0,
                             1,
-                            False,
                             0,
                             None,
                             None,
@@ -999,14 +951,10 @@ class TestEncounterExplanation:
                 "gated_reward": 0.0,
                 "p90_intensity": 0.0,
                 "semantic_gate": 0,
-                "is_valid": False,
-                "n_frames": 0,
-                "baseline_neutral": None,
+                "n_frames_in_window": 0,
+                "au12_baseline_pre": None,
                 "stimulus_time": None,
                 "created_at": ts,
-                "pitch_f0": None,
-                "jitter": None,
-                "shimmer": None,
                 "f0_valid_measure": False,
                 "f0_valid_baseline": False,
                 "perturbation_valid_measure": False,
@@ -1026,8 +974,8 @@ class TestEncounterExplanation:
         )
 
         assert latest is not None
-        assert latest.acoustic is not None
-        acoustic = latest.acoustic
+        assert latest.observational_acoustic is not None
+        acoustic = latest.observational_acoustic
         assert acoustic.f0_valid_measure is False
         assert isinstance(acoustic.f0_valid_measure, bool)
         assert acoustic.f0_valid_baseline is False
@@ -1041,8 +989,6 @@ class TestEncounterExplanation:
         assert acoustic.f0_mean_measure_hz is None
         assert acoustic.f0_mean_baseline_hz is None
         assert acoustic.f0_delta_semitones is None
-        assert acoustic.jitter_mean_measure is None
-        assert acoustic.shimmer_delta is None
         assert latest.observational_acoustic is not None
         assert latest.observational_acoustic.f0_valid_measure is False
         assert latest.observational_acoustic.f0_valid_baseline is False
@@ -1051,7 +997,6 @@ class TestEncounterExplanation:
         assert latest.observational_acoustic.voiced_coverage_measure_s == 0.0
         assert latest.observational_acoustic.voiced_coverage_baseline_s == 0.0
         assert latest.observational_acoustic.f0_mean_measure_hz is None
-        assert latest.observational_acoustic.shimmer_delta is None
 
 
 # ----------------------------------------------------------------------

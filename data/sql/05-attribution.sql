@@ -9,10 +9,11 @@
 --
 -- Replay/backfill idempotency is enforced in PostgreSQL by UUID primary keys
 -- plus natural UNIQUE constraints mirroring each deterministic UUIDv5 input
--- tuple. This file is additive and safe to rerun via IF NOT EXISTS guards.
+-- tuple. This file is safe to rerun via IF NOT EXISTS and idempotent
+-- constraint canonicalization guards.
 --
 -- Data governance (§5): persist only derived/versioned attribution artifacts.
--- Raw media, raw physiological chunks, and free-form semantic rationales MUST
+-- Raw media, raw physiological chunks, and unbounded semantic prose MUST
 -- NOT be stored in these tables.
 -- =============================================================================
 
@@ -25,9 +26,7 @@ CREATE TABLE IF NOT EXISTS attribution_event (
     stimulus_time_utc           TIMESTAMPTZ,
     selected_arm_id             TEXT NOT NULL,
     expected_rule_text_hash     TEXT NOT NULL CHECK (expected_rule_text_hash ~ '^[0-9a-f]{64}$'),
-    semantic_method             TEXT NOT NULL CHECK (
-        semantic_method IN ('cross_encoder', 'llm_gray_band', 'azure_llm_legacy')
-    ),
+    semantic_method             TEXT NOT NULL,
     semantic_method_version     TEXT NOT NULL,
     semantic_p_match            DOUBLE PRECISION CHECK (
         semantic_p_match IS NULL OR semantic_p_match BETWEEN 0.0 AND 1.0
@@ -44,6 +43,16 @@ CREATE TABLE IF NOT EXISTS attribution_event (
     CONSTRAINT uq_attribution_event_deterministic_identity
         UNIQUE (session_id, segment_id, event_type, reward_path_version)
 );
+
+ALTER TABLE attribution_event
+    DROP CONSTRAINT IF EXISTS attribution_event_semantic_method_check;
+
+ALTER TABLE attribution_event
+    DROP CONSTRAINT IF EXISTS ck_attribution_event_semantic_method;
+
+ALTER TABLE attribution_event
+    ADD CONSTRAINT ck_attribution_event_semantic_method
+    CHECK (semantic_method IN ('cross_encoder', 'llm_gray_band')) NOT VALID;
 
 CREATE TABLE IF NOT EXISTS outcome_event (
     outcome_id          UUID PRIMARY KEY,

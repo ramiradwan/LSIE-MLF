@@ -17,7 +17,6 @@ Spec references:
   §7B            — Thompson Sampling reward = p90 × gate; posterior α/β,
                    evaluation variance, selection count drive the table
   §12            — errors on the experiment slice surface via banner
-  SPEC-AMEND-008 — PySide6 Operator Console
 """
 
 from __future__ import annotations

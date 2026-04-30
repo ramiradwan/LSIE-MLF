@@ -194,15 +194,69 @@ class TestJsonSchemaLoader:
         assert entity.fields["score"].type == "number"
         assert entity.fields["score"].nullable is True
 
-    def test_extract_schemas_handles_v3_and_v31_layouts(self) -> None:
-        v31 = {"interface_contracts": {"schemas": {"Foo": {"type": "object"}}}}
-        v3 = {
+    def test_extract_schemas_handles_supported_layouts(self) -> None:
+        direct = {"interface_contracts": {"schemas": {"Foo": {"type": "object"}}}}
+        nested = {
             "interface_contracts": {"schema_definition": {"schemas": {"Bar": {"type": "object"}}}}
         }
-        assert extract_json_schemas(v31) == {"Foo": {"type": "object"}}
-        assert extract_json_schemas(v3) == {"Bar": {"type": "object"}}
+        assert extract_json_schemas(direct) == {"Foo": {"type": "object"}}
+        assert extract_json_schemas(nested) == {"Bar": {"type": "object"}}
         assert extract_json_schemas({}) == {}
         assert extract_json_schemas({"interface_contracts": "not-a-dict"}) == {}
+
+    def test_load_default_sources_prefers_active_content_index(self, tmp_path: Path) -> None:
+        import json
+
+        from scripts.check_schema_consistency import load_default_sources
+
+        (tmp_path / "data" / "sql").mkdir(parents=True)
+        active_content = {
+            "interface_contracts": {
+                "schemas": {
+                    "ActiveSchema": {
+                        "type": "object",
+                        "properties": {"value": {"type": "string"}},
+                    }
+                }
+            }
+        }
+        frozen_content = {
+            "interface_contracts": {
+                "schemas": {
+                    "FrozenSchema": {
+                        "type": "object",
+                        "properties": {"value": {"type": "integer"}},
+                    }
+                }
+            }
+        }
+
+        docs_dir = tmp_path / "docs"
+        artifacts_dir = docs_dir / "artifacts"
+        artifacts_dir.mkdir(parents=True)
+        (docs_dir / "content.json").write_text(json.dumps(active_content), encoding="utf-8")
+        (artifacts_dir / "content.json").write_text(json.dumps(frozen_content), encoding="utf-8")
+
+        registry = (
+            EntityMapping(
+                name="ActiveSchema",
+                pydantic_class=None,
+                sql_table=None,
+                json_schema_key="ActiveSchema",
+            ),
+            EntityMapping(
+                name="FrozenSchema",
+                pydantic_class=None,
+                sql_table=None,
+                json_schema_key="FrozenSchema",
+            ),
+        )
+
+        *_unused, json_schema_entities, warnings = load_default_sources(registry, tmp_path)
+
+        assert "ActiveSchema" in json_schema_entities
+        assert "FrozenSchema" not in json_schema_entities
+        assert not any("docs/artifacts/content.json" in warning for warning in warnings)
 
 
 # =====================================================================

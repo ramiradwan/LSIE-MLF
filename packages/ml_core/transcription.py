@@ -1,9 +1,10 @@
 """
-Speech Transcription — §4.D.1
+faster-whisper transcription wrapper for Module D audio input (§4.D.1).
 
-Wraps faster-whisper with CTranslate2 inference backend.
-Uses INT8 quantization, requires CUDA 12 and cuDNN 8.
-SPEC-AMEND-001: compute_type locked to int8 for dp4a on Pascal (SM 6.1).
+The module lazy-loads the CTranslate2-backed Whisper model and transcribes
+16 kHz audio files to UTF-8 text from a caller-provided audio path. Runtime is
+constrained to CUDA with cuDNN 8 and INT8 compute for the target ML Worker
+topology (§9, §10.2); compute type is not operator-configurable.
 """
 
 from __future__ import annotations
@@ -13,10 +14,13 @@ from typing import Any
 
 class TranscriptionEngine:
     """
-    §4.D.1 — faster-whisper speech transcription engine.
+    Transcribe 16 kHz audio segments with faster-whisper.
 
-    Loads the large-v3 model with INT8 quantization on CUDA device.
-    Transcribes 16 kHz PCM audio segments into text.
+    Accepts a model size and CUDA device identifier, lazy-loads the configured
+    Whisper model, and produces concatenated UTF-8 transcript text for a
+    caller-provided audio path. It does not expose a compute_type override,
+    perform semantic matching, or persist transcripts; INT8 is fixed for the
+    supported CUDA/cuDNN ML Worker runtime.
     """
 
     # SPEC-AMEND-001: compute_type is hardcoded to "int8" to enforce dp4a
@@ -47,12 +51,12 @@ class TranscriptionEngine:
 
     def transcribe(self, audio_path: str, language: str | None = None) -> str:
         """
-        Transcribe a 16 kHz audio segment.
+        Transcribe a 16 kHz audio segment from a filesystem path.
 
         §4.D.1 — faster-whisper CTranslate2 inference backend.
 
         Args:
-            audio_path: Path to PCM s16le 16 kHz audio file or buffer.
+            audio_path: Path to a PCM s16le 16 kHz audio file.
             language: Optional language hint.
 
         Returns:

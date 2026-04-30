@@ -17,12 +17,8 @@ from services.api.db.connection import get_connection, put_connection
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
-# Keep this route-level projection aligned with the operator read-model acoustic
-# payload while preserving the legacy pitch/jitter/shimmer fields additively.
+# Keep this route-level projection aligned with the canonical §7D acoustic payload.
 _ACOUSTIC_METRICS_COLUMNS: tuple[str, ...] = (
-    "pitch_f0",
-    "jitter",
-    "shimmer",
     "f0_valid_measure",
     "f0_valid_baseline",
     "perturbation_valid_measure",
@@ -165,9 +161,9 @@ async def get_au12_timeseries(session_id: str) -> list[dict[str, Any]]:
 @router.get("/metrics/{session_id}/acoustic")
 async def get_acoustic_timeseries(session_id: str) -> list[dict[str, Any]]:
     """
-    Retrieve legacy and canonical observational acoustic time-series for a session.
+    Retrieve canonical observational acoustic time-series for a session.
 
-    §11 — Vocal Pitch, Jitter, Shimmer, and §7D observational acoustic fields.
+    §7D — observational acoustic fields.
     """
     conn = None
     try:

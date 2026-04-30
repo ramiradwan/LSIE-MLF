@@ -1,11 +1,11 @@
 """
-Qt worker primitives for non-blocking API access — Phase 4 revision.
+Qt worker primitives for non-blocking API access.
 
 Two primitives live here:
 
   * `PollingWorker` — a QObject that, once moved to a QThread, calls a
     provided fetch callable on a fixed interval and emits the result.
-    In Phase 4 the worker carries a `job_name` so one signal bus
+    The worker carries a `job_name` so one signal bus
     (`PollingCoordinator`) can multiplex many independent jobs through
     the same slot surface — previously every view wired its own worker
     and its own signal, which does not scale to nine parallel polls.
@@ -26,7 +26,6 @@ Design constraints:
 
 Spec references:
   §12            — error-handling matrix (retry vs surface)
-  SPEC-AMEND-008 — PySide6 Operator Console
 """
 
 from __future__ import annotations

@@ -1,4 +1,4 @@
-"""Experiments (arms) table model — Phase 7.
+"""Experiments (arms) table model.
 
 Backs the Experiments page's arm posterior table. Columns surface the
 exact Thompson Sampling readbacks an operator needs to reason about
@@ -19,7 +19,6 @@ relationship belongs on the Live Session encounter table (where
 Spec references:
   §7B            — Thompson Sampling posterior (α, β), evaluation variance
   §4.E.1         — Experiments operator surface
-  SPEC-AMEND-008 — PySide6 Operator Console
 """
 
 from __future__ import annotations

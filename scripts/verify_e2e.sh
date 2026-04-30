@@ -176,7 +176,7 @@ else
 fi
 
 if log_contains orchestrator "AU12 normalizer initialized"; then
-    pass "AU12 normalizer initialized (v3.0)"
+    pass "AU12 normalizer initialized"
     info "$(log_last_match orchestrator 'AU12 normalizer initialized')"
 else
     warn "AU12 normalizer not yet initialized (waiting for first video frame)"
@@ -232,7 +232,7 @@ if [ "${METRIC_COUNT:-0}" -gt 0 ]; then
     pass "Metrics table has data ($METRIC_COUNT rows)"
 
     # Sample the latest metric
-    LATEST=$(db_query "SELECT segment_id, au12_intensity, pitch_f0 FROM metrics ORDER BY created_at DESC LIMIT 1;" || echo "")
+    LATEST=$(db_query "SELECT segment_id, au12_intensity, f0_mean_measure_hz FROM metrics ORDER BY created_at DESC LIMIT 1;" || echo "")
     if [ -n "$LATEST" ]; then
         info "Latest metric: $LATEST"
     fi

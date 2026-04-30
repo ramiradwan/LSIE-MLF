@@ -16,7 +16,6 @@ string passes through `formatters.py`; no inline formatting.
 Spec references:
   §4.E.1         — Health operator surface
   §12            — degraded vs recovering vs error; operator-action hints
-  SPEC-AMEND-008 — PySide6 Operator Console
 """
 
 from __future__ import annotations

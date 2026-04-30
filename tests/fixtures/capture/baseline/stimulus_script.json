@@ -31,7 +31,7 @@
     "weak_arm_role": "weak",
     "minimum_encounters": 20,
     "posterior_mean_margin_min": 0.5,
-    "reward_input_tolerance": 0.000001,
+    "reward_input_tolerance": 1e-06,
     "stimulus_window_start_offset_s": 0.5,
     "stimulus_window_end_offset_s": 5.0,
     "reward_percentile": 90.0
@@ -48,8 +48,7 @@
       "expected_p90_intensity": 0.08,
       "expected_reward": 0.08,
       "expected_semantic_match": true,
-      "expected_confidence_score": 1.0,
-      "expected_x_max": null
+      "expected_confidence_score": 1.0
     },
     {
       "encounter_index": 1,
@@ -62,8 +61,7 @@
       "expected_p90_intensity": 0.9,
       "expected_reward": 0.9,
       "expected_semantic_match": true,
-      "expected_confidence_score": 1.0,
-      "expected_x_max": null
+      "expected_confidence_score": 1.0
     },
     {
       "encounter_index": 2,
@@ -76,8 +74,7 @@
       "expected_p90_intensity": 0.9,
       "expected_reward": 0.9,
       "expected_semantic_match": true,
-      "expected_confidence_score": 1.0,
-      "expected_x_max": null
+      "expected_confidence_score": 1.0
     },
     {
       "encounter_index": 3,
@@ -90,8 +87,7 @@
       "expected_p90_intensity": 0.9,
       "expected_reward": 0.9,
       "expected_semantic_match": true,
-      "expected_confidence_score": 1.0,
-      "expected_x_max": null
+      "expected_confidence_score": 1.0
     },
     {
       "encounter_index": 4,
@@ -104,8 +100,7 @@
       "expected_p90_intensity": 0.9,
       "expected_reward": 0.9,
       "expected_semantic_match": true,
-      "expected_confidence_score": 1.0,
-      "expected_x_max": null
+      "expected_confidence_score": 1.0
     },
     {
       "encounter_index": 5,
@@ -118,8 +113,7 @@
       "expected_p90_intensity": 0.9,
       "expected_reward": 0.9,
       "expected_semantic_match": true,
-      "expected_confidence_score": 1.0,
-      "expected_x_max": null
+      "expected_confidence_score": 1.0
     },
     {
       "encounter_index": 6,
@@ -132,8 +126,7 @@
       "expected_p90_intensity": 0.9,
       "expected_reward": 0.9,
       "expected_semantic_match": true,
-      "expected_confidence_score": 1.0,
-      "expected_x_max": null
+      "expected_confidence_score": 1.0
     },
     {
       "encounter_index": 7,
@@ -146,8 +139,7 @@
       "expected_p90_intensity": 0.9,
       "expected_reward": 0.9,
       "expected_semantic_match": true,
-      "expected_confidence_score": 1.0,
-      "expected_x_max": null
+      "expected_confidence_score": 1.0
     },
     {
       "encounter_index": 8,
@@ -160,8 +152,7 @@
       "expected_p90_intensity": 0.9,
       "expected_reward": 0.9,
       "expected_semantic_match": true,
-      "expected_confidence_score": 1.0,
-      "expected_x_max": null
+      "expected_confidence_score": 1.0
     },
     {
       "encounter_index": 9,
@@ -174,8 +165,7 @@
       "expected_p90_intensity": 0.9,
       "expected_reward": 0.9,
       "expected_semantic_match": true,
-      "expected_confidence_score": 1.0,
-      "expected_x_max": null
+      "expected_confidence_score": 1.0
     },
     {
       "encounter_index": 10,
@@ -188,8 +178,7 @@
       "expected_p90_intensity": 0.9,
       "expected_reward": 0.9,
       "expected_semantic_match": true,
-      "expected_confidence_score": 1.0,
-      "expected_x_max": null
+      "expected_confidence_score": 1.0
     },
     {
       "encounter_index": 11,
@@ -202,8 +191,7 @@
       "expected_p90_intensity": 0.9,
       "expected_reward": 0.9,
       "expected_semantic_match": true,
-      "expected_confidence_score": 1.0,
-      "expected_x_max": null
+      "expected_confidence_score": 1.0
     },
     {
       "encounter_index": 12,
@@ -216,8 +204,7 @@
       "expected_p90_intensity": 0.9,
       "expected_reward": 0.9,
       "expected_semantic_match": true,
-      "expected_confidence_score": 1.0,
-      "expected_x_max": null
+      "expected_confidence_score": 1.0
     },
     {
       "encounter_index": 13,
@@ -230,8 +217,7 @@
       "expected_p90_intensity": 0.9,
       "expected_reward": 0.9,
       "expected_semantic_match": true,
-      "expected_confidence_score": 1.0,
-      "expected_x_max": null
+      "expected_confidence_score": 1.0
     },
     {
       "encounter_index": 14,
@@ -244,8 +230,7 @@
       "expected_p90_intensity": 0.9,
       "expected_reward": 0.9,
       "expected_semantic_match": true,
-      "expected_confidence_score": 1.0,
-      "expected_x_max": null
+      "expected_confidence_score": 1.0
     },
     {
       "encounter_index": 15,
@@ -258,8 +243,7 @@
       "expected_p90_intensity": 0.9,
       "expected_reward": 0.9,
       "expected_semantic_match": true,
-      "expected_confidence_score": 1.0,
-      "expected_x_max": null
+      "expected_confidence_score": 1.0
     },
     {
       "encounter_index": 16,
@@ -272,8 +256,7 @@
       "expected_p90_intensity": 0.9,
       "expected_reward": 0.9,
       "expected_semantic_match": true,
-      "expected_confidence_score": 1.0,
-      "expected_x_max": null
+      "expected_confidence_score": 1.0
     },
     {
       "encounter_index": 17,
@@ -286,8 +269,7 @@
       "expected_p90_intensity": 0.9,
       "expected_reward": 0.9,
       "expected_semantic_match": true,
-      "expected_confidence_score": 1.0,
-      "expected_x_max": null
+      "expected_confidence_score": 1.0
     },
     {
       "encounter_index": 18,
@@ -300,8 +282,7 @@
       "expected_p90_intensity": 0.9,
       "expected_reward": 0.9,
       "expected_semantic_match": true,
-      "expected_confidence_score": 1.0,
-      "expected_x_max": null
+      "expected_confidence_score": 1.0
     },
     {
       "encounter_index": 19,
@@ -314,8 +295,7 @@
       "expected_p90_intensity": 0.9,
       "expected_reward": 0.9,
       "expected_semantic_match": true,
-      "expected_confidence_score": 1.0,
-      "expected_x_max": null
+      "expected_confidence_score": 1.0
     }
   ]
 }

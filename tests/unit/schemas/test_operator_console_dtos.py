@@ -20,7 +20,6 @@ import pytest
 from pydantic import ValidationError
 
 from packages.schemas.operator_console import (
-    AcousticObservationalMetrics,
     AlertEvent,
     AlertKind,
     AlertSeverity,
@@ -396,92 +395,6 @@ class TestSemanticAndAttributionSummaries:
             AttributionSummary.model_validate({"sync_peak_lag": 1.5})
 
 
-class TestAcousticObservationalMetrics:
-    def test_defaults_follow_deterministic_null_contract(self) -> None:
-        metrics = AcousticObservationalMetrics()
-        dumped = json.loads(metrics.model_dump_json())
-        assert dumped["f0_valid_measure"] is False
-        assert dumped["f0_valid_baseline"] is False
-        assert dumped["perturbation_valid_measure"] is False
-        assert dumped["perturbation_valid_baseline"] is False
-        assert dumped["voiced_coverage_measure_s"] == 0.0
-        assert dumped["voiced_coverage_baseline_s"] == 0.0
-        assert dumped["f0_mean_measure_hz"] is None
-        assert dumped["f0_mean_baseline_hz"] is None
-        assert dumped["jitter_mean_measure"] is None
-        assert dumped["shimmer_mean_measure"] is None
-        assert dumped["pitch_f0"] is None
-        assert dumped["jitter"] is None
-        assert dumped["shimmer"] is None
-
-    def test_non_finite_floats_are_rejected(self) -> None:
-        with pytest.raises(ValidationError):
-            AcousticObservationalMetrics(f0_mean_measure_hz=float("nan"))
-
-    def test_encounter_summary_roundtrips_nested_acoustic_metrics(self) -> None:
-        summary = EncounterSummary(
-            encounter_id="e-acoustic-1",
-            session_id=uuid.uuid4(),
-            segment_timestamp_utc=_utc(),
-            state=EncounterState.COMPLETED,
-            semantic_gate=1,
-            p90_intensity=0.91,
-            gated_reward=0.91,
-            acoustic=AcousticObservationalMetrics(
-                f0_valid_measure=True,
-                f0_valid_baseline=True,
-                perturbation_valid_measure=True,
-                perturbation_valid_baseline=True,
-                voiced_coverage_measure_s=2.5,
-                voiced_coverage_baseline_s=2.0,
-                f0_mean_measure_hz=210.0,
-                f0_mean_baseline_hz=180.0,
-                f0_delta_semitones=2.667,
-                jitter_mean_measure=0.012,
-                jitter_mean_baseline=0.009,
-                jitter_delta=0.003,
-                shimmer_mean_measure=0.034,
-                shimmer_mean_baseline=0.03,
-                shimmer_delta=0.004,
-                pitch_f0=210.0,
-                jitter=0.012,
-                shimmer=0.034,
-            ),
-        )
-        restored = EncounterSummary.model_validate_json(summary.model_dump_json())
-        assert restored.acoustic is not None
-        assert restored.acoustic.f0_valid_measure is True
-        assert restored.acoustic.f0_mean_measure_hz == pytest.approx(210.0)
-        assert restored.acoustic.pitch_f0 == pytest.approx(210.0)
-
-    def test_field_names_match_canonical_section_7d_schema(self) -> None:
-        canonical_fields = (
-            "f0_valid_measure",
-            "f0_valid_baseline",
-            "perturbation_valid_measure",
-            "perturbation_valid_baseline",
-            "voiced_coverage_measure_s",
-            "voiced_coverage_baseline_s",
-            "f0_mean_measure_hz",
-            "f0_mean_baseline_hz",
-            "f0_delta_semitones",
-            "jitter_mean_measure",
-            "jitter_mean_baseline",
-            "jitter_delta",
-            "shimmer_mean_measure",
-            "shimmer_mean_baseline",
-            "shimmer_delta",
-        )
-
-        assert tuple(AcousticObservationalMetrics.model_fields.keys()) == (
-            "pitch_f0",
-            "jitter",
-            "shimmer",
-            *canonical_fields,
-        )
-        assert len(canonical_fields) == 15
-
-
 # ----------------------------------------------------------------------
 # StimulusRequest dedup key
 # ----------------------------------------------------------------------
@@ -798,7 +711,7 @@ class TestRewardExplanationFields:
             p90_intensity=0.88,
             gated_reward=0.88,
             n_frames_in_window=120,
-            baseline_b_neutral=0.1,
+            au12_baseline_pre=0.1,
             physiology_attached=True,
             physiology_stale=False,
             notes=["gate-open"],
@@ -806,7 +719,7 @@ class TestRewardExplanationFields:
         # r_t = p90_intensity × semantic_gate per §7B
         assert enc.semantic_gate == 1
         assert enc.gated_reward == pytest.approx(enc.p90_intensity or 0.0)
-        assert enc.baseline_b_neutral == pytest.approx(0.1)
+        assert enc.au12_baseline_pre == pytest.approx(0.1)
         assert enc.n_frames_in_window == 120
 
     def test_gated_reward_is_zero_when_gate_closed(self) -> None:

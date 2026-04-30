@@ -1,13 +1,13 @@
 """QApplication bootstrap and ``main()`` entry point for the Operator
 Console.
 
-Phase 6 factors the bootstrap into four tiny factories (`build_*`) so
+This module factors the bootstrap into four tiny factories (`build_*`) so
 tests can construct the dependency graph without also standing up a
 `QApplication`, and so the ordering constraint that actually matters —
 *instantiate the store before any view, start polling only after the
 window is shown* — lives in one place.
 
-Ordering rationale:
+Ordering notes:
   1. Store first: views bind their slots to store signals on
      construction, so the store has to exist before `build_main_window`.
   2. Window.show() before coordinator.start(): if polling kicks off
@@ -21,7 +21,6 @@ Ordering rationale:
 Spec references:
   §4.E.1         — operator-facing execution details
   §12            — clean shutdown joins polling threads within 2s
-  SPEC-AMEND-008 — PySide6 Operator Console
 """
 
 from __future__ import annotations

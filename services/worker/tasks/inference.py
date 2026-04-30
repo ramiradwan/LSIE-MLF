@@ -1,17 +1,15 @@
 """
-Inference Task — §4.D Multimodal ML Processing via Celery
+Module D inference task entry points for the ML Worker (§4.D).
 
-Dispatched from Module C → Module D via in-process call, then
-Module D → Module E via Celery async task through Message Broker (§2 step 6).
+``process_segment()`` consumes an InferenceHandoffPayload dict from the
+Orchestrator Container, runs transcription, AU12, §7D acoustic, preprocessing,
+and semantic evaluation, then dispatches derived metrics to Module E through the
+Message Broker (§2 step 6).
 
-Gap 1 fix: process_segment() now forwards orchestrator experiment and
-telemetry fields (_active_arm, _experiment_id, _expected_greeting,
-_au12_series, _stimulus_time, _x_max) to persist_metrics. _x_max is
-carried only as calibration telemetry/diagnostics and is not consumed by
-§7B reward computation.
-
-Gap 2 fix: _audio_data and _frame_data are base64-decoded from the
-JSON-serialized Celery payload back to bytes.
+``persist_metrics()`` writes Module E outputs to the Persistent Store and applies
+§7B Thompson Sampling feedback when Orchestrator Container reward telemetry is
+present. Binary transport fields (``_audio_data``, ``_frame_data``) are decoded
+from base64 before ML processing.
 """
 
 from __future__ import annotations
@@ -30,23 +28,18 @@ from services.worker.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
 
-# Orchestrator experiment and telemetry fields that must be forwarded
-# from the input payload to the persist_metrics output. These are
-# underscore-prefixed internal fields not part of the §2 step 6 spec
-# payload. _au12_series and _stimulus_time feed the §7B reward pipeline;
-# _x_max is forwarded only as calibration telemetry/diagnostics.
+# Orchestrator Container experiment/reward telemetry forwarded to persist_metrics.
+# _au12_series and _stimulus_time feed the §7B reward pipeline.
 _FORWARD_FIELDS: tuple[str, ...] = (
     "_active_arm",
     "_experiment_id",
     "_expected_greeting",
     "_au12_series",
     "_stimulus_time",
-    "_x_max",
 )
 
-# Optional §7E attribution/outcome metadata forwarded only when present. Kept
-# separate from _FORWARD_FIELDS to preserve the historical v3 reward-path test
-# fixture contract for the six Thompson Sampling telemetry fields.
+# Optional §7E attribution/outcome metadata forwarded only when present.
+# Kept separate from _FORWARD_FIELDS to preserve the §7B telemetry contract.
 _ATTRIBUTION_FORWARD_FIELDS: tuple[str, ...] = (
     "_outcome_event",
     "_outcome_events",
@@ -62,16 +55,16 @@ _BINARY_FIELDS: list[str] = ["_audio_data", "_frame_data"]
 # Raw Module C → D audio is mono PCM s16le at 16 kHz.
 _PCM_SAMPLE_WIDTH_BYTES: int = 2
 
-# Cached per worker-process transcriber. Celery concurrency is constrained to a
-# single worker process in docker-compose, so this preserves the initialized
-# model object after the first successful transcription without sharing it
-# across processes.
+# Cached per-ML Worker process transcriber. Celery concurrency is constrained
+# to a single ML Worker process in docker-compose, so this preserves the
+# initialized model object after the first successful transcription without
+# sharing it across processes.
 _TRANSCRIPTION_ENGINE: Any | None = None
 _TRANSCRIPTION_ENGINE_FACTORY: Any | None = None
 
 
 def _get_transcription_engine() -> Any:
-    """Return the worker-process transcriber without loading it in /healthz."""
+    """Return the ML Worker process transcriber without loading it in /healthz."""
 
     global _TRANSCRIPTION_ENGINE, _TRANSCRIPTION_ENGINE_FACTORY
     from packages.ml_core.transcription import TranscriptionEngine
@@ -86,12 +79,12 @@ def _get_transcription_engine() -> Any:
 _INSERT_ENCOUNTER_LOG_SQL: str = """
     INSERT INTO encounter_log (
         session_id, segment_id, experiment_id, arm, timestamp_utc,
-        gated_reward, p90_intensity, semantic_gate, is_valid,
-        n_frames, baseline_neutral, stimulus_time
+        gated_reward, p90_intensity, semantic_gate,
+        n_frames_in_window, au12_baseline_pre, stimulus_time
     ) VALUES (
         %(session_id)s, %(segment_id)s, %(experiment_id)s, %(arm)s, %(timestamp_utc)s,
-        %(gated_reward)s, %(p90_intensity)s, %(semantic_gate)s, %(is_valid)s,
-        %(n_frames)s, %(baseline_neutral)s, %(stimulus_time)s
+        %(gated_reward)s, %(p90_intensity)s, %(semantic_gate)s,
+        %(n_frames_in_window)s, %(au12_baseline_pre)s, %(stimulus_time)s
     )
 """
 
@@ -105,9 +98,6 @@ _CANONICAL_NULLABLE_ACOUSTIC_FLOAT_FIELDS: tuple[str, ...] = (
     "shimmer_mean_measure",
     "shimmer_mean_baseline",
     "shimmer_delta",
-    "pitch_f0",
-    "jitter",
-    "shimmer",
 )
 
 _CANONICAL_COVERAGE_ACOUSTIC_FLOAT_FIELDS: tuple[str, ...] = (
@@ -134,9 +124,6 @@ def _default_acoustic_payload() -> dict[str, Any]:
         "shimmer_mean_measure": None,
         "shimmer_mean_baseline": None,
         "shimmer_delta": None,
-        "pitch_f0": None,
-        "jitter": None,
-        "shimmer": None,
     }
 
 
@@ -223,9 +210,6 @@ def _default_semantic_method_version(method: str) -> str:
         deployment = os.environ.get("AZURE_OPENAI_DEPLOYMENT") or "unconfigured"
         api_version = os.environ.get("AZURE_OPENAI_API_VERSION", "2024-02-01")
         return f"azure-openai:{deployment}:{api_version}"
-    if method == "azure_llm_legacy":
-        return "azure-openai-legacy"
-
     try:
         from packages.ml_core.semantic import CROSS_ENCODER_METHOD_VERSION
     except (AttributeError, ImportError):
@@ -235,15 +219,12 @@ def _default_semantic_method_version(method: str) -> str:
 
 
 def _bounded_semantic_reason(reasoning: Any, *, method: str, is_match: bool) -> str:
-    """Map legacy/free-form semantic reasoning to the bounded reason-code enum."""
+    """Accept bounded semantic reason codes and reject any non-canonical text."""
     from packages.schemas.evaluation import SEMANTIC_REASON_CODES
 
+    del method, is_match
     if reasoning in SEMANTIC_REASON_CODES:
         return str(reasoning)
-    if method == "llm_gray_band":
-        return "gray_band_llm_match" if is_match else "gray_band_llm_nonmatch"
-    if method == "cross_encoder":
-        return "cross_encoder_high_match" if is_match else "cross_encoder_high_nonmatch"
     return "semantic_error"
 
 
@@ -343,7 +324,7 @@ def process_segment(self: Task, payload: dict[str, Any]) -> dict[str, Any]:
       3. AU12 intensity scoring — §7A.5
       4. Acoustic analysis (parselmouth) — §4.D.3
       5. Text preprocessing (spaCy) — §4.D.4
-      6. Semantic evaluation (Azure OpenAI) — §8
+      6. Semantic evaluation (local Cross-Encoder plus optional gray-band fallback) — §8
 
     Dispatches results to Module E via Message Broker.
 
@@ -353,12 +334,11 @@ def process_segment(self: Task, payload: dict[str, Any]) -> dict[str, Any]:
     Returns:
         Dict with session_id, segment_id, AU12 intensity, transcription,
         semantic match, and the canonical observational acoustic payload
-        (plus optional legacy pitch/jitter/shimmer compatibility fields)
         required by §2 step 6 / §4.D.3.
     """
     started_at = time.perf_counter()
 
-    # --- Gap 2 fix: decode base64-encoded binary fields from JSON transport ---
+    # Decode base64-encoded binary fields from JSON transport.
     from services.worker.pipeline.serialization import decode_bytes_fields, sanitize_json_payload
 
     payload = decode_bytes_fields(payload, _BINARY_FIELDS)
@@ -459,7 +439,7 @@ def process_segment(self: Task, payload: dict[str, Any]) -> dict[str, Any]:
                 # §7A.5 — AU12 scoring
                 normalizer = AU12Normalizer()
                 normalizer.b_neutral = 0.0  # Prevent uncalibrated crash on the single frame
-                au12_intensity = normalizer.compute_intensity(landmarks)
+                au12_intensity = normalizer.compute_bounded_intensity(landmarks)
         except Exception:
             # §4.D contract — missing face returns null facial metrics
             logger.warning("AU12 extraction failed for %s", segment_id, exc_info=True)
@@ -499,7 +479,7 @@ def process_segment(self: Task, payload: dict[str, Any]) -> dict[str, Any]:
         except Exception:
             # §4.D.contract / §12.4 — acoustic invalidity and local extraction
             # failures are data-quality outcomes; emit deterministic false/null
-            # outputs instead of retrying or failing the worker.
+            # outputs instead of retrying or failing the ML Worker.
             logger.warning("Acoustic analysis failed for %s", segment_id, exc_info=True)
             acoustic_payload = _default_acoustic_payload()
     else:
@@ -518,7 +498,6 @@ def process_segment(self: Task, payload: dict[str, Any]) -> dict[str, Any]:
 
     # --- §8 — Semantic Evaluation ---
     semantic: dict[str, Any] | None = None
-    semantic_shadow: dict[str, Any] | None = None
     if preprocessed_text:
         try:
             from packages.ml_core.semantic import SemanticEvaluator
@@ -539,22 +518,6 @@ def process_segment(self: Task, payload: dict[str, Any]) -> dict[str, Any]:
                 ),
             )
 
-            shadow_evaluator = getattr(evaluator, "evaluate_shadow", None)
-            if callable(shadow_evaluator):
-                shadow_semantic = shadow_evaluator(expected_greeting, preprocessed_text)
-                semantic_shadow = _normalize_semantic_result(
-                    shadow_semantic,
-                    semantic_method=getattr(
-                        evaluator,
-                        "last_shadow_semantic_method",
-                        None,
-                    ),
-                    semantic_method_version=getattr(
-                        evaluator,
-                        "last_shadow_semantic_method_version",
-                        None,
-                    ),
-                )
         except Exception:
             # §4.D contract — semantic failures are bounded and local to Module D.
             logger.warning("Semantic evaluation failed for %s", segment_id, exc_info=True)
@@ -569,21 +532,14 @@ def process_segment(self: Task, payload: dict[str, Any]) -> dict[str, Any]:
         "semantic": semantic,
         **acoustic_payload,
     }
-    if semantic_shadow is not None:
-        # §8.6 — Observational only; reward path reads the live ``semantic`` field.
-        result["semantic_shadow"] = semantic_shadow
-
     physio_context: dict[str, Any] | None = payload.get("_physiological_context")
     if physio_context is not None:
-        # Preserve the orchestrator-provided dict exactly as received, but
-        # keep the Task 4 omission rule when physiology is unavailable.
+        # Preserve the Orchestrator Container-provided dict exactly as received,
+        # but keep the omission rule when physiology is unavailable.
         result["_physiological_context"] = physio_context
 
-    # --- Gap 1 fix: Forward orchestrator experiment and telemetry fields ---
-    # These underscore-prefixed fields are not part of the §2 step 6 spec payload
-    # _au12_series and _stimulus_time are required by persist_metrics for
-    # the Thompson Sampling reward pipeline. _x_max is carried forward only
-    # as calibration telemetry/diagnostics and must not scale reward.
+    # Forward optional Orchestrator Container telemetry consumed by Module E.
+    # _au12_series and _stimulus_time feed the §7B Thompson Sampling reward pipeline.
     for key in _FORWARD_FIELDS:
         if key in payload:
             result[key] = payload[key]
@@ -637,11 +593,9 @@ def _log_encounter(
         conn = store._get_conn()
         try:
             # §2.7 typing is enforced by the encounter_log schema:
-            # timestamp_utc -> TIMESTAMPTZ, and reward/stimulus scalars ->
-            # DOUBLE PRECISION (gated_reward, p90_intensity,
-            # baseline_neutral, stimulus_time). The legacy DB column
-            # baseline_neutral stores the canonical §7B au12_baseline_pre
-            # diagnostic without broad schema churn.
+            # timestamp_utc -> TIMESTAMPTZ, frame counts -> INTEGER, and
+            # reward/stimulus scalars -> DOUBLE PRECISION (gated_reward,
+            # p90_intensity, au12_baseline_pre, stimulus_time).
             with conn.cursor() as cur:
                 cur.execute(
                     _INSERT_ENCOUNTER_LOG_SQL,
@@ -654,19 +608,18 @@ def _log_encounter(
                         "gated_reward": result.gated_reward,
                         "p90_intensity": result.p90_intensity,
                         "semantic_gate": result.semantic_gate,
-                        "is_valid": result.is_valid,
-                        "n_frames": result.n_frames_in_window,
-                        "baseline_neutral": result.au12_baseline_pre,
+                        "n_frames_in_window": result.n_frames_in_window,
+                        "au12_baseline_pre": result.au12_baseline_pre,
                         "stimulus_time": stimulus_time,
                     },
                 )
             conn.commit()
             logger.debug(
-                "Encounter logged: experiment=%s arm=%s reward=%.4f valid=%s",
+                "Encounter logged: experiment=%s arm=%s reward=%.4f frames=%d",
                 experiment_id,
                 arm,
                 result.gated_reward,
-                result.is_valid,
+                result.n_frames_in_window,
             )
         finally:
             store._put_conn(conn)
@@ -689,19 +642,25 @@ def _log_encounter(
 def persist_metrics(self: Task, metrics: dict[str, Any]) -> None:
     """
     §2 step 7 — Module E: Persist inference metrics to Persistent Store.
-    §4.E.1 — [v3.0] Close Thompson Sampling feedback loop with continuous
-    fractional Beta-Bernoulli reward.
+    §4.E.1/§7B — close the Thompson Sampling feedback loop with a
+    continuous fractional Beta-Bernoulli reward.
 
-    Failure mode (§12.5): If database unreachable, buffer up to 1000
+    Failure mode (§12.5): If Persistent Store unreachable, buffer up to 1000
     records in memory and retry every 5 seconds before overflow to CSV.
+
+    Reward inputs are optional observation telemetry from the Orchestrator Container:
+    `_active_arm`, `_experiment_id`, `_expected_greeting`, `_au12_series`,
+    and `_stimulus_time`. When all reward inputs are present, the §7B path
+    builds the timestamped AU12 series, applies the post-stimulus response
+    window, aggregates P90 intensity, gates it with semantic `is_match`, and
+    applies the fractional Thompson Sampling update. Missing reward inputs are
+    skipped as "no observation"; a present-but-empty AU12 list is a normative
+    zero-frame measurement. `timestamp_utc` persists as TIMESTAMPTZ, while
+    `_stimulus_time` remains the drift-corrected epoch scalar stored in
+    `encounter_log.stimulus_time` as DOUBLE PRECISION.
 
     Args:
         metrics: Structured inference results from Module D.
-                 Includes _active_arm, _experiment_id, _expected_greeting,
-                 and (v3.0) _au12_series, _stimulus_time from the Orchestrator.
-                 timestamp_utc persists as TIMESTAMPTZ, while _stimulus_time
-                 remains the drift-corrected epoch used by the reward pipeline
-                 and is stored in encounter_log.stimulus_time as DOUBLE PRECISION.
     """
     from packages.ml_core.attribution import build_attribution_ledger_records
     from services.worker.pipeline.analytics import MetricsStore, ThompsonSamplingEngine
@@ -768,9 +727,9 @@ def persist_metrics(self: Task, metrics: dict[str, Any]) -> None:
         physio_context: dict[str, Any] | None = metrics.get("_physiological_context")
         persistable_metrics: dict[str, Any] = dict(metrics)
         if physio_context is not None:
-            # §4.D / orchestrator_physio_buffer.py — preserve the orchestrator-
-            # injected dict exactly as received when handing the payload to
-            # Module E persistence methods.
+            # §4.D / orchestrator_physio_buffer.py — preserve the
+            # Orchestrator Container-injected dict exactly as received when
+            # handing the payload to Module E persistence methods.
             persistable_metrics["_physiological_context"] = physio_context
         else:
             # Keep the optional handoff omitted when upstream sends no usable
@@ -786,26 +745,7 @@ def persist_metrics(self: Task, metrics: dict[str, Any]) -> None:
             metrics.get("segment_id"),
         )
 
-        # ─── [v3.0] Thompson Sampling Continuous Reward Pipeline ───
-        #
-        # Pipeline:
-        #   1. Build timestamped AU12 series from orchestrator telemetry
-        #   2. Apply stimulus response window
-        #        t ∈ [stimulus_time + 0.5, stimulus_time + 5.0]
-        #   3. Aggregate facial response using P90 intensity
-        #   4. Apply semantic validity gate
-        #        G_t = 1 if semantic match else 0
-        #   5. Continuous reward
-        #        r_t = P90 × G_t
-        #   6. Fractional Thompson Sampling update
-        #        α ← α + r_t
-        #        β ← β + (1 − r_t)
-        #
-        # Null observation handling:
-        #   Missing reward inputs (no AU12 field or no stimulus time) remain
-        #   "no observation" and are skipped. A present but empty AU12 list is
-        #   a normative zero-frame measurement: §7B computes P90=0.0 and the
-        #   Thompson Sampling update uses result_reward.gated_reward directly.
+        # §7B reward update runs only when all observation inputs are present.
 
         semantic: dict[str, Any] | None = metrics.get("semantic")
         active_arm: str = metrics.get("_active_arm", "")
@@ -819,8 +759,7 @@ def persist_metrics(self: Task, metrics: dict[str, Any]) -> None:
         # §2.7 cross-artifact typing: timestamp_utc captures the wall-clock
         # observation time as TIMESTAMPTZ, while stimulus_time is the reward
         # pipeline's drift-corrected epoch scalar persisted as DOUBLE PRECISION.
-        # _x_max may be present in metrics as calibration telemetry, but §7B
-        # reward uses only bounded AU12 post-stimulus data and binary is_match.
+        # §7B reward uses only bounded AU12 post-stimulus data and binary is_match.
 
         if (
             semantic is not None

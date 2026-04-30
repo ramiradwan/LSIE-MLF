@@ -158,7 +158,7 @@ The console ships six pages: Overview, Live Session, Experiments,
 Physiology, Health, and Sessions. Page behavior traces to the spec:
 
 - Live Session's reward explanation uses `p90_intensity`, `semantic_gate`,
-  `gated_reward`, `n_frames_in_window`, and `baseline_b_neutral` (§7B).
+  `gated_reward`, `n_frames_in_window`, and `au12_baseline_pre` (§7B).
 - Physiology surfaces `fresh` / `stale` / `absent` / `no-rmssd` as four
   distinct states (§4.C.4).
 - Co-modulation `null` is rendered as a legitimate `null-valid` outcome
@@ -219,7 +219,7 @@ Keep README-level guidance brief and put detailed governance, retention, and sec
 
 ## Specification
 
-LSIE-MLF is implemented against the specification `docs/tech-spec-v3.2.pdf`.
+LSIE-MLF is implemented against the single signed specification PDF committed as `docs/tech-spec-v*.pdf`.
 
 This README is intentionally operational. It explains how the repository is organized, how to run it locally, and where to make changes. Detailed contracts, mathematical formulas, failure handling, and version history belong in the specification and amendment log.
 

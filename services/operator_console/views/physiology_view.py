@@ -1,6 +1,6 @@
 """Physiology page — per-`subject_role` snapshots + §7C Co-Modulation Index.
 
-Renders the four physiology states explicitly per SPEC-AMEND-007:
+Renders the four physiology states explicitly per §4.C.4 and §7C:
   * **fresh**  — recent non-stale snapshot (§4.C.4)
   * **stale**  — snapshot present but `is_stale=True` (§4.C.4)
   * **absent** — no snapshot at all (strap off, provider outage)
@@ -18,8 +18,6 @@ Spec references:
   §4.E.2         — physiology_log fields (rmssd_ms, heart_rate_bpm, ...)
   §7C            — Co-Modulation Index (rolling Pearson, null-valid)
   §12            — physiology staleness alerts + error surfaces
-  SPEC-AMEND-007 — v3.1 physiology transport
-  SPEC-AMEND-008 — PySide6 Operator Console
 """
 
 from __future__ import annotations
@@ -303,7 +301,7 @@ class _CoModulationPanel(QFrame):
         self._title = QLabel("Co-Modulation Index", self)
         self._title.setObjectName("PanelTitle")
         self._subtitle = QLabel(
-            "Rolling 5-minute Pearson correlation over aligned RMSSD bins.",
+            "Rolling Pearson correlation over aligned RMSSD bins.",
             self,
         )
         self._subtitle.setObjectName("PanelSubtitle")

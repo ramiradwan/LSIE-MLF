@@ -21,7 +21,6 @@ from unittest.mock import MagicMock
 import pytest
 
 from packages.schemas.operator_console import (
-    AcousticObservationalMetrics,
     AttributionSummary,
     EncounterState,
     EncounterSummary,
@@ -177,23 +176,6 @@ class TestOperatorReadRoutes:
             p90_intensity=0.71,
             gated_reward=0.71,
             n_frames_in_window=128,
-            acoustic=AcousticObservationalMetrics(
-                f0_valid_measure=False,
-                f0_valid_baseline=False,
-                perturbation_valid_measure=False,
-                perturbation_valid_baseline=False,
-                voiced_coverage_measure_s=0.0,
-                voiced_coverage_baseline_s=0.0,
-                f0_mean_measure_hz=None,
-                f0_mean_baseline_hz=None,
-                f0_delta_semitones=None,
-                jitter_mean_measure=None,
-                jitter_mean_baseline=None,
-                jitter_delta=None,
-                shimmer_mean_measure=None,
-                shimmer_mean_baseline=None,
-                shimmer_delta=None,
-            ),
             observational_acoustic=ObservationalAcousticSummary(
                 f0_valid_measure=True,
                 f0_valid_baseline=False,
@@ -243,11 +225,6 @@ class TestOperatorReadRoutes:
         )
 
         assert result == [encounter]
-        assert result[0].acoustic is not None
-        assert result[0].acoustic.f0_valid_measure is False
-        assert isinstance(result[0].acoustic.f0_valid_measure, bool)
-        assert result[0].acoustic.voiced_coverage_measure_s == 0.0
-        assert result[0].acoustic.f0_mean_measure_hz is None
         assert result[0].observational_acoustic is not None
         assert result[0].observational_acoustic.f0_valid_measure is True
         assert isinstance(result[0].observational_acoustic.f0_valid_measure, bool)
@@ -255,10 +232,6 @@ class TestOperatorReadRoutes:
         assert result[0].observational_acoustic.voiced_coverage_measure_s == 2.4
         assert result[0].observational_acoustic.f0_mean_measure_hz == 215.5
         assert result[0].observational_acoustic.f0_mean_baseline_hz is None
-        assert result[0].observational_acoustic.jitter_mean_measure == 0.018
-        assert result[0].observational_acoustic.jitter_mean_baseline is None
-        assert result[0].observational_acoustic.shimmer_mean_measure == 0.027
-        assert result[0].observational_acoustic.shimmer_delta is None
         assert result[0].semantic_evaluation is not None
         assert result[0].semantic_evaluation.reasoning == "cross_encoder_high_match"
         assert result[0].semantic_evaluation.is_match is True

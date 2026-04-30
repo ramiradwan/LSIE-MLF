@@ -177,9 +177,9 @@ class TestGetSession:
                 session_cursor.description = [
                     ("total_segments",),
                     ("avg_au12",),
-                    ("avg_pitch_f0",),
-                    ("avg_jitter",),
-                    ("avg_shimmer",),
+                    ("avg_f0_mean_measure_hz",),
+                    ("avg_jitter_mean_measure",),
+                    ("avg_shimmer_mean_measure",),
                     ("first_segment_at",),
                     ("last_segment_at",),
                 ]

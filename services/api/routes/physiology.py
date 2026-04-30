@@ -1,17 +1,17 @@
 """
-Physiological Webhook Ingress — §4.B.2, §2.8 (v3.2 notification-only ingress)
+Physiological Webhook Ingress — §4.B.2, §2.8 notification-only ingress
 
-FastAPI POST route for authenticated Oura Ring v2 webhook notifications.
+API Server route for authenticated Oura Ring v2 webhook notifications.
 Authenticates incoming JSON, deduplicates deliveries, and enqueues minimal
-hydration metadata to Redis for a later provider-fetch stage.
+hydration metadata to the Message Broker for a later provider-fetch stage.
 
 Design constraints:
   - Lives in services/api/routes/ (API Server container, python:3.11-slim)
   - MUST NOT import anything from packages/ml_core/ (§3.2 image separation)
   - Uses HMAC-SHA256 signature verification against OURA_WEBHOOK_SECRET
-  - Idempotency via Redis SETNX with 1-hour TTL
-  - Enqueue via RPUSH to physio:hydrate Redis list
-  - Returns 200 on success, 401 bad sig, 422 bad payload, 503 Redis failure
+  - Idempotency via Message Broker SETNX with 1-hour TTL
+  - Enqueue via RPUSH to the physio:hydrate Message Broker list
+  - Returns 200 on success, 401 bad sig, 422 bad payload, 503 Message Broker failure
 
 Spec references:
   §4.B.2  — Physiological Ingestion Adapter
@@ -43,11 +43,11 @@ router = APIRouter()
 # §5 — Secret injected at runtime, never hardcoded.
 OURA_WEBHOOK_SECRET: str = os.environ.get("OURA_WEBHOOK_SECRET", "")
 
-# Redis key prefix for idempotency tracking.
+# Message Broker key prefix for idempotency tracking.
 _IDEMPOTENCY_PREFIX = "physio:seen:"
 _IDEMPOTENCY_TTL_S = 3600  # 1 hour
 
-# Redis list key for hydration notifications.
+# Message Broker list key for hydration notifications.
 _PHYSIO_HYDRATE_QUEUE = "physio:hydrate"
 
 
@@ -76,7 +76,7 @@ def _verify_oura_signature(body: bytes, signature: str | None, secret: str) -> b
 
 
 def _get_redis() -> Any:
-    """Create a Redis client using REDIS_URL from the environment."""
+    """Create the Redis client for Message Broker access using REDIS_URL."""
     import redis as redis_lib
 
     redis_url = os.environ.get("REDIS_URL", "redis://redis:6379/0")
@@ -120,7 +120,7 @@ async def oura_webhook(
       - Invalid signature → 401
       - Duplicate delivery → 200 (no-op)
       - Malformed payload → 422
-      - Redis enqueue failure → 503
+      - Message Broker enqueue failure → 503
     """
     body = await request.body()
 
@@ -188,7 +188,8 @@ async def oura_webhook(
         raise
     except Exception as exc:
         logger.error(
-            "Redis enqueue failed for physiological hydration notification: subject=%s event_id=%s",
+            "Message Broker enqueue failed for physiological hydration notification: "
+            "subject=%s event_id=%s",
             subject_role,
             event_uuid,
             exc_info=True,

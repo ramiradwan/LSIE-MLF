@@ -69,12 +69,6 @@ def _assert_false_null_contract(result: AcousticAnalyticsResult) -> None:
     assert result.f0_mean_measure_hz is None
     assert result.f0_mean_baseline_hz is None
     assert result.f0_delta_semitones is None
-    assert result.jitter_mean_measure is None
-    assert result.jitter_mean_baseline is None
-    assert result.jitter_delta is None
-    assert result.shimmer_mean_measure is None
-    assert result.shimmer_mean_baseline is None
-    assert result.shimmer_delta is None
 
 
 class TestAcousticAnalyticsResult:
@@ -153,12 +147,6 @@ class TestAcousticAnalyticsResult:
         assert result.f0_delta_semitones == pytest.approx(12.0 * np.log2(180.0 / 150.0))
 
         # Perturbation means are nulled only for invalid perturbation windows.
-        assert result.jitter_mean_measure is None
-        assert result.jitter_mean_baseline == 0.009
-        assert result.jitter_delta is None
-        assert result.shimmer_mean_measure is None
-        assert result.shimmer_mean_baseline == 0.03
-        assert result.shimmer_delta is None
 
     def test_compute_observational_result_nulls_baseline_f0_and_delta_when_baseline_invalid(
         self,
@@ -203,12 +191,6 @@ class TestAcousticAnalyticsResult:
         assert result.f0_mean_measure_hz is None
         assert result.f0_mean_baseline_hz == 150.0
         assert result.f0_delta_semitones is None
-        assert result.jitter_mean_measure is None
-        assert result.jitter_mean_baseline == 0.009
-        assert result.jitter_delta is None
-        assert result.shimmer_mean_measure is None
-        assert result.shimmer_mean_baseline == 0.03
-        assert result.shimmer_delta is None
 
     def test_compute_observational_result_requires_computable_perturbation_metrics(
         self,
@@ -235,12 +217,6 @@ class TestAcousticAnalyticsResult:
         assert result.f0_mean_measure_hz == 180.0
         assert result.f0_mean_baseline_hz == 150.0
         assert result.f0_delta_semitones == pytest.approx(12.0 * np.log2(180.0 / 150.0))
-        assert result.jitter_mean_measure is None
-        assert result.jitter_mean_baseline == 0.009
-        assert result.jitter_delta is None
-        assert result.shimmer_mean_measure is None
-        assert result.shimmer_mean_baseline == 0.03
-        assert result.shimmer_delta is None
 
     @pytest.mark.parametrize(
         ("jitter_mean_measure", "shimmer_mean_measure"),
@@ -278,12 +254,6 @@ class TestAcousticAnalyticsResult:
         assert result.f0_mean_measure_hz == 180.0
         assert result.f0_mean_baseline_hz == 150.0
         assert result.f0_delta_semitones == pytest.approx(12.0 * np.log2(180.0 / 150.0))
-        assert result.jitter_mean_measure is None
-        assert result.jitter_mean_baseline == 0.009
-        assert result.jitter_delta is None
-        assert result.shimmer_mean_measure is None
-        assert result.shimmer_mean_baseline == 0.03
-        assert result.shimmer_delta is None
 
     def test_compute_f0_delta_semitones_matches_canonical_formula(self) -> None:
         assert compute_f0_delta_semitones(180.0, 150.0) == pytest.approx(
@@ -317,8 +287,6 @@ class TestAcousticAnalyticsResult:
         assert result.perturbation_valid_measure is True
         assert result.perturbation_valid_baseline is True
         assert result.f0_delta_semitones == pytest.approx(12.0 * np.log2(220.0 / 110.0))
-        assert result.jitter_delta == pytest.approx(0.014 - 0.009)
-        assert result.shimmer_delta == pytest.approx(0.041 - 0.033)
 
 
 class TestStimulusLockedAcousticAnalytics:
@@ -397,12 +365,6 @@ class TestStimulusLockedAcousticAnalytics:
         assert result.f0_mean_measure_hz == pytest.approx(180.0)
         assert result.f0_mean_baseline_hz == pytest.approx(150.0)
         assert result.f0_delta_semitones == pytest.approx(12.0 * np.log2(180.0 / 150.0))
-        assert result.jitter_mean_measure is None
-        assert result.jitter_mean_baseline == pytest.approx(0.008)
-        assert result.jitter_delta is None
-        assert result.shimmer_mean_measure is None
-        assert result.shimmer_mean_baseline == pytest.approx(0.018)
-        assert result.shimmer_delta is None
 
     def test_invalid_f0_window_nulls_mean_and_semitone_delta(self) -> None:
         stimulus_time_s = 100.0
@@ -431,12 +393,6 @@ class TestStimulusLockedAcousticAnalytics:
         assert result.f0_mean_measure_hz == pytest.approx(180.0)
         assert result.f0_mean_baseline_hz is None
         assert result.f0_delta_semitones is None
-        assert result.jitter_mean_measure == pytest.approx(0.010)
-        assert result.jitter_mean_baseline is None
-        assert result.jitter_delta is None
-        assert result.shimmer_mean_measure == pytest.approx(0.020)
-        assert result.shimmer_mean_baseline is None
-        assert result.shimmer_delta is None
 
     def test_uses_longest_eligible_voiced_island_for_perturbation(self) -> None:
         stimulus_time_s = 100.0
@@ -481,10 +437,6 @@ class TestStimulusLockedAcousticAnalytics:
         assert result.f0_valid_measure is True
         assert result.perturbation_valid_measure is True
         assert result.f0_mean_measure_hz == pytest.approx(220.0)
-        assert result.jitter_mean_measure == pytest.approx(0.011)
-        assert result.shimmer_mean_measure == pytest.approx(0.021)
-        assert result.jitter_delta == pytest.approx(0.003)
-        assert result.shimmer_delta == pytest.approx(0.003)
 
     def test_unvoiced_windows_are_deterministic_and_do_not_probe_perturbation(self) -> None:
         stimulus_time_s = 100.0
@@ -539,10 +491,6 @@ class TestStimulusLockedAcousticAnalytics:
         assert result.f0_delta_semitones == pytest.approx(
             12.0 * np.log2(expected_measure_mean_hz / expected_baseline_mean_hz)
         )
-        assert result.jitter_mean_measure is None
-        assert result.jitter_mean_baseline is None
-        assert result.shimmer_mean_measure is None
-        assert result.shimmer_mean_baseline is None
 
     def test_insufficient_voiced_coverage_is_deterministic_and_skips_perturbation(self) -> None:
         stimulus_time_s = 100.0
@@ -577,12 +525,6 @@ class TestStimulusLockedAcousticAnalytics:
         assert result.f0_mean_measure_hz is None
         assert result.f0_mean_baseline_hz is None
         assert result.f0_delta_semitones is None
-        assert result.jitter_mean_measure is None
-        assert result.jitter_mean_baseline is None
-        assert result.jitter_delta is None
-        assert result.shimmer_mean_measure is None
-        assert result.shimmer_mean_baseline is None
-        assert result.shimmer_delta is None
 
     def test_undefined_perturbation_outputs_null_only_perturbation_fields(self) -> None:
         stimulus_time_s = 100.0
@@ -619,12 +561,6 @@ class TestStimulusLockedAcousticAnalytics:
         assert result.f0_mean_measure_hz == pytest.approx(180.0)
         assert result.f0_mean_baseline_hz == pytest.approx(150.0)
         assert result.f0_delta_semitones == pytest.approx(12.0 * np.log2(180.0 / 150.0))
-        assert result.jitter_mean_measure is None
-        assert result.jitter_mean_baseline == pytest.approx(0.008)
-        assert result.jitter_delta is None
-        assert result.shimmer_mean_measure is None
-        assert result.shimmer_mean_baseline == pytest.approx(0.018)
-        assert result.shimmer_delta is None
 
 
 class TestAcousticMetrics:
@@ -642,19 +578,8 @@ class TestAcousticMetrics:
         assert m.f0_mean_measure_hz is None
         assert m.f0_mean_baseline_hz is None
         assert m.f0_delta_semitones is None
-        assert m.jitter_mean_measure is None
-        assert m.jitter_mean_baseline is None
-        assert m.jitter_delta is None
-        assert m.shimmer_mean_measure is None
-        assert m.shimmer_mean_baseline is None
-        assert m.shimmer_delta is None
 
-        # Legacy compatibility fields remain optional and deprecated.
-        assert m.pitch_f0 is None
-        assert m.jitter is None
-        assert m.shimmer is None
-
-    def test_with_canonical_and_legacy_values(self) -> None:
+    def test_with_canonical_values(self) -> None:
         m = AcousticMetrics(
             f0_valid_measure=True,
             f0_valid_baseline=True,
@@ -671,9 +596,6 @@ class TestAcousticMetrics:
             shimmer_mean_measure=0.035,
             shimmer_mean_baseline=0.03,
             shimmer_delta=0.005,
-            pitch_f0=150.0,
-            jitter=0.01,
-            shimmer=0.03,
         )
 
         assert m.f0_valid_measure is True
@@ -685,17 +607,8 @@ class TestAcousticMetrics:
         assert m.f0_mean_measure_hz == 180.0
         assert m.f0_mean_baseline_hz == 150.0
         assert m.f0_delta_semitones == 3.157376
-        assert m.jitter_mean_measure == 0.012
-        assert m.jitter_mean_baseline == 0.009
-        assert m.jitter_delta == 0.003
-        assert m.shimmer_mean_measure == 0.035
-        assert m.shimmer_mean_baseline == 0.03
-        assert m.shimmer_delta == 0.005
-        assert m.pitch_f0 == 150.0
-        assert m.jitter == 0.01
-        assert m.shimmer == 0.03
 
-    def test_from_observational_result_preserves_legacy_scalars(self) -> None:
+    def test_from_observational_result_preserves_canonical_values(self) -> None:
         result = compute_observational_acoustic_result(
             f0_valid_measure=True,
             f0_valid_baseline=True,
@@ -711,23 +624,13 @@ class TestAcousticMetrics:
             shimmer_mean_baseline=0.03,
         )
 
-        metrics = AcousticMetrics.from_observational_result(
-            result,
-            pitch_f0=210.0,
-            jitter=0.01,
-            shimmer=0.03,
-        )
+        metrics = AcousticMetrics.from_observational_result(result)
 
-        assert metrics.pitch_f0 == 210.0
-        assert metrics.jitter == 0.01
-        assert metrics.shimmer == 0.03
         assert metrics.f0_valid_measure is True
         assert metrics.f0_valid_baseline is True
         assert metrics.perturbation_valid_measure is True
         assert metrics.perturbation_valid_baseline is True
         assert metrics.f0_delta_semitones == pytest.approx(12.0 * np.log2(180.0 / 150.0))
-        assert metrics.jitter_delta == pytest.approx(0.003)
-        assert metrics.shimmer_delta == pytest.approx(0.005)
 
 
 @pytest.fixture()
@@ -747,7 +650,7 @@ class TestAcousticAnalyzer:
     """§4.D.3 — Praat acoustic feature extraction."""
 
     def test_analyze_returns_metrics(self, mock_parselmouth: tuple[MagicMock, MagicMock]) -> None:
-        """§4.D.3 — Returns AcousticMetrics with legacy compatibility values."""
+        """§4.D.3 — Returns AcousticMetrics with canonical defaults."""
         mock_pm, mock_praat = mock_parselmouth
 
         mock_sound = MagicMock()
@@ -779,9 +682,6 @@ class TestAcousticAnalyzer:
         assert result.f0_valid_measure is False
         assert result.voiced_coverage_measure_s == 0.0
         assert result.f0_mean_measure_hz is None
-        assert result.pitch_f0 == 180.0
-        assert result.jitter == 0.012
-        assert result.shimmer == 0.035
 
     def test_analyze_stimulus_locked_populates_section_7d_fields(
         self,
@@ -872,41 +772,6 @@ class TestAcousticAnalyzer:
         assert result.f0_mean_measure_hz == pytest.approx(220.0)
         assert result.f0_mean_baseline_hz == pytest.approx(180.0)
         assert result.f0_delta_semitones == pytest.approx(12.0 * np.log2(220.0 / 180.0))
-        assert result.jitter_mean_measure == pytest.approx(0.010)
-        assert result.jitter_mean_baseline == pytest.approx(0.008)
-        assert result.jitter_delta == pytest.approx(0.002)
-        assert result.shimmer_mean_measure == pytest.approx(0.020)
-        assert result.shimmer_mean_baseline == pytest.approx(0.018)
-        assert result.shimmer_delta == pytest.approx(0.002)
-        assert result.pitch_f0 == pytest.approx(200.0)
-        assert result.jitter == pytest.approx(0.012)
-        assert result.shimmer == pytest.approx(0.035)
-
-    def test_analyze_zero_pitch_becomes_none(
-        self, mock_parselmouth: tuple[MagicMock, MagicMock]
-    ) -> None:
-        """§4.D.3 — Zero pitch (no voiced frames) returns None."""
-        mock_pm, mock_praat = mock_parselmouth
-        mock_pm.Sound.return_value = MagicMock()
-
-        def call_side_effect(*args: Any, **kwargs: Any) -> Any:
-            cmd = args[1] if len(args) > 1 else ""
-            if cmd == "Get mean":
-                return 0.0
-            if cmd == "Get jitter (local)":
-                return None
-            if cmd == "Get shimmer (local)":
-                return None
-            return MagicMock()
-
-        mock_praat.call.side_effect = call_side_effect
-
-        samples = np.zeros(16000, dtype=np.int16)
-        analyzer = AcousticAnalyzer()
-        result = analyzer.analyze(samples.tobytes())
-
-        assert result.pitch_f0 is None
-        assert result.f0_mean_measure_hz is None
 
     def test_analyze_uses_correct_sample_rate(
         self, mock_parselmouth: tuple[MagicMock, MagicMock]

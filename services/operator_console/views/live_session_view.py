@@ -1,10 +1,10 @@
 """Live Session page — encounter timeline + reward explanation pane.
 
 The operator-trust surface: every encounter row exposes the §7B reward
-inputs the pipeline used (P90, semantic gate, gated reward, frames,
-baseline B_neutral). Selecting a row drops the full explanation into
-the detail pane alongside the §4.C.4 physiology freshness read for
-that segment.
+inputs the pipeline used (P90, semantic gate, gated reward,
+n_frames_in_window, au12_baseline_pre). Selecting a row drops the full
+explanation into the detail pane alongside the §4.C.4 physiology
+freshness read for that segment.
 
 The view never formats strings inline. All operator language comes
 through `formatters.py`. All business logic — arm readback, stimulus
@@ -21,7 +21,6 @@ Spec references:
   §7B            — reward = p90_intensity × semantic_gate; detail pane
                    surfaces every input the pipeline used
   §12            — non-retryable errors surface on the page-level banner
-  SPEC-AMEND-008 — PySide6 Operator Console
 """
 
 from __future__ import annotations
@@ -552,7 +551,7 @@ class _EncounterDetailPanel(QFrame):
         self._gate_card = MetricCard("Semantic gate", self)
         self._reward_card = MetricCard("Gated reward", self)
         self._frames_card = MetricCard("Frames in window", self)
-        self._baseline_card = MetricCard("Baseline B_neutral", self)
+        self._baseline_card = MetricCard("AU12 baseline pre", self)
         self._physiology_card = MetricCard("Physiology", self)
 
         grid = QGridLayout()
@@ -760,8 +759,8 @@ class _EncounterDetailPanel(QFrame):
             self._frames_card.set_secondary_text("")
             self._frames_card.set_status(UiStatusKind.NEUTRAL, None)
 
-        self._baseline_card.set_primary_text(format_reward(encounter.baseline_b_neutral))
-        self._baseline_card.set_secondary_text("neutral AU12 baseline")
+        self._baseline_card.set_primary_text(format_reward(encounter.au12_baseline_pre))
+        self._baseline_card.set_secondary_text("pre-stimulus AU12 baseline")
         self._baseline_card.set_status(UiStatusKind.NEUTRAL, None)
 
         if encounter.physiology_attached:

@@ -1,7 +1,7 @@
 """
 Operator query layer — raw DB row fetchers for the Operator Console aggregate endpoints.
 
-These functions are the lowest layer of the Operator Console Phase 2 stack:
+These functions are the lowest layer of the Operator Console API stack:
 they take a psycopg2 cursor and return plain row dicts. The higher
 `OperatorReadService` composes them into Pydantic DTOs.
 
@@ -31,14 +31,7 @@ from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-# Preserve the legacy scalar acoustics additively while surfacing the full
-# canonical §7D observational-acoustic projection on operator encounter rows.
-_LEGACY_ACOUSTIC_METRICS_COLUMNS: tuple[str, ...] = (
-    "pitch_f0",
-    "jitter",
-    "shimmer",
-)
-
+# Operator encounter rows project only canonical §7D observational-acoustic columns.
 _CANONICAL_OBSERVATIONAL_ACOUSTIC_COLUMNS: tuple[str, ...] = (
     "f0_valid_measure",
     "f0_valid_baseline",
@@ -57,10 +50,7 @@ _CANONICAL_OBSERVATIONAL_ACOUSTIC_COLUMNS: tuple[str, ...] = (
     "shimmer_delta",
 )
 
-_ACOUSTIC_METRICS_COLUMNS: tuple[str, ...] = (
-    *_LEGACY_ACOUSTIC_METRICS_COLUMNS,
-    *_CANONICAL_OBSERVATIONAL_ACOUSTIC_COLUMNS,
-)
+_ACOUSTIC_METRICS_COLUMNS: tuple[str, ...] = _CANONICAL_OBSERVATIONAL_ACOUSTIC_COLUMNS
 
 _ACOUSTIC_METRICS_SELECT_SQL: str = ",\n        ".join(
     ["acoustic.metrics_row_id", *[f"acoustic.{column}" for column in _ACOUSTIC_METRICS_COLUMNS]]
@@ -75,8 +65,8 @@ _ACOUSTIC_METRICS_LATERAL_SQL: str = ",\n            ".join(
 
 # §7E / §6.4 semantic-attribution projections are read additively from the
 # attribution ledger and pivoted onto the existing encounter aggregate rows.
-# Prefix the service-layer source keys to avoid colliding with legacy reward
-# fields such as encounter_log.semantic_gate and encounter_log.baseline_neutral.
+# Prefix the service-layer source keys to avoid colliding with encounter reward
+# fields such as encounter_log.semantic_gate and encounter_log.au12_baseline_pre.
 _SEMANTIC_ATTRIBUTION_SELECT_SQL: str = """
         attr.semantic_reason_code AS semantic_reasoning,
         CASE
@@ -90,8 +80,8 @@ _SEMANTIC_ATTRIBUTION_SELECT_SQL: str = """
         attribution_scores.soft_reward_candidate,
         CASE
             WHEN attr.event_id IS NULL THEN NULL::double precision
-            ELSE e.baseline_neutral
-        END AS au12_baseline_pre,
+            ELSE e.au12_baseline_pre
+        END AS attribution_au12_baseline_pre,
         attribution_scores.au12_lift_p90,
         attribution_scores.au12_lift_peak,
         attribution_scores.au12_peak_latency_ms,
@@ -252,13 +242,13 @@ _GET_ACTIVE_SESSION_SQL: str = """
 # ----------------------------------------------------------------------
 
 # Full reward-explanation columns per §7B — `p90_intensity`, `semantic_gate`,
-# `gated_reward`, `n_frames`, `baseline_neutral`, `stimulus_time`.
+# `gated_reward`, `n_frames_in_window`, `au12_baseline_pre`, `stimulus_time`.
 _SESSION_ENCOUNTERS_SQL: str = f"""
     SELECT
         e.id, e.session_id, e.segment_id, e.experiment_id,
         e.arm, e.timestamp_utc, e.gated_reward, e.p90_intensity,
-        e.semantic_gate, e.is_valid, e.n_frames,
-        e.baseline_neutral, e.stimulus_time, e.created_at,
+        e.semantic_gate, e.n_frames_in_window,
+        e.au12_baseline_pre, e.stimulus_time, e.created_at,
         {_ACOUSTIC_METRICS_SELECT_SQL},
         {_SEMANTIC_ATTRIBUTION_SELECT_SQL}
     FROM encounter_log e
@@ -285,8 +275,8 @@ _LATEST_ENCOUNTER_SQL: str = f"""
     SELECT
         e.id, e.session_id, e.segment_id, e.experiment_id,
         e.arm, e.timestamp_utc, e.gated_reward, e.p90_intensity,
-        e.semantic_gate, e.is_valid, e.n_frames,
-        e.baseline_neutral, e.stimulus_time, e.created_at,
+        e.semantic_gate, e.n_frames_in_window,
+        e.au12_baseline_pre, e.stimulus_time, e.created_at,
         {_ACOUSTIC_METRICS_SELECT_SQL},
         {_SEMANTIC_ATTRIBUTION_SELECT_SQL}
     FROM encounter_log e

@@ -1,10 +1,12 @@
 """
-InferenceHandoffPayload — §6.1 JSON Schema Draft 07 Contract
+Pydantic contracts for Module C → D → E inference handoff (§6.1).
 
-Standardized schema for multimodal ML pipeline handoff between
-Module C → Module D and Module D → Module E. v3.4 adds stable segment
-identity/window fields, first-class bandit decision capture, and optional
-strict physiological context.
+The schema validates multimodal segment identity, drift-corrected UTC window
+bounds, media metadata, active experiment fields, AU12 telemetry, pre-update
+BanditDecisionSnapshot records, and optional physiological context. It uses canonical
+field aliases for underscore-prefixed transport keys (§0, §13.15) and rejects
+null physiological context placeholders; it does not run inference or compute
+rewards.
 """
 
 from __future__ import annotations
@@ -26,7 +28,13 @@ UUID4_PATTERN = "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f
 
 
 class MediaSource(BaseModel):
-    """Media source metadata attached to each InferenceHandoffPayload."""
+    """
+    Validate source media metadata for an inference handoff.
+
+    Accepts a stream URI, codec, and positive [width, height] resolution and
+    produces strict serialized metadata for the segment payload. It does not
+    inspect media bytes or infer codec/resolution values.
+    """
 
     stream_url: AnyUrl = Field(..., description="URI of the source stream.")
     codec: str = Field(..., pattern="^(h264|h265|raw)$")
@@ -48,7 +56,13 @@ class MediaSource(BaseModel):
 
 
 class AU12Observation(BaseModel):
-    """One bounded AU12 observation attached to the inference handoff."""
+    """
+    Validate one bounded AU12 telemetry sample.
+
+    Accepts a drift-corrected epoch timestamp and a [0, 1] intensity value and
+    produces the strict item schema used in ``_au12_series``. It does not compute
+    or recalibrate AU12 values.
+    """
 
     timestamp_s: float
     intensity: float = Field(..., ge=0.0, le=1.0)
@@ -58,12 +72,14 @@ class AU12Observation(BaseModel):
 
 class InferenceHandoffPayload(BaseModel):
     """
-    §6.1 — The JSON Schema Draft 07 contract governing data exchange
-    between Module C and Module D, and from Module D to Module E.
+    Validate the §6.1 handoff payload exchanged across pipeline modules.
 
-    Underscore-prefixed payload keys are represented by internal Python field
-    names with exact external aliases so Pydantic treats them as normal modeled
-    fields rather than private attributes or free-form extras.
+    Accepts segment IDs/windows, media metadata, Module C experiment context,
+    per-frame AU12 observations, the pre-update BanditDecisionSnapshot, and an
+    optional non-empty physiological context. Produces a Draft 07-compatible
+    Pydantic model using canonical external aliases for underscore-prefixed
+    fields. It does not compute segment IDs, run semantic evaluation, calculate
+    rewards, or accept ``None`` as a present physiological context.
     """
 
     session_id: UUID4 = Field(
@@ -118,16 +134,11 @@ class InferenceHandoffPayload(BaseModel):
         alias="_au12_series",
         description="Per-frame AU12 bounded intensity observations.",
     )
-    x_max: float | None = Field(
-        ...,
-        alias="_x_max",
-        description="Per-subject maximum raw D_mouth/IOD ratio observed during calibration.",
-    )
     bandit_decision_snapshot: BanditDecisionSnapshot = Field(
         ...,
         alias="_bandit_decision_snapshot",
         description=(
-            "Pre-update Thompson Sampling selection snapshot captured at arm-selection time."
+            "Pre-update Thompson Sampling BanditDecisionSnapshot captured at arm-selection time."
         ),
     )
     physiological_context: PhysiologicalContext | SkipJsonSchema[None] = Field(

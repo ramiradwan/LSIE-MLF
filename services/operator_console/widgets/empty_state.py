@@ -6,7 +6,6 @@ operator from staring at a literally blank surface.
 
 Spec references:
   §4.E.1         — operator-facing UX affordances
-  SPEC-AMEND-008 — PySide6 Operator Console
 """
 
 from __future__ import annotations

@@ -1,6 +1,6 @@
 """Event timeline — a QTableView wrapper that scrolls to latest on demand.
 
-Backs the alerts feed (AlertsTableModel, Phase 7) and the encounter
+Backs the alerts feed (`AlertsTableModel`) and the encounter
 timeline on the Live Session page. We wrap QTableView rather than
 subclassing so consumers can swap in any QAbstractItemModel without
 this widget needing to know the column layout.
@@ -8,7 +8,6 @@ this widget needing to know the column layout.
 Spec references:
   §4.E.1         — operator-facing event timelines
   §12            — alert feed surfaced on Health view
-  SPEC-AMEND-008 — PySide6 Operator Console
 """
 
 from __future__ import annotations

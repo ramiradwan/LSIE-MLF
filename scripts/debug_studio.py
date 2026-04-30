@@ -1,4 +1,43 @@
 #!/usr/bin/env python3  
+"""LSIE-MLF Debug Studio (§4.E.1 operator tooling).
+
+Data consumption contract — three disjoint read paths, one write path.
+Each thread below owns exactly one path; no thread mixes sources.
+
+1. LIVE PATH (StreamThread)
+   Source: /tmp/ipc/video_stream.mkv (IPC Pipe, in-process MediaPipe)
+   Cadence: ~30 fps, sub-100 ms frame-to-display latency
+   Why direct: per-frame landmarks are never persisted (§5 data governance;
+   only per-segment aggregates enter the Persistent Store). A Persistent Store
+   or API Server hop would add poll latency and the data does not exist there.
+   Consumers: VideoPane, AU12Tile, TrackingPointsTile, Face/FPS tiles.
+
+2. ANALYTICS PATH (AnalyticsThread, polls OPERATOR_SNAPSHOT_SQL)
+   Source: Persistent Store via `docker compose exec postgres psql`
+   Cadence: ANALYTICS_POLL_SECONDS (default 1 s), fingerprint-deduped
+   Why direct: operator readback is a high-frequency multi-table JOIN over
+   session history. Going through the API Server per tick would cost an HTTP
+   round-trip for every poll and force the API Server to grow a read endpoint
+   for every table we surface. Direct `psql` keeps the GUI decoupled from API
+   Server uptime and consistent across tabs. The CLI (scripts/lsie_cli.py) has
+   the opposite tradeoff — one-shot queries, so it uses API Server REST endpoints.
+   Consumers: all "Analytics" tab panels and the right-hand side panels on the
+   "Live" tab (transcript, semantic eval, reward, acoustic metrics, physiology,
+   Co-Modulation Index, per-arm).
+
+3. HARDWARE PATH (HardwareTelemetryThread)
+   Source: `nvidia-smi` (host) + `adb shell` (device), out-of-band
+   Why direct: host/device telemetry is not a Persistent Store concern; it
+   never transits the API Server or Persistent Store. Read straight from the
+   tools that own it.
+   Consumers: Host System tile, Device CPU tile, Foreground App tile.
+
+WRITE PATH (stimulus inject)
+   Target: API Server `POST /api/v1/stimulus`
+   Why API Server: the API Server owns the Message Broker pub/sub publish.
+   Write authority stays with a single service — the GUI does not talk to the
+   Message Broker directly.
+"""
 from __future__ import annotations  
   
 import json
@@ -61,50 +100,6 @@ from PySide6.QtWidgets import (
     QWidget,
 )
   
-# -----------------------------------------------------------------------------
-# LSIE-MLF Debug Studio (§4.E.1 operator tooling)
-#
-# Data consumption contract — three disjoint read paths, one write path.
-# Each worker thread below owns exactly one path; no thread mixes sources.
-#
-#   1. LIVE PATH  (StreamThread)
-#      Source:      /tmp/ipc/video_stream.mkv (IPC Pipe, in-process MediaPipe)
-#      Cadence:     ~30 fps, sub-100 ms frame-to-display latency
-#      Why direct:  Per-frame landmarks are never persisted (§5 data governance
-#                   — only per-segment aggregates enter the Persistent Store).
-#                   A DB or API hop would add poll latency that would break the
-#                   live preview; the data also does not exist at those layers.
-#      Consumers:   VideoPane, AU12Tile, TrackingPointsTile, Face/FPS tiles.
-#
-#   2. ANALYTICS PATH  (AnalyticsThread, polls OPERATOR_SNAPSHOT_SQL)
-#      Source:      PostgreSQL via `docker compose exec postgres psql`
-#      Cadence:     ANALYTICS_POLL_SECONDS (default 1 s), fingerprint-deduped
-#      Why direct:  Operator readback is a high-frequency multi-table JOIN over
-#                   session history. Going through FastAPI per tick would cost
-#                   an HTTP round-trip for every poll and force the API to
-#                   grow a read endpoint for every table we surface. Direct
-#                   psql keeps the GUI decoupled from the API uptime and
-#                   consistent across tabs. The CLI (scripts/lsie_cli.py) has
-#                   the opposite tradeoff — one-shot queries, so it uses the
-#                   REST API.
-#      Consumers:   All "Analytics" tab panels and the right-hand side panels
-#                   on the "Live" tab (transcript, semantic eval, reward,
-#                   acoustic metrics, physiology, co-modulation, per-arm).
-#
-#   3. HARDWARE PATH  (HardwareTelemetryThread)
-#      Source:      nvidia-smi (host) + `adb shell` (device), out-of-band
-#      Why direct:  Host/device telemetry is not a Persistent Store concern;
-#                   it never transits the API or DB. Read straight from the
-#                   tools that own it.
-#      Consumers:   Host System tile, Device CPU tile, Foreground App tile.
-#
-#   WRITE PATH  (stimulus inject)
-#      Target:      FastAPI `POST /api/v1/stimulus`
-#      Why API:     The API owns the Redis pub/sub publish. Write authority
-#                   stays with a single service — the GUI does not talk to
-#                   Redis directly.
-# -----------------------------------------------------------------------------
-  
 APP_NAME = "LSIE-MLF Debug Studio"  
   
 cv2.setUseOptimized(True)  
@@ -150,9 +145,8 @@ MODE_LABELS = {
 LIP_MARKER_COLOR = (0, 255, 0)  
 LIP_OUTLINE_COLOR = (0, 0, 0)  
   
-# Core snapshot — queries only tables that exist in every v2+ deployment.
-# Split from the physiology/comodulation query so a missing v3.1 migration
-# on an old volume doesn't break the rest of the operator readback.
+# Core snapshot stays separate from physiology/comodulation so missing
+# optional tables do not break the rest of the operator readback.
 OPERATOR_SNAPSHOT_SQL = r"""
 WITH recent_metrics AS (
   SELECT *
@@ -212,11 +206,11 @@ encounter_summary AS (
   SELECT
     arm,
     COUNT(*) AS encounter_count,
-    COUNT(*) FILTER (WHERE is_valid) AS valid_count,
+    COUNT(*) FILTER (WHERE n_frames_in_window > 0) AS valid_count,
     AVG(gated_reward) AS avg_reward,
-    AVG(gated_reward) FILTER (WHERE is_valid) AS avg_valid_reward,
+    AVG(gated_reward) FILTER (WHERE n_frames_in_window > 0) AS avg_valid_reward,
     AVG(semantic_gate::double precision) AS gate_rate,
-    AVG(n_frames::double precision) AS avg_frames
+    AVG(n_frames_in_window::double precision) AS avg_frames
   FROM encounter_log
   WHERE experiment_id = 'greeting_line_v1'
   GROUP BY arm
@@ -237,9 +231,6 @@ SELECT json_build_object(
   COALESCE(
     (SELECT json_agg(row_to_json(mh)) FROM (
       SELECT
-        to_jsonb(rm) -> 'pitch_f0' AS pitch_f0,
-        to_jsonb(rm) -> 'jitter' AS jitter,
-        to_jsonb(rm) -> 'shimmer' AS shimmer,
         to_jsonb(rm) -> 'f0_valid_measure' AS f0_valid_measure,
         to_jsonb(rm) -> 'f0_valid_baseline' AS f0_valid_baseline,
         to_jsonb(rm) -> 'perturbation_valid_measure' AS perturbation_valid_measure,
@@ -275,9 +266,8 @@ SELECT json_build_object(
 );
 """
 
-# Physiology snapshot — depends on v3.1 tables (data/sql/03-physiology.sql).
-# If those tables don't exist yet, AnalyticsThread degrades gracefully: the
-# core query still flows, and this one is skipped until the next restart.
+# Physiology snapshot depends on data/sql/03-physiology.sql tables. If
+# they do not exist yet, AnalyticsThread skips this query while core data flows.
 OPERATOR_PHYSIO_SQL = r"""
 WITH active_session AS (
   SELECT session_id
@@ -326,9 +316,9 @@ SELECT json_build_object(
 );
 """
 
-# v3.4 Semantic / Attribution snapshot — depends on data/sql/05-attribution.sql.
-# AnalyticsThread skips this query on older volumes where attribution tables are
-# absent, preserving the direct-Postgres polling path for legacy rows.
+# Semantic / attribution snapshot — depends on data/sql/05-attribution.sql.
+# AnalyticsThread skips this query when attribution tables are unavailable;
+# missing canonical values render as the em-dash null state.
 OPERATOR_ATTRIBUTION_SQL = r"""
 WITH latest_encounter AS (
   SELECT *
@@ -743,14 +733,16 @@ def run_psql_json(query: str) -> dict[str, Any]:
         return json.loads(raw.splitlines()[-1])  
   
   
-def pick(mapping: dict[str, Any], *keys: str, default: Any = "--") -> Any:  
+EM_DASH = "—"
+
+def pick(mapping: dict[str, Any], *keys: str, default: Any = EM_DASH) -> Any:
     for key in keys:  
         if key in mapping and mapping[key] is not None:  
             return mapping[key]  
     return default  
   
   
-def deep_find(value: Any, target_key: str, default: Any = "--") -> Any:  
+def deep_find(value: Any, target_key: str, default: Any = EM_DASH) -> Any:
     if isinstance(value, dict):  
         if target_key in value and value[target_key] is not None:  
             return value[target_key]  
@@ -770,8 +762,8 @@ def mode_label(mode: str) -> str:
     return MODE_LABELS.get(mode, mode.title())  
   
   
-def format_optional_float(value: Any, precision: int, default: str = "--") -> str:  
-    if value in (None, "", "--"):  
+def format_optional_float(value: Any, precision: int, default: str = EM_DASH) -> str:
+    if value in (None, "", "--", EM_DASH):
         return default  
     try:  
         number = float(value)  
@@ -783,7 +775,7 @@ def format_optional_float(value: Any, precision: int, default: str = "--") -> st
   
   
 def is_missing_value(value: Any) -> bool:
-    return value is None or value == "" or value == "--"
+    return value is None or value == "" or value == "--" or value == EM_DASH
 
 
 def first_present(mapping: dict[str, Any], *keys: str, default: Any = None) -> Any:
@@ -811,7 +803,7 @@ def format_delta_line(value: Any, precision: int, suffix: str = "") -> str:
 
 def format_validity_flag(value: Any) -> str:
     if is_missing_value(value):
-        return "--"
+        return EM_DASH
     if isinstance(value, bool):
         return "YES" if value else "NO"
 
@@ -821,18 +813,18 @@ def format_validity_flag(value: Any) -> str:
         return "YES"
     if lowered in {"false", "f", "0", "no", "n"}:
         return "NO"
-    return text or "--"
+    return text or EM_DASH
 
 
 def format_validity_pair(
     mapping: dict[str, Any], measure_key: str, baseline_key: str
 ) -> str:
     if not isinstance(mapping, dict):
-        return "--"
+        return EM_DASH
     measure = mapping.get(measure_key)
     baseline = mapping.get(baseline_key)
     if is_missing_value(measure) and is_missing_value(baseline):
-        return "--"
+        return EM_DASH
     return f"M {format_validity_flag(measure)} · B {format_validity_flag(baseline)}"
 
 
@@ -877,8 +869,6 @@ def build_semantic_attribution_view(
     for field in SEMANTIC_ATTRIBUTION_FIELDS:
         if v34_source:
             view[field] = first_present(v34_source, field, default=None)
-        elif field in {"reasoning", "confidence_score"}:
-            view[field] = first_present(evaluation, field, default=None)
         else:
             view[field] = None
     return view
@@ -886,28 +876,24 @@ def build_semantic_attribution_view(
 
 def clean_code_label(value: Any) -> str:
     text = str(value).replace("_", " ").replace("-", " ").strip()
-    return text.capitalize() if text else "--"
+    return text.capitalize() if text else EM_DASH
 
 
 def format_semantic_route(method: Any, has_v34_fields: bool) -> str:
+    del has_v34_fields
     if method == "cross_encoder":
         return "primary local cross_encoder"
     if method == "llm_gray_band":
         return "gray-band fallback"
-    if method == "azure_llm_legacy":
-        return "historical Azure LLM method"
-    if not has_v34_fields:
-        return "legacy (historical row; no v3.4 fields)"
     if is_missing_value(method):
-        return "v3.4 route unavailable"
+        return EM_DASH
     return clean_code_label(method)
 
 
 def format_reason_code(value: Any, *, has_v34_fields: bool) -> str:
+    del has_v34_fields
     if is_missing_value(value):
-        return "--" if has_v34_fields else "legacy (see text)"
-    if not has_v34_fields:
-        return "legacy (see text)"
+        return EM_DASH
     mapping = {
         "cross_encoder_high_match": "Cross-encoder high-confidence match",
         "cross_encoder_high_nonmatch": "Cross-encoder high-confidence non-match",
@@ -922,7 +908,7 @@ def format_reason_code(value: Any, *, has_v34_fields: bool) -> str:
 
 def format_finality(value: Any) -> str:
     if is_missing_value(value):
-        return "--"
+        return EM_DASH
     mapping = {
         "online_provisional": "online provisional",
         "offline_final": "offline final",
@@ -930,7 +916,7 @@ def format_finality(value: Any) -> str:
     return mapping.get(str(value), clean_code_label(value))
 
 
-def format_optional_signed_float(value: Any, precision: int, default: str = "--") -> str:
+def format_optional_signed_float(value: Any, precision: int, default: str = EM_DASH) -> str:
     if is_missing_value(value):
         return default
     try:
@@ -943,12 +929,12 @@ def format_optional_signed_float(value: Any, precision: int, default: str = "--"
 
 
 def join_display_parts(*parts: str) -> str:
-    cleaned = [part for part in parts if part and part != "--"]
-    return " · ".join(cleaned) if cleaned else "--"
+    cleaned = [part for part in parts if part and not is_missing_value(part)]
+    return " · ".join(cleaned) if cleaned else EM_DASH
   
   
-def format_numeric_or_text(value: Any, precision: int, default: str = "--") -> str:  
-    if value in (None, "", "--"):  
+def format_numeric_or_text(value: Any, precision: int, default: str = EM_DASH) -> str:
+    if is_missing_value(value):
         return default  
     try:  
         number = float(value)  
@@ -1244,7 +1230,7 @@ class StreamThread(QThread):
     """LIVE PATH — reads frames from the IPC Pipe and runs MediaPipe in-process.
 
     See the data-consumption contract at the top of this module: this thread
-    owns path (1) and MUST NOT read from PostgreSQL or the API.
+    owns path (1) and MUST NOT read from the Persistent Store or API Server.
     """
 
     frame_ready = Signal(QImage)
@@ -1263,22 +1249,13 @@ class StreamThread(QThread):
         self._decoder_proc: subprocess.Popen[bytes] | None = None
 
         self._reconnects = 0
-        # Windowed FPS measurement: ring of recent frame timestamps (last ~2s)
-        # avoids the per-frame 1/dt artifact where pipe-buffer bursts produce
-        # 300 fps spikes and quiet reads produce <10 fps dips. Actual
-        # throughput is clamped upstream by `ffmpeg -vf fps=30`.
+        # Windowed FPS avoids per-frame 1/dt pipe-burst spikes.
         self._frame_times: deque[float] = deque(maxlen=120)
-        # Windowed-FPS samples (one per emit tick) for stable min/avg/max.
+        # Emit-sample ring backs stable min/avg/max display.
         self._fps_samples: deque[float] = deque(maxlen=60)
         self._overlay_mode = OVERLAY_FULL
         self._au12_normalizer = LiveAU12Normalizer()
-        # Single-slot latest-frame decoupling. FFmpeg decodes faster than
-        # MediaPipe + Qt paint when the processor occasionally stalls past the
-        # 33 ms budget; without this, the OS pipe buffer fills and the
-        # processor catches up by painting a burst of now-stale frames,
-        # producing visible slow-mo stutter. The reader thread drains stdout
-        # as fast as it arrives and keeps only the freshest frame; the
-        # processor loop always paints the current moment.
+        # Single-slot frame buffer keeps preview current under transient stalls.
         self._frame_cond = threading.Condition()
         self._latest_frame: bytes | None = None
         self._reader_thread: threading.Thread | None = None
@@ -1302,9 +1279,7 @@ class StreamThread(QThread):
             return self._overlay_mode  
   
     def _stop_processes(self) -> None:
-        # Signal reader to exit before tearing down its stdout, then close
-        # processes, then join. Order matters: closing stdout unblocks the
-        # reader's blocked read so the join completes quickly.
+        # Stop reader and child processes, then unblock any waiting frame consumer.
         self._reader_stop.set()
         with self._proc_lock:
             stop_process(self._decoder_proc)
@@ -1343,12 +1318,7 @@ class StreamThread(QThread):
         self._reader_thread.start()
 
     def _reader_loop(self, stdout: Any) -> None:
-        """Drain the decoder's stdout at line rate into a single-slot buffer.
-
-        Dropping the previous unread frame when a new one arrives is the
-        whole point: the processor always paints the current moment, even
-        when it briefly falls behind the 30 fps budget.
-        """
+        """Drain decoder stdout into a one-frame latest buffer."""
         while not self._reader_stop.is_set():
             try:
                 frame = read_exact(stdout, FRAME_BYTES)
@@ -1858,13 +1828,13 @@ echo "${btemp}|${cpu_used}|${sr_cpu}|${focus}"
   
   
 class AnalyticsThread(QThread):
-    """ANALYTICS PATH — polls PostgreSQL via OPERATOR_SNAPSHOT_SQL.
+    """ANALYTICS PATH — polls the Persistent Store via OPERATOR_SNAPSHOT_SQL.
 
     See the data-consumption contract at the top of this module. Every panel
     that shows persisted session state (right-hand side on the Live tab, and
     the entire Analytics tab) is fed from a single snapshot emitted here. Do
-    not add HTTP calls to this thread — GUI writes go through the API, but
-    GUI reads stay on psql.
+    not add HTTP calls to this thread — GUI writes go through the API Server,
+    but GUI reads stay on psql.
     """
 
     snapshot_ready = Signal(object)
@@ -1882,7 +1852,7 @@ class AnalyticsThread(QThread):
         self._stop_event.set()
 
     def run(self) -> None:
-        self.log_message.emit("DB polling thread started (bypassing HTTP)")
+        self.log_message.emit("Persistent Store polling thread started (bypassing HTTP)")
         while not self._stop_event.is_set():
             try:
                 snapshot = run_psql_json(OPERATOR_SNAPSHOT_SQL)
@@ -1927,14 +1897,14 @@ class AnalyticsThread(QThread):
                         self.snapshot_ready.emit(snapshot)
                 self._last_error = ""
             except Exception as exc:
-                msg = f"DB poll error: {exc}"
+                msg = f"Persistent Store poll error: {exc}"
                 if msg != self._last_error:
                     self._last_error = msg
                     self.log_message.emit(msg)
 
             self._stop_event.wait(ANALYTICS_POLL_SECONDS)
 
-        self.log_message.emit("DB polling thread stopped")
+        self.log_message.emit("Persistent Store polling thread stopped")
   
   
 class CustomTitleBar(QWidget):  
@@ -2953,7 +2923,7 @@ class MainWindow(QMainWindow):
         inner_layout.addWidget(physio_panel)
 
         # Co-Modulation Index panel
-        comod_panel = PanelCard("Co-Modulation Index (5-min rolling)")
+        comod_panel = PanelCard("Co-Modulation Index (rolling window)")
 
         comod_top_row = QHBoxLayout()
         comod_top_row.setContentsMargins(0, 0, 0, 0)
@@ -3137,10 +3107,10 @@ class MainWindow(QMainWindow):
             semantic_attribution = {}
   
         transcript_text = str(  
-            pick(transcript, "transcription", "transcript", "text", default="--")  
+            pick(transcript, "transcription", "transcript", "text", default=EM_DASH)
         )  
-        transcript_segment = pick(transcript, "segment_id", default="--")  
-        transcript_time = pick(transcript, "created_at", "timestamp_utc", default="--")  
+        transcript_segment = pick(transcript, "segment_id", default=EM_DASH)
+        transcript_time = pick(transcript, "created_at", "timestamp_utc", default=EM_DASH)
   
         set_text_if_changed(  
             self.transcript_meta,  
@@ -3159,9 +3129,9 @@ class MainWindow(QMainWindow):
             )
         )
 
-        pitch_value = first_present(metrics, "f0_mean_measure_hz", "pitch_f0")
-        jitter_value = first_present(metrics, "jitter_mean_measure", "jitter")
-        shimmer_value = first_present(metrics, "shimmer_mean_measure", "shimmer")
+        pitch_value = first_present(metrics, "f0_mean_measure_hz")
+        jitter_value = first_present(metrics, "jitter_mean_measure")
+        shimmer_value = first_present(metrics, "shimmer_mean_measure")
 
         f0_delta_hint = format_delta_line(
             first_present(metrics, "f0_delta_semitones"), 2, " st"
@@ -3185,9 +3155,9 @@ class MainWindow(QMainWindow):
             if not isinstance(row, dict):
                 continue
             for target, keys in (
-                (pitches, ("f0_mean_measure_hz", "pitch_f0")),
-                (jitters, ("jitter_mean_measure", "jitter")),
-                (shimmers, ("shimmer_mean_measure", "shimmer")),
+                (pitches, ("f0_mean_measure_hz",)),
+                (jitters, ("jitter_mean_measure",)),
+                (shimmers, ("shimmer_mean_measure",)),
             ):
                 try:
                     number = float(first_present(row, *keys))
@@ -3208,12 +3178,12 @@ class MainWindow(QMainWindow):
         if isinstance(is_match, bool):  
             self.stat_match.set_value("YES" if is_match else "NO")  
         else:  
-            self.stat_match.set_value(str(is_match if is_match is not None else "--"))  
+            self.stat_match.set_value(str(is_match if is_match is not None else EM_DASH))
   
         confidence = first_present(
             semantic_diag,
             "confidence_score",
-            default=pick(evaluation, "confidence", default="--"),
+            default=EM_DASH,
         )
         self.stat_confidence.set_value(format_numeric_or_text(confidence, 2))  
   
@@ -3221,7 +3191,7 @@ class MainWindow(QMainWindow):
             first_present(
                 semantic_diag,
                 "reasoning",
-                default=pick(evaluation, "reasoning", default="Waiting for evaluation..."),
+                default=EM_DASH,
             )
         )
         set_plaintext_if_changed(self.reasoning_output, reasoning_text)
@@ -3244,8 +3214,13 @@ class MainWindow(QMainWindow):
         finality_label = format_finality(
             first_present(semantic_diag, "finality", default=None)
         )
+        semantic_reason_parts = []
+        if reason_label != EM_DASH:
+            semantic_reason_parts.append(f"reason: {reason_label}")
+        if finality_label != EM_DASH:
+            semantic_reason_parts.append(f"finality: {finality_label}")
         self.stat_semantic_reason_finality.set_value(
-            join_display_parts(f"reason: {reason_label}", f"finality: {finality_label}")
+            join_display_parts(*semantic_reason_parts)
         )
 
         self.stat_soft_reward.set_value(
@@ -3264,14 +3239,14 @@ class MainWindow(QMainWindow):
         au12_latency = format_optional_float(
             first_present(semantic_diag, "au12_peak_latency_ms", default=None), 0
         )
-        if au12_p90 != "--":
+        if au12_p90 != EM_DASH:
             au12_lift_parts.append(f"P90 {au12_p90}")
-        if au12_peak != "--":
+        if au12_peak != EM_DASH:
             au12_lift_parts.append(f"peak {au12_peak}")
-        if au12_latency != "--":
+        if au12_latency != EM_DASH:
             au12_lift_parts.append(f"latency {au12_latency} ms")
         self.stat_au12_attribution.set_value(
-            " · ".join(au12_lift_parts) if au12_lift_parts else "--"
+            " · ".join(au12_lift_parts) if au12_lift_parts else EM_DASH
         )
 
         sync_corr = format_optional_signed_float(
@@ -3284,18 +3259,18 @@ class MainWindow(QMainWindow):
             first_present(semantic_diag, "outcome_link_lag_s", default=None), 1
         )
         sync_parts = []
-        if sync_corr != "--":
+        if sync_corr != EM_DASH:
             sync_parts.append(f"corr {sync_corr}")
-        if sync_lag != "--":
+        if sync_lag != EM_DASH:
             sync_parts.append(f"lag {sync_lag}")
-        if outcome_lag != "--":
+        if outcome_lag != EM_DASH:
             sync_parts.append(f"outcome lag {outcome_lag}s")
-        self.stat_sync_outcome.set_value(" · ".join(sync_parts) if sync_parts else "--")
+        self.stat_sync_outcome.set_value(" · ".join(sync_parts) if sync_parts else EM_DASH)
   
-        reward = format_if_number(deep_find(encounter, "gated_reward", default="--"), 3)  
-        p90 = format_if_number(deep_find(encounter, "p90_intensity", default="--"), 3)  
-        gate = deep_find(encounter, "semantic_gate", default="--")  
-        frames = deep_find(encounter, "n_frames_in_window", default="--")  
+        reward = format_if_number(deep_find(encounter, "gated_reward", default=EM_DASH), 3)
+        p90 = format_if_number(deep_find(encounter, "p90_intensity", default=EM_DASH), 3)
+        gate = deep_find(encounter, "semantic_gate", default=EM_DASH)
+        frames = deep_find(encounter, "n_frames_in_window", default=EM_DASH)
   
         reward_text = f"r = {reward}  ·  p90 = {p90}  ·  gate = {gate}  ·  frames = {frames}"  
         self.stat_reward.set_value(reward_text)  
@@ -3425,8 +3400,8 @@ class MainWindow(QMainWindow):
         self._post_stimulus(trimmed)
 
     def _post_stimulus(self, line_text: str | None) -> None:
-        # WRITE PATH — the only place this module talks to FastAPI. The API
-        # owns the Redis pub/sub publish; do not bypass it from the GUI.
+        # WRITE PATH — the only place this module talks to the API Server.
+        # The API Server owns the Message Broker pub/sub publish.
         url = f"{API_BASE}/api/v1/stimulus"
         payload = json.dumps({"line_text": line_text} if line_text else {}).encode("utf-8")
         req = urllib.request.Request(

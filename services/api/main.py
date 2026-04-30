@@ -5,7 +5,7 @@ FastAPI application serving REST endpoints on port 8000.
 ASGI entry point via Uvicorn. Dependency injection for
 Persistent Store connection pool.
 
-Gap 5 addition: stimulus router for operator greeting injection trigger.
+Includes the stimulus router for operator greeting injection triggers.
 """
 
 from __future__ import annotations
@@ -62,7 +62,7 @@ def _start_oura_hydration_worker() -> tuple[threading.Thread, Any] | None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Application lifecycle: init and teardown DB pool."""
+    """Application lifecycle: init and teardown Persistent Store pool."""
     del app
     await init_pool()
     hydration_runtime = _start_oura_hydration_worker()
@@ -87,11 +87,11 @@ app = FastAPI(
 app.include_router(health.router, tags=["health"])
 app.include_router(metrics.router, prefix="/api/v1", tags=["metrics"])
 app.include_router(sessions.router, prefix="/api/v1", tags=["sessions"])
-# Gap 5 — Stimulus injection trigger for the operator
+# Operator stimulus injection trigger.
 app.include_router(stimulus.router, prefix="/api/v1", tags=["stimulus"])
 app.include_router(encounters.router, prefix="/api/v1", tags=["encounters"])
 app.include_router(experiments.router, prefix="/api/v1", tags=["experiments"])
 app.include_router(physiology.router, prefix="/api/v1", tags=["physiology"])
 app.include_router(comodulation.router, prefix="/api/v1", tags=["comodulation"])
-# SPEC-AMEND-008 — Operator Console aggregate surface (Phase 2)
+# §4.E.1/§10.2 — Operator Console aggregate surface.
 app.include_router(operator.router, prefix="/api/v1")

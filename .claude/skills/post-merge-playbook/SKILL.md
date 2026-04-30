@@ -34,7 +34,7 @@ Run the eight Standing Post-Merge Chores **in order**. Each one feeds the next; 
 5. **Logging and Observability Audit** — grep for emoji log lines, bare `except: pass`, `logger.error()` on §12-recoverable conditions, and log statements at WARNING+ that lack `session_id`/`segment_id`/`subject_role`. Confirm no raw biometric payloads in any log line.
 6. **Deferred Integration Inventory Refresh** — walk the diff for new public symbols. Each is either (a) imported by a runtime entrypoint, or (b) added to `docs/DEFERRED_INTEGRATIONS.md` with name, files, gating dependency, deferred-since date, and justification. Re-run the four search recipes from that file's "Search methodology" section.
 7. **Performance Baseline Refresh** — only required if the merge touched `orchestrator.py`, `inference.py`, `analytics.py`, `transcription.py`, `face_mesh.py`, or any IPC path. Append a row to `docs/artifacts/performance_baseline.md` with date, commit SHA, segment-assembly p50/p95, ML inference p50/p95, AU12 per-frame p50, and (if physiology touched) Co-Modulation Index window-compute time. Regression > 20% → ADO work item.
-8. **§13 Audit Checklist Execution** — run `.claude/commands/audit.md` (the 21-item checklist). Append a pass/fail table to the cycle log. Every fail must point to a follow-up commit OR a SPEC-AMEND entry.
+8. **§13 Audit Checklist Execution** — run `.claude/commands/audit.md` (the current spec checklist). Append a pass/fail table to the cycle log. Every fail must point to a follow-up commit OR a SPEC-AMEND entry.
 
 After Standing Chores complete, execute every chore in **Part 2 — Merge-Specific Chores (Current Cycle)** from the playbook. These are tied to what was just merged and rotate per cycle.
 
@@ -43,7 +43,7 @@ After Standing Chores complete, execute every chore in **Part 2 — Merge-Specif
 - A short cycle-log block (markdown) summarizing: merge SHA, branch, Standing chores 1–8 pass/fail, Merge-Specific chores M1–MN pass/fail, follow-up commits, and any new ADO work items filed.
 - For Standing Chore #6 specifically, an updated `docs/DEFERRED_INTEGRATIONS.md` if any new dormant code was found.
 - For Standing Chore #2, any required docs updates committed (or a doc-only fast-follow PR if the merge was already shipped).
-- For Standing Chore #8, a 21-line pass/fail table appended to the cycle log.
+- For Standing Chore #8, a pass/fail table for every current §13 item appended to the cycle log.
 
 After Part 2 is done, **rewrite the Merge-Specific Chores section of `docs/POST_MERGE_PLAYBOOK.md`** with entries scoped to the next merge — leave it ready for the next cycle.
 

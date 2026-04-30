@@ -88,7 +88,7 @@ def _encounter(
         p90_intensity=p90,
         gated_reward=gated_reward,
         n_frames_in_window=frames,
-        baseline_b_neutral=0.1,
+        au12_baseline_pre=0.1,
         observational_acoustic=observational_acoustic,
         semantic_evaluation=semantic_evaluation,
         attribution=attribution,

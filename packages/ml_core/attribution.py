@@ -1,9 +1,10 @@
-"""Deterministic attribution ledger helpers — §4.E.3 / §7E.
+"""Pure attribution ledger builders for §4.E.3 / §7E analytics.
 
-This module contains pure helper functions for constructing v3.4 attribution
-ledger records.  It intentionally performs no database I/O and has no reward,
-posterior-update, or arm-selection side effects: attribution remains an
-observational-only analytics layer over the §7B reward path.
+The module derives deterministic UUIDv5 identifiers, baseline-aware AU12
+diagnostics, semantic metadata, event/outcome links, and score records for the
+§6.4 attribution schemas. It performs no direct Persistent Store I/O and has no
+reward, posterior-update, or arm-selection side effects; attribution remains
+observational over the §7B reward path (§13.15).
 """
 
 from __future__ import annotations
@@ -48,7 +49,14 @@ BASELINE_WINDOW_END: float = -2.0
 
 @dataclass(frozen=True)
 class AttributionLedgerRecords:
-    """Materialized attribution records ready for persistence."""
+    """
+    Bundle caller-ready attribution records for persistence.
+
+    Accepts the materialized §6.4 event, outcome, link, and score schema
+    instances assembled by helper functions and produces an immutable grouping
+    for callers to write. It does not generate identifiers, query the Persistent
+    Store, or mutate reward and bandit state.
+    """
 
     event: AttributionEvent
     outcomes: tuple[OutcomeEvent, ...]
@@ -144,8 +152,8 @@ def attribution_score_id(
 
     Finality is intentionally excluded from the deterministic identity tuple so
     an online_provisional score can be replayed/upserted as offline_final
-    without creating a second score row. The lifecycle state remains a mutable
-    persisted AttributionScore.finality field.
+    without creating a second AttributionScore record. The lifecycle state
+    remains a mutable persisted AttributionScore.finality field.
     """
 
     return deterministic_uuid5(
@@ -305,9 +313,7 @@ def _semantic_metadata(metrics: dict[str, Any]) -> dict[str, Any]:
         or "unknown"
     )
     p_match = _probability_or_none(
-        semantic.get(
-            "confidence_score", semantic.get("confidence", metrics.get("semantic_p_match"))
-        )
+        semantic.get("confidence_score", metrics.get("semantic_p_match"))
     )
     reason_code = semantic.get("reasoning") or semantic.get("semantic_reason_code")
     if reason_code not in SEMANTIC_REASON_CODES:

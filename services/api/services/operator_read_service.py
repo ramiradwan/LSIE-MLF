@@ -1,17 +1,17 @@
 """
-OperatorReadService — composes Phase-1 DTOs from DB row dicts.
+OperatorReadService — composes Operator Console DTOs from DB row dicts.
 
 This is the only place in the API Server that performs cross-table
 assembly for the Operator Console surfaces. Route handlers call into
 this class; the repo layer (`services.api.repos.operator_queries`)
 stays pure SQL. Every public method returns a validated Pydantic DTO
-from `packages.schemas.operator_console` (Phase 1).
+from `packages.schemas.operator_console`.
 
 Design constraints:
   - No raw SQL here; the repo layer owns statements (§2 step 7).
   - No HTTP concerns; FastAPI plumbing stays in the route module.
   - No formatting for display; operator-facing text lives in
-    `services.operator_console.formatters` (Phase 3).
+    `services.operator_console.formatters`.
   - Null is a first-class outcome for §7C co-modulation — always surface
     `null_reason` when the index is None rather than flattening to 0.0.
   - §12 degraded-but-recovering states must carry `recovery_mode` and
@@ -22,8 +22,7 @@ Spec references:
   §4.C     — Orchestrator `_active_arm`, `_expected_greeting`,
              authoritative `_stimulus_time`.
   §4.C.4   — Physiological State Buffer freshness semantics.
-  §4.E.1   — Operator-facing execution details (replaces the retired
-             Streamlit dashboard per SPEC-AMEND-008).
+  §4.E.1   — Operator-facing execution details for the PySide6 console.
   §4.E.2   — Physiology persistence schema (rmssd_ms, hr, provider).
   §4.E.3   — Attribution analytics persistence.
   §7B      — Thompson Sampling reward = p90_intensity × semantic_gate.
@@ -45,7 +44,6 @@ from typing import Any, Literal, Protocol, cast
 from uuid import UUID, uuid4
 
 from packages.schemas.operator_console import (
-    AcousticObservationalMetrics,
     AlertEvent,
     AlertKind,
     AlertSeverity,
@@ -295,7 +293,7 @@ class OperatorReadService:
                 logger.debug("operator live-session Redis client close failed", exc_info=True)
 
     # ------------------------------------------------------------------
-    # Builders — DB row dict → Phase-1 DTO
+    # Builders — DB row dict → Operator Console DTO
     # ------------------------------------------------------------------
 
     def _build_session_summary(
@@ -369,9 +367,8 @@ class OperatorReadService:
         notes: list[str] = []
         if row.get("semantic_gate") == 0:
             notes.append("gate-closed: reward zero per §7B")
-        if (row.get("n_frames") or 0) == 0:
+        if (row.get("n_frames_in_window") or 0) == 0:
             notes.append("no valid frames in measurement window")
-        acoustic = self._build_acoustic_observational_metrics(row)
         observational_acoustic = self._build_observational_acoustic_summary(row)
         semantic_evaluation = self._build_semantic_evaluation_summary(row)
         attribution = self._build_attribution_summary(row)
@@ -387,9 +384,8 @@ class OperatorReadService:
             semantic_confidence=None,
             p90_intensity=_as_float(row.get("p90_intensity")),
             gated_reward=_as_float(row.get("gated_reward")),
-            n_frames_in_window=_as_int(row.get("n_frames")),
-            baseline_b_neutral=_as_float(row.get("baseline_neutral")),
-            acoustic=acoustic,
+            n_frames_in_window=_as_int(row.get("n_frames_in_window")),
+            au12_baseline_pre=_as_float(row.get("au12_baseline_pre")),
             observational_acoustic=observational_acoustic,
             semantic_evaluation=semantic_evaluation,
             attribution=attribution,
@@ -404,7 +400,6 @@ class OperatorReadService:
         if row is None:
             return None
         state = _encounter_state_for(row)
-        acoustic = self._build_acoustic_observational_metrics(row)
         observational_acoustic = self._build_observational_acoustic_summary(row)
         semantic_evaluation = self._build_semantic_evaluation_summary(row)
         attribution = self._build_attribution_summary(row)
@@ -419,8 +414,7 @@ class OperatorReadService:
             semantic_gate=_as_int(row.get("semantic_gate")),
             p90_intensity=_as_float(row.get("p90_intensity")),
             gated_reward=_as_float(row.get("gated_reward")),
-            n_frames_in_window=_as_int(row.get("n_frames")),
-            acoustic=acoustic,
+            n_frames_in_window=_as_int(row.get("n_frames_in_window")),
             observational_acoustic=observational_acoustic,
             semantic_evaluation=semantic_evaluation,
             attribution=attribution,
@@ -462,7 +456,7 @@ class OperatorReadService:
         """
         finality = _as_str(row.get("attribution_finality"))
         soft_reward_candidate = _as_float(row.get("soft_reward_candidate"))
-        au12_baseline_pre = _as_float(row.get("au12_baseline_pre"))
+        au12_baseline_pre = _as_float(row.get("attribution_au12_baseline_pre"))
         au12_lift_p90 = _as_float(row.get("au12_lift_p90"))
         au12_lift_peak = _as_float(row.get("au12_lift_peak"))
         au12_peak_latency_ms = _as_float(row.get("au12_peak_latency_ms"))
@@ -494,61 +488,6 @@ class OperatorReadService:
             sync_peak_corr=sync_peak_corr,
             sync_peak_lag=sync_peak_lag,
             outcome_link_lag_s=outcome_link_lag_s,
-        )
-
-    def _build_acoustic_observational_metrics(
-        self, row: dict[str, Any]
-    ) -> AcousticObservationalMetrics | None:
-        acoustic_fields = (
-            "pitch_f0",
-            "jitter",
-            "shimmer",
-            "f0_valid_measure",
-            "f0_valid_baseline",
-            "perturbation_valid_measure",
-            "perturbation_valid_baseline",
-            "voiced_coverage_measure_s",
-            "voiced_coverage_baseline_s",
-            "f0_mean_measure_hz",
-            "f0_mean_baseline_hz",
-            "f0_delta_semitones",
-            "jitter_mean_measure",
-            "jitter_mean_baseline",
-            "jitter_delta",
-            "shimmer_mean_measure",
-            "shimmer_mean_baseline",
-            "shimmer_delta",
-        )
-        has_metrics_row = row.get("metrics_row_id") is not None
-        has_inline_acoustic_values = any(row.get(field) is not None for field in acoustic_fields)
-        if not has_metrics_row and not has_inline_acoustic_values:
-            return None
-
-        voiced_coverage_measure = _as_float(row.get("voiced_coverage_measure_s"))
-        voiced_coverage_baseline = _as_float(row.get("voiced_coverage_baseline_s"))
-        return AcousticObservationalMetrics(
-            pitch_f0=_as_float(row.get("pitch_f0")),
-            jitter=_as_float(row.get("jitter")),
-            shimmer=_as_float(row.get("shimmer")),
-            f0_valid_measure=_as_bool(row.get("f0_valid_measure")),
-            f0_valid_baseline=_as_bool(row.get("f0_valid_baseline")),
-            perturbation_valid_measure=_as_bool(row.get("perturbation_valid_measure")),
-            perturbation_valid_baseline=_as_bool(row.get("perturbation_valid_baseline")),
-            voiced_coverage_measure_s=(
-                voiced_coverage_measure if voiced_coverage_measure is not None else 0.0
-            ),
-            voiced_coverage_baseline_s=(
-                voiced_coverage_baseline if voiced_coverage_baseline is not None else 0.0
-            ),
-            f0_mean_measure_hz=_as_float(row.get("f0_mean_measure_hz")),
-            f0_mean_baseline_hz=_as_float(row.get("f0_mean_baseline_hz")),
-            f0_delta_semitones=_as_float(row.get("f0_delta_semitones")),
-            jitter_mean_measure=_as_float(row.get("jitter_mean_measure")),
-            jitter_mean_baseline=_as_float(row.get("jitter_mean_baseline")),
-            jitter_delta=_as_float(row.get("jitter_delta")),
-            shimmer_mean_measure=_as_float(row.get("shimmer_mean_measure")),
-            shimmer_mean_baseline=_as_float(row.get("shimmer_mean_baseline")),
-            shimmer_delta=_as_float(row.get("shimmer_delta")),
         )
 
     def _build_observational_acoustic_summary(
@@ -599,7 +538,7 @@ class OperatorReadService:
             shimmer_mean_baseline,
             shimmer_delta,
         )
-        if all(value is None for value in acoustic_values):
+        if row.get("metrics_row_id") is None and all(value is None for value in acoustic_values):
             return None
 
         return ObservationalAcousticSummary(
@@ -928,16 +867,13 @@ def _classify_subsystem(
 
 def _encounter_state_for(row: dict[str, Any]) -> EncounterState:
     """Derive §7B encounter lifecycle state from persisted row fields."""
-    is_valid = bool(row.get("is_valid"))
     gate = row.get("semantic_gate")
-    n_frames = row.get("n_frames") or 0
-    if is_valid:
-        return EncounterState.COMPLETED
+    frames_in_window = row.get("n_frames_in_window") or 0
     if gate == 0:
         return EncounterState.REJECTED_GATE_CLOSED
-    if n_frames == 0:
+    if frames_in_window == 0:
         return EncounterState.REJECTED_NO_FRAMES
-    return EncounterState.MEASURING
+    return EncounterState.COMPLETED
 
 
 def _as_uuid(value: Any) -> UUID:

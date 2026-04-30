@@ -1,4 +1,4 @@
-"""Live Session page viewmodel — Phase 8.
+"""Live Session page viewmodel.
 
 The Live Session VM is the center of operator trust. It owns five
 concerns:
@@ -34,7 +34,6 @@ Spec references:
                    used (P90, semantic gate, frames, baseline)
   §12            — write/poll failures flow through the page-scoped
                    error banner
-  SPEC-AMEND-008 — PySide6 Operator Console
 """
 
 from __future__ import annotations

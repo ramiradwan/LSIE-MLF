@@ -1,5 +1,5 @@
 """
-Operator-language formatters — Phase 3 of the Operator Console cycle.
+Operator-language formatters.
 
 Pure string helpers that translate DTO fields into the short, precise
 phrases the operator UI shows. Nothing here creates widgets, talks to
@@ -26,7 +26,7 @@ Spec references:
   §7D        — observational acoustic validity, means, and deltas render
                as measured values or explicit not-measured outcomes
   §7E / §8   — semantic/attribution diagnostics are observational only;
-               reason codes are bounded, not free-form rationale
+               reason codes are bounded operator explanations
   §12        — degraded-but-recovering vocabulary for health rows
 """
 
@@ -410,7 +410,6 @@ def format_semantic_method_label(
     mapping = {
         "cross_encoder": "local cross-encoder",
         "llm_gray_band": "LLM gray-band fallback",
-        "azure_llm_legacy": "Azure LLM legacy",
     }
     label = mapping.get(semantic_method, _clean_code_label(semantic_method))
     if semantic_method_version:
@@ -421,8 +420,8 @@ def format_semantic_method_label(
 def format_bounded_reason_code_label(reason_code: str | None) -> str:
     """Operator label for §8.3 bounded semantic reason codes.
 
-    The persisted `reasoning` field is a bounded code, not free-form
-    rationale; this formatter prevents raw JSON/code strings from leaking
+    The persisted `reasoning` field is a bounded code, not narrative
+    prose; this formatter prevents raw JSON/code strings from leaking
     into operator panes while preserving the diagnostic meaning.
     """
 
@@ -765,8 +764,8 @@ def build_reward_explanation(encounter: EncounterSummary) -> str:
         f"semantic gate {gate_text} "
         f"= gated reward {format_reward(encounter.gated_reward)}."
     )
-    if encounter.baseline_b_neutral is not None:
-        parts.append(f"Baseline B_neutral {format_reward(encounter.baseline_b_neutral)}.")
+    if encounter.au12_baseline_pre is not None:
+        parts.append(f"AU12 baseline pre {format_reward(encounter.au12_baseline_pre)}.")
     if encounter.n_frames_in_window is not None:
         parts.append(f"{encounter.n_frames_in_window} AU12 frame(s) in window.")
     if encounter.physiology_attached:

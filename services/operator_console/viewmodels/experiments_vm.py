@@ -1,4 +1,4 @@
-"""Experiments page viewmodel — Phase 8.
+"""Experiments page viewmodel.
 
 Surfaces the §7B Thompson Sampling arm readback and the task-scoped
 management intents for experiments and arms. Management commands are
@@ -17,7 +17,6 @@ Spec references:
   §4.E.1         — Experiments operator surface
   §7B            — Thompson Sampling posterior; reward math is
                    intensity × gate, not confidence-scaled
-  SPEC-AMEND-008 — PySide6 Operator Console
 """
 
 from __future__ import annotations

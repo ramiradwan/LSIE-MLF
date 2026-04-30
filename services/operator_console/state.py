@@ -1,5 +1,5 @@
 """
-Operator Console app-scoped state store — Phase 4.
+Operator Console app-scoped state store.
 
 `OperatorStore` is a single in-memory QObject that holds every piece of
 state the UI reads. Views and viewmodels subscribe to its Qt signals;
@@ -21,14 +21,13 @@ Design constraints:
     transient failure on one surface does not overwrite another's
     error banner.
   - `stimulus_state_changed` carries a `StimulusUiContext` value object
-    so Phase-5's `ActionBar` can render idle / submitting / accepted /
+    so `ActionBar` can render idle / submitting / accepted /
     measuring / completed entirely from a single signal.
 
 Spec references:
   §4.C           — stimulus lifecycle (authoritative stimulus_time stays
                    orchestrator-side; the context here is UI-only)
   §4.E.1         — operator-facing surfaces + multi-page layout
-  SPEC-AMEND-008 — PySide6 Operator Console
 """
 
 from __future__ import annotations
@@ -53,7 +52,7 @@ from packages.schemas.operator_console import (
 
 
 class AppRoute(StrEnum):
-    """Six operator-facing pages per Phase 6's navigation layout.
+    """Six operator-facing pages for the navigation layout.
 
     `StrEnum` so the enum value doubles as a stable signal payload
     (`route_changed = Signal(str)` per the checklist).
@@ -72,9 +71,9 @@ class StimulusUiContext:
     """UI-only state for the stimulus rail.
 
     `state` drives the action-bar button visuals. `client_action_id`
-    is the idempotency key that Phase-5's `ActionBar` echoes back on
+    is the idempotency key that `ActionBar` echoes back on
     the next submission. `authoritative_stimulus_time_utc` comes from
-    the encounter read-back — Phase-8's viewmodel will reconcile the
+    the encounter read-back — the viewmodel reconciles the
     countdown against this value rather than the click wall-clock.
     """
 

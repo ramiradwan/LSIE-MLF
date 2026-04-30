@@ -1,4 +1,4 @@
-"""Encounters table model — Phase 7.
+"""Encounters table model.
 
 Backs the Live Session page's encounter timeline. Columns expose the
 exact §7B reward-explanation inputs the pipeline used — the operator
@@ -17,7 +17,6 @@ Spec references:
   §4.C.4     — physiology freshness / staleness on per-segment payload
   §4.E.1     — Live Session operator surface
   §7B        — reward = p90_intensity × semantic_gate; gate=0 → 0 reward
-  SPEC-AMEND-008 — PySide6 Operator Console
 """
 
 from __future__ import annotations

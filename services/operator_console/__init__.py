@@ -6,7 +6,7 @@ for live pipeline introspection (video, landmarks, AU12 normalization,
 diagnostic polling); the Operator Console is a modular, multi-page
 surface designed for routine operation of the live inference stack.
 
-Pages (SPEC-AMEND-008):
+Pages (§4.E.1, §10.2):
     Overview      — active session, experiment, physiology, health, and
                     the attention queue in a single glance.
     Live Session  — encounter timeline with per-segment reward
@@ -27,10 +27,6 @@ Persistent stimulus rail:
     console's only write path. Submission is a one-shot via the polling
     coordinator; idempotency is keyed by `client_action_id` and the
     authoritative `stimulus_time` stays orchestrator-owned per §4.C.
-
-See SPEC-AMEND-008 in `docs/SPEC_AMENDMENTS.md` for the amendment that
-retired the Streamlit dashboard in favor of this multi-page PySide6
-layout.
 
 Entry point:
     python -m services.operator_console

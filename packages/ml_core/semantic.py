@@ -1,10 +1,12 @@
 """
-Semantic Evaluation — §8 Deterministic Semantic Scorer Specification
+Deterministic semantic scoring for greeting-rule evaluation (§8).
 
-v3.4 uses a local deterministic Cross-Encoder as the live semantic scorer.
-Azure OpenAI is retained only as an optional gray-band fallback for scores in
-``0.58 <= score < 0.72``. The public result contract emits bounded reason
-codes only; free-form rationale text is neither returned nor persisted.
+The module routes an expected greeting and transcribed utterance through a
+local Cross-Encoder primary scorer, optionally invokes the configured Azure
+OpenAI fallback only for scores in the gray band [0.58, 0.72), and validates the
+canonical §8.3 payload of bounded reason code, binary match gate, and confidence
+score. Method/version sidecar fields are recorded for downstream analytics;
+semantic probability does not modulate the §7B reward path per §8.6.
 """
 
 from __future__ import annotations
@@ -17,7 +19,6 @@ from collections.abc import Callable
 from typing import Any, Final
 
 from packages.schemas.evaluation import (
-    SEMANTIC_METHODS,
     SEMANTIC_REASON_CODES,
     SemanticEvaluationResult,
 )
@@ -48,7 +49,7 @@ SYSTEM_PROMPT: str = (
     "- Minor transcription errors and filler words are acceptable if the "
     "semantic intent remains unchanged.\n"
     "- Major deviations in subject matter must be rejected.\n"
-    "- Do not produce free-form explanations.\n\n"
+    "- Return only the bounded reason code requested below.\n\n"
     "Return strict JSON with exactly these fields:\n"
     '1. reasoning: bounded reason code, one of ["gray_band_llm_match", '
     '"gray_band_llm_nonmatch"]\n'
@@ -65,7 +66,7 @@ LLM_PARAMS: dict[str, Any] = {
     "seed": 42,
 }
 
-# §8.3 — Canonical scorer output, no downstream metadata or rationale fields.
+# §8.3 — Canonical scorer output, no downstream metadata or unbounded prose fields.
 OUTPUT_SCHEMA: dict[str, Any] = {
     "type": "object",
     "required": ["reasoning", "is_match", "confidence_score"],
@@ -73,7 +74,7 @@ OUTPUT_SCHEMA: dict[str, Any] = {
         "reasoning": {
             "type": "string",
             "enum": list(SEMANTIC_REASON_CODES),
-            "description": "Bounded semantic reason code; not a free-form rationale.",
+            "description": "Bounded semantic reason code.",
         },
         "is_match": {"type": "boolean"},
         "confidence_score": {"type": "number", "minimum": 0.0, "maximum": 1.0},
@@ -111,7 +112,6 @@ GRAY_BAND_RESPONSE_FORMAT: dict[str, Any] = {
 }
 
 PrimaryScorer = Callable[[str, str], float]
-ShadowScorer = Callable[[str, str], dict[str, Any] | float | None]
 
 
 def _env_flag(name: str, *, default: bool = False) -> bool:
@@ -208,45 +208,24 @@ def _is_timeout_error(exc: Exception) -> bool:
 
 
 class LocalCrossEncoderScorer:
-    """Lazy local Cross-Encoder scorer for the v3.4 primary semantic method."""
+    """
+    Lazy wrapper around the local Cross-Encoder primary scorer.
+
+    Accepts an expected greeting and actual utterance pair, loads the configured
+    sentence-transformers model on first use, and produces a raw scalar score for
+    SemanticEvaluator calibration. It does not apply thresholds, call the
+    gray-band fallback, or emit the §8.3 result payload.
+    """
 
     def __init__(
         self,
         *,
         model_id: str = CROSS_ENCODER_MODEL_ID,
         device_mode: str | None = None,
-        primary_scorer: PrimaryScorer | LocalCrossEncoderScorer | None = None,
-        gray_band_fallback_enabled: bool | None = None,
-        shadow_mode_enabled: bool | None = None,
-        shadow_scorer: ShadowScorer | None = None,
     ) -> None:
-        if isinstance(self, LocalCrossEncoderScorer):
-            self.model_id = model_id
-            self.device_mode = device_mode or os.environ.get("SEMANTIC_DEVICE_MODE", "cuda:0")
-            self._model: Any = None
-            return
-
-        self.gray_band_fallback_enabled = (
-            _env_flag("SEMANTIC_GRAY_BAND_FALLBACK_ENABLED")
-            if gray_band_fallback_enabled is None
-            else gray_band_fallback_enabled
-        )
-        self.shadow_mode_enabled = (
-            _env_flag("SEMANTIC_SHADOW_MODE_ENABLED")
-            if shadow_mode_enabled is None
-            else shadow_mode_enabled
-        )
-        self._primary_scorer = primary_scorer or LocalCrossEncoderScorer()
-        self._shadow_scorer = shadow_scorer
-        self.last_semantic_method: str | None = None
-        self.last_semantic_method_version: str | None = None
-        self.last_shadow_semantic_method: str | None = None
-        self.last_shadow_semantic_method_version: str | None = None
-        self.endpoint: str | None = os.environ.get("AZURE_OPENAI_ENDPOINT")
-        self.api_key: str | None = os.environ.get("AZURE_OPENAI_API_KEY")
-        self.deployment: str | None = os.environ.get("AZURE_OPENAI_DEPLOYMENT")
-        self.api_version: str = os.environ.get("AZURE_OPENAI_API_VERSION", "2024-02-01")
-        self._client: Any = None  # Lazy-loaded AzureOpenAI fallback client.
+        self.model_id = model_id
+        self.device_mode = device_mode or os.environ.get("SEMANTIC_DEVICE_MODE", "cuda:0")
+        self._model: Any = None
 
     def _init_model(self) -> None:
         """Load the pinned sentence-transformers CrossEncoder lazily."""
@@ -273,11 +252,14 @@ class LocalCrossEncoderScorer:
 
 class SemanticEvaluator:
     """
-    §8 — Deterministic semantic evaluation.
+    Evaluate greeting semantics and emit the canonical §8.3 scorer payload.
 
-    The live path is the local Cross-Encoder primary scorer. Azure OpenAI is
-    reachable only when gray-band fallback is explicitly enabled and the
-    calibrated primary score satisfies ``0.58 <= score < 0.72``.
+    Accepts expected-greeting text and an actual utterance plus an optional primary
+    scorer and gray-band fallback flag. Produces a dict containing only
+    ``reasoning``, ``is_match``, and ``confidence_score`` while retaining method
+    metadata on sidecar attributes. It does not persist rationales, expose
+    free-form LLM text, or let confidence scores alter the §7B reward gate;
+    fallback is only eligible for [0.58, 0.72) scores when enabled (§8.6).
     """
 
     def __init__(
@@ -287,31 +269,18 @@ class SemanticEvaluator:
         device_mode: str | None = None,
         primary_scorer: PrimaryScorer | LocalCrossEncoderScorer | None = None,
         gray_band_fallback_enabled: bool | None = None,
-        shadow_mode_enabled: bool | None = None,
-        shadow_scorer: ShadowScorer | None = None,
     ) -> None:
-        if isinstance(self, LocalCrossEncoderScorer):
-            self.model_id = model_id
-            self.device_mode = device_mode or os.environ.get("SEMANTIC_DEVICE_MODE", "cuda:0")
-            self._model: Any = None
-            return
-
         self.gray_band_fallback_enabled = (
             _env_flag("SEMANTIC_GRAY_BAND_FALLBACK_ENABLED")
             if gray_band_fallback_enabled is None
             else gray_band_fallback_enabled
         )
-        self.shadow_mode_enabled = (
-            _env_flag("SEMANTIC_SHADOW_MODE_ENABLED")
-            if shadow_mode_enabled is None
-            else shadow_mode_enabled
+        self._primary_scorer = primary_scorer or LocalCrossEncoderScorer(
+            model_id=model_id,
+            device_mode=device_mode,
         )
-        self._primary_scorer = primary_scorer or LocalCrossEncoderScorer()
-        self._shadow_scorer = shadow_scorer
         self.last_semantic_method: str | None = None
         self.last_semantic_method_version: str | None = None
-        self.last_shadow_semantic_method: str | None = None
-        self.last_shadow_semantic_method_version: str | None = None
         self.endpoint: str | None = os.environ.get("AZURE_OPENAI_ENDPOINT")
         self.api_key: str | None = os.environ.get("AZURE_OPENAI_API_KEY")
         self.deployment: str | None = os.environ.get("AZURE_OPENAI_DEPLOYMENT")
@@ -405,9 +374,9 @@ class SemanticEvaluator:
         self,
         expected_greeting: str,
         actual_utterance: str,
-        primary_score: float | None = None,
+        _primary_score: float,
     ) -> dict[str, Any]:
-        """Invoke Azure OpenAI for enabled gray-band or primary-failure fallback."""
+        """Invoke Azure OpenAI for an enabled primary Cross-Encoder gray-band score."""
 
         user_content: str = (
             f"Expected Greeting Rule: {expected_greeting}\nActual Utterance: {actual_utterance}"
@@ -487,12 +456,6 @@ class SemanticEvaluator:
             )
         except Exception:
             logger.warning("Local semantic Cross-Encoder scoring failed", exc_info=True)
-            if self.gray_band_fallback_enabled:
-                return self._evaluate_gray_band_fallback(
-                    expected_greeting,
-                    actual_utterance,
-                    None,
-                )
             self._record_attribution(
                 semantic_method="cross_encoder",
                 semantic_method_version=CROSS_ENCODER_METHOD_VERSION,
@@ -520,103 +483,13 @@ class SemanticEvaluator:
             )
         return self._gray_band_without_fallback(primary_score)
 
-    def evaluate_shadow(
-        self,
-        expected_greeting: str,
-        actual_utterance: str,
-    ) -> dict[str, Any] | None:
-        """
-        Execute an observational shadow scorer without affecting live outputs.
-
-        Shadow results are returned separately as canonical scorer payloads so
-        callers can log or persist them under a non-reward field. Method/version
-        attribution is retained separately on the shadow sidecar attributes and is
-        never merged into the live semantic result.
-        """
-
-        self.last_shadow_semantic_method = None
-        self.last_shadow_semantic_method_version = None
-
-        if not self.shadow_mode_enabled or self._shadow_scorer is None:
-            return None
-
-        try:
-            candidate = self._shadow_scorer(expected_greeting, actual_utterance)
-            if candidate is None:
-                return None
-            if isinstance(candidate, dict):
-                is_match = _coerce_bool(candidate.get("is_match", False))
-                reason = candidate.get("reasoning")
-                raw_method = candidate.get("semantic_method")
-                if raw_method is None and reason in GRAY_BAND_PROVIDER_REASON_CODES:
-                    method = "llm_gray_band"
-                else:
-                    method = str(raw_method or "cross_encoder")
-                if method not in SEMANTIC_METHODS:
-                    method = "cross_encoder"
-                version = str(
-                    candidate.get("semantic_method_version")
-                    or (
-                        self._fallback_method_version()
-                        if method == "llm_gray_band"
-                        else CROSS_ENCODER_METHOD_VERSION
-                    )
-                )
-                if reason not in SEMANTIC_REASON_CODES:
-                    if method == "llm_gray_band":
-                        reason = "gray_band_llm_match" if is_match else "gray_band_llm_nonmatch"
-                    elif method == "cross_encoder":
-                        reason = (
-                            "cross_encoder_high_match"
-                            if is_match
-                            else "cross_encoder_high_nonmatch"
-                        )
-                    else:
-                        reason = "semantic_error"
-                self._record_attribution(
-                    semantic_method=method,
-                    semantic_method_version=version,
-                    shadow=True,
-                )
-                return self._validated_result(
-                    reasoning=str(reason),
-                    is_match=is_match,
-                    confidence_score=candidate.get("confidence_score", 0.0),
-                )
-
-            score = calibrate_cross_encoder_score(candidate)
-            self._record_attribution(
-                semantic_method="cross_encoder",
-                semantic_method_version=CROSS_ENCODER_METHOD_VERSION,
-                shadow=True,
-            )
-            return self._primary_result(score)
-        except Exception:
-            logger.warning("Semantic shadow scorer failed", exc_info=True)
-            self._record_attribution(
-                semantic_method="cross_encoder",
-                semantic_method_version=CROSS_ENCODER_METHOD_VERSION,
-                shadow=True,
-            )
-            return self._validated_result(
-                reasoning="semantic_error",
-                is_match=False,
-                confidence_score=0.0,
-            )
-
     def _record_attribution(
         self,
         *,
         semantic_method: str,
         semantic_method_version: str,
-        shadow: bool = False,
     ) -> None:
         """Record method/version sidecar without altering the canonical scorer JSON."""
-
-        if shadow:
-            self.last_shadow_semantic_method = semantic_method
-            self.last_shadow_semantic_method_version = semantic_method_version
-            return
 
         self.last_semantic_method = semantic_method
         self.last_semantic_method_version = semantic_method_version

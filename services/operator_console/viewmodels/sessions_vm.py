@@ -1,11 +1,9 @@
-"""Sessions (history) page viewmodel — Phase 10.
+"""Sessions (history) page viewmodel.
 
-Backs the repurposed Sessions page. The original scaffold spun up its
-own `QThread` + `ApiClient`; Phase 10 rewires it to read from the
-shared `OperatorStore` and lets the `PollingCoordinator` drive the
-underlying fetch through a route-scoped job. The VM itself holds no
-cached copy — it re-reads on demand and re-emits on change so the view
-stays wired the same way the other five pages are.
+Reads sessions from the shared `OperatorStore` while `PollingCoordinator`
+drives the underlying fetch through a route-scoped job. The VM holds no
+cached copy: it re-reads on demand and re-emits on store change so the
+view stays aligned with shared operator state.
 
 `session_selected(session_id)` is the VM's write path: clicking a row
 pushes the selection into the store so the shell can carry it across
@@ -14,7 +12,6 @@ pages (most commonly Sessions → Live Session).
 Spec references:
   §4.E.1         — Sessions / history operator surface
   §7B            — latest_reward is the §7B readback carried on SessionSummary
-  SPEC-AMEND-008 — PySide6 Operator Console
 """
 
 from __future__ import annotations

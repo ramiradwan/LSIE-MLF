@@ -15,7 +15,7 @@ Spec references:
   §4.C           — authoritative stimulus_time is orchestrator-owned;
                    UI state derives from `StimulusUiContext`
   §7B            — reward explanation uses p90_intensity × semantic_gate,
-                   n_frames_in_window, gated_reward, baseline_b_neutral
+                   n_frames_in_window, gated_reward, au12_baseline_pre
   §12            — SUBMITTING is a lifecycle state, not an error
   SPEC-AMEND-008 — PySide6 Operator Console
 """
@@ -182,7 +182,7 @@ def test_live_session_view_encounter_selection_updates_detail_pane() -> None:
         p90_intensity=0.55,
         gated_reward=0.55,
         n_frames_in_window=150,
-        baseline_b_neutral=0.12,
+        au12_baseline_pre=0.12,
         observational_acoustic=ObservationalAcousticSummary(
             f0_valid_measure=True,
             f0_valid_baseline=True,

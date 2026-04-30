@@ -1,7 +1,7 @@
 """Status indicator pill — coloured dot + short label.
 
-Phase 5 refactor: now takes the shared `UiStatusKind` enum from the
-Phase-1 DTOs rather than ad-hoc string kinds, so every surface
+Takes the shared `UiStatusKind` enum from the
+operator DTOs rather than ad-hoc string kinds, so every surface
 (overview cards, health rows, action-bar recovery hints) maps health
 and lifecycle state through the same palette bucket.
 
@@ -12,7 +12,6 @@ values set on it from the outside.
 Spec references:
   §4.E.1         — operator-facing status affordances
   §12            — subsystem state categories (OK/DEGRADED/RECOVERING/ERROR)
-  SPEC-AMEND-008 — PySide6 Operator Console surface
 """
 
 from __future__ import annotations

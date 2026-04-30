@@ -68,12 +68,71 @@ else
 fi
 echo ""
 
-# 5. Canonical terminology audit (§0.3) — file-type filter matches ci.yml
+# 5. Canonical terminology audit (§0.3) — scope/pattern matches .claude/commands/audit.md item 15
 echo "── Canonical terminology audit ──"
-RETIRED_TERMS="Celery node|GPU worker|inference worker|task queue|FIFO|named pipe|POSIX pipe|audio pipe|kernel pipe|24-hour vault|data vault|transient storage|secure buffer|handoff schema|payload schema|inference payload|FastAPI server|web server|ASGI server|Celery worker|scrcpy container|capture service|stream ingester|relational database"
-MATCHES=$(grep -rnE "$RETIRED_TERMS" services/ packages/ docker-compose.yml \
-    --include='*.py' --include='*.yml' --include='*.yaml' --include='*.sh' --include='*.txt' \
-    2>/dev/null || true)
+RETIRE_PARTS=(
+    "Celery n"'ode'
+    "GPU work"'er'
+    "inference work"'er'
+    "task que"'ue'
+    "\bFI"'FO\b'
+    "named pi"'pe'
+    "POSIX pi"'pe'
+    "audio pi"'pe'
+    "kernel pi"'pe'
+    "24-hour vau"'lt'
+    "data vau"'lt'
+    "transient stor"'age'
+    "secure buff"'er'
+    "handoff sche"'ma'
+    "payload sche"'ma'
+    "inference pay"'load'
+    "FastAPI serv"'er'
+    "web serv"'er'
+    "ASGI serv"'er'
+    "Celery work"'er'
+    "scrcpy contain"'er'
+    "capture serv"'ice'
+    "stream ingest"'er'
+    "relational data"'base'
+    "Physiological Chunk Even"'t'
+    "Physiological Sample Even"'t'
+    "oura even"'t'
+    "HRV even"'t'
+    "wearable even"'t'
+    "physio even"'t'
+    "bandit snap"'shot'
+    "decision snap"'shot'
+    "selection snap"'shot'
+    "attribution even"'t'
+    "event ledger r"'ow'
+    "encounter attribution rec"'ord'
+    "conversion even"'t'
+    "terminal even"'t'
+    "outcome r"'ow'
+    "attribution lin"'k\b'
+    "event lin"'k\b'
+    "causal link r"'ow'
+    "attribution metr"'ic'
+    "score r"'ow'
+    "ledger sco"'re'
+    "free-form ration"'ale'
+    "free-form ration"'ales'
+    "free-form semantic ration"'ale'
+    "free-form semantic ration"'ales'
+    "x[_-]?max[- ]normalized reward"
+    "x[_-]?max as reward input"
+    "x[_-]?max reward input"
+    "\bpitch_f"'0\b'
+    "legacy acoustic scal"'ar'
+    "scalar-only acous"'tic'
+    "\[0\.0, 5\.0\].*AU"'12'
+    "AU"'12.*\[0\.0, 5\.0\]'
+    "AU"'12 clamp.*5\.0'
+    "clamp.*AU"'12.*5\.0'
+)
+RETIRED_TERMS=$(IFS='|'; printf '%s' "${RETIRE_PARTS[*]}")
+MATCHES=$(grep -rnE "$RETIRED_TERMS" services/ packages/ scripts/ 2>/dev/null || true)
 if [ -z "$MATCHES" ]; then
     pass "No retired synonyms found"
 else

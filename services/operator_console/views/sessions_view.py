@@ -1,19 +1,14 @@
-"""Sessions page — history + recent sessions picker.
+"""Sessions page — history and recent sessions picker.
 
-Phase 10 rewrites the scaffold SessionsView into a proper page: no more
-per-page `QThread` or `ApiClient`, no more ad-hoc dict rows. The shared
-`PollingCoordinator` drives the underlying fetch, `OperatorStore` holds
-the state, and the view now emits `session_selected(UUID)` when an
-operator picks a row so the shell can jump into Live Session with the
-same session already wired through.
+The shared `PollingCoordinator` drives the sessions fetch, `OperatorStore`
+holds session state, and the view emits `session_selected(UUID)` when an
+operator picks a row so the shell can open Live Session with that selection.
 
-Columns come from `SessionsTableModel` (Phase 7) and render through
-`formatters.py`; no inline formatting here.
+Columns come from `SessionsTableModel` and render through `formatters.py`.
 
 Spec references:
   §4.E.1         — Sessions / history operator surface
   §7B            — latest_reward readback column
-  SPEC-AMEND-008 — PySide6 Operator Console
 """
 
 from __future__ import annotations

@@ -1,8 +1,8 @@
 """Dark-neutral QSS stylesheet for the Operator Console.
 
-Phase 6 extends the scaffold theme to cover every widget primitive
-introduced in Phase 5 (`MetricCard`, `ActionBar`, `AlertBanner`,
-`EmptyState`, `SectionHeader`, `EventTimeline`) plus the health-row
+The theme covers every widget primitive used by the Operator Console
+(`MetricCard`, `ActionBar`, `AlertBanner`, `EmptyState`, `SectionHeader`,
+`EventTimeline`) plus the health-row
 state classes (`ok` / `warn` / `bad` / `degraded` / `recovering`) that
 the Health view needs to distinguish degraded-but-recovering subsystems
 from hard errors (§12 error-handling matrix).
@@ -14,7 +14,7 @@ with any caller that imports the constant directly.
 
 Styling strategy:
   * All component-specific rules key off stable object names set by
-    Phase-5 widgets (`#MetricCard`, `#ActionBar`, `#AlertBannerInfo`,
+    widget classes (`#MetricCard`, `#ActionBar`, `#AlertBannerInfo`,
     ...). Widget code never calls `setStyleSheet` inline.
   * `#HealthRowRecovering` and `#HealthRowDegraded` are deliberately
     coloured between `ok` and `bad` so an operator sees "this is
@@ -23,7 +23,6 @@ Styling strategy:
 Spec references:
   §4.E.1         — operator-facing execution details
   §12            — error-handling matrix; recovery vs error colouring
-  SPEC-AMEND-008 — PySide6 Operator Console
 """
 
 from __future__ import annotations
@@ -120,7 +119,7 @@ QLabel#StatusBarLabel {{
     color: {p.text_muted};
 }}
 
-/* ---- MetricCard (Phase 5) --------------------------------------- */
+/* ---- MetricCard --------------------------------------- */
 
 QFrame#MetricCard {{
     background: {p.surface};
@@ -143,7 +142,7 @@ QLabel#MetricCardSecondary {{
     font-size: 12px;
 }}
 
-/* ---- SectionHeader (Phase 5) ------------------------------------ */
+/* ---- SectionHeader ------------------------------------ */
 
 QWidget#SectionHeader {{
     background: transparent;
@@ -158,7 +157,7 @@ QLabel#SectionHeaderSubtitle {{
     font-size: 12px;
 }}
 
-/* ---- ActionBar (Phase 5) ---------------------------------------- */
+/* ---- ActionBar ---------------------------------------- */
 
 QWidget#ActionBar {{
     background: {p.surface};
@@ -205,7 +204,7 @@ QLabel#ActionBarMessage {{
     font-size: 12px;
 }}
 
-/* ---- AlertBanner (Phase 5) -------------------------------------- */
+/* ---- AlertBanner -------------------------------------- */
 
 QFrame#AlertBanner,
 QFrame#AlertBannerInfo,
@@ -235,7 +234,7 @@ QLabel#AlertBannerMessage {{
     color: {p.text_primary};
 }}
 
-/* ---- EmptyState (Phase 5) --------------------------------------- */
+/* ---- EmptyState --------------------------------------- */
 
 QWidget#EmptyState {{
     background: transparent;
@@ -249,7 +248,7 @@ QLabel#EmptyStateMessage {{
     color: {p.text_muted};
 }}
 
-/* ---- EventTimeline (Phase 5) ------------------------------------ */
+/* ---- EventTimeline ------------------------------------ */
 
 QWidget#EventTimeline {{
     background: transparent;
@@ -284,9 +283,9 @@ QTableView::item {{
 
 /* ---- Health-row state classes (§12) ----------------------------- */
 
-/* Used by Phase-7's HealthTableModel via
+/* Used by HealthTableModel via
  * `model.setData(index, "HealthRowOk", ForegroundRole)` proxy — the
- * visual intent is documented here so the Phase-10 view can pick the
+ * visual intent is documented here so the Health view can pick the
  * right styling hook without re-deriving §12 colour semantics. */
 
 QLabel#HealthRowOk        {{ color: {p.status_ok}; font-weight: 600; }}

@@ -1,11 +1,11 @@
 """Operator Console shell — sidebar + stacked content + persistent ActionBar.
 
-Phase 6 rewrites the scaffold window around the Phase-4 `OperatorStore`
+The window composes the scaffold window around the `OperatorStore`
 and `PollingCoordinator`. The window is the composition root for the
 six operator pages; views are eager-instantiated into a
 `QStackedWidget` so switching between routes is a cheap index change
 (no re-polling, no re-wiring). A single `ActionBar` mounts once below
-the content area per SPEC-AMEND-008's "persistent stimulus rail" —
+the content area per the §4.E.1 persistent stimulus rail —
 mounting per-page would re-create its state on every route change.
 
 The shell never talks to the API directly. Route selection is
@@ -20,7 +20,6 @@ Spec references:
                    `StimulusUiContext` only)
   §4.E.1         — operator-facing multi-page layout
   §12            — close handler must stop polling + join threads
-  SPEC-AMEND-008 — PySide6 Operator Console
 """
 
 from __future__ import annotations
@@ -178,7 +177,7 @@ class MainWindow(QMainWindow):
         coordinator's route scoping is the single source of truth for
         "is this page active?" via `on_route_changed`.
         """
-        # Table models (Phase 7) — one per tabular surface. Parented to
+        # Table models — one per tabular surface. Parented to
         # the window so their lifetime is shell-scoped.
         self._encounters_model = EncountersTableModel(self)
         self._experiments_arms_model = ExperimentsTableModel(self)
@@ -186,7 +185,7 @@ class MainWindow(QMainWindow):
         self._alerts_model = AlertsTableModel(self)
         self._sessions_model = SessionsTableModel(self)
 
-        # Viewmodels (Phase 8) — subscribe to the store, expose
+        # Viewmodels — subscribe to the store, expose
         # read-only getters plus safe operator intents (stimulus,
         # experiment management, and Sessions' selection push).
         self._overview_vm = OverviewViewModel(self._store, self)
@@ -471,7 +470,7 @@ class MainWindow(QMainWindow):
         self._coordinator.stop()
         # Legacy scaffold pages exposed `shutdown()` — still call it on
         # any current page that implements it (belt and braces for
-        # pages that may briefly re-appear before Phase 10 rewrites the
+        # pages that may briefly re-appear while the
         # last scaffold view).
         for page in self._pages.values():
             shutdown = getattr(page, "shutdown", None)

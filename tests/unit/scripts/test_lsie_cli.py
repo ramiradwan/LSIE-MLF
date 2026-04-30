@@ -123,9 +123,9 @@ class TestSessionCommands:
             "summary": {
                 "total_segments": 10,
                 "avg_au12": 0.45,
-                "avg_pitch_f0": 220.0,
-                "avg_jitter": 0.02,
-                "avg_shimmer": 0.03,
+                "avg_f0_mean_measure_hz": 220.0,
+                "avg_jitter_mean_measure": 0.02,
+                "avg_shimmer_mean_measure": 0.03,
                 "first_segment_at": "2025-04-01T00:01:00",
                 "last_segment_at": "2025-04-01T00:05:00",
             },
@@ -180,6 +180,37 @@ class TestEncounterCommands:
         result = runner.invoke(app, ["encounter", "list"])
         assert result.exit_code == 0
         mock_get.assert_called_once_with("/api/v1/encounters?limit=100")
+
+    @patch("scripts.lsie_cli._render_table")
+    @patch("scripts.lsie_cli._api_get")
+    def test_encounter_list_renders_canonical_reward_fields(
+        self,
+        mock_get: MagicMock,
+        mock_render_table: MagicMock,
+    ) -> None:
+        rows = [
+            {
+                "id": 1,
+                "session_id": "s1",
+                "arm": "warm",
+                "timestamp_utc": "2025-04-01T00:00:00",
+                "gated_reward": 0.72,
+                "p90_intensity": 0.8,
+                "semantic_gate": 1,
+                "n_frames_in_window": 120,
+                "au12_baseline_pre": 0.15,
+            }
+        ]
+        mock_get.return_value = rows
+        result = runner.invoke(app, ["encounter", "list"])
+        assert result.exit_code == 0
+        mock_render_table.assert_called_once()
+        assert mock_render_table.call_args.args[0] == rows
+        rendered_columns = mock_render_table.call_args.args[1]
+        assert "n_frames_in_window" in rendered_columns
+        assert "au12_baseline_pre" in rendered_columns
+        assert "is_valid" not in rendered_columns
+        assert "n_frames" not in rendered_columns
 
     @patch("scripts.lsie_cli._api_get")
     def test_encounter_list_all_filters(self, mock_get: MagicMock) -> None:

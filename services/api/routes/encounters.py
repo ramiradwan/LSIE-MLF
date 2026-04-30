@@ -24,8 +24,8 @@ logger = logging.getLogger(__name__)
 _LIST_ENCOUNTERS_SQL: str = """
     SELECT e.id, e.session_id, e.segment_id, e.experiment_id, e.arm,
            e.timestamp_utc, e.gated_reward, e.p90_intensity,
-           e.semantic_gate, e.is_valid, e.n_frames,
-           e.baseline_neutral, e.stimulus_time, e.created_at
+           e.semantic_gate, e.n_frames_in_window,
+           e.au12_baseline_pre, e.stimulus_time, e.created_at
     FROM encounter_log e
     {where_clause}
     ORDER BY e.created_at DESC
@@ -37,12 +37,12 @@ _ENCOUNTER_SUMMARY_SQL: str = """
     SELECT
         e.arm,
         COUNT(*) AS encounter_count,
-        COUNT(*) FILTER (WHERE e.is_valid) AS valid_count,
+        COUNT(*) FILTER (WHERE e.n_frames_in_window > 0) AS valid_count,
         AVG(e.gated_reward) AS avg_reward,
-        AVG(e.gated_reward) FILTER (WHERE e.is_valid) AS avg_valid_reward,
-        AVG(e.p90_intensity) FILTER (WHERE e.is_valid) AS avg_p90,
+        AVG(e.gated_reward) FILTER (WHERE e.n_frames_in_window > 0) AS avg_valid_reward,
+        AVG(e.p90_intensity) FILTER (WHERE e.n_frames_in_window > 0) AS avg_p90,
         AVG(e.semantic_gate::numeric) AS gate_rate,
-        AVG(e.n_frames) FILTER (WHERE e.is_valid) AS avg_frames,
+        AVG(e.n_frames_in_window) FILTER (WHERE e.n_frames_in_window > 0) AS avg_frames,
         MIN(e.timestamp_utc) AS first_encounter,
         MAX(e.timestamp_utc) AS last_encounter
     FROM encounter_log e
@@ -84,7 +84,7 @@ async def list_encounters(
     Args:
         experiment_id: Filter by experiment (e.g., "greeting_line_v1").
         arm: Filter by specific arm (e.g., "warm_welcome").
-        valid_only: If True, return only encounters with is_valid=True.
+        valid_only: If True, return only encounters with measurement-window frames.
         limit: Maximum rows (1-1000, default 100).
     """
     conn = None
@@ -101,7 +101,7 @@ async def list_encounters(
                 conditions.append("e.arm = %(arm)s")
                 params["arm"] = arm
             if valid_only:
-                conditions.append("e.is_valid = TRUE")
+                conditions.append("e.n_frames_in_window > 0")
 
             where_clause = "WHERE " + " AND ".join(conditions) if conditions else ""
 

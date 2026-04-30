@@ -54,14 +54,6 @@ def _assert_canonical_acoustic_payload(payload: dict[str, Any]) -> None:
     assert payload["shimmer_mean_baseline"] == pytest.approx(0.018)
     assert payload["shimmer_delta"] == pytest.approx(0.002)
 
-    # Legacy scalar dual-write remains optional/deprecated.
-    if payload.get("pitch_f0") is not None:
-        assert payload["pitch_f0"] == pytest.approx(220.0)
-    if payload.get("jitter") is not None:
-        assert payload["jitter"] == pytest.approx(0.010)
-    if payload.get("shimmer") is not None:
-        assert payload["shimmer"] == pytest.approx(0.020)
-
 
 def _assert_null_canonical_acoustic_payload(payload: dict[str, Any]) -> None:
     """Assert deterministic false/null §7D outputs for null or locally failed acoustics."""
@@ -80,12 +72,6 @@ def _assert_null_canonical_acoustic_payload(payload: dict[str, Any]) -> None:
     assert payload["shimmer_mean_measure"] is None
     assert payload["shimmer_mean_baseline"] is None
     assert payload["shimmer_delta"] is None
-    if "pitch_f0" in payload:
-        assert payload["pitch_f0"] is None
-    if "jitter" in payload:
-        assert payload["jitter"] is None
-    if "shimmer" in payload:
-        assert payload["shimmer"] is None
 
 
 class _FakeRequest:
@@ -410,9 +396,6 @@ def _fake_ml_modules(
                 assert stimulus_time_s is not None
                 assert segment_start_time_s is not None
                 return AcousticMetrics(
-                    pitch_f0=220.0,
-                    jitter=0.01,
-                    shimmer=0.02,
                     f0_valid_measure=True,
                     f0_valid_baseline=True,
                     perturbation_valid_measure=True,
@@ -448,9 +431,8 @@ def _fake_ml_modules(
         def evaluate(self, expected_greeting: str, actual_text: str) -> dict[str, Any]:
             del expected_greeting
             return {
-                "reasoning": "integration-test match",
+                "reasoning": "cross_encoder_high_match",
                 "is_match": actual_text == "hello welcome to the stream",
-                "confidence": 0.91,
                 "confidence_score": 0.91,
             }
 
@@ -842,8 +824,6 @@ def test_reward_pipeline_is_invariant_with_optional_physiology_context() -> None
         au12_series=[TimestampedAU12(**point) for point in _reward_telemetry()],
         stimulus_time_s=STIMULUS_TIME_S,
         is_match=True,
-        confidence_score=0.91,
-        x_max=None,
     )
 
     assert result_without_physio["semantic"]["is_match"] is True
@@ -892,8 +872,6 @@ def test_acoustic_invalidity_is_local_and_reward_is_preserved_end_to_end() -> No
         au12_series=[TimestampedAU12(**point) for point in _reward_telemetry()],
         stimulus_time_s=STIMULUS_TIME_S,
         is_match=True,
-        confidence_score=0.91,
-        x_max=None,
     )
 
     class SilentAcousticAnalyzer:
@@ -925,9 +903,6 @@ def test_acoustic_invalidity_is_local_and_reward_is_preserved_end_to_end() -> No
             assert stimulus_time_s == STIMULUS_TIME_S
             assert segment_start_time_s is not None
             return AcousticMetrics(
-                pitch_f0=210.0,
-                jitter=0.010,
-                shimmer=0.020,
                 f0_valid_measure=True,
                 f0_valid_baseline=True,
                 voiced_coverage_measure_s=2.4,
@@ -988,9 +963,6 @@ def test_acoustic_invalidity_is_local_and_reward_is_preserved_end_to_end() -> No
             assert result["shimmer_mean_measure"] is None
             assert result["shimmer_mean_baseline"] is None
             assert result["shimmer_delta"] is None
-            assert result["pitch_f0"] == pytest.approx(210.0)
-            assert result["jitter"] == pytest.approx(0.010)
-            assert result["shimmer"] == pytest.approx(0.020)
             assert store.metrics_rows[0]["perturbation_valid_measure"] is False
             assert store.metrics_rows[0]["jitter_mean_measure"] is None
             assert store.metrics_rows[0]["shimmer_mean_measure"] is None

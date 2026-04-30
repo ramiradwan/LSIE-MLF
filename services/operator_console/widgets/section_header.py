@@ -5,7 +5,6 @@ operator can scan for the section they need. Layout only; no logic.
 
 Spec references:
   §4.E.1         — operator-facing page structure
-  SPEC-AMEND-008 — PySide6 Operator Console
 """
 
 from __future__ import annotations

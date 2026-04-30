@@ -12,7 +12,6 @@ Spec references:
                    authoritative `_stimulus_time`
   §4.E.1         — operator-facing action rail
   §7B            — measurement-window countdown applies once accepted
-  SPEC-AMEND-008 — PySide6 Operator Console
 """
 
 from __future__ import annotations
@@ -198,7 +197,7 @@ class ActionBar(QWidget):
         """Show a `00:12` countdown while the §7B measurement window runs.
 
         The orchestrator owns the authoritative `stimulus_time` that
-        anchors the window; Phase 8's viewmodel feeds that seconds-
+        anchors the window; the viewmodel feeds that seconds-
         remaining value in. We only format + show.
         """
         if seconds is None or seconds <= 0:
@@ -246,7 +245,7 @@ class ActionBar(QWidget):
     def focus_note_input(self) -> None:
         """Give keyboard focus to the operator-note input.
 
-        Phase-6 main window wires a global shortcut (e.g. Ctrl+Enter)
+        The main window wires a global shortcut (e.g. Ctrl+Enter)
         to this method so the operator can stimulate without leaving
         the keyboard.
         """

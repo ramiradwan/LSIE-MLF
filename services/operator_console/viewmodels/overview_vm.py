@@ -1,4 +1,4 @@
-"""Overview page viewmodel — Phase 8.
+"""Overview page viewmodel.
 
 Binds the Overview page to the shared `OperatorStore`. All six Overview
 cards (active session, experiment, physiology, health, latest encounter,
@@ -13,7 +13,6 @@ value and no drift between signal fan-out and cached state can occur.
 Spec references:
   §4.E.1         — Overview operator surface (the six glance cards)
   §12            — alert feed drives the attention queue
-  SPEC-AMEND-008 — PySide6 Operator Console
 """
 
 from __future__ import annotations

@@ -22,9 +22,6 @@ from services.api.routes.metrics import (
 )
 
 _ACOUSTIC_COLUMNS: list[str] = [
-    "pitch_f0",
-    "jitter",
-    "shimmer",
     "f0_valid_measure",
     "f0_valid_baseline",
     "perturbation_valid_measure",
@@ -100,7 +97,7 @@ class TestGetMetrics:
     """§2 step 7 / §4.E — Metrics query endpoint."""
 
     def test_returns_metrics_list_with_extended_acoustic_projection(self) -> None:
-        """§4.E — Returns legacy plus canonical observational acoustic fields."""
+        """§4.E — Returns canonical observational acoustic fields."""
         mock_conn = MagicMock()
         columns = [
             "id",
@@ -118,9 +115,6 @@ class TestGetMetrics:
                     "sess-1",
                     "seg-001",
                     2.5,
-                    180.0,
-                    0.02,
-                    0.05,
                     True,
                     False,
                     True,
@@ -150,7 +144,6 @@ class TestGetMetrics:
 
         assert len(result) == 1
         assert result[0]["au12_intensity"] == 2.5
-        assert result[0]["pitch_f0"] == 180.0
         assert result[0]["f0_valid_measure"] is True
         assert isinstance(result[0]["f0_valid_measure"], bool)
         assert result[0]["voiced_coverage_measure_s"] == 2.4
@@ -209,9 +202,6 @@ class TestGetMetrics:
                     "seg-007",
                     datetime(2026, 3, 13, 12, 5, 0, tzinfo=UTC),
                     0.75,
-                    None,
-                    None,
-                    None,
                     False,
                     True,
                     False,
@@ -324,8 +314,8 @@ class TestGetAU12Timeseries:
 class TestGetAcousticTimeseries:
     """§11 — Acoustic metrics time-series."""
 
-    def test_returns_legacy_and_canonical_acoustic_fields(self) -> None:
-        """§11 — Route passes through the extended observational acoustic payload."""
+    def test_returns_canonical_acoustic_fields(self) -> None:
+        """§7D — Route passes through the canonical observational acoustic payload."""
         mock_conn = MagicMock()
         mock_cursor = _make_mock_cursor(
             ["segment_id", "timestamp_utc", *_ACOUSTIC_COLUMNS],
@@ -333,9 +323,6 @@ class TestGetAcousticTimeseries:
                 (
                     "seg-001",
                     "2026-03-13T12:00:00Z",
-                    180.0,
-                    0.02,
-                    0.05,
                     True,
                     True,
                     True,
@@ -363,8 +350,6 @@ class TestGetAcousticTimeseries:
             result = asyncio.run(get_acoustic_timeseries("test-uuid"))
 
         assert len(result) == 1
-        assert result[0]["pitch_f0"] == 180.0
-        assert result[0]["jitter"] == 0.02
         assert result[0]["f0_valid_measure"] is True
         assert result[0]["perturbation_valid_baseline"] is True
         assert result[0]["f0_mean_measure_hz"] == 220.0
@@ -379,9 +364,6 @@ class TestGetAcousticTimeseries:
                 (
                     "seg-null-acoustic",
                     "2026-03-13T12:01:00Z",
-                    None,
-                    None,
-                    None,
                     False,
                     False,
                     False,
@@ -410,9 +392,6 @@ class TestGetAcousticTimeseries:
 
         assert len(result) == 1
         row = result[0]
-        assert row["pitch_f0"] is None
-        assert row["jitter"] is None
-        assert row["shimmer"] is None
         assert row["f0_valid_measure"] is False
         assert isinstance(row["f0_valid_measure"], bool)
         assert row["perturbation_valid_measure"] is False
@@ -437,7 +416,6 @@ class TestGetAcousticTimeseries:
 
         sql, params = mock_cursor.execute.call_args[0]
         assert params["session_id"] == "test-uuid"
-        assert "m.pitch_f0 IS NOT NULL" in sql
         assert "m.f0_valid_measure IS NOT NULL" in sql
         assert "m.voiced_coverage_measure_s IS NOT NULL" in sql
 
@@ -451,9 +429,6 @@ class TestGetAcousticTimeseries:
                 (
                     "seg-serialize",
                     datetime(2026, 3, 13, 12, 2, 0, tzinfo=UTC),
-                    None,
-                    None,
-                    None,
                     False,
                     True,
                     False,
@@ -484,9 +459,6 @@ class TestGetAcousticTimeseries:
         row = result[0]
         assert set(row) == {"segment_id", "timestamp_utc", *_ACOUSTIC_COLUMNS}
         assert row["timestamp_utc"] == "2026-03-13T12:02:00+00:00"
-        assert row["pitch_f0"] is None
-        assert row["jitter"] is None
-        assert row["shimmer"] is None
         assert row["f0_valid_measure"] is False
         assert isinstance(row["f0_valid_measure"], bool)
         assert row["f0_valid_baseline"] is True

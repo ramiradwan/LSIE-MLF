@@ -1,14 +1,16 @@
 """
-Acoustic Analysis — §4.D.3
+Module D acoustic analysis helpers (§4.D.3, §7D).
 
-Pure §7D observational acoustic helpers live here alongside the legacy
-parselmouth-backed compatibility extractor used by current Module D call sites.
+Provides deterministic stimulus-locked observational acoustic analytics for
+Module D. Public helpers compute canonical §7D validity, voiced coverage, F0,
+jitter, and shimmer fields from PCM audio or timestamped pitch frames; raw audio
+and reconstructive voiceprint data are not persisted (§13.23).
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from math import isfinite, log2
 from typing import Any
 
@@ -507,28 +509,7 @@ def compute_stimulus_locked_acoustic_result(
 
 @dataclass
 class AcousticMetrics:
-    """Compatibility envelope for Module D acoustic outputs.
-
-    ``AcousticAnalyticsResult`` is the exact reward-free §7D schema. This
-    dataclass keeps those canonical fields together with deprecated
-    segment-level compatibility scalars that current downstream readers in this
-    repository still consume.
-    """
-
-    # Deprecated optional compatibility fields for legacy downstream readers.
-    # Kept first to preserve the historical positional constructor shape.
-    pitch_f0: float | None = field(
-        default=None,
-        metadata={"deprecated": True, "compatibility": "legacy_scalar"},
-    )
-    jitter: float | None = field(
-        default=None,
-        metadata={"deprecated": True, "compatibility": "legacy_scalar"},
-    )
-    shimmer: float | None = field(
-        default=None,
-        metadata={"deprecated": True, "compatibility": "legacy_scalar"},
-    )
+    """Canonical §7D acoustic output schema for Module D."""
 
     f0_valid_measure: bool = False
     f0_valid_baseline: bool = False
@@ -550,16 +531,9 @@ class AcousticMetrics:
     def from_observational_result(
         cls,
         result: AcousticAnalyticsResult,
-        *,
-        pitch_f0: float | None = None,
-        jitter: float | None = None,
-        shimmer: float | None = None,
     ) -> AcousticMetrics:
-        """Merge a canonical §7D result with legacy compatibility scalars."""
+        """Create an AcousticMetrics instance from a canonical §7D result."""
         return cls(
-            pitch_f0=pitch_f0,
-            jitter=jitter,
-            shimmer=shimmer,
             f0_valid_measure=result.f0_valid_measure,
             f0_valid_baseline=result.f0_valid_baseline,
             perturbation_valid_measure=result.perturbation_valid_measure,
@@ -580,12 +554,13 @@ class AcousticMetrics:
 
 class AcousticAnalyzer:
     """
-    §4.D.3 — Praat acoustic feature extraction via parselmouth.
+    §4.D.3 / §7D — parselmouth-backed acoustic analyzer for PCM audio.
 
-    ``analyze()`` keeps the legacy scalar compatibility outputs. When both
-    ``stimulus_time_s`` and ``segment_start_time_s`` are provided, the method
-    additionally computes the canonical §7D stimulus-locked observational
-    acoustic fields.
+    ``analyze()`` accepts mono PCM s16le bytes and a sample rate. When both
+    ``stimulus_time_s`` and ``segment_start_time_s`` are provided, it returns
+    canonical stimulus-locked observational acoustic fields; otherwise it returns
+    deterministic false/null §7D defaults. It does not compute rewards or persist
+    raw audio or reconstructive voiceprint data (§13.23).
     """
 
     def _extract_pitch_frame_times(
@@ -800,8 +775,7 @@ class AcousticAnalyzer:
                 same time base as ``stimulus_time_s``.
 
         Returns:
-            ``AcousticMetrics`` with legacy compatibility pitch, jitter, shimmer
-            values populated when available. Canonical §7D fields remain at
+            ``AcousticMetrics`` with canonical §7D fields. Fields remain at
             deterministic false/null defaults unless both timing arguments are
             supplied.
         """
@@ -820,29 +794,9 @@ class AcousticAnalyzer:
         # §4.D.3 — Create Praat Sound object
         sound: pm.Sound = pm.Sound(samples, sampling_frequency=sample_rate)
 
-        # §4.D.3 — Pitch extraction (F0): 75–600 Hz range
+        # §4.D.3 — Pitch extraction for canonical voiced-window F0 frames.
         pitch: pm.Pitch = call(sound, "To Pitch", 0.0, 75.0, 600.0)
-        pitch_f0 = _normalize_optional_float(call(pitch, "Get mean", 0.0, 0.0, "Hertz"))
-        if pitch_f0 == 0.0:
-            pitch_f0 = None  # No voiced frames detected
-
-        # §4.D.3 — Jitter and shimmer via PointProcess
         point_process: Any = call(sound, "To PointProcess (periodic, cc)", 75.0, 600.0)
-        jitter = _normalize_optional_float(
-            call(point_process, "Get jitter (local)", 0.0, 0.0, 0.0001, 0.02, 1.3)
-        )
-        shimmer = _normalize_optional_float(
-            call(
-                [sound, point_process],
-                "Get shimmer (local)",
-                0.0,
-                0.0,
-                0.0001,
-                0.02,
-                1.3,
-                1.6,
-            )
-        )
 
         observational_result = null_acoustic_result()
         if stimulus_time_s is not None and segment_start_time_s is not None:
@@ -864,9 +818,4 @@ class AcousticAnalyzer:
                 perturbation_measurement_provider=perturbation_provider,
             )
 
-        return AcousticMetrics.from_observational_result(
-            observational_result,
-            pitch_f0=pitch_f0,
-            jitter=jitter,
-            shimmer=shimmer,
-        )
+        return AcousticMetrics.from_observational_result(observational_result)

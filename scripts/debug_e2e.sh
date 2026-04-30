@@ -135,7 +135,7 @@ else
     hint "Check if data/sql/ is mounted:"
     hint "  docker compose exec postgres ls /docker-entrypoint-initdb.d/"
     hint "If empty, the volume mount in docker-compose.yml is wrong."
-    hint "If files exist but tables don't, the DB was already initialized."
+    hint "If files exist but tables don't, the Persistent Store was already initialized."
     hint "Nuclear fix: docker compose down -v && docker compose up -d"
     detail "(Warning: -v deletes all data including pg-data volume)"
 
@@ -165,8 +165,8 @@ if [ "${ARM_COUNT:-0}" -ge 4 ]; then
     ok "Experiment arms seeded ($ARM_COUNT arms)"
 else
     broken "Experiment arms missing ($ARM_COUNT of 4)"
-    hint "Seed manually: docker compose exec -T postgres psql -U $DB_USER -d $DB_NAME \\\"
-    hint "  -f /docker-entrypoint-initdb.d/02-seed-experiments.sql"
+    hint "Seed manually:"
+    hint "  docker compose exec -T postgres psql -U $DB_USER -d $DB_NAME -f /docker-entrypoint-initdb.d/02-seed-experiments.sql"
 
     if [ "$AUTO_FIX" = true ]; then
         echo -e "       ${YELLOW}AUTO-FIX:${NC} Seeding experiments..."
@@ -233,7 +233,7 @@ if docker compose logs orchestrator 2>/dev/null | grep -q "FFmpeg resampler star
     ok "FFmpeg 48→16 kHz resampler running"
 else
     broken "FFmpeg resampler not started"
-    hint "Check audio pipe exists (Step 3) and FFmpeg is installed:"
+    hint "Check the audio IPC Pipe exists (Step 3) and FFmpeg is installed:"
     hint "  docker compose exec orchestrator which ffmpeg"
     dump_logs orchestrator
 fi
@@ -258,7 +258,7 @@ if docker compose logs orchestrator 2>/dev/null | grep -q "AU12 normalizer initi
     ok "AU12 normalizer initialized"
     detail "$ALPHA_LINE"
     if echo "$ALPHA_LINE" | grep -q "6.0"; then
-        ok "α_scale = 6.0 (v3.0 confirmed)"
+        ok "α_scale = 6.0"
     else
         broken "α_scale is NOT 6.0 — wrong AU12Normalizer version"
         hint "Check packages/ml_core/au12.py has DEFAULT_ALPHA_SCALE = 6.0"
@@ -298,12 +298,12 @@ DISPATCH_COUNT=$(docker compose logs orchestrator 2>/dev/null | grep -c "dispatc
 PROCESS_COUNT=$(docker compose logs worker 2>/dev/null | grep -c "Module D: processing" || echo "0")
 
 if [ "$PROCESS_COUNT" -gt 0 ]; then
-    ok "Worker processed $PROCESS_COUNT segment(s)"
+    ok "ML Worker processed $PROCESS_COUNT segment(s)"
 elif [ "$DISPATCH_COUNT" -gt 0 ]; then
-    broken "Orchestrator dispatched $DISPATCH_COUNT segment(s) but worker processed 0"
-    hint "Check Celery connection to Redis:"
+    broken "Orchestrator Container dispatched $DISPATCH_COUNT segment(s) but ML Worker processed 0"
+    hint "Check Celery connection to the Message Broker:"
     hint "  docker compose exec worker celery -A services.worker.celery_app inspect ping"
-    hint "Common causes: Redis URL mismatch, JSON serialization error (Gap 2)"
+    hint "Common causes: Message Broker URL mismatch or JSON serialization error in binary payload fields"
     dump_logs worker
 else
     broken "No segments dispatched yet"
@@ -311,12 +311,12 @@ else
     hint "If FFmpeg is running (Step 5), wait 30-45 seconds and re-run this script"
 fi
 
-# Check for serialization errors (Gap 2)
+# Check for serialization errors in binary payload transport.
 if docker compose logs worker 2>/dev/null | grep -qi "not JSON serializable\|TypeError.*bytes"; then
-    broken "JSON serialization error detected (Gap 2 — bytes in payload)"
-    hint "The orchestrator must base64-encode _audio_data and _frame_data"
+    broken "JSON serialization error detected: raw bytes reached a JSON payload"
+    hint "The Orchestrator Container must base64-encode _audio_data and _frame_data"
     hint "Check services/worker/pipeline/serialization.py exists"
-    hint "Check orchestrator.py imports and calls encode_bytes_fields()"
+    hint "Check Orchestrator Container assembly imports and calls encode_bytes_fields()"
 fi
 
 # =============================================================================
@@ -339,18 +339,18 @@ if [ "${METRIC_ROWS:-0}" -gt 0 ]; then
     fi
 else
     broken "Metrics table is empty"
-    hint "persist_metrics may be failing. Check worker logs:"
+    hint "persist_metrics may be failing. Check ML Worker logs:"
     hint "  docker compose logs worker | grep -i 'error\|fail\|exception' | tail -10"
     dump_logs worker
 fi
 
-# Check for the field forwarding gap (Gap 1)
+# Check for missing reward telemetry forwarding.
 if docker compose logs worker 2>/dev/null | grep -q "SKIPPED (no AU12 telemetry)"; then
     SKIP_COUNT=$(docker compose logs worker 2>/dev/null | grep -c "SKIPPED (no AU12 telemetry)" || echo "0")
     broken "Thompson Sampling skipped $SKIP_COUNT time(s) due to missing AU12 telemetry"
     echo ""
     detail "This usually means one of:"
-    detail "  1. process_segment() is not forwarding _au12_series to persist_metrics (Gap 1)"
+    detail "  1. process_segment() is not forwarding _au12_series to persist_metrics"
     detail "  2. Stimulus was never injected so _au12_series is always empty"
     detail "  3. _stimulus_time is None because record_stimulus_injection() was never called"
     echo ""

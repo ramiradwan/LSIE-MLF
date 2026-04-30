@@ -1,8 +1,8 @@
-"""Base viewmodel for Operator Console pages — Phase 7.
+"""Base viewmodel for Operator Console pages.
 
 `ViewModelBase` is the thin `QObject` superclass every page-scoped
 viewmodel (`OverviewVM`, `LiveSessionVM`, `ExperimentsVM`, `PhysiologyVM`,
-`HealthVM`) inherits in Phase 8. It exists so every view can bind to the
+`HealthVM`) inherits. It exists so every view can bind to the
 same three-signal surface without each VM re-declaring the boilerplate:
 
   * ``changed`` — the VM's rendered state changed; the view re-reads.
@@ -21,7 +21,6 @@ state locally — the store is the single source of truth.
 Spec references:
   §4.E.1         — operator-facing page surfaces (Overview, Live Session,
                    Experiments, Physiology, Health, Sessions)
-  SPEC-AMEND-008 — PySide6 Operator Console
 """
 
 from __future__ import annotations

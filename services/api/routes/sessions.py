@@ -50,9 +50,9 @@ _SESSION_SUMMARY_SQL: str = """
     SELECT
         COUNT(m.id) AS total_segments,
         AVG(m.au12_intensity) AS avg_au12,
-        AVG(m.pitch_f0) AS avg_pitch_f0,
-        AVG(m.jitter) AS avg_jitter,
-        AVG(m.shimmer) AS avg_shimmer,
+        AVG(m.f0_mean_measure_hz) AS avg_f0_mean_measure_hz,
+        AVG(m.jitter_mean_measure) AS avg_jitter_mean_measure,
+        AVG(m.shimmer_mean_measure) AS avg_shimmer_mean_measure,
         MIN(m.timestamp_utc) AS first_segment_at,
         MAX(m.timestamp_utc) AS last_segment_at
     FROM metrics m

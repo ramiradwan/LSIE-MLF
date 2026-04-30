@@ -1,14 +1,14 @@
 # LSIE-MLF Specification Amendment Registry
 
-This document tracks all known deviations from the **Master Technical Specification** (signed PDF, `docs/tech-spec-v3.2.pdf`). The spec is a signed PDF that cannot be edited. This registry is the single authoritative source for "what the spec says" vs "what the implementation does."
+This document tracks accepted deviations and historical amendments for the **Master Technical Specification** (the signed `docs/tech-spec-v*.pdf` committed in this repository). The spec is a signed PDF that cannot be edited in place. This registry remains the authoritative traceability log for "what the spec says" vs. "what the implementation does" whenever behavior is amended before it is folded into a signed PDF.
 
-Each amendment was made for a documented technical reason. The review agent should treat these as accepted deviations, not violations.
-
-SPEC-AMEND-001 through SPEC-AMEND-006 were originally raised against the v3.0 text and carry forward unchanged against v3.2 (none of them were incorporated into the v3.1 or v3.2 base text). SPEC-AMEND-007 was issued as the v3.1 physiology extension and is embedded in the v3.1+ base spec text — it is retained here for historical traceability of the v3.0 → v3.1 transition. SPEC-AMEND-008 (dual PySide6 operator surface) is embedded in the v3.2 base spec text and is retained for traceability of the v3.1 → v3.2 transition. SPEC-AMEND-009 (corrected Oura ingestion model: webhooks as change notifications, OAuth2 hydration, normalized Physiological Chunk Event transport, Module C rolling RMSSD derivation, 1-minute co-modulation resampling) is embedded in the v3.2 base spec text and is now implemented in the repository; this entry is retained for traceability of the v3.1 → v3.2 physiology migration rather than as an active deviation.
+Each amendment was made for a documented technical reason. The review agent should treat accepted active entries as governing deviations, not violations. Entries marked historical have been folded into the current PDF base text and are retained only so older commits, reviews, and implementation notes remain explainable.
 
 ---
 
 ## SPEC-AMEND-001: Worker GPU Architecture Downgrade
+
+**Status:** Historical — folded into the current PDF base text; retained for traceability of the hardening baseline.
 
 | Field | Value |
 |---|---|
@@ -22,6 +22,8 @@ SPEC-AMEND-001 through SPEC-AMEND-006 were originally raised against the v3.0 te
 
 ## SPEC-AMEND-002: Capture Container Ubuntu Upgrade
 
+**Status:** Historical — folded into the current PDF base text; retained for traceability of the hardening baseline.
+
 | Field | Value |
 |---|---|
 | **Spec section** | §9.1 — Container Specifications |
@@ -33,6 +35,8 @@ SPEC-AMEND-001 through SPEC-AMEND-006 were originally raised against the v3.0 te
 ---
 
 ## SPEC-AMEND-003: Orchestrator as Separate Container
+
+**Status:** Historical — folded into the current PDF base text; retained for traceability of the hardening baseline.
 
 | Field | Value |
 |---|---|
@@ -46,6 +50,8 @@ SPEC-AMEND-001 through SPEC-AMEND-006 were originally raised against the v3.0 te
 
 ## SPEC-AMEND-004: scrcpy Dual-Instance Architecture
 
+**Status:** Historical — folded into the current PDF base text; retained for traceability of the hardening baseline.
+
 | Field | Value |
 |---|---|
 | **Spec section** | §4.A.1 — Hardware & Transport |
@@ -57,6 +63,8 @@ SPEC-AMEND-001 through SPEC-AMEND-006 were originally raised against the v3.0 te
 ---
 
 ## SPEC-AMEND-005: Audio Chunk Size for Video Frame Alignment
+
+**Status:** Historical — folded into the current PDF base text; retained for traceability of the hardening baseline.
 
 | Field | Value |
 |---|---|
@@ -70,6 +78,8 @@ SPEC-AMEND-001 through SPEC-AMEND-006 were originally raised against the v3.0 te
 
 ## SPEC-AMEND-006: TranscriptionEngine compute_type Locked to INT8
 
+**Status:** Historical — folded into the current PDF base text; retained for traceability of the hardening baseline.
+
 | Field | Value |
 |---|---|
 | **Spec section** | §4.D.1 — Speech Transcription |
@@ -81,6 +91,8 @@ SPEC-AMEND-001 through SPEC-AMEND-006 were originally raised against the v3.0 te
 ---
 
 ## SPEC-AMEND-007: Physiology Extension via API Ingress and Orchestrator Context
+
+**Status:** Historical — folded into the current PDF base text; retained for traceability of the physiology rollout.
 
 | Field | Value |
 |---|---|
@@ -94,11 +106,13 @@ SPEC-AMEND-001 through SPEC-AMEND-006 were originally raised against the v3.0 te
 
 ## SPEC-AMEND-008: Operator Dashboard Framework — Streamlit Retired, Dual PySide6 Surfaces
 
+**Status:** Historical — folded into the current PDF base text; retained for traceability of the operator-surface rollout.
+
 | Field | Value |
 |---|---|
 | **Spec section** | §4.E.1 — Execution Details; §10.2 — Dependencies |
 | **Original text** | "Operational metrics and experiment state are visualized through a `Streamlit` dashboard." Dependencies list includes `Streamlit`. |
-| **New behavior** | The Streamlit dashboard is retired. Operator visualization is delivered through two PySide6 surfaces on the operator host, not in a container: (a) `scripts/debug_studio.py` — developer-facing debug/diagnostic GUI retained as a single-file tool for live pipeline introspection (video, landmarks, AU12 normalization, analytics poller); (b) `services/operator_console/` — production-grade operator dashboard split into clean modules (`api_client.py`, `workers.py`, `state.py`, `polling.py`, `viewmodels/`, `views/`, `widgets/`, `table_models/`) for session monitoring, experiment readback, physiology/co-modulation views, and operator actions (stimulus injection today; future device configuration and external-telemetry OAuth flows). The console surfaces are: **Overview** (active session + experiment + physiology + health rollup + latest encounter + alert attention queue), **Live Session** (per-segment encounter table + §7B reward-explanation detail pane exposing `p90_intensity`, `semantic_gate`, `gated_reward`, `n_frames_in_window`, `baseline_b_neutral`; hosts the stimulus action rail), **Experiments** (Thompson Sampling posterior α/β + evaluation variance + selection count per arm; never implies `semantic_confidence` moves the reward), **Physiology** (operator/streamer RMSSD + heart rate + §4.C.4 four-state freshness: fresh/stale/absent/no-rmssd; §7C Co-Modulation Index with null-valid rendered as an INFO outcome carrying `null_reason`, not as an error), **Health** (§12 subsystem rollup keeping degraded/recovering/error visually distinct; `operator_action_hint` surfaced on the error summary card), and **Sessions** (history; double-click emits `session_selected(UUID)` through the shell's navigation handler). The stimulus action-rail lifecycle — `IDLE → SUBMITTING → ACCEPTED → MEASURING → COMPLETED` with `FAILED` as a terminal error — is driven by `StimulusUiContext` carried through the store; the authoritative `stimulus_time` is the orchestrator's readback (§4.C), never the click wall-clock, and the submit button disables during `SUBMITTING` to guard against double-fires beyond the `client_action_id` idempotency key. Reads are polled on per-surface cadences configured by `OperatorConsoleConfig`; the coordinator scopes jobs by active route so hidden pages do not poll. The `streamlit` pin is removed from `requirements/worker.txt`; `PySide6` and `pydantic` are pinned on the operator host in `requirements/cli.txt`. All data still flows through the FastAPI server's `/api/v1/operator/*` aggregate routes — the operator host does not add direct Postgres or Redis coupling. Packaging is driven by `build/operator_console.spec` (PyInstaller one-dir) with the ML-worker stack explicitly excluded. |
+| **New behavior** | The Streamlit dashboard is retired. Operator visualization is delivered through two PySide6 surfaces on the operator host, not in a container: (a) `scripts/debug_studio.py` — developer-facing debug/diagnostic GUI retained as a single-file tool for live pipeline introspection (video, landmarks, AU12 normalization, analytics poller); (b) `services/operator_console/` — production-grade operator dashboard split into clean modules (`api_client.py`, `workers.py`, `state.py`, `polling.py`, `viewmodels/`, `views/`, `widgets/`, `table_models/`) for session monitoring, experiment readback, physiology/co-modulation views, and operator actions (stimulus injection today; future device configuration and external-telemetry OAuth flows). The console surfaces are: **Overview** (active session + experiment + physiology + health rollup + latest encounter + alert attention queue), **Live Session** (per-segment encounter table + §7B reward-explanation detail pane exposing `p90_intensity`, `semantic_gate`, `gated_reward`, `n_frames_in_window`, `au12_baseline_pre`; hosts the stimulus action rail), **Experiments** (Thompson Sampling posterior α/β + evaluation variance + selection count per arm; never implies `semantic_confidence` moves the reward), **Physiology** (operator/streamer RMSSD + heart rate + §4.C.4 four-state freshness: fresh/stale/absent/no-rmssd; §7C Co-Modulation Index with null-valid rendered as an INFO outcome carrying `null_reason`, not as an error), **Health** (§12 subsystem rollup keeping degraded/recovering/error visually distinct; `operator_action_hint` surfaced on the error summary card), and **Sessions** (history; double-click emits `session_selected(UUID)` through the shell's navigation handler). The stimulus action-rail lifecycle — `IDLE → SUBMITTING → ACCEPTED → MEASURING → COMPLETED` with `FAILED` as a terminal error — is driven by `StimulusUiContext` carried through the store; the authoritative `stimulus_time` is the orchestrator's readback (§4.C), never the click wall-clock, and the submit button disables during `SUBMITTING` to guard against double-fires beyond the `client_action_id` idempotency key. Reads are polled on per-surface cadences configured by `OperatorConsoleConfig`; the coordinator scopes jobs by active route so hidden pages do not poll. The `streamlit` pin is removed from `requirements/worker.txt`; `PySide6` and `pydantic` are pinned on the operator host in `requirements/cli.txt`. All data still flows through the FastAPI server's `/api/v1/operator/*` aggregate routes — the operator host does not add direct Postgres or Redis coupling. Packaging is driven by `build/operator_console.spec` (PyInstaller one-dir) with the ML-worker stack explicitly excluded. |
 | **Rationale** | Streamlit's web-based rerun-on-interaction model does not fit operator workflows that need (1) live sub-second video and metric readback, (2) device-level operator actions (USB, external-wearable OAuth, stimulus injection), and (3) long-running stateful sessions without tab-refresh semantics. A native PySide6 application gives the operator a single cohesive surface while keeping developer debugging tooling separate. Splitting the production console into modules (API client, Qt workers, views, widgets) is explicitly to avoid the monolithic growth pattern seen in `scripts/debug_studio.py` — the debug tool is allowed to stay a single file because it is developer-facing, but the operator-facing console is maintained as a multi-module package so it can be extended safely over time. |
 | **Affected files** | `services/operator_console/**`, `services/api/routes/operator.py`, `services/api/services/operator_read_service.py`, `services/api/services/operator_action_service.py`, `services/api/repos/operator_queries.py`, `packages/schemas/operator_console.py`, `scripts/debug_studio.py`, `requirements/cli.txt`, `requirements/worker.txt` (streamlit removed), `build/operator_console.spec`, `docs/SPEC_REFERENCE.md`, `.claude/skills/module-contracts/SKILL.md`, `README.md` |
 
@@ -106,7 +120,7 @@ SPEC-AMEND-001 through SPEC-AMEND-006 were originally raised against the v3.0 te
 
 ## SPEC-AMEND-009: Physiological Ingestion Model Corrected — Webhook-as-Notification + OAuth2 Hydration + Physiological Chunk Event
 
-**Status:** Resolved. The repository now ships the v3.2 ingestion model. Oura webhook deliveries are handled as change notifications, hydration work is queued on `physio:hydrate`, the API-hosted hydration worker emits Physiological Chunk Event records on `physio:events`, the Orchestrator derives rolling physiological snapshots with validity gating, and Module E persists only scalar physiology analytics. Active repository terminology now uses the canonical `Physiological Chunk Event` name; the superseded v3.1 scalar event label is retained only inside the `Original text` traceability field below. This entry remains in the registry for traceability of the shipped v3.1 → v3.2 migration.
+**Status:** Historical / resolved. The repository now ships the ingestion model folded into the current PDF base text. Oura webhook deliveries are handled as change notifications, hydration work is queued on `physio:hydrate`, the API-hosted hydration worker emits Physiological Chunk Event records on `physio:events`, the Orchestrator derives rolling physiological snapshots with validity gating, and Module E persists only scalar physiology analytics. Active repository terminology now uses the canonical `Physiological Chunk Event` name; the superseded v3.1 scalar event label is retained only inside the `Original text` traceability field below. This entry remains in the registry for traceability of the shipped v3.1 → v3.2 migration.
 
 | Field | Value |
 |---|---|

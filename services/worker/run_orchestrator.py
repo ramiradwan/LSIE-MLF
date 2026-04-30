@@ -1,16 +1,14 @@
 """
-Orchestrator Entrypoint — §4.C Module C Standalone Process
+Orchestrator Entrypoint — §4.C Module C
 
-Starts the Orchestrator.run() asyncio loop as a dedicated container process.
-The orchestrator is the PRODUCER of Celery tasks — it reads from IPC pipes,
-processes video frames for AU12, assembles 30-second segments, and dispatches
-them to the worker (consumer) via process_segment.delay().
+Starts the Orchestrator.run() asyncio loop for the Orchestrator Container.
+The Orchestrator Container reads from IPC Pipes, processes video frames for
+AU12, assembles 30-second segments, and dispatches process_segment.delay()
+tasks through the Message Broker to the ML Worker.
 
-This module is the CMD target for the `orchestrator` service in docker-compose.yml:
+This module is the CMD target for the Orchestrator Container service in
+docker-compose.yml:
     command: ["python3.11", "-m", "services.worker.run_orchestrator"]
-
-Gap 6 fix: the worker Dockerfile CMD starts only the Celery consumer.
-This separate entrypoint starts the orchestrator loop that feeds it.
 
 Environment variables:
     STREAM_URL — TikTok stream URL (optional, default "")
@@ -34,7 +32,7 @@ logger = logging.getLogger("orchestrator.main")
 
 
 def main() -> None:
-    """Start the orchestrator loop with graceful shutdown on SIGTERM/SIGINT."""
+    """Start the Orchestrator Container loop with graceful shutdown."""
     from services.worker.pipeline.orchestrator import Orchestrator
 
     stream_url = os.environ.get("STREAM_URL", "")
@@ -62,7 +60,7 @@ def main() -> None:
         experiment_id,
     )
 
-    # Gap 5 — Set up stimulus injection triggers
+    # Set up stimulus injection triggers.
     auto_timer = None
     _redis_thread = None
     try:
@@ -74,7 +72,7 @@ def main() -> None:
         # Auto-trigger for E2E testing (controlled by AUTO_STIMULUS_DELAY_S env var)
         auto_timer = setup_auto_trigger(orchestrator)
 
-        # Redis pub/sub listener for production operator trigger
+        # Message Broker listener for production operator stimulus triggers.
         _redis_thread = start_redis_listener(orchestrator)
     except Exception:
         logger.warning("Stimulus trigger setup failed", exc_info=True)

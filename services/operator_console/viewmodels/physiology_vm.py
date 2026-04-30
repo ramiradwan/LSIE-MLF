@@ -1,4 +1,4 @@
-"""Physiology page viewmodel — Phase 8.
+"""Physiology page viewmodel.
 
 The physiology surface has to communicate four distinct states per
 `subject_role`:
@@ -15,8 +15,6 @@ Spec references:
   §4.C.4         — Physiological State Buffer freshness / staleness
   §4.E.2         — physiology_log fields (rmssd_ms, heart_rate_bpm, ...)
   §7C            — Co-Modulation Index rolling Pearson, null-valid
-  SPEC-AMEND-007 — v3.1 physiology transport
-  SPEC-AMEND-008 — PySide6 Operator Console
 """
 
 from __future__ import annotations

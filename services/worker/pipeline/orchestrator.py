@@ -1,15 +1,12 @@
 """
-Orchestration & Synchronization — §4.C Module C
+Module C orchestration and synchronization for pipeline handoff (§4.C).
 
-Aligns timestamps between device hardware clocks, IPC media streams,
-and external WebSocket events. Manages audio resampling pipeline
-and segment assembly for handoff to Module D.
-
-v3.0 additions:
-  - Per-frame AU12 accumulation via compute_bounded_intensity() (§7A.4)
-  - Stimulus injection timestamping for reward window anchoring (§4.E.1)
-  - Calibration lifecycle: pre-stimulus B_neutral → post-stimulus scoring
-  - Payload wiring: _au12_series, _stimulus_time, _x_max fields
+The module coordinates drift correction, FFmpeg audio resampling, video-frame
+capture, AU12 telemetry, stimulus timestamps, physiological context, session
+lifecycle state, and construction of InferenceHandoffPayloads for Module D. It
+applies ADB drift polling every 30 seconds with frozen/reset fallback (§13.5)
+and uses canonical component names (§0, §13.15). It does not perform semantic
+scoring, reward updates, or direct ML persistence.
 """
 
 from __future__ import annotations
@@ -109,14 +106,13 @@ def _live_session_state_key(session_id: str) -> str:
 
 class DriftCorrector:
     """
-    §4.C.1 — Temporal drift correction.
+    Maintain drift-corrected UTC timestamps for Module C.
 
-    Polls Android hardware clock via ADB every 30 seconds, computes
-    drift_offset = host_utc_time - android_epoch_time, and applies
-    correction to all timestamps.
-
-    Fallback: freeze drift_offset after 3 ADB failures; reset to
-    zero after 5 minutes.
+    Accepts host time and Android epoch readings from the configured ADB poll,
+    produces the current seconds offset, and applies it to media/event
+    timestamps. It freezes the last offset after repeated poll failures and
+    resets after the configured timeout (§13.5); it does not block segment
+    assembly on ADB loss or persist drift history.
     """
 
     def __init__(self) -> None:
@@ -198,12 +194,12 @@ class DriftCorrector:
 
 class AudioResampler:
     """
-    §4.C.2 — FFmpeg audio resampling subprocess.
+    Manage the persistent FFmpeg resampling pipe for audio handoff.
 
-    Continuously resamples audio from 48 kHz → 16 kHz via pipe:1.
-    Spawns persistent FFmpeg subprocess (§4.C contract side effects).
-
-    Error: FFmpeg crashes restart automatically within 1 second (§2 step 3).
+    Accepts no in-memory audio input; it reads the shared 48 kHz PCM IPC stream,
+    starts/restarts the configured FFmpeg subprocess, and produces 16 kHz mono
+    PCM chunks from stdout. It does not transcribe audio, own the IPC writer, or
+    persist audio bytes.
     """
 
     def __init__(self) -> None:
@@ -281,20 +277,15 @@ class AudioResampler:
 
 class Orchestrator:
     """
-    §4.C — Main orchestration loop.
+    Coordinate Module C capture state and assemble inference handoff payloads.
 
-    Coordinates drift correction, audio resampling, event buffering,
-    and segment assembly into InferenceHandoffPayload objects for
-    dispatch to Module D via process_segment().
-
-    Segment windows are fixed at 30 seconds and validated before
-    inference (§2 step 5).
-
-    v3.0 additions:
-      - Per-frame AU12 telemetry accumulation (§7A.4, §4.D.2)
-      - Stimulus injection timestamping (§4.E.1)
-      - Calibration lifecycle: B_neutral accumulation → scoring transition
-      - Payload wiring for reward pipeline (_au12_series, _stimulus_time)
+    Accepts stream/session/experiment configuration plus live or replay IPC
+    media, ground-truth events, stimulus triggers, and optional physiology
+    events. Produces 30-second segment payloads with drift-corrected windows,
+    active arm context, per-frame AU12 telemetry, stimulus timestamps, and a
+    pre-update BanditDecisionSnapshot for Module D. It does not perform
+    transcription, semantic evaluation, reward/posterior updates, or persist raw
+    media.
     """
 
     def __init__(
@@ -335,9 +326,9 @@ class Orchestrator:
         self._audio_buffer: bytearray = bytearray()
         self._running: bool = False
 
-        # Gap G-05 / Stage 2 — Thompson Sampling state. _experiment_id keeps
-        # the string experiment key used by the reward updater; v3.4 handoff
-        # emits the selected Persistent Store row ID via _experiment_row_id.
+        # Thompson Sampling state. _experiment_id keeps the string experiment
+        # key used by the reward updater; handoff emits the selected Persistent
+        # Store row ID via _experiment_row_id.
         self._experiment_id: str = experiment_id
         self._experiment_row_id: int = DEFAULT_EXPERIMENT_ROW_ID
         self._active_arm: str = ""
@@ -345,27 +336,27 @@ class Orchestrator:
         self._bandit_decision_snapshot: dict[str, Any] | None = None
         self._segment_window_anchor_utc: datetime | None = None
 
-        # Gap G-03 — Video capture (lazy-init in run() for live capture).
+        # Video capture (lazy-init in run() for live capture).
         # Replay mode binds the same source to the video and audio surfaces.
         self.video_capture: Any = replay_source
 
-        # [v3.0] AU12 telemetry accumulator for continuous reward pipeline.
+        # AU12 telemetry accumulator for continuous reward pipeline.
         # Each entry: {"timestamp_s": float, "intensity": float}
         # Drained into the payload on each assemble_segment() call.
         self._au12_series: list[dict[str, float]] = []
 
-        # [v3.0] Stimulus injection timestamp (drift-corrected UTC epoch).
+        # Stimulus injection timestamp (drift-corrected UTC epoch).
         # Set by record_stimulus_injection(). None until operator sends greeting.
         self._stimulus_time: float | None = None
 
-        # [v3.2] Physiological rolling buffers — §4.C.4.
+        # Physiological rolling buffers — §4.C.4.
         # Keep time-ordered chunk events per subject_role for trailing-window derivation.
         self._physio_buffer: dict[str, deque[dict[str, Any]]] = {
             "streamer": deque(),
             "operator": deque(),
         }
 
-        # [v3.1] Redis client for non-blocking physiological drains.
+        # Redis client for non-blocking physiological drains.
         # Client creation is best-effort; actual I/O happens on LPOP.
         self._redis: Any = None
         try:
@@ -378,14 +369,14 @@ class Orchestrator:
         except Exception:
             logger.debug("Physiology Redis client unavailable during init", exc_info=True)
 
-        # [v3.0] Per-session AU12 normalizer — lazy-init on first frame
+        # Per-session AU12 normalizer — lazy-init on first frame
         self._au12_normalizer: Any = None
 
-        # [v3.0] Calibration state: True until operator injects greeting.
-        # While True, AU12Normalizer accumulates B_neutral baseline (§7A.4).
+        # Calibration state: True until operator injects greeting.
+        # While True, AU12Normalizer accumulates the pre-stimulus AU12 baseline (§7A.4).
         self._is_calibrating: bool = True
 
-        # [v3.0] FaceMesh processor — lazy-init on first frame
+        # FaceMesh processor — lazy-init on first frame
         self._face_mesh: Any = None
 
         # Session lifecycle state — boot session starts during run(), but
@@ -462,7 +453,7 @@ class Orchestrator:
 
     def record_stimulus_injection(self) -> None:
         """
-        [v3.0] Record the exact moment the greeting line was sent.
+        Record the exact moment the greeting line was sent.
 
         Must be called by the operator interface when the greeting text
         is injected into the live stream chat. This timestamp anchors
@@ -470,8 +461,8 @@ class Orchestrator:
         the reward pipeline (services/worker/pipeline/reward.py).
 
         Also transitions the AU12 normalizer from calibration mode to
-        inference mode. All pre-stimulus frames contributed to B_neutral;
-        all post-stimulus frames will be scored against that baseline.
+        inference mode. Pre-stimulus frames establish the AU12 baseline;
+        post-stimulus frames are scored against that baseline.
 
         §7A.4 — Calibration phase ends at stimulus onset.
         §4.E.1 — Thompson Sampling experiment arm deployment trigger.
@@ -488,13 +479,13 @@ class Orchestrator:
 
     def _process_video_frame(self) -> None:
         """
-        [v3.0] Grab the latest video frame and compute AU12 intensity.
+        Grab the latest video frame and compute AU12 intensity.
 
         §4.D.2 — MediaPipe FaceMesh landmark extraction
         §7A.4 — AU12 baseline calibration (pre-stimulus) and scoring (post-stimulus)
 
         During calibration (before stimulus injection):
-          - compute_bounded_intensity(is_calibrating=True) accumulates B_neutral
+          - compute_bounded_intensity(is_calibrating=True) accumulates the AU12 baseline
           - Returned intensity is 0.0 (calibration phase always returns zero)
           - These frames are NOT appended to _au12_series (no value for reward)
 
@@ -827,7 +818,7 @@ class Orchestrator:
         sampled_theta_by_arm: dict[str, float] | None,
         random_seed: int | None = None,
     ) -> None:
-        """Capture the v3.4 pre-update Thompson Sampling decision snapshot.
+        """Capture the pre-update Thompson Sampling BanditDecisionSnapshot.
 
         The caller invokes this immediately after arm selection. Copy every
         mutable selection input before storing it so later posterior updates,
@@ -902,7 +893,7 @@ class Orchestrator:
         events: list[dict[str, Any]],
     ) -> dict[str, Any]:
         """
-        Assemble a 30-second segment as a fully validated v3.4 InferenceHandoffPayload.
+        Assemble a 30-second segment as a fully validated InferenceHandoffPayload.
 
         §2 step 5 — Validates against Pydantic schema before returning.
         §6.1 — InferenceHandoffPayload JSON Schema Draft 07 contract.
@@ -941,7 +932,7 @@ class Orchestrator:
             "events": events,
         }
 
-        # [Stage 2] Gap G-03 — Determine codec based on video availability.
+        # Determine codec based on video availability.
         has_video = self.video_capture is not None and getattr(
             self.video_capture,
             "is_running",
@@ -950,7 +941,7 @@ class Orchestrator:
         codec = "h264" if has_video else "raw"
         resolution = [1920, 1080] if has_video else [1, 1]
 
-        # [Stage 2] Gap G-03 — Extract latest video frame FIRST.
+        # Extract latest video frame before building the handoff payload.
         frame_data: bytes | None = None
         if self.video_capture is not None:
             try:
@@ -993,7 +984,6 @@ class Orchestrator:
             "_expected_greeting": self._expected_greeting,
             "_stimulus_time": self._stimulus_time,
             "_au12_series": au12_series,
-            "_x_max": None,
             "_bandit_decision_snapshot": self._bandit_decision_snapshot,
         }
         if physiological_context is not None:
@@ -1301,35 +1291,35 @@ class Orchestrator:
             with contextlib.suppress(Exception):
                 self._session_lifecycle_thread.join(timeout=SESSION_LIFECYCLE_POLL_TIMEOUT_S + 1.0)
         self.audio_resampler.stop()
-        # [Stage 2] Gap G-03 — Stop video capture thread
+        # Stop video capture thread
         if self.video_capture is not None and self.video_capture is not self.audio_resampler:
             with contextlib.suppress(Exception):
                 self.video_capture.stop()
-        # [v3.1] Release Redis client used for physiological drain.
+        # Release Redis client used for physiological drain.
         if self._redis is not None and hasattr(self._redis, "close"):
             with contextlib.suppress(Exception):
                 self._redis.close()
             self._redis = None
-        # [v3.0] Release FaceMesh resources
+        # Release FaceMesh resources
         if self._face_mesh is not None:
             with contextlib.suppress(Exception):
                 self._face_mesh.close()
             self._face_mesh = None
-        # [v3.0] Clear AU12 state
+        # Clear AU12 state
         self._au12_normalizer = None
         self._au12_series.clear()
 
     async def run(self) -> None:
         """
-        Main orchestration loop — revised for lifecycle-aware session ownership.
+        Main orchestration loop for lifecycle-aware session ownership.
 
         §4.C — Coordinates all Module C responsibilities:
         0. Preserve boot-time session auto-create from STREAM_URL/EXPERIMENT_ID.
         0b. Start background Redis lifecycle listener for authoritative start/end.
-        0c. Start video capture thread (Gap G-03).
+        0c. Start video capture thread.
         1. Poll drift every DRIFT_POLL_INTERVAL seconds (§4.C.1).
         2. Continuously read resampled audio chunks (§4.C.2).
-        2b. [v3.0] Process latest video frame → AU12 accumulation.
+        2b. Process latest video frame → AU12 accumulation.
         3. Assemble fixed 30-second segments only while a session is active.
         4. Flush/rotate sessions on lifecycle intents from the API Server.
         """
@@ -1337,7 +1327,7 @@ class Orchestrator:
         self._running = True
         self._start_session_lifecycle_listener()
 
-        # Preserve the historical boot path until/unless lifecycle messages arrive.
+        # Start the configured boot session until/unless lifecycle messages arrive.
         self._begin_session(
             session_id=self._session_id,
             stream_url=self._stream_url,
@@ -1346,7 +1336,7 @@ class Orchestrator:
         self._publish_live_session_state()
         self._publish_orchestrator_heartbeat()
 
-        # Gap G-03 — Start video capture from IPC Pipe unless replay is opt-in.
+        # Start video capture from IPC Pipe unless replay is opt-in.
         if self._using_replay_capture:
             logger.info("Using replay capture source instead of live IPC pipes")
         else:
@@ -1410,8 +1400,8 @@ class Orchestrator:
                     # fails, the next loop iteration will retry.
                     logger.debug("Video revival failed", exc_info=True)
 
-            # [v3.0] §4.D.2 + §7A.4 — Process latest video frame for AU12 only
-            # while a lifecycle session is actively running.
+            # §4.D.2 + §7A.4 — Process latest video frame for AU12 only
+            # while a session is actively running.
             if self._session_active:
                 self._process_video_frame()
 
@@ -1446,12 +1436,12 @@ class Orchestrator:
             await asyncio.sleep(0.01)
 
     # ------------------------------------------------------------------
-    # Stage 2 — Session registration and experiment arm selection
+    # Session registration and experiment arm selection
     # ------------------------------------------------------------------
 
     def _register_session(self) -> None:
         """
-        Gap G-02 — Register this session in the Persistent Store.
+        Register this session in the Persistent Store.
 
         §2 step 7 — Parameterized INSERT with ON CONFLICT guard
         (idempotent in case of worker restart with same session_id).
@@ -1508,8 +1498,8 @@ class Orchestrator:
         """
         §4.E.1 — Select the active greeting line via Thompson Sampling.
 
-        Captures the pre-update v3.4 BanditDecisionSnapshot at arm-selection
-        time while keeping the string experiment key available for the existing
+        Captures the pre-update BanditDecisionSnapshot at arm-selection
+        time while keeping the string experiment key available for the
         §7B reward update path.
         """
         selection_time = datetime.fromtimestamp(

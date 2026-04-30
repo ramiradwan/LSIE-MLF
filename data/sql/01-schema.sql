@@ -17,20 +17,15 @@ CREATE TABLE IF NOT EXISTS sessions (
     ended_at        TIMESTAMPTZ
 );
 
--- §11 — AU12 intensity, legacy scalar acoustics, and canonical §7D observational acoustics
--- Fresh installs create the full canonical §7D field set directly here.
+-- §11 — AU12 intensity and canonical §7D observational acoustics.
+-- Fresh installs create the canonical §7D field set directly here.
 -- Existing deployments are upgraded by 04-metrics-observational-acoustics.sql.
--- legacy pitch_f0/jitter/shimmer remain temporarily for compatibility while
--- downstream readers migrate to the §7D windowed fields.
 CREATE TABLE IF NOT EXISTS metrics (
     id                              BIGSERIAL PRIMARY KEY,
     session_id                      UUID NOT NULL REFERENCES sessions(session_id),
     segment_id                      TEXT NOT NULL,
     timestamp_utc                   TIMESTAMPTZ NOT NULL,
     au12_intensity                  DOUBLE PRECISION,
-    pitch_f0                        DOUBLE PRECISION,
-    jitter                          DOUBLE PRECISION,
-    shimmer                         DOUBLE PRECISION,
     f0_valid_measure                BOOLEAN,
     f0_valid_baseline               BOOLEAN,
     perturbation_valid_measure      BOOLEAN,
@@ -59,7 +54,7 @@ CREATE TABLE IF NOT EXISTS transcripts (
     created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
--- §11 — Semantic Match (Azure OpenAI evaluation)
+-- §11 — Semantic Match (bounded deterministic evaluation)
 CREATE TABLE IF NOT EXISTS evaluations (
     id              BIGSERIAL PRIMARY KEY,
     session_id      UUID NOT NULL REFERENCES sessions(session_id),
@@ -120,9 +115,8 @@ CREATE TABLE IF NOT EXISTS encounter_log (
     gated_reward        DOUBLE PRECISION NOT NULL,
     p90_intensity       DOUBLE PRECISION NOT NULL,
     semantic_gate       INTEGER NOT NULL,
-    is_valid            BOOLEAN NOT NULL,
-    n_frames            INTEGER NOT NULL,
-    baseline_neutral    DOUBLE PRECISION,
+    n_frames_in_window  INTEGER NOT NULL,
+    au12_baseline_pre   DOUBLE PRECISION,
     stimulus_time       DOUBLE PRECISION,
     created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );

@@ -1,13 +1,12 @@
 """
-Runtime configuration for the Operator Console — Phase 3 of the Operator
-Console cycle (SPEC-AMEND-008).
+Runtime configuration for the Operator Console.
 
 Everything the console needs to bootstrap lives here: the API base URL,
 the request timeout, an `environment_label` for the title bar, and a
 per-surface poll cadence. Each operator page polls its own endpoint on
 its own interval so a slow `/health` does not back-pressure the
-overview card, and so Phase 4's `PollingCoordinator` can scope jobs to
-the active route without re-deriving intervals elsewhere.
+overview card. `PollingCoordinator` scopes jobs to the active route
+without re-deriving intervals elsewhere.
 
 All values are read from environment variables at startup. Defaults
 target the local docker-compose stack. Every interval is validated
@@ -17,7 +16,6 @@ failure at startup.
 
 Spec references:
   §4.E.1         — operator-facing execution details
-  SPEC-AMEND-008 — PySide6 Operator Console replaces Streamlit
 """
 
 from __future__ import annotations
@@ -33,7 +31,7 @@ class OperatorConsoleConfig:
 
     `environment_label` surfaces in the title/status bar so operators
     never confuse a staging console with a production one. The ten
-    `*_poll_ms` fields each own one page's refresh cadence; Phase 4's
+    `*_poll_ms` fields each own one page's refresh cadence;
     `PollingCoordinator` matches them to route lifecycle.
     """
 
@@ -42,8 +40,7 @@ class OperatorConsoleConfig:
     environment_label: str
 
     # Per-surface poll intervals. Each corresponds to one operator page
-    # or attention queue. Phase 4 route-scopes the jobs so a hidden page
-    # does not poll.
+    # or attention queue. Route-scoping prevents hidden pages from polling.
     overview_poll_ms: int
     session_header_poll_ms: int
     live_encounters_poll_ms: int
@@ -61,8 +58,7 @@ class OperatorConsoleConfig:
 
     # --- scaffold-compat aliases -----------------------------------
     # `SessionsView`/`MainWindow` from the initial scaffold still read
-    # the old `*_interval_ms` names. Phase 6/10 rewrite those consumers
-    # around the new names; until then the aliases keep the scaffold
+    # the old `*_interval_ms` names. The aliases keep scaffold consumers
     # functional without duplicating env reads.
 
     @property
@@ -79,8 +75,7 @@ class OperatorConsoleConfig:
 
 
 # Backwards-compat alias — external imports of `ConsoleConfig` keep
-# working through the Phase-3 rename; Phase 6/10 remove the last
-# references.
+# working through the configuration rename.
 ConsoleConfig = OperatorConsoleConfig
 
 

@@ -12,7 +12,7 @@ silent drift:
   3. **Python DDL string** ``services.api.db.schema.SCHEMA_SQL`` (used
      by the API Server's bootstrap path)
   4. **JSON Schema blocks** under ``interface_contracts.schemas`` in the
-     ``content.json`` payload referenced by ``docs/tech-spec-v3.2.pdf``
+     extracted ``content.json`` payload from the committed ``docs/tech-spec-v*.pdf``
      (the spec contract surface that the review agent loads)
 
 This script loads all four, normalizes them onto a common type / nullability
@@ -442,7 +442,7 @@ def parse_json_schema(schema: dict[str, Any], name: str) -> EntitySpec:
 
 
 def extract_json_schemas(content: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    """Pull the schemas dict out of content.json under v3 or v3.1 layouts."""
+    """Pull the schemas dict out of supported content.json layouts."""
     contracts = content.get("interface_contracts") or {}
     if not isinstance(contracts, dict):
         return {}
@@ -603,10 +603,9 @@ def load_default_sources(
     except Exception as exc:
         warnings.append(f"Could not load services.api.db.schema.SCHEMA_SQL: {exc}")
 
-    # 4. content.json (referenced by docs/tech-spec-v3.2.pdf)
+    # 4. content.json (the active extracted index for the committed spec)
     json_schema_entities: dict[str, EntitySpec] = {}
     candidates = [
-        repo_root / "docs" / "artifacts" / "content.json",
         repo_root / "docs" / "content.json",
         repo_root / "content.json",
     ]

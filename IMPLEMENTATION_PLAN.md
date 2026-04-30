@@ -13,7 +13,7 @@ Historical plans from prior cycles are archived under `docs/artifacts/` — for 
 - `/implement-phase N` — runs the TRUST GATE (`scripts/verify_spec_signature.py`), then reads this file, locates the `## Phase N` heading, implements every file listed under that phase, runs `mypy --strict` per file, adds or updates tests, and runs `pytest -x -q`. The command definition is `.claude/commands/implement-phase.md`.
 - `/implement-file <path>` — same trust gate, then implements a single file by tracing back through this file to find which phase it belongs to and confirming its upstream dependencies are implemented. Definition in `.claude/commands/implement-file.md`.
 
-Both commands assume that **every implementation decision traces to a spec section** — the phases you write here must cite the §-references that govern each file. The signed spec is `docs/tech-spec-v3.1.pdf`; the extracted index is `docs/content.json`; spec amendments live in `docs/SPEC_AMENDMENTS.md`.
+Both commands assume that **every implementation decision traces to a spec section** — the phases you write here must cite the §-references that govern each file. The signed spec is the single `docs/tech-spec-v*.pdf` match; the extracted index is `docs/content.json`; spec amendments live in `docs/SPEC_AMENDMENTS.md`.
 
 ---
 
