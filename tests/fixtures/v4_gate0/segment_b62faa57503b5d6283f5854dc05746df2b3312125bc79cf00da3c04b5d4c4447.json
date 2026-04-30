@@ -1,0 +1,315 @@
+{
+  "session_id": "34b5783f-60aa-4cc9-b01e-5a1220bcfa89",
+  "segment_id": "b62faa57503b5d6283f5854dc05746df2b3312125bc79cf00da3c04b5d4c4447",
+  "segment_window_start_utc": "2027-01-15T07:59:33Z",
+  "segment_window_end_utc": "2027-01-15T08:00:03Z",
+  "timestamp_utc": "2027-01-15T08:00:03Z",
+  "media_source": {
+    "stream_url": "replay://synthetic-fixture",
+    "codec": "h264",
+    "resolution": [
+      320,
+      240
+    ]
+  },
+  "segments": [
+    {
+      "segment_id": "b62faa57503b5d6283f5854dc05746df2b3312125bc79cf00da3c04b5d4c4447",
+      "audio_bytes": 96000,
+      "events": []
+    }
+  ],
+  "_active_arm": "direct_question",
+  "_experiment_id": 0,
+  "_expected_greeting": "Hi! What's the best advice you've gotten today?",
+  "_stimulus_time": 1800000000.75,
+  "_au12_series": [
+    {
+      "timestamp_s": 1800000000.7666667,
+      "intensity": 0.0
+    },
+    {
+      "timestamp_s": 1800000000.8,
+      "intensity": 0.0
+    },
+    {
+      "timestamp_s": 1800000000.8333333,
+      "intensity": 0.0
+    },
+    {
+      "timestamp_s": 1800000000.8666666,
+      "intensity": 0.1450137620254601
+    },
+    {
+      "timestamp_s": 1800000000.9,
+      "intensity": 0.211794877719411
+    },
+    {
+      "timestamp_s": 1800000000.9333334,
+      "intensity": 0.12239385048948967
+    },
+    {
+      "timestamp_s": 1800000000.9666667,
+      "intensity": 0.5387911869740848
+    },
+    {
+      "timestamp_s": 1800000001.0,
+      "intensity": 0.1781076135346157
+    },
+    {
+      "timestamp_s": 1800000001.0333333,
+      "intensity": 0.2494268073457616
+    },
+    {
+      "timestamp_s": 1800000001.0666666,
+      "intensity": 0.561654320185792
+    },
+    {
+      "timestamp_s": 1800000001.1,
+      "intensity": 0.6682455680105442
+    },
+    {
+      "timestamp_s": 1800000001.1333334,
+      "intensity": 0.7771862441479847
+    },
+    {
+      "timestamp_s": 1800000001.1666667,
+      "intensity": 0.756221131491432
+    },
+    {
+      "timestamp_s": 1800000001.2,
+      "intensity": 0.7853773198421848
+    },
+    {
+      "timestamp_s": 1800000001.2333333,
+      "intensity": 0.5998385077942859
+    },
+    {
+      "timestamp_s": 1800000001.2666667,
+      "intensity": 0.6736084922617966
+    },
+    {
+      "timestamp_s": 1800000001.3,
+      "intensity": 0.8977965695639049
+    },
+    {
+      "timestamp_s": 1800000001.3333333,
+      "intensity": 0.7449410865075131
+    },
+    {
+      "timestamp_s": 1800000001.3666666,
+      "intensity": 0.7640248230892587
+    },
+    {
+      "timestamp_s": 1800000001.4,
+      "intensity": 0.673178511161057
+    },
+    {
+      "timestamp_s": 1800000001.4333334,
+      "intensity": 0.5897927810195079
+    },
+    {
+      "timestamp_s": 1800000001.4666667,
+      "intensity": 0.714302564511881
+    },
+    {
+      "timestamp_s": 1800000001.5,
+      "intensity": 0.8068439053813655
+    },
+    {
+      "timestamp_s": 1800000001.5333333,
+      "intensity": 0.5328659581224826
+    },
+    {
+      "timestamp_s": 1800000001.5666666,
+      "intensity": 0.7525190907973415
+    },
+    {
+      "timestamp_s": 1800000001.6,
+      "intensity": 0.6107447384876987
+    },
+    {
+      "timestamp_s": 1800000001.6333334,
+      "intensity": 0.7751403900118665
+    },
+    {
+      "timestamp_s": 1800000001.6666667,
+      "intensity": 0.681818393563179
+    },
+    {
+      "timestamp_s": 1800000001.7,
+      "intensity": 0.7767349686715621
+    },
+    {
+      "timestamp_s": 1800000001.7333333,
+      "intensity": 0.8621267984821868
+    },
+    {
+      "timestamp_s": 1800000001.7666667,
+      "intensity": 0.7600030597612958
+    },
+    {
+      "timestamp_s": 1800000001.8,
+      "intensity": 0.6485695757067731
+    },
+    {
+      "timestamp_s": 1800000001.8333333,
+      "intensity": 0.8423090310951058
+    },
+    {
+      "timestamp_s": 1800000001.8666666,
+      "intensity": 0.5542261861768274
+    },
+    {
+      "timestamp_s": 1800000001.9,
+      "intensity": 0.7770724263102545
+    },
+    {
+      "timestamp_s": 1800000001.9333334,
+      "intensity": 0.7111675393037205
+    },
+    {
+      "timestamp_s": 1800000001.9666667,
+      "intensity": 0.741112987466073
+    },
+    {
+      "timestamp_s": 1800000002.0,
+      "intensity": 0.6681976361536694
+    },
+    {
+      "timestamp_s": 1800000002.0333333,
+      "intensity": 0.8545687653190029
+    },
+    {
+      "timestamp_s": 1800000002.0666666,
+      "intensity": 0.7043578742653192
+    },
+    {
+      "timestamp_s": 1800000002.1,
+      "intensity": 0.6603414472959507
+    },
+    {
+      "timestamp_s": 1800000002.1333334,
+      "intensity": 0.7708348381171656
+    },
+    {
+      "timestamp_s": 1800000002.1666667,
+      "intensity": 0.6103900200567371
+    },
+    {
+      "timestamp_s": 1800000002.2,
+      "intensity": 0.8235373573962669
+    },
+    {
+      "timestamp_s": 1800000002.2333333,
+      "intensity": 0.7565929450310122
+    },
+    {
+      "timestamp_s": 1800000002.2666667,
+      "intensity": 0.7215207621716149
+    },
+    {
+      "timestamp_s": 1800000002.3,
+      "intensity": 0.5993324482260369
+    },
+    {
+      "timestamp_s": 1800000002.3333333,
+      "intensity": 0.7974525992919475
+    },
+    {
+      "timestamp_s": 1800000002.3666666,
+      "intensity": 0.826278993067735
+    },
+    {
+      "timestamp_s": 1800000002.4,
+      "intensity": 0.766874389112563
+    },
+    {
+      "timestamp_s": 1800000002.4333334,
+      "intensity": 0.8667453817474416
+    },
+    {
+      "timestamp_s": 1800000002.4666667,
+      "intensity": 0.7383176393076687
+    },
+    {
+      "timestamp_s": 1800000002.5,
+      "intensity": 0.6439925741036412
+    },
+    {
+      "timestamp_s": 1800000002.5333333,
+      "intensity": 0.6636751210838556
+    },
+    {
+      "timestamp_s": 1800000002.5666666,
+      "intensity": 0.7632289675790664
+    },
+    {
+      "timestamp_s": 1800000002.6,
+      "intensity": 0.705280232765019
+    },
+    {
+      "timestamp_s": 1800000002.6333334,
+      "intensity": 0.7730968022081375
+    },
+    {
+      "timestamp_s": 1800000002.6666667,
+      "intensity": 0.7589855115277128
+    },
+    {
+      "timestamp_s": 1800000002.7,
+      "intensity": 0.7577098429283382
+    },
+    {
+      "timestamp_s": 1800000002.7333333,
+      "intensity": 0.8563548348252279
+    },
+    {
+      "timestamp_s": 1800000002.7666667,
+      "intensity": 0.7038884396430992
+    },
+    {
+      "timestamp_s": 1800000002.8,
+      "intensity": 0.7984479809382788
+    },
+    {
+      "timestamp_s": 1800000002.8333333,
+      "intensity": 0.7208865300996194
+    },
+    {
+      "timestamp_s": 1800000002.8666666,
+      "intensity": 0.8371463677124807
+    },
+    {
+      "timestamp_s": 1800000002.9,
+      "intensity": 0.5720449029700356
+    },
+    {
+      "timestamp_s": 1800000002.9333334,
+      "intensity": 0.7903493084510488
+    },
+    {
+      "timestamp_s": 1800000002.9666667,
+      "intensity": 0.7533343643674126
+    }
+  ],
+  "_bandit_decision_snapshot": {
+    "selection_method": "thompson_sampling",
+    "selection_time_utc": "2027-01-15T08:00:03Z",
+    "experiment_id": 0,
+    "policy_version": "thompson_sampling_v1",
+    "selected_arm_id": "direct_question",
+    "candidate_arm_ids": [
+      "direct_question"
+    ],
+    "posterior_by_arm": {
+      "direct_question": {
+        "alpha": 1.0,
+        "beta": 1.0
+      }
+    },
+    "expected_greeting": "Hi! What's the best advice you've gotten today?",
+    "decision_context_hash": "19334dbd3f6e22b741622d2b714884fc401a7ae5209a662129739e93e3fbf74f"
+  },
+  "_experiment_code": "greeting_line_v1"
+}
