@@ -1,4 +1,4 @@
-"""Six-process desktop graph bootstrap (v4.0 §9 / WS3 P1).
+"""Six-process desktop graph bootstrap (v4.0 §9 / WS3 P1 + P2).
 
 Replaces the v3.4 docker-compose container topology with six named
 ``multiprocessing.Process`` children spawned via the ``spawn`` start
@@ -9,10 +9,10 @@ import discipline holds: ``torch`` / ``mediapipe`` / ``faster_whisper``
 ``services.desktop_app.processes.gpu_ml_worker`` and only after the
 spawned child re-imports it.
 
-Each process module exposes a ``run(shutdown_event)`` callable that
-loops until the event is set. The IPC plumbing for actual segment
-dispatch lands in WS3 P2; Phase 1 only proves the spawn graph and the
-import isolation contract.
+Each process module exposes a ``run(shutdown_event, channels)``
+callable. ``channels`` is the :class:`IpcChannels` bundle carrying the
+multiprocessing queues that knit the graph together (Phase 2 wires
+``ml_inbox`` between ``module_c_orchestrator`` and ``gpu_ml_worker``).
 """
 
 from __future__ import annotations
@@ -23,6 +23,8 @@ import multiprocessing as mp
 import multiprocessing.context as mpcontext
 import multiprocessing.synchronize as mpsync
 from dataclasses import dataclass, field
+
+from services.desktop_app.ipc import IpcChannels
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +46,11 @@ PROCESS_MODULES: dict[str, str] = {
 ML_LIB_ROOTS: frozenset[str] = frozenset({"torch", "mediapipe", "faster_whisper", "ctranslate2"})
 
 
-def _launch(module_name: str, shutdown_event: mpsync.Event) -> None:
+def _launch(
+    module_name: str,
+    shutdown_event: mpsync.Event,
+    channels: IpcChannels,
+) -> None:
     """Pickleable child entrypoint — runs only inside the spawned child.
 
     Spawn-mode children re-import this module to find ``_launch``, then
@@ -53,7 +59,7 @@ def _launch(module_name: str, shutdown_event: mpsync.Event) -> None:
     ``gpu_ml_worker``.
     """
     mod = importlib.import_module(module_name)
-    mod.run(shutdown_event=shutdown_event)
+    mod.run(shutdown_event=shutdown_event, channels=channels)
 
 
 @dataclass
@@ -69,15 +75,18 @@ class ProcessGraph:
 
     children: dict[str, mpcontext.SpawnProcess] = field(default_factory=dict)
     shutdown_events: dict[str, mpsync.Event] = field(default_factory=dict)
+    channels: IpcChannels | None = field(default=None)
 
     def start_all(self) -> None:
         ctx = mp.get_context("spawn")
+        if self.channels is None:
+            self.channels = IpcChannels(ml_inbox=ctx.Queue())
         for name, module in PROCESS_MODULES.items():
             evt = ctx.Event()
             proc = ctx.Process(
                 name=name,
                 target=_launch,
-                args=(module, evt),
+                args=(module, evt, self.channels),
                 daemon=False,
             )
             proc.start()

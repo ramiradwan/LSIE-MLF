@@ -16,10 +16,13 @@ from __future__ import annotations
 import logging
 import multiprocessing.synchronize as mpsync
 
+from services.desktop_app.ipc import IpcChannels
+
 logger = logging.getLogger(__name__)
 
 
-def run(shutdown_event: mpsync.Event) -> None:
+def run(shutdown_event: mpsync.Event, channels: IpcChannels) -> None:
+    del channels  # WS5 P4 wires the analytics inbox.
     logger.info("analytics_state_worker started")
     shutdown_event.wait()
     logger.info("analytics_state_worker stopped")

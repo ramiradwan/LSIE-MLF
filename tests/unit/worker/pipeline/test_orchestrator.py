@@ -527,7 +527,9 @@ class TestOrchestrator:
         assert payload["segment_id"] == _expected_segment_id(payload)
         assert payload["_experiment_id"] == 0
         assert payload["_bandit_decision_snapshot"]["experiment_id"] == 0
-        assert base64.b64decode(payload["_audio_data"]) == audio
+        # WS3 P2: assemble_segment no longer base64-encodes _audio_data;
+        # the desktop IPC path moves audio through SharedMemory.
+        assert payload["_audio_data"] == audio
 
     def test_assemble_segment_prefers_ibi_over_session(self) -> None:
         orch = Orchestrator()
@@ -1113,23 +1115,48 @@ class TestOrchestrator:
         assert "random_seed" not in payload_snapshot
 
     def test_dispatch_payload_validates_model_and_omits_ineligible_physio(self) -> None:
-        orch = Orchestrator(session_id="88888888-8888-4888-8888-888888888888")
-        payload = orch.assemble_segment(b"\x01\x02", [])
-        payload["_physiological_context"] = {"streamer": None, "operator": None}
-        mock_task = MagicMock()
+        """WS3 P2: dispatch validates handoff and pushes IPC control message.
 
-        with patch("services.worker.tasks.inference.process_segment", mock_task):
+        The v3.4 Celery + base64 path is retired; the segment now travels
+        as a SharedMemory PCM block plus an ``InferenceControlMessage``.
+        ``_physiological_context`` with all-None roles is still pruned by
+        ``sanitize_json_payload``.
+        """
+        from queue import Queue as ThreadQueue
+
+        from services.desktop_app.ipc.control_messages import InferenceControlMessage
+        from services.desktop_app.ipc.shared_buffers import (
+            PcmBlockMetadata,
+            read_pcm_block,
+        )
+
+        ipc_queue: ThreadQueue[Any] = ThreadQueue()
+        orch = Orchestrator(
+            session_id="88888888-8888-4888-8888-888888888888",
+            ipc_queue=ipc_queue,
+        )
+        try:
+            payload = orch.assemble_segment(b"\x01\x02", [])
+            payload["_physiological_context"] = {"streamer": None, "operator": None}
+
             orch._dispatch_payload(payload)
 
-        mock_task.delay.assert_called_once()
-        dispatched = mock_task.delay.call_args.args[0]
-        handoff_fields = {
-            key: value
-            for key, value in dispatched.items()
-            if key not in {"_audio_data", "_frame_data", "_experiment_code"}
-        }
-        InferenceHandoffPayload.model_validate(handoff_fields)
-        assert "_physiological_context" not in dispatched
-        assert "sampled_theta_by_arm" not in dispatched["_bandit_decision_snapshot"]
-        assert "random_seed" not in dispatched["_bandit_decision_snapshot"]
-        assert base64.b64decode(dispatched["_audio_data"]) == b"\x01\x02"
+            assert ipc_queue.qsize() == 1
+            raw = ipc_queue.get_nowait()
+            msg = InferenceControlMessage.model_validate(raw)
+
+            InferenceHandoffPayload.model_validate(msg.handoff)
+            assert "_physiological_context" not in msg.handoff
+            assert "sampled_theta_by_arm" not in msg.handoff["_bandit_decision_snapshot"]
+            assert "random_seed" not in msg.handoff["_bandit_decision_snapshot"]
+
+            recovered = read_pcm_block(
+                PcmBlockMetadata(
+                    name=msg.audio.name,
+                    byte_length=msg.audio.byte_length,
+                    sha256=msg.audio.sha256,
+                )
+            )
+            assert recovered == b"\x01\x02"
+        finally:
+            orch.close_inflight_blocks()

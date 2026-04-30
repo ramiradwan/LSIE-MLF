@@ -29,6 +29,9 @@ import socket
 import threading
 import time
 
+from services.desktop_app.ipc import IpcChannels
+from services.desktop_app.ipc.cleanup import recover_orphan_ipc_blocks
+
 logger = logging.getLogger(__name__)
 
 API_HOST = "127.0.0.1"
@@ -136,8 +139,10 @@ class _EmptyPool:
         return None
 
 
-def run(shutdown_event: mpsync.Event) -> None:
+def run(shutdown_event: mpsync.Event, channels: IpcChannels) -> None:
+    del channels  # ui_api_shell does not consume IPC channels directly.
     logger.info("ui_api_shell starting")
+    recover_orphan_ipc_blocks()
 
     # Late imports — preserves the WS3 P1 ML-isolation canary contract
     # and keeps the parent process free of FastAPI/Qt state.

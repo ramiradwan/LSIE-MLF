@@ -17,10 +17,16 @@ from __future__ import annotations
 import logging
 import multiprocessing.synchronize as mpsync
 
+from services.desktop_app.ipc import IpcChannels
+
 logger = logging.getLogger(__name__)
 
 
-def run(shutdown_event: mpsync.Event) -> None:
+def run(shutdown_event: mpsync.Event, channels: IpcChannels) -> None:
+    # Phase 2 wires the IPC channel into the orchestrator's dispatch
+    # path. Live audio feed from capture_supervisor lands in WS3 P3;
+    # until then this stub holds the channel reference for inspection.
+    del channels
     logger.info("module_c_orchestrator started")
     shutdown_event.wait()
     logger.info("module_c_orchestrator stopped")

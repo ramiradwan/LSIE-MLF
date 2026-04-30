@@ -15,10 +15,13 @@ from __future__ import annotations
 import logging
 import multiprocessing.synchronize as mpsync
 
+from services.desktop_app.ipc import IpcChannels
+
 logger = logging.getLogger(__name__)
 
 
-def run(shutdown_event: mpsync.Event) -> None:
+def run(shutdown_event: mpsync.Event, channels: IpcChannels) -> None:
+    del channels  # WS3 P3 wires the orchestrator audio feed.
     logger.info("capture_supervisor started")
     shutdown_event.wait()
     logger.info("capture_supervisor stopped")

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import logging
 import multiprocessing.synchronize as mpsync
+import queue
 
 # The four ML library imports below are intentional at module top
 # level: they prove the v4.0 §9 isolation contract. The canary test
@@ -30,10 +31,33 @@ import faster_whisper  # noqa: F401
 import mediapipe  # noqa: F401
 import torch  # noqa: F401
 
+from services.desktop_app.ipc import IpcChannels
+from services.desktop_app.ipc.control_messages import InferenceControlMessage
+
 logger = logging.getLogger(__name__)
 
+INBOX_POLL_TIMEOUT_S = 0.5
 
-def run(shutdown_event: mpsync.Event) -> None:
+
+def run(shutdown_event: mpsync.Event, channels: IpcChannels) -> None:
     logger.info("gpu_ml_worker started")
-    shutdown_event.wait()
+    while not shutdown_event.is_set():
+        try:
+            raw = channels.ml_inbox.get(timeout=INBOX_POLL_TIMEOUT_S)
+        except queue.Empty:
+            continue
+        try:
+            msg = InferenceControlMessage.model_validate(raw)
+        except Exception:  # noqa: BLE001
+            logger.exception("gpu_ml_worker discarded malformed control message")
+            continue
+        # Phase 2: just acknowledge receipt — actual ML inference call
+        # (faster-whisper + face mesh + cross-encoder) lands when WS2
+        # P2 settles the device-resolver and the GPU runtime path.
+        logger.info(
+            "gpu_ml_worker received segment_id=%s audio=%s/%d bytes",
+            msg.handoff.get("segment_id", "?"),
+            msg.audio.name,
+            msg.audio.byte_length,
+        )
     logger.info("gpu_ml_worker stopped")

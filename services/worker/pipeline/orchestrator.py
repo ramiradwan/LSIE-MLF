@@ -300,6 +300,7 @@ class Orchestrator:
         stream_url: str = "",
         session_id: str | None = None,
         experiment_id: str = "greeting_line_v1",
+        ipc_queue: Any = None,
     ) -> None:
         """
         Initialize orchestrator with session, experiment, video, and AU12 state.
@@ -308,6 +309,12 @@ class Orchestrator:
             stream_url: TikTok stream URL for this session.
             session_id: UUID for this session (auto-generated if None).
             experiment_id: Thompson Sampling experiment ID (§4.E.1).
+            ipc_queue: ``multiprocessing.Queue``-like sink for v4.0 desktop
+                IPC dispatch. When ``None``, ``_dispatch_payload`` logs a
+                warning and discards the segment — useful for unit tests
+                that exercise other parts of the pipeline. The v4.0
+                ``module_c_orchestrator`` process supplies the real queue
+                via ``IpcChannels.ml_inbox``.
         """
         self.drift_corrector = DriftCorrector()
         replay_fixture = os.environ.get("REPLAY_CAPTURE_FIXTURE")
@@ -342,6 +349,14 @@ class Orchestrator:
         self._expected_greeting: str = ""
         self._bandit_decision_snapshot: dict[str, Any] | None = None
         self._segment_window_anchor_utc: datetime | None = None
+
+        # WS3 P2 — IPC dispatch state. The orchestrator keeps the most
+        # recent N PcmBlock handles alive so consumers (gpu_ml_worker)
+        # can attach to them; the kernel auto-reclaims older blocks
+        # when they fall out of the bounded buffer. N=8 covers ~4 min
+        # of 30-second segments, far longer than ML inference latency.
+        self._ipc_queue: Any = ipc_queue
+        self._inflight_blocks: deque[Any] = deque(maxlen=8)
 
         # Video capture (lazy-init in run() for live capture).
         # Replay mode binds the same source to the video and audio surfaces.
@@ -919,10 +934,7 @@ class Orchestrator:
         §7E/§11.3 — Stable segment_id = SHA-256 over session/window identity.
         """
         from packages.schemas.inference_handoff import InferenceHandoffPayload
-        from services.worker.pipeline.serialization import (
-            encode_bytes_fields,
-            sanitize_json_payload,
-        )
+        from services.worker.pipeline.serialization import sanitize_json_payload
 
         assembly_started = time.perf_counter()
         self._segment_counter += 1
@@ -1023,7 +1035,11 @@ class Orchestrator:
         result["_experiment_code"] = self._experiment_id
 
         result = sanitize_json_payload(result)
-        result = encode_bytes_fields(result, ["_audio_data", "_frame_data"])
+        # WS3 P2: the v3.4 base64 round-trip on _audio_data / _frame_data is
+        # retired. The desktop IPC path moves audio through SharedMemory
+        # (services.desktop_app.ipc.shared_buffers) and frames stay
+        # process-local per the v4.0 §9 invariant that decoded video
+        # frames never cross a process boundary.
         logger.info(
             "BENCHMARK segment_assembly_ms=%.3f segment_id=%s",
             (time.perf_counter() - assembly_started) * 1000.0,
@@ -1033,14 +1049,25 @@ class Orchestrator:
         return result
 
     def _dispatch_payload(self, payload: dict[str, Any]) -> None:
-        """Validate the typed handoff surface and dispatch it to Module D."""
+        """Validate the typed handoff and dispatch via v4.0 IPC.
+
+        WS3 P2 retires the v3.4 Celery + Redis dispatch path. The 30 s
+        PCM window travels via ``shared_buffers.write_pcm_block``; its
+        SharedMemory metadata is wrapped into an
+        ``InferenceControlMessage`` and pushed onto the IPC queue. The
+        ``_audio_data`` base64 round-trip is dropped on the desktop
+        path; ``sanitize_json_payload`` is retained because it also
+        prunes empty ``_physiological_context`` and absent
+        ``_bandit_decision_snapshot`` optionals.
+        """
         try:
             from packages.schemas.inference_handoff import InferenceHandoffPayload
-            from services.worker.pipeline.serialization import (
-                encode_bytes_fields,
-                sanitize_json_payload,
+            from services.desktop_app.ipc.control_messages import (
+                AudioBlockRef,
+                InferenceControlMessage,
             )
-            from services.worker.tasks.inference import process_segment
+            from services.desktop_app.ipc.shared_buffers import write_pcm_block
+            from services.worker.pipeline.serialization import sanitize_json_payload
 
             transport_fields = ("_audio_data", "_frame_data", "_experiment_code")
             transport_payload = {key: payload[key] for key in transport_fields if key in payload}
@@ -1049,17 +1076,63 @@ class Orchestrator:
             }
 
             validated = InferenceHandoffPayload.model_validate(sanitize_json_payload(handoff_data))
-            dispatch_payload: dict[str, Any] = validated.model_dump(mode="json", by_alias=True)
-            dispatch_payload = sanitize_json_payload(dispatch_payload)
-            dispatch_payload.update(transport_payload)
-            dispatch_payload = encode_bytes_fields(
-                dispatch_payload,
-                ["_audio_data", "_frame_data"],
+            handoff_dump: dict[str, Any] = sanitize_json_payload(
+                validated.model_dump(mode="json", by_alias=True)
             )
 
-            process_segment.delay(dispatch_payload)
+            audio = transport_payload.pop("_audio_data", None)
+            # WS3 P2 / v4.0 §9 invariant: decoded video frames never cross
+            # a process boundary. Drop _frame_data unconditionally — it
+            # was a v3.4 Celery-path artifact and is observed nowhere on
+            # the desktop graph.
+            transport_payload.pop("_frame_data", None)
+            if not isinstance(audio, bytes | bytearray) or not audio:
+                logger.warning(
+                    "dispatch skipped: missing or empty _audio_data on segment %s",
+                    handoff_dump.get("segment_id"),
+                )
+                return
+
+            if self._ipc_queue is None:
+                logger.warning(
+                    "dispatch skipped: no IPC queue configured on Orchestrator (segment_id=%s)",
+                    handoff_dump.get("segment_id"),
+                )
+                return
+
+            block = write_pcm_block(bytes(audio))
+            evicted = self._track_block(block)
+            if evicted is not None:
+                evicted.close_and_unlink()
+
+            msg = InferenceControlMessage(
+                handoff=handoff_dump,
+                audio=AudioBlockRef.from_metadata(block.metadata),
+                forward_fields=transport_payload,
+            )
+            self._ipc_queue.put(msg.model_dump(mode="json"))
         except Exception as exc:
-            logger.error("Failed to dispatch segment: %s", exc)
+            logger.error("Failed to dispatch segment via IPC: %s", exc)
+
+    def _track_block(self, block: Any) -> Any | None:
+        """Append ``block`` to the bounded inflight buffer; return any eviction."""
+        evicted: Any | None = None
+        if (
+            self._inflight_blocks.maxlen is not None
+            and len(self._inflight_blocks) == self._inflight_blocks.maxlen
+        ):
+            evicted = self._inflight_blocks[0]
+        self._inflight_blocks.append(block)
+        return evicted
+
+    def close_inflight_blocks(self) -> None:
+        """Release every retained PcmBlock handle. Idempotent."""
+        while self._inflight_blocks:
+            block = self._inflight_blocks.popleft()
+            try:
+                block.close_and_unlink()
+            except Exception:  # noqa: BLE001
+                logger.debug("inflight block cleanup failed", exc_info=True)
 
     def _drain_event_buffer(self) -> list[dict[str, Any]]:
         """Drain queued ground-truth events into the current segment payload."""

@@ -96,6 +96,7 @@ def test_process_graph_starts_and_stops_cleanly() -> None:
         for proc in graph.children.values():
             assert proc.is_alive(), f"{proc.name} failed to start"
             assert proc.pid is not None
+        assert graph.channels is not None
     finally:
         graph.stop_all(timeout=15.0)
 
