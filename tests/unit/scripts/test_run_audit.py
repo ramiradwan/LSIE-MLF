@@ -88,19 +88,22 @@ def test_run_audit_prints_placeholder_report_and_returns_nonzero(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
+    # Use synthetic item numbers (98, 99) that no concrete verifier registers
+    # against, so the harness must fall back to the placeholder mechanism. The
+    # real §13.1 / §13.2 ids are now backed by concrete mechanical verifiers.
     pdf_path = _write_pdf(tmp_path / "docs" / "tech-spec-vsynthetic.pdf")
     spec_content = {
         "audit_checklist": {
             "items": [
                 {
-                    "item_number": 1,
-                    "audit_item": "Directory structure",
-                    "verification_criterion": "Repository directories match Section 3.",
+                    "item_number": 98,
+                    "audit_item": "Synthetic placeholder A",
+                    "verification_criterion": "Body text exercising the placeholder mechanism.",
                 },
                 {
-                    "item_number": 2,
-                    "audit_item": "Docker topology",
-                    "verification_criterion": "Containers are defined correctly.",
+                    "item_number": 99,
+                    "audit_item": "Synthetic placeholder B",
+                    "verification_criterion": "Second body text for placeholder mechanism.",
                 },
             ]
         }
@@ -118,10 +121,10 @@ def test_run_audit_prints_placeholder_report_and_returns_nonzero(
     captured = capsys.readouterr()
     assert exit_code == 1
     assert observed_paths == [pdf_path]
-    assert "| 13.1 | Directory structure | FAIL |" in captured.out
-    assert "| 13.2 | Docker topology | FAIL |" in captured.out
+    assert "| 13.98 | Synthetic placeholder A | FAIL |" in captured.out
+    assert "| 13.99 | Synthetic placeholder B | FAIL |" in captured.out
     assert "not yet implemented" in captured.out
-    assert "Repository directories match Section 3." in captured.out
+    assert "Body text exercising the placeholder mechanism." in captured.out
 
 
 def test_run_audit_honors_pre_registered_shared_verifier(
@@ -130,19 +133,20 @@ def test_run_audit_honors_pre_registered_shared_verifier(
     capsys: pytest.CaptureFixture[str],
     fresh_default_audit_registry: AuditRegistry,
 ) -> None:
+    # Use synthetic item numbers 98/99 — see comment on the placeholder test.
     pdf_path = _write_pdf(tmp_path / "docs" / "tech-spec-vsynthetic.pdf")
     spec_content = {
         "audit_checklist": {
             "items": [
                 {
-                    "item_number": 1,
-                    "audit_item": "Directory structure",
-                    "verification_criterion": "Repository directories match Section 3.",
+                    "item_number": 98,
+                    "audit_item": "Synthetic shared-verifier item",
+                    "verification_criterion": "Body text routed to a pre-registered verifier.",
                 },
                 {
-                    "item_number": 2,
-                    "audit_item": "Docker topology",
-                    "verification_criterion": "Containers are defined correctly.",
+                    "item_number": 99,
+                    "audit_item": "Synthetic placeholder fallback",
+                    "verification_criterion": "Body text routed to the placeholder mechanism.",
                 },
             ]
         }
@@ -150,8 +154,8 @@ def test_run_audit_honors_pre_registered_shared_verifier(
     observed_paths: list[Path] = []
     observed_verifier_calls: list[tuple[Path, Any, Section13Item]] = []
 
-    @register_audit_verifier("13.1")
-    def verify_directory(ctx: AuditContext, current_item: Section13Item) -> AuditResult:
+    @register_audit_verifier("13.98")
+    def verify_synthetic(ctx: AuditContext, current_item: Section13Item) -> AuditResult:
         observed_verifier_calls.append((ctx.repo_root, ctx.spec_content, current_item))
         return AuditResult(
             current_item.item_id,
@@ -176,15 +180,18 @@ def test_run_audit_honors_pre_registered_shared_verifier(
     assert observed_repo_root == tmp_path.resolve()
     assert observed_spec_content is spec_content
     assert observed_item == Section13Item(
-        "13.1", "Directory structure", "Repository directories match Section 3."
+        "13.98",
+        "Synthetic shared-verifier item",
+        "Body text routed to a pre-registered verifier.",
     )
-    assert fresh_default_audit_registry.item_ids == ("13.1", "13.2")
+    assert fresh_default_audit_registry.item_ids == ("13.98", "13.99")
     assert (
-        "| 13.1 | Directory structure | PASS | real shared verifier executed | — |" in captured.out
+        "| 13.98 | Synthetic shared-verifier item | PASS | real shared verifier executed | — |"
+        in captured.out
     )
-    assert "Verifier for §13.1 is not yet implemented" not in captured.out
-    assert "| 13.2 | Docker topology | FAIL |" in captured.out
-    assert "Verifier for §13.2 is not yet implemented" in captured.out
+    assert "Verifier for §13.98 is not yet implemented" not in captured.out
+    assert "| 13.99 | Synthetic placeholder fallback | FAIL |" in captured.out
+    assert "Verifier for §13.99 is not yet implemented" in captured.out
 
 
 def test_main_returns_nonzero_on_discovery_failure(

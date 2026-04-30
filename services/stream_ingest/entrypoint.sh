@@ -55,7 +55,7 @@ start_capture() {
         # §12.1.3 Module A — Worker Process Crash: scrcpy/pipe breaks are
         # detected by wait -n below and the capture loop recreates both streams.
         # §12.1.4 Module A — Queue Overload: the IPC boundary is the bounded
-        # kernel pipe (AUDIO_PIPE/VIDEO_PIPE); no unbounded user-space queue is
+        # IPC Pipe (AUDIO_PIPE/VIDEO_PIPE); no unbounded user-space queue is
         # allocated in this container.
         # 1. Cleanup: Kill zombie ADB network tunnels from previous runs
         adb forward --remove-all 2>/dev/null || true

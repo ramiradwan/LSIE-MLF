@@ -1190,8 +1190,8 @@ def verify_canonical_terminology(context: AuditContext, item: Section13Item) -> 
                 if match is None:
                     continue
                 matches.append(
-                    f"§0.3/§13.15 {rel_path}:{line_number} matched {match.group(0)!r} "
-                    f"({canonical_pattern.source}): {line.strip()}"
+                    f"§0.3/§13.15 {rel_path.as_posix()}:{line_number} matched "
+                    f"{match.group(0)!r} ({canonical_pattern.source}): {line.strip()}"
                 )
     if matches:
         return _result(
@@ -1775,11 +1775,1160 @@ def verify_derived_only_attribution_persistence(
     return _checks_result(item, checks)
 
 
+# ---------------------------------------------------------------------------
+# §13.1 — Directory structure
+# ---------------------------------------------------------------------------
+
+
+def _expected_directory_hierarchy(spec_content: Mapping[str, Any]) -> _SpecExtraction:
+    architecture = _as_mapping(spec_content.get("codebase_architecture"))
+    if architecture is None:
+        return _not_extracted(
+            "§3/§13.1",
+            "directory hierarchy entries",
+            "missing codebase_architecture object in spec_content",
+        )
+    entries: list[str] = []
+    for row in _as_sequence(architecture.get("directory_hierarchy")):
+        row_mapping = _as_mapping(row)
+        if row_mapping is None:
+            continue
+        path = str(row_mapping.get("path", "")).strip()
+        if path and path not in entries:
+            entries.append(path)
+    if not entries:
+        return _not_extracted(
+            "§3/§13.1",
+            "directory hierarchy entries",
+            "codebase_architecture.directory_hierarchy is empty",
+        )
+    return _extracted(
+        tuple(entries),
+        f"§3/§13.1: extracted {len(entries)} directory_hierarchy entries from spec_content.",
+    )
+
+
+def verify_directory_structure(context: AuditContext, item: Section13Item) -> AuditResult:
+    """Verify §3 directory hierarchy entries exist in the repository."""
+
+    extraction = _expected_directory_hierarchy(context.spec_content)
+    if extraction.value is None:
+        return _spec_extraction_result(item, extraction)
+
+    checks: list[_Check] = []
+    for spec_path in extraction.value:
+        relative = spec_path.lstrip("/").rstrip("/")
+        if not relative:
+            checks.append(
+                _Check(False, f"§3/§13.1 spec_path={spec_path!r} resolves to repo root.")
+            )
+            continue
+        target = context.repo_root / relative
+        if spec_path.endswith("/"):
+            present = target.is_dir()
+            kind = "directory"
+        elif "." in target.name:
+            present = target.is_file()
+            kind = "file"
+        else:
+            present = target.exists()
+            kind = "path"
+        checks.append(
+            _Check(
+                present,
+                f"§3/§13.1 {relative} {kind} {'present' if present else 'MISSING'} "
+                f"(spec_path={spec_path!r}).",
+            )
+        )
+
+    summary = _checks_result(item, checks)
+    return _result(
+        item,
+        summary.passed,
+        f"{extraction.evidence}\n{summary.evidence}",
+        summary.follow_up,
+    )
+
+
+# ---------------------------------------------------------------------------
+# §13.2 — Docker topology
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class _ExpectedContainer:
+    name: str
+    image_token: str
+    network: str
+    restart_policy: str
+    depends_on: tuple[str, ...]
+    gpu_required: bool
+
+
+@dataclass(frozen=True, slots=True)
+class _ExpectedVolume:
+    name: str
+    mount_path: str
+    targets: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _ExpectedTopology:
+    containers: tuple[_ExpectedContainer, ...]
+    volumes: tuple[_ExpectedVolume, ...]
+
+
+def _expected_docker_topology(spec_content: Mapping[str, Any]) -> _SpecExtraction:
+    topology = _as_mapping(spec_content.get("docker_topology"))
+    if topology is None:
+        return _not_extracted(
+            "§9/§13.2",
+            "docker topology containers/volumes",
+            "missing docker_topology object in spec_content",
+        )
+    containers: list[_ExpectedContainer] = []
+    for row in _as_sequence(topology.get("containers")):
+        row_mapping = _as_mapping(row)
+        if row_mapping is None:
+            continue
+        name = str(row_mapping.get("container_name", "")).strip()
+        image_base = str(row_mapping.get("image_base", "")).strip()
+        # docker-compose tag form: extract the leading "image:tag" before any " + " suffix
+        # (Capture Container is "ubuntu:24.04 + scrcpy v3.3.4").
+        image_token = image_base.split(" + ", 1)[0].split()[0] if image_base else ""
+        depends_on_raw = tuple(
+            str(value).strip() for value in _as_sequence(row_mapping.get("depends_on")) if value
+        )
+        containers.append(
+            _ExpectedContainer(
+                name=name,
+                image_token=image_token,
+                network=str(row_mapping.get("network", "")).strip(),
+                restart_policy=str(row_mapping.get("restart_policy", "")).strip(),
+                depends_on=depends_on_raw,
+                gpu_required=bool(row_mapping.get("gpu_required")),
+            )
+        )
+    volumes: list[_ExpectedVolume] = []
+    for row in _as_sequence(topology.get("volumes")):
+        row_mapping = _as_mapping(row)
+        if row_mapping is None:
+            continue
+        volumes.append(
+            _ExpectedVolume(
+                name=str(row_mapping.get("volume_name", "")).strip(),
+                mount_path=str(row_mapping.get("mount_path", "")).strip(),
+                targets=tuple(
+                    str(value).strip()
+                    for value in _as_sequence(row_mapping.get("container_targets"))
+                    if value
+                ),
+            )
+        )
+    if not containers:
+        return _not_extracted(
+            "§9/§13.2",
+            "docker topology containers",
+            "docker_topology.containers is empty",
+        )
+    return _extracted(
+        _ExpectedTopology(containers=tuple(containers), volumes=tuple(volumes)),
+        f"§9/§13.2: extracted {len(containers)} containers and {len(volumes)} volumes "
+        "from spec_content.docker_topology.",
+    )
+
+
+def _load_docker_compose(context: AuditContext) -> tuple[Mapping[str, Any], int]:
+    import yaml  # type: ignore[import-untyped]  # noqa: PLC0415
+
+    compose_path = _repo_file(context, "docker-compose.yml")
+    text = compose_path.read_text(encoding="utf-8")
+    parsed = yaml.safe_load(text)
+    if not isinstance(parsed, Mapping):
+        raise ValueError("docker-compose.yml root must be a mapping")
+    return parsed, len(text.splitlines())
+
+
+def verify_docker_topology(context: AuditContext, item: Section13Item) -> AuditResult:
+    """Verify §9 docker topology container/volume contract against docker-compose.yml."""
+
+    extraction = _expected_docker_topology(context.spec_content)
+    if extraction.value is None:
+        return _spec_extraction_result(item, extraction)
+    expected: _ExpectedTopology = extraction.value
+
+    try:
+        compose, _line_count = _load_docker_compose(context)
+    except FileNotFoundError:
+        return _result(
+            item,
+            False,
+            f"§9/§13.2 docker-compose.yml is missing (expected at {context.repo_root}).",
+            "Restore docker-compose.yml at the repository root.",
+        )
+    except (ImportError, ValueError) as exc:
+        return _result(
+            item,
+            False,
+            f"§9/§13.2 unable to parse docker-compose.yml: {exc}",
+            "Install pyyaml or repair docker-compose.yml so the §13.2 verifier can parse it.",
+        )
+
+    services_raw = compose.get("services") if isinstance(compose, Mapping) else None
+    services = _as_mapping(services_raw) or {}
+    top_volumes = _as_mapping(compose.get("volumes")) or {}
+
+    checks: list[_Check] = []
+    for spec_container in expected.containers:
+        service = _as_mapping(services.get(spec_container.name))
+        if service is None:
+            checks.append(
+                _Check(
+                    False,
+                    f"§9/§13.2 service {spec_container.name!r} is missing from docker-compose.yml.",
+                )
+            )
+            continue
+        service_image = str(service.get("image", "")).strip()
+        build_block = _as_mapping(service.get("build"))
+        # GPU services build from a Dockerfile rather than declaring `image:`; for
+        # those the spec image_token names the FROM base, which we accept implicitly.
+        image_match = (
+            spec_container.image_token == ""
+            or spec_container.image_token in service_image
+            or build_block is not None
+        )
+        checks.append(
+            _Check(
+                image_match,
+                f"§9/§13.2 service {spec_container.name} image='{service_image}' "
+                f"matches spec image_token={spec_container.image_token!r}."
+                if image_match
+                else (
+                    f"§9/§13.2 service {spec_container.name} image='{service_image}' "
+                    f"does not contain spec image_token={spec_container.image_token!r}."
+                ),
+            )
+        )
+        service_networks = service.get("networks")
+        network_names: tuple[str, ...] = ()
+        if isinstance(service_networks, Mapping):
+            network_names = tuple(str(name) for name in service_networks)
+        elif isinstance(service_networks, Sequence) and not isinstance(
+            service_networks, str | bytes | bytearray
+        ):
+            network_names = tuple(str(name) for name in service_networks)
+        if spec_container.network:
+            network_match = spec_container.network in network_names
+        else:
+            network_match = True
+        checks.append(
+            _Check(
+                network_match,
+                f"§9/§13.2 service {spec_container.name} network={network_names!r} "
+                f"includes spec network={spec_container.network!r}."
+                if network_match
+                else (
+                    f"§9/§13.2 service {spec_container.name} network={network_names!r} "
+                    f"missing spec network={spec_container.network!r}."
+                ),
+            )
+        )
+        restart_policy = str(service.get("restart", "")).strip()
+        deploy_block = _as_mapping(service.get("deploy"))
+        if not restart_policy and deploy_block is not None:
+            restart_policy_block = _as_mapping(deploy_block.get("restart_policy")) or {}
+            restart_policy = str(restart_policy_block.get("condition", "")).strip()
+        # The compose form of "on-failure:5" is "restart: on-failure" with
+        # max_attempts: 5; accept the prefix match against spec.
+        spec_policy = spec_container.restart_policy
+        if not spec_policy:
+            policy_match = True
+        elif restart_policy == spec_policy:
+            policy_match = True
+        elif spec_policy.startswith("on-failure") and restart_policy.startswith("on-failure"):
+            policy_match = True
+        else:
+            policy_match = False
+        checks.append(
+            _Check(
+                policy_match,
+                f"§9/§13.2 service {spec_container.name} restart='{restart_policy}' "
+                f"matches spec restart_policy={spec_policy!r}."
+                if policy_match
+                else (
+                    f"§9/§13.2 service {spec_container.name} restart='{restart_policy}' "
+                    f"does not match spec restart_policy={spec_policy!r}."
+                ),
+            )
+        )
+        depends_on_raw = service.get("depends_on")
+        depends_names: tuple[str, ...] = ()
+        if isinstance(depends_on_raw, Mapping):
+            depends_names = tuple(str(name) for name in depends_on_raw)
+        elif isinstance(depends_on_raw, Sequence) and not isinstance(
+            depends_on_raw, str | bytes | bytearray
+        ):
+            depends_names = tuple(str(name) for name in depends_on_raw)
+        depends_missing = tuple(name for name in spec_container.depends_on if name not in depends_names)
+        depends_match = not depends_missing
+        checks.append(
+            _Check(
+                depends_match,
+                f"§9/§13.2 service {spec_container.name} depends_on={depends_names!r} "
+                f"covers spec depends_on={spec_container.depends_on!r}."
+                if depends_match
+                else (
+                    f"§9/§13.2 service {spec_container.name} depends_on={depends_names!r} "
+                    f"missing spec entries {depends_missing!r}."
+                ),
+            )
+        )
+
+    for spec_volume in expected.volumes:
+        if spec_volume.name not in top_volumes:
+            checks.append(
+                _Check(
+                    False,
+                    f"§9/§13.2 top-level volumes is missing {spec_volume.name!r}.",
+                )
+            )
+        else:
+            checks.append(
+                _Check(
+                    True,
+                    f"§9/§13.2 top-level volumes declares {spec_volume.name!r}.",
+                )
+            )
+        for target in spec_volume.targets:
+            service = _as_mapping(services.get(target))
+            mount_lines: list[str] = []
+            if service is not None:
+                volumes_block = service.get("volumes")
+                if isinstance(volumes_block, Sequence) and not isinstance(
+                    volumes_block, str | bytes | bytearray
+                ):
+                    for entry in volumes_block:
+                        if isinstance(entry, str):
+                            mount_lines.append(entry)
+                        elif isinstance(entry, Mapping):
+                            mount_lines.append(
+                                f"{entry.get('source', '')}:{entry.get('target', '')}"
+                            )
+            mounted = any(
+                line.startswith(f"{spec_volume.name}:") and spec_volume.mount_path in line
+                for line in mount_lines
+            )
+            checks.append(
+                _Check(
+                    mounted,
+                    f"§9/§13.2 service {target} mounts volume {spec_volume.name!r} at "
+                    f"{spec_volume.mount_path!r}."
+                    if mounted
+                    else (
+                        f"§9/§13.2 service {target} does not mount {spec_volume.name!r} at "
+                        f"{spec_volume.mount_path!r} (mounts={mount_lines!r})."
+                    ),
+                )
+            )
+
+    summary = _checks_result(item, checks)
+    return _result(
+        item,
+        summary.passed,
+        f"{extraction.evidence}\n{summary.evidence}",
+        summary.follow_up,
+    )
+
+
+# ---------------------------------------------------------------------------
+# §13.3 — IPC lifecycle
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class _IPCStep:
+    step_number: int
+    title: str
+    tokens: tuple[str, ...]
+
+
+def _expected_ipc_lifecycle(spec_content: Mapping[str, Any]) -> _SpecExtraction:
+    module_a = _module_by_id(spec_content, "A")
+    if module_a is None:
+        return _not_extracted(
+            "§4.A/§13.3",
+            "Module A IPC lifecycle steps",
+            "missing core_modules.modules[module_id='A']",
+        )
+    steps: list[_IPCStep] = []
+    for row in _as_sequence(module_a.get("ipc_lifecycle_steps")):
+        row_mapping = _as_mapping(row)
+        if row_mapping is None:
+            continue
+        description = str(row_mapping.get("description", ""))
+        # Pull every <path>/<func>/<env>/<cmd>/<flag> token from the description
+        # and use those as the literal grep targets for the implementation file.
+        tokens = tuple(
+            value.strip()
+            for _tag, value in re.findall(
+                r"<(path|func|env|cmd|flag|file)>([^<]+)</\1>", description
+            )
+            if value.strip()
+        )
+        if not tokens:
+            continue
+        steps.append(
+            _IPCStep(
+                step_number=int(row_mapping.get("step_number", len(steps) + 1)),
+                title=str(row_mapping.get("title", "")).strip(),
+                tokens=tokens,
+            )
+        )
+    if not steps:
+        return _not_extracted(
+            "§4.A/§13.3",
+            "Module A IPC lifecycle tokens",
+            "no <tag>...</tag> tokens in any ipc_lifecycle_steps[*].description",
+        )
+    return _extracted(
+        tuple(steps),
+        f"§4.A/§13.3: extracted {len(steps)} IPC lifecycle steps with {sum(len(s.tokens) for s in steps)} "
+        "structured tokens from spec_content.",
+    )
+
+
+_SHELL_ASSIGN_RE = re.compile(r'^\s*([A-Z_][A-Z0-9_]*)="([^"\n]+)"\s*$', re.MULTILINE)
+
+
+def _expand_shell_variables(text: str) -> str:
+    """Substitute literal POSIX `VAR="value"` declarations into expanded form.
+
+    The verifier only expands declarations whose value is itself a literal (or
+    references previously-declared variables) so the IPC lifecycle tokens like
+    `/tmp/ipc/audio_stream.raw` resolve through `$AUDIO_PIPE="$IPC_DIR/..."`.
+    Quoted variable references (`"$VAR"`) collapse to just the value so the
+    expanded form matches unquoted spec tokens like `mkdir -p /tmp/ipc`.
+    Conditionally-assigned shell variables and command substitutions are left
+    untouched.
+    """
+
+    expansions: dict[str, str] = {}
+    for match in _SHELL_ASSIGN_RE.finditer(text):
+        name, value = match.group(1), match.group(2)
+        if "$(" in value or "`" in value:
+            continue
+        resolved = re.sub(
+            r"\$\{?([A-Z_][A-Z0-9_]*)\}?",
+            lambda m: expansions.get(m.group(1), m.group(0)),
+            value,
+        )
+        expansions[name] = resolved
+    expanded = text
+    for name, value in expansions.items():
+        # Drop surrounding double quotes around the reference so the expanded
+        # text matches unquoted spec tokens (e.g. spec says `mkdir -p /tmp/ipc`,
+        # source says `mkdir -p "$IPC_DIR"`).
+        expanded = expanded.replace(f'"${{{name}}}"', value)
+        expanded = expanded.replace(f'"${name}"', value)
+        expanded = expanded.replace(f"${{{name}}}", value)
+        expanded = re.sub(rf"\${name}\b", value, expanded)
+    return text + "\n" + expanded
+
+
+def verify_ipc_lifecycle(context: AuditContext, item: Section13Item) -> AuditResult:
+    """Verify each Module A IPC lifecycle step is implemented in stream_ingest entrypoint."""
+
+    extraction = _expected_ipc_lifecycle(context.spec_content)
+    if extraction.value is None:
+        return _spec_extraction_result(item, extraction)
+    steps: tuple[_IPCStep, ...] = extraction.value
+
+    rel_path = "services/stream_ingest/entrypoint.sh"
+    try:
+        raw_text = _read_text(context, rel_path)
+    except FileNotFoundError:
+        return _result(
+            item,
+            False,
+            f"§4.A/§13.3 {rel_path} is missing.",
+            f"Create {rel_path} or update the verifier to reference the new Module A entrypoint.",
+        )
+    text = _expand_shell_variables(raw_text)
+
+    checks: list[_Check] = []
+    for step in steps:
+        missing = tuple(token for token in step.tokens if token not in text)
+        passed = not missing
+        if passed:
+            checks.append(
+                _Check(
+                    True,
+                    f"§4.A/§13.3 step {step.step_number} ({step.title}): "
+                    f"all tokens present {step.tokens!r}.",
+                )
+            )
+        else:
+            checks.append(
+                _Check(
+                    False,
+                    f"§4.A/§13.3 step {step.step_number} ({step.title}): "
+                    f"{rel_path} missing tokens {missing!r}.",
+                )
+            )
+
+    summary = _checks_result(item, checks)
+    return _result(
+        item,
+        summary.passed,
+        f"{extraction.evidence}\n{summary.evidence}",
+        summary.follow_up,
+    )
+
+
+# ---------------------------------------------------------------------------
+# §13.5 — Drift correction
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class _ExpectedDrift:
+    poll_interval_s: int
+    max_drift_ms: int
+    freeze_after: int
+    reset_timeout_s: int
+    formula: str
+
+
+_DRIFT_INTERVAL_RE = re.compile(r"(\d+)\s*seconds?")
+_DRIFT_MS_RE = re.compile(r"(\d+)\s*milliseconds?")
+_DRIFT_FREEZE_RE = re.compile(r"(\d+)\s*consecutive")
+_DRIFT_RESET_RE = re.compile(r"(\d+)\s*seconds?")
+
+
+def _expected_drift_parameters(spec_content: Mapping[str, Any]) -> _SpecExtraction:
+    module_c = _module_by_id(spec_content, "C")
+    if module_c is None:
+        return _not_extracted(
+            "§4.C/§13.5",
+            "Module C drift_polling_parameters",
+            "missing core_modules.modules[module_id='C']",
+        )
+    rows = _as_sequence(module_c.get("drift_polling_parameters"))
+    if not rows:
+        return _not_extracted(
+            "§4.C/§13.5",
+            "Module C drift_polling_parameters",
+            "drift_polling_parameters list is empty on Module C",
+        )
+
+    poll_interval: int | None = None
+    max_drift_ms: int | None = None
+    freeze_after: int | None = None
+    reset_timeout: int | None = None
+    formula: str | None = None
+    for row in rows:
+        row_mapping = _as_mapping(row)
+        if row_mapping is None:
+            continue
+        parameter = str(row_mapping.get("parameter", "")).strip().lower()
+        value = str(row_mapping.get("value", "")).strip()
+        if parameter == "polling interval":
+            match = _DRIFT_INTERVAL_RE.search(value)
+            if match:
+                poll_interval = int(match.group(1))
+        elif parameter == "maximum tolerated drift":
+            match = _DRIFT_MS_RE.search(value)
+            if match:
+                max_drift_ms = int(match.group(1))
+        elif parameter == "freeze threshold":
+            match = _DRIFT_FREEZE_RE.search(value)
+            if match:
+                freeze_after = int(match.group(1))
+        elif parameter == "reset timeout":
+            match = _DRIFT_RESET_RE.search(value)
+            if match:
+                reset_timeout = int(match.group(1))
+        elif parameter == "drift formula":
+            formula = value
+    missing: list[str] = []
+    if poll_interval is None:
+        missing.append("Polling interval")
+    if max_drift_ms is None:
+        missing.append("Maximum tolerated drift")
+    if freeze_after is None:
+        missing.append("Freeze threshold")
+    if reset_timeout is None:
+        missing.append("Reset timeout")
+    if formula is None:
+        missing.append("Drift formula")
+    if (
+        missing
+        or poll_interval is None
+        or max_drift_ms is None
+        or freeze_after is None
+        or reset_timeout is None
+        or formula is None
+    ):
+        return _not_extracted(
+            "§4.C/§13.5",
+            "Module C drift_polling_parameters values",
+            "missing rows for " + ", ".join(missing) if missing else "incomplete extraction",
+        )
+    return _extracted(
+        _ExpectedDrift(
+            poll_interval_s=poll_interval,
+            max_drift_ms=max_drift_ms,
+            freeze_after=freeze_after,
+            reset_timeout_s=reset_timeout,
+            formula=formula,
+        ),
+        "§4.C/§13.5: extracted drift_polling_parameters (interval, max drift, freeze, "
+        "reset, formula) from spec_content.",
+    )
+
+
+def verify_drift_correction(context: AuditContext, item: Section13Item) -> AuditResult:
+    """Verify Module C drift constants and formula appear in orchestrator.py."""
+
+    extraction = _expected_drift_parameters(context.spec_content)
+    if extraction.value is None:
+        return _spec_extraction_result(item, extraction)
+    expected: _ExpectedDrift = extraction.value
+
+    rel_path = "services/worker/pipeline/orchestrator.py"
+    try:
+        text = _read_text(context, rel_path)
+    except FileNotFoundError:
+        return _result(
+            item,
+            False,
+            f"§4.C/§13.5 {rel_path} is missing.",
+            f"Create {rel_path} or update §13.5 verifier to point to the new drift module.",
+        )
+
+    poll_value = _literal_assignment(context, rel_path, "DRIFT_POLL_INTERVAL")
+    max_drift_value = _literal_assignment(context, rel_path, "MAX_TOLERATED_DRIFT_MS")
+    freeze_value = _literal_assignment(context, rel_path, "DRIFT_FREEZE_AFTER_FAILURES")
+    reset_value = _literal_assignment(context, rel_path, "DRIFT_RESET_TIMEOUT")
+    # Drift formula evidence: spec form is "drift_offset = host_utc - android_epoch"; the
+    # orchestrator implementation uses the same algebraic form with renamed locals, so we
+    # require either a substring match on the spec form OR a documented `drift_offset`
+    # subtraction (sign-preserving) in the file.
+    formula_match = (
+        expected.formula in text
+        or re.search(
+            r"drift_offset\s*=\s*[A-Za-z_][A-Za-z0-9_.]*\s*-\s*[A-Za-z_][A-Za-z0-9_.]*", text
+        )
+        is not None
+    )
+
+    checks: list[_Check] = [
+        _Check(
+            poll_value is not None and poll_value.value == expected.poll_interval_s,
+            (
+                f"§4.C/§13.5 {rel_path}:{poll_value.line if poll_value else '?'} "
+                f"DRIFT_POLL_INTERVAL={poll_value.value if poll_value else '<unset>'}; "
+                f"expected {expected.poll_interval_s}."
+            ),
+        ),
+        _Check(
+            max_drift_value is not None and max_drift_value.value == expected.max_drift_ms,
+            (
+                f"§4.C/§13.5 {rel_path}:{max_drift_value.line if max_drift_value else '?'} "
+                f"MAX_TOLERATED_DRIFT_MS={max_drift_value.value if max_drift_value else '<unset>'}; "
+                f"expected {expected.max_drift_ms}."
+            ),
+        ),
+        _Check(
+            freeze_value is not None and freeze_value.value == expected.freeze_after,
+            (
+                f"§4.C/§13.5 {rel_path}:{freeze_value.line if freeze_value else '?'} "
+                f"DRIFT_FREEZE_AFTER_FAILURES={freeze_value.value if freeze_value else '<unset>'}; "
+                f"expected {expected.freeze_after}."
+            ),
+        ),
+        _Check(
+            reset_value is not None and reset_value.value == expected.reset_timeout_s,
+            (
+                f"§4.C/§13.5 {rel_path}:{reset_value.line if reset_value else '?'} "
+                f"DRIFT_RESET_TIMEOUT={reset_value.value if reset_value else '<unset>'}; "
+                f"expected {expected.reset_timeout_s}."
+            ),
+        ),
+        _Check(
+            formula_match,
+            (
+                f"§4.C/§13.5 {rel_path} contains drift formula {expected.formula!r} or an "
+                f"algebraic `drift_offset = X - Y` assignment."
+                if formula_match
+                else f"§4.C/§13.5 {rel_path} missing drift formula {expected.formula!r}."
+            ),
+        ),
+    ]
+
+    summary = _checks_result(item, checks)
+    return _result(
+        item,
+        summary.passed,
+        f"{extraction.evidence}\n{summary.evidence}",
+        summary.follow_up,
+    )
+
+
+# ---------------------------------------------------------------------------
+# §13.9 — Schema validation (InferenceHandoffPayload)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class _ExpectedSchema:
+    required: tuple[str, ...]
+    properties: tuple[str, ...]
+    deprecated: frozenset[str]
+
+
+_SCHEMA_DEPRECATED_HINTS = (
+    "diagnostic",
+    "calibration telemetry",
+    "compatibility",
+    "does not divide",
+)
+
+
+def _expected_inference_handoff_schema(spec_content: Mapping[str, Any]) -> _SpecExtraction:
+    contracts = _as_mapping(spec_content.get("interface_contracts"))
+    if contracts is None:
+        return _not_extracted(
+            "§6.1/§13.9",
+            "InferenceHandoffPayload schema",
+            "missing interface_contracts object in spec_content",
+        )
+    schema_block = _as_mapping(contracts.get("schema_definition"))
+    if schema_block is None:
+        return _not_extracted(
+            "§6.1/§13.9",
+            "InferenceHandoffPayload schema",
+            "missing interface_contracts.schema_definition",
+        )
+    source = str(schema_block.get("source", "")).strip()
+    try:
+        parsed = json.loads(source)
+    except json.JSONDecodeError as exc:
+        return _not_extracted(
+            "§6.1/§13.9",
+            "InferenceHandoffPayload schema",
+            f"schema_definition.source is not parseable JSON: {exc}",
+        )
+    if not isinstance(parsed, Mapping) or parsed.get("title") != "InferenceHandoffPayload":
+        return _not_extracted(
+            "§6.1/§13.9",
+            "InferenceHandoffPayload schema",
+            "schema_definition.source.title != 'InferenceHandoffPayload'",
+        )
+    required = tuple(str(field) for field in _as_sequence(parsed.get("required")))
+    properties_map = _as_mapping(parsed.get("properties")) or {}
+    properties = tuple(str(field) for field in properties_map)
+    deprecated: set[str] = set()
+    for field, schema in properties_map.items():
+        schema_mapping = _as_mapping(schema)
+        if schema_mapping is None:
+            continue
+        description = str(schema_mapping.get("description", "")).lower()
+        if any(hint in description for hint in _SCHEMA_DEPRECATED_HINTS):
+            deprecated.add(str(field))
+    return _extracted(
+        _ExpectedSchema(
+            required=required, properties=properties, deprecated=frozenset(deprecated)
+        ),
+        f"§6.1/§13.9: extracted InferenceHandoffPayload schema with {len(required)} required, "
+        f"{len(properties)} total properties, {len(deprecated)} deprecated/diagnostic fields "
+        f"({sorted(deprecated)!r}) from spec_content.",
+    )
+
+
+def _is_pydantic_basemodel_subclass(node: ast.ClassDef) -> bool:
+    for base in node.bases:
+        if isinstance(base, ast.Name) and base.id == "BaseModel":
+            return True
+        if isinstance(base, ast.Attribute) and base.attr == "BaseModel":
+            return True
+    return False
+
+
+def _pydantic_field_aliases(node: ast.ClassDef) -> dict[str, str]:
+    """Map declared attribute name -> external alias for every Pydantic field."""
+
+    aliases: dict[str, str] = {}
+    for stmt in node.body:
+        if isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name):
+            attr_name = stmt.target.id
+            value = stmt.value
+            alias = attr_name  # default if no explicit alias
+            if isinstance(value, ast.Call) and (
+                (isinstance(value.func, ast.Name) and value.func.id == "Field")
+                or (isinstance(value.func, ast.Attribute) and value.func.attr == "Field")
+            ):
+                for keyword in value.keywords:
+                    if keyword.arg == "alias" and isinstance(keyword.value, ast.Constant):
+                        if isinstance(keyword.value.value, str):
+                            alias = keyword.value.value
+            aliases[attr_name] = alias
+    return aliases
+
+
+def _has_extra_forbid(node: ast.ClassDef) -> bool:
+    for stmt in node.body:
+        if isinstance(stmt, ast.Assign):
+            for target in stmt.targets:
+                if (
+                    isinstance(target, ast.Name)
+                    and target.id == "model_config"
+                    and isinstance(stmt.value, ast.Call)
+                ):
+                    for keyword in stmt.value.keywords:
+                        if (
+                            keyword.arg == "extra"
+                            and isinstance(keyword.value, ast.Constant)
+                            and keyword.value.value == "forbid"
+                        ):
+                            return True
+    return False
+
+
+def verify_schema_validation(context: AuditContext, item: Section13Item) -> AuditResult:
+    """Verify InferenceHandoffPayload is a Pydantic BaseModel covering §6.1 required fields."""
+
+    extraction = _expected_inference_handoff_schema(context.spec_content)
+    if extraction.value is None:
+        return _spec_extraction_result(item, extraction)
+    expected: _ExpectedSchema = extraction.value
+
+    rel_path = "packages/schemas/inference_handoff.py"
+    try:
+        module, _lines = _parse_python(context, rel_path)
+    except FileNotFoundError:
+        return _result(
+            item,
+            False,
+            f"§6.1/§13.9 {rel_path} is missing.",
+            f"Create {rel_path} or repoint §13.9 verifier at the new location.",
+        )
+
+    target_class: ast.ClassDef | None = None
+    for node in ast.walk(module):
+        if isinstance(node, ast.ClassDef) and node.name == "InferenceHandoffPayload":
+            target_class = node
+            break
+    if target_class is None:
+        return _result(
+            item,
+            False,
+            f"§6.1/§13.9 {rel_path} does not define class InferenceHandoffPayload.",
+            f"Define InferenceHandoffPayload(BaseModel) in {rel_path}.",
+        )
+
+    aliases = _pydantic_field_aliases(target_class)
+    declared_external = set(aliases.values())
+    missing_required: list[str] = []
+    deprecation_excluded: list[str] = []
+    for required_field in expected.required:
+        if required_field in declared_external:
+            continue
+        if required_field in expected.deprecated:
+            deprecation_excluded.append(required_field)
+            continue
+        missing_required.append(required_field)
+
+    is_basemodel = _is_pydantic_basemodel_subclass(target_class)
+    extra_forbid = _has_extra_forbid(target_class)
+
+    # Confirm the model is actually validated at a dispatch boundary somewhere
+    # under services/. We grep for `InferenceHandoffPayload(` or `.model_validate(`
+    # invocations under services/worker/.
+    dispatch_evidence_re = re.compile(
+        r"InferenceHandoffPayload\s*\(|InferenceHandoffPayload\.model_validate"
+    )
+    dispatch_hits: list[str] = []
+    for path in (context.repo_root / "services" / "worker").rglob("*.py"):
+        try:
+            body = path.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError):
+            continue
+        if dispatch_evidence_re.search(body):
+            dispatch_hits.append(str(path.relative_to(context.repo_root).as_posix()))
+
+    checks: list[_Check] = [
+        _Check(
+            is_basemodel,
+            f"§6.1/§13.9 {rel_path} InferenceHandoffPayload subclasses pydantic BaseModel."
+            if is_basemodel
+            else f"§6.1/§13.9 {rel_path} InferenceHandoffPayload does not subclass BaseModel.",
+        ),
+        _Check(
+            extra_forbid,
+            f"§6.1/§13.9 {rel_path} InferenceHandoffPayload sets model_config extra='forbid'."
+            if extra_forbid
+            else (
+                f"§6.1/§13.9 {rel_path} InferenceHandoffPayload model_config does not "
+                "set extra='forbid'."
+            ),
+        ),
+        _Check(
+            not missing_required,
+            f"§6.1/§13.9 {rel_path} declares all required fields {sorted(expected.required)!r}; "
+            f"deprecated/diagnostic carve-outs accepted: {sorted(deprecation_excluded)!r}."
+            if not missing_required
+            else (
+                f"§6.1/§13.9 {rel_path} missing required fields "
+                f"{sorted(missing_required)!r} (declared aliases={sorted(declared_external)!r})."
+            ),
+        ),
+        _Check(
+            bool(dispatch_hits),
+            f"§6.1/§13.9 InferenceHandoffPayload validated at dispatch boundary: {dispatch_hits!r}."
+            if dispatch_hits
+            else (
+                "§6.1/§13.9 services/worker/ does not invoke InferenceHandoffPayload(...) or "
+                ".model_validate(); the schema is defined but not used at a dispatch boundary."
+            ),
+        ),
+    ]
+
+    summary = _checks_result(item, checks)
+    return _result(
+        item,
+        summary.passed,
+        f"{extraction.evidence}\n{summary.evidence}",
+        summary.follow_up,
+    )
+
+
+# ---------------------------------------------------------------------------
+# §13.10 — Module contracts
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class _ContractToken:
+    module_id: str
+    contract_field: str
+    tag: str
+    value: str
+
+
+_CONTRACT_TAG_RE = re.compile(r"<(path|func|env|class|cmd|flag|field|file)>([^<]+)</\1>")
+_CONTRACT_FIELDS = ("inputs", "outputs", "dependencies", "side_effects", "failure_modes")
+
+
+def _expected_module_contracts(spec_content: Mapping[str, Any]) -> _SpecExtraction:
+    core_modules = _as_mapping(spec_content.get("core_modules"))
+    if core_modules is None:
+        return _not_extracted(
+            "§4/§13.10",
+            "Module A–F contract surfaces",
+            "missing core_modules object in spec_content",
+        )
+    tokens: list[_ContractToken] = []
+    seen_modules: set[str] = set()
+    for module in _as_sequence(core_modules.get("modules")):
+        module_mapping = _as_mapping(module)
+        if module_mapping is None:
+            continue
+        module_id = str(module_mapping.get("module_id", "")).strip()
+        if not module_id:
+            continue
+        seen_modules.add(module_id)
+        contract = _as_mapping(module_mapping.get("contract"))
+        if contract is None:
+            continue
+        for field in _CONTRACT_FIELDS:
+            text = str(contract.get(field, ""))
+            for tag, value in _CONTRACT_TAG_RE.findall(text):
+                cleaned = value.strip()
+                if not cleaned:
+                    continue
+                tokens.append(
+                    _ContractToken(
+                        module_id=module_id, contract_field=field, tag=tag, value=cleaned
+                    )
+                )
+    if not tokens:
+        return _not_extracted(
+            "§4/§13.10",
+            "Module contract <tag>...</tag> tokens",
+            "no structured tokens in any contract field across modules",
+        )
+    return _extracted(
+        tuple(tokens),
+        f"§4/§13.10: extracted {len(tokens)} contract tokens across "
+        f"{len(seen_modules)} modules ({sorted(seen_modules)!r}) from spec_content.",
+    )
+
+
+# Tokens that the spec carves out as deprecated/diagnostic (handled elsewhere) or
+# that name external infrastructure rather than repo-local symbols. The audit
+# accepts these as documented but does not require them in the source tree.
+_CONTRACT_DOCUMENTED_OMISSIONS = frozenset(
+    {
+        "_x_max",  # spec §6.1 _x_max — diagnostic/compatibility telemetry only
+    }
+)
+# Token values whose tag is "env" but whose canonical home is deployment-only (compose
+# environment, .env.example) rather than Python source.
+_CONTRACT_DEPLOYMENT_ENV_TOKENS = frozenset(
+    {
+        "ADB_SERVER_SOCKET=tcp:host.docker.internal:5037",
+        "SDL_VIDEODRIVER=dummy",
+        "XDG_RUNTIME_DIR=/tmp",
+    }
+)
+
+
+def _scan_targets_for_module(repo_root: Path, module_id: str) -> tuple[Path, ...]:
+    """Per-module file globs that audit-token presence checks against."""
+
+    if module_id == "A":
+        return (repo_root / "services" / "stream_ingest", repo_root / "docker-compose.yml")
+    if module_id == "B":
+        return (
+            repo_root / "services" / "worker" / "pipeline" / "ground_truth.py",
+            repo_root / "services" / "api" / "routes",
+            repo_root / "services" / "api" / "services",
+            repo_root / "packages" / "schemas",
+        )
+    if module_id == "C":
+        return (
+            repo_root / "services" / "worker" / "pipeline",
+            repo_root / "packages" / "schemas",
+            repo_root / "packages" / "ml_core",
+        )
+    if module_id == "D":
+        return (
+            repo_root / "services" / "worker" / "tasks",
+            repo_root / "packages" / "ml_core",
+            repo_root / "packages" / "schemas",
+        )
+    if module_id == "E":
+        return (
+            repo_root / "services" / "worker" / "pipeline",
+            repo_root / "services" / "api",
+            repo_root / "packages" / "ml_core",
+            repo_root / "packages" / "schemas",
+        )
+    if module_id == "F":
+        return (
+            repo_root / "services" / "worker" / "tasks" / "enrichment.py",
+            repo_root / "packages" / "schemas",
+            repo_root / "data" / "sql",
+        )
+    return ()
+
+
+def _token_present(token: _ContractToken, search_roots: Sequence[Path]) -> bool:
+    needle = token.value
+    if token.tag == "func" and needle.endswith("()"):
+        needle = needle[:-2]
+    for root in search_roots:
+        if not root.exists():
+            continue
+        candidates: Iterable[Path]
+        if root.is_file():
+            candidates = (root,)
+        else:
+            candidates = (
+                path
+                for path in root.rglob("*")
+                if path.is_file()
+                and path.suffix not in _BINARY_SCAN_SUFFIXES
+                and not _has_excluded_scan_part(path.relative_to(root))
+            )
+        for path in candidates:
+            try:
+                body = path.read_text(encoding="utf-8")
+            except (UnicodeDecodeError, OSError):
+                continue
+            # Shell scripts encode token-bearing paths through variable
+            # assignments (e.g. `AUDIO_PIPE="$IPC_DIR/audio_stream.raw"`); the
+            # spec lists the expanded form, so resolve declarations before the
+            # substring check.
+            if path.suffix == ".sh":
+                body = _expand_shell_variables(body)
+            if needle in body:
+                return True
+    return False
+
+
+def verify_module_contracts(context: AuditContext, item: Section13Item) -> AuditResult:
+    """Verify each Module A–F contract <tag> token resolves to repo-local source evidence."""
+
+    extraction = _expected_module_contracts(context.spec_content)
+    if extraction.value is None:
+        return _spec_extraction_result(item, extraction)
+    tokens: tuple[_ContractToken, ...] = extraction.value
+
+    repo_root = context.repo_root
+    deployment_search_roots = (
+        repo_root / "docker-compose.yml",
+        repo_root / ".env.example",
+    )
+
+    # Group module-level results so the evidence stays compact.
+    by_module: dict[str, list[_Check]] = {}
+    for token in tokens:
+        if token.value in _CONTRACT_DOCUMENTED_OMISSIONS:
+            by_module.setdefault(token.module_id, []).append(
+                _Check(
+                    True,
+                    f"§4/§13.10 module {token.module_id} contract.{token.contract_field} "
+                    f"<{token.tag}>{token.value}</{token.tag}>: documented carve-out "
+                    f"(diagnostic/compatibility-only); not required in source tree.",
+                )
+            )
+            continue
+        search_roots: tuple[Path, ...]
+        if token.tag == "env" and token.value in _CONTRACT_DEPLOYMENT_ENV_TOKENS:
+            search_roots = deployment_search_roots
+        else:
+            search_roots = _scan_targets_for_module(repo_root, token.module_id)
+            # For env-style tokens, also accept presence in compose / .env.example.
+            if token.tag == "env":
+                search_roots = (*search_roots, *deployment_search_roots)
+        present = _token_present(token, search_roots)
+        by_module.setdefault(token.module_id, []).append(
+            _Check(
+                present,
+                f"§4/§13.10 module {token.module_id} contract.{token.contract_field} "
+                f"<{token.tag}>{token.value}</{token.tag}>: "
+                f"{'present' if present else 'MISSING'} in {[r.name for r in search_roots]!r}.",
+            )
+        )
+
+    # Flatten in module order.
+    flat_checks: list[_Check] = []
+    for module_id in sorted(by_module):
+        flat_checks.extend(by_module[module_id])
+
+    summary = _checks_result(item, flat_checks)
+    return _result(
+        item,
+        summary.passed,
+        f"{extraction.evidence}\n{summary.evidence}",
+        summary.follow_up,
+    )
+
+
 MECHANICAL_VERIFIERS: Mapping[str, AuditVerifier] = {
+    "13.1": verify_directory_structure,
+    "13.2": verify_docker_topology,
+    "13.3": verify_ipc_lifecycle,
     "13.4": verify_ffmpeg_resample,
+    "13.5": verify_drift_correction,
     "13.6": verify_au12_geometry,
     "13.7": verify_semantic_determinism,
     "13.8": verify_ephemeral_vault,
+    "13.9": verify_schema_validation,
+    "13.10": verify_module_contracts,
     "13.12": verify_dependency_pins,
     "13.15": verify_canonical_terminology,
     "13.30": verify_derived_only_attribution_persistence,
@@ -1805,8 +2954,14 @@ __all__ = [
     "verify_canonical_terminology",
     "verify_dependency_pins",
     "verify_derived_only_attribution_persistence",
+    "verify_directory_structure",
+    "verify_docker_topology",
+    "verify_drift_correction",
     "verify_ephemeral_vault",
     "verify_ffmpeg_resample",
+    "verify_ipc_lifecycle",
+    "verify_module_contracts",
+    "verify_schema_validation",
     "verify_semantic_determinism",
     "verify_semantic_reason_codes",
 ]

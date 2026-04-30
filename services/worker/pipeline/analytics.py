@@ -963,7 +963,7 @@ class MetricsStore:
                         event_params,
                         DataTier.PERMANENT,
                         spec_ref="§5.2.3",
-                        purpose="Normalized attribution event row parameters",
+                        purpose="Normalized AttributionEvent row parameters",
                     ),
                 )
                 for params in outcome_params:
@@ -973,7 +973,7 @@ class MetricsStore:
                             params,
                             DataTier.PERMANENT,
                             spec_ref="§5.2.3",
-                            purpose="Normalized attribution outcome row parameters",
+                            purpose="Normalized OutcomeEvent row parameters",
                         ),
                     )
                 for params in link_params:
@@ -983,7 +983,7 @@ class MetricsStore:
                             params,
                             DataTier.PERMANENT,
                             spec_ref="§5.2.3",
-                            purpose="Normalized attribution link row parameters",
+                            purpose="Normalized EventOutcomeLink row parameters",
                         ),
                     )
                 for params in score_params:
@@ -993,7 +993,7 @@ class MetricsStore:
                             params,
                             DataTier.PERMANENT,
                             spec_ref="§5.2.3",
-                            purpose="Normalized attribution score row parameters",
+                            purpose="Normalized AttributionScore row parameters",
                         ),
                     )
             conn.commit()

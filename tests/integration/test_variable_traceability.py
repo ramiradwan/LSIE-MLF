@@ -1053,6 +1053,17 @@ def _discover_variable_producers() -> dict[tuple[str, str], list[VariableEvidenc
         "f0_valid_baseline",
         "perturbation_valid_measure",
         "perturbation_valid_baseline",
+        # Upstream-produced variables persisted by analytics.py through the
+        # mark_data_tier(...) wrapper; analytics.py is a passthrough sink for
+        # these (Module D produces is_match, Module C produces the physiology
+        # fields), so the dict-literal emission inside the mark_data_tier call
+        # would otherwise be reported as unmapped after the analytics surface
+        # filter strips the matched canonical variables.
+        "is_match",
+        "source_kind",
+        "window_s",
+        "validity_ratio",
+        "is_valid",
         "rmssd_ms",
         "heart_rate_bpm",
         "freshness_s",

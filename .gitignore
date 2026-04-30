@@ -51,3 +51,4 @@ docs/artifacts/*
 
 # docs/content.json is regenerated from the single docs/tech-spec-v*.pdf via
 # scripts/spec_ref_check.py --extract. Source of truth is the signed PDF.
+docs/content.json

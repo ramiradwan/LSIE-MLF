@@ -16,8 +16,14 @@ from scripts.audit.verifiers.mechanical import (
     verify_canonical_terminology,
     verify_dependency_pins,
     verify_derived_only_attribution_persistence,
+    verify_directory_structure,
+    verify_docker_topology,
+    verify_drift_correction,
     verify_ephemeral_vault,
     verify_ffmpeg_resample,
+    verify_ipc_lifecycle,
+    verify_module_contracts,
+    verify_schema_validation,
     verify_semantic_determinism,
     verify_semantic_reason_codes,
 )
@@ -70,10 +76,16 @@ _SEMANTIC_METHODS = (
 )
 
 _EXPECTED_MECHANICAL_ITEMS = {
+    "13.1",
+    "13.2",
+    "13.3",
     "13.4",
+    "13.5",
     "13.6",
     "13.7",
     "13.8",
+    "13.9",
+    "13.10",
     "13.12",
     "13.15",
     "13.30",
@@ -750,4 +762,476 @@ class TestMechanicalVerifiers:
             "feature=False",
             "lower_inclusive=True",
             "upper_exclusive=True",
+        )
+
+    # ---- §13.1 — Directory structure ----------------------------------------
+
+    def test_verify_directory_structure_pass_and_missing_path(self, tmp_path: Path) -> None:
+        spec = {
+            "codebase_architecture": {
+                "directory_hierarchy": [
+                    {"path": "/services/api/", "purpose": "API"},
+                    {"path": "/packages/schemas/", "purpose": "Schemas"},
+                    {"path": "/docker-compose.yml", "purpose": "Topology"},
+                ]
+            }
+        }
+        good = tmp_path / "good"
+        (good / "services" / "api").mkdir(parents=True)
+        (good / "packages" / "schemas").mkdir(parents=True)
+        (good / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
+
+        result = verify_directory_structure(_context(good, spec), _item("13.1"))
+        _assert_pass_evidence(
+            result,
+            "§3/§13.1: extracted 3 directory_hierarchy entries",
+            "services/api directory present",
+            "docker-compose.yml file present",
+        )
+
+        bad = tmp_path / "bad"
+        (bad / "services" / "api").mkdir(parents=True)
+        # packages/schemas is missing on purpose.
+        (bad / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
+
+        result_fail = verify_directory_structure(_context(bad, spec), _item("13.1"))
+        _assert_fail_evidence(
+            result_fail,
+            "packages/schemas directory MISSING",
+        )
+
+    def test_verify_directory_structure_fails_closed_without_spec(self, tmp_path: Path) -> None:
+        result = verify_directory_structure(_context(tmp_path, {}), _item("13.1"))
+        assert result.passed is False
+        assert "missing codebase_architecture object" in result.evidence
+
+    # ---- §13.2 — Docker topology --------------------------------------------
+
+    def test_verify_docker_topology_pass_and_missing_service(self, tmp_path: Path) -> None:
+        spec = {
+            "docker_topology": {
+                "containers": [
+                    {
+                        "container_name": "api",
+                        "image_base": "python:3.11-slim",
+                        "network": "appnetwork",
+                        "restart_policy": "unless-stopped",
+                        "depends_on": ["postgres"],
+                        "gpu_required": False,
+                    },
+                    {
+                        "container_name": "worker",
+                        "image_base": "nvidia/cuda:12.2.2-cudnn8-runtime-ubuntu22.04",
+                        "network": "appnetwork",
+                        "restart_policy": "on-failure:5",
+                        "depends_on": ["postgres"],
+                        "gpu_required": True,
+                    },
+                ],
+                "volumes": [
+                    {
+                        "volume_name": "ipc-share",
+                        "mount_path": "/tmp/ipc/",
+                        "container_targets": ["worker"],
+                    }
+                ],
+            }
+        }
+        good_compose = """\
+services:
+  api:
+    image: python:3.11-slim
+    networks:
+      - appnetwork
+    restart: unless-stopped
+    depends_on:
+      - postgres
+  worker:
+    build:
+      context: .
+    networks:
+      - appnetwork
+    restart: on-failure
+    deploy:
+      restart_policy:
+        condition: on-failure
+        max_attempts: 5
+    depends_on:
+      - postgres
+    volumes:
+      - ipc-share:/tmp/ipc/
+volumes:
+  ipc-share: {}
+networks:
+  appnetwork:
+    driver: bridge
+"""
+        good = tmp_path / "good"
+        good.mkdir()
+        (good / "docker-compose.yml").write_text(good_compose, encoding="utf-8")
+
+        result = verify_docker_topology(_context(good, spec), _item("13.2"))
+        _assert_pass_evidence(
+            result,
+            "§9/§13.2: extracted 2 containers and 1 volumes",
+            "service api image='python:3.11-slim' matches spec",
+            "service worker mounts volume 'ipc-share' at '/tmp/ipc/'",
+        )
+
+        bad_compose = good_compose.replace("worker:", "worker_misnamed:")
+        bad = tmp_path / "bad"
+        bad.mkdir()
+        (bad / "docker-compose.yml").write_text(bad_compose, encoding="utf-8")
+
+        result_fail = verify_docker_topology(_context(bad, spec), _item("13.2"))
+        _assert_fail_evidence(
+            result_fail,
+            "service 'worker' is missing from docker-compose.yml",
+        )
+
+    def test_verify_docker_topology_missing_compose_fails_closed(self, tmp_path: Path) -> None:
+        spec = {
+            "docker_topology": {
+                "containers": [
+                    {
+                        "container_name": "api",
+                        "image_base": "python:3.11-slim",
+                        "network": "appnetwork",
+                        "restart_policy": "unless-stopped",
+                        "depends_on": [],
+                    }
+                ],
+                "volumes": [],
+            }
+        }
+        empty = tmp_path / "no_compose"
+        empty.mkdir()
+        result = verify_docker_topology(_context(empty, spec), _item("13.2"))
+        _assert_fail_evidence(result, "docker-compose.yml is missing")
+
+    # ---- §13.3 — IPC lifecycle ----------------------------------------------
+
+    def test_verify_ipc_lifecycle_pass_and_missing_token(self, tmp_path: Path) -> None:
+        spec = {
+            "core_modules": {
+                "modules": [
+                    {
+                        "module_id": "A",
+                        "ipc_lifecycle_steps": [
+                            {
+                                "step_number": 1,
+                                "title": "Init",
+                                "description": (
+                                    "<func>setup_pipes()</func> creates "
+                                    "<path>/tmp/ipc/audio_stream.raw</path>."
+                                ),
+                            },
+                            {
+                                "step_number": 2,
+                                "title": "Wait",
+                                "description": (
+                                    "<func>wait_for_device()</func> polls <cmd>adb devices</cmd>."
+                                ),
+                            },
+                        ],
+                    }
+                ]
+            }
+        }
+        good = tmp_path / "good"
+        _write(
+            good,
+            "services/stream_ingest/entrypoint.sh",
+            "#!/usr/bin/env bash\n"
+            'AUDIO_PIPE="/tmp/ipc/audio_stream.raw"\n'
+            'setup_pipes() { mkfifo "$AUDIO_PIPE"; }\n'
+            "wait_for_device() { adb devices; }\n",
+        )
+        result = verify_ipc_lifecycle(_context(good, spec), _item("13.3"))
+        _assert_pass_evidence(
+            result,
+            "§4.A/§13.3: extracted 2 IPC lifecycle steps",
+            "step 1 (Init): all tokens present",
+            "step 2 (Wait): all tokens present",
+        )
+
+        bad = tmp_path / "bad"
+        _write(
+            bad,
+            "services/stream_ingest/entrypoint.sh",
+            "#!/usr/bin/env bash\nsetup_pipes() { :; }\nwait_for_device() { :; }\n",
+        )
+        result_fail = verify_ipc_lifecycle(_context(bad, spec), _item("13.3"))
+        _assert_fail_evidence(
+            result_fail,
+            "step 1 (Init): services/stream_ingest/entrypoint.sh missing tokens",
+            "/tmp/ipc/audio_stream.raw",
+        )
+
+    def test_verify_ipc_lifecycle_missing_entrypoint_fails_closed(self, tmp_path: Path) -> None:
+        spec = {
+            "core_modules": {
+                "modules": [
+                    {
+                        "module_id": "A",
+                        "ipc_lifecycle_steps": [
+                            {
+                                "step_number": 1,
+                                "title": "Init",
+                                "description": "<path>/tmp/x</path>",
+                            }
+                        ],
+                    }
+                ]
+            }
+        }
+        empty = tmp_path / "no_entrypoint"
+        empty.mkdir()
+        result = verify_ipc_lifecycle(_context(empty, spec), _item("13.3"))
+        _assert_fail_evidence(result, "services/stream_ingest/entrypoint.sh is missing")
+
+    # ---- §13.5 — Drift correction -------------------------------------------
+
+    def test_verify_drift_correction_pass_and_wrong_constant(self, tmp_path: Path) -> None:
+        spec = {
+            "core_modules": {
+                "modules": [
+                    {
+                        "module_id": "C",
+                        "drift_polling_parameters": [
+                            {"parameter": "Polling interval", "value": "30 seconds"},
+                            {
+                                "parameter": "Maximum tolerated drift",
+                                "value": "150 milliseconds",
+                            },
+                            {"parameter": "Freeze threshold", "value": "3 consecutive failures"},
+                            {"parameter": "Reset timeout", "value": "300 seconds"},
+                            {
+                                "parameter": "Drift formula",
+                                "value": "drift_offset = host_utc - android_epoch",
+                            },
+                        ],
+                    }
+                ]
+            }
+        }
+        good = tmp_path / "good"
+        _write(
+            good,
+            "services/worker/pipeline/orchestrator.py",
+            "from __future__ import annotations\n"
+            "DRIFT_POLL_INTERVAL: int = 30\n"
+            "MAX_TOLERATED_DRIFT_MS: int = 150\n"
+            "DRIFT_FREEZE_AFTER_FAILURES: int = 3\n"
+            "DRIFT_RESET_TIMEOUT: int = 300\n"
+            "def correct(host_utc: float, android_epoch: float) -> float:\n"
+            "    drift_offset = host_utc - android_epoch\n"
+            "    return drift_offset\n",
+        )
+        result = verify_drift_correction(_context(good, spec), _item("13.5"))
+        _assert_pass_evidence(
+            result,
+            "§4.C/§13.5: extracted drift_polling_parameters",
+            "DRIFT_POLL_INTERVAL=30; expected 30",
+            "DRIFT_RESET_TIMEOUT=300; expected 300",
+        )
+
+        bad = tmp_path / "bad"
+        _write(
+            bad,
+            "services/worker/pipeline/orchestrator.py",
+            "DRIFT_POLL_INTERVAL: int = 60\n"
+            "MAX_TOLERATED_DRIFT_MS: int = 150\n"
+            "DRIFT_FREEZE_AFTER_FAILURES: int = 3\n"
+            "DRIFT_RESET_TIMEOUT: int = 300\n"
+            "def correct(host_utc: float, android_epoch: float) -> float:\n"
+            "    drift_offset = host_utc - android_epoch\n"
+            "    return drift_offset\n",
+        )
+        result_fail = verify_drift_correction(_context(bad, spec), _item("13.5"))
+        _assert_fail_evidence(
+            result_fail,
+            "DRIFT_POLL_INTERVAL=60",
+            "expected 30",
+        )
+
+    # ---- §13.9 — Schema validation -------------------------------------------
+
+    def test_verify_schema_validation_pass_and_missing_field(self, tmp_path: Path) -> None:
+        schema_source = json.dumps(
+            {
+                "$schema": "http://json-schema.org/draft-07/schema#",
+                "title": "InferenceHandoffPayload",
+                "required": ["session_id", "_active_arm", "_x_max"],
+                "properties": {
+                    "session_id": {"type": "string"},
+                    "_active_arm": {"type": "string"},
+                    "_x_max": {
+                        "type": ["number", "null"],
+                        "description": (
+                            "Calibration telemetry; reward computation does not divide P90 by it."
+                        ),
+                    },
+                },
+            }
+        )
+        spec = {"interface_contracts": {"schema_definition": {"source": schema_source}}}
+
+        good = tmp_path / "good"
+        _write(
+            good,
+            "packages/schemas/inference_handoff.py",
+            "from __future__ import annotations\n"
+            "from pydantic import BaseModel, ConfigDict, Field\n"
+            "class InferenceHandoffPayload(BaseModel):\n"
+            "    session_id: str\n"
+            "    active_arm: str = Field(..., alias='_active_arm')\n"
+            "    model_config = ConfigDict(extra='forbid')\n",
+        )
+        _write(
+            good,
+            "services/worker/pipeline/orchestrator.py",
+            "from packages.schemas.inference_handoff import InferenceHandoffPayload\n"
+            "def dispatch(p):\n"
+            "    return InferenceHandoffPayload(**p)\n",
+        )
+        result = verify_schema_validation(_context(good, spec), _item("13.9"))
+        _assert_pass_evidence(
+            result,
+            "InferenceHandoffPayload subclasses pydantic BaseModel",
+            "model_config extra='forbid'",
+            "deprecated/diagnostic carve-outs accepted: ['_x_max']",
+            "validated at dispatch boundary",
+        )
+
+        bad = tmp_path / "bad"
+        _write(
+            bad,
+            "packages/schemas/inference_handoff.py",
+            "from __future__ import annotations\n"
+            "from pydantic import BaseModel, ConfigDict\n"
+            "class InferenceHandoffPayload(BaseModel):\n"
+            "    session_id: str\n"
+            "    model_config = ConfigDict(extra='forbid')\n",
+        )
+        _write(
+            bad,
+            "services/worker/pipeline/orchestrator.py",
+            "from packages.schemas.inference_handoff import InferenceHandoffPayload\n"
+            "def dispatch(p):\n"
+            "    return InferenceHandoffPayload(**p)\n",
+        )
+        result_fail = verify_schema_validation(_context(bad, spec), _item("13.9"))
+        _assert_fail_evidence(
+            result_fail,
+            "missing required fields ['_active_arm']",
+        )
+
+    def test_verify_schema_validation_missing_module_fails_closed(self, tmp_path: Path) -> None:
+        spec = {
+            "interface_contracts": {
+                "schema_definition": {
+                    "source": json.dumps(
+                        {
+                            "title": "InferenceHandoffPayload",
+                            "required": ["session_id"],
+                            "properties": {"session_id": {"type": "string"}},
+                        }
+                    )
+                }
+            }
+        }
+        empty = tmp_path / "no_schema"
+        empty.mkdir()
+        result = verify_schema_validation(_context(empty, spec), _item("13.9"))
+        _assert_fail_evidence(result, "packages/schemas/inference_handoff.py is missing")
+
+    # ---- §13.10 — Module contracts -------------------------------------------
+
+    def test_verify_module_contracts_pass_and_missing_token(self, tmp_path: Path) -> None:
+        spec = {
+            "core_modules": {
+                "modules": [
+                    {
+                        "module_id": "A",
+                        "contract": {
+                            "outputs": "<path>/tmp/ipc/audio_stream.raw</path>",
+                            "failure_modes": "<func>wait_for_device()</func>",
+                        },
+                    },
+                    {
+                        "module_id": "C",
+                        "contract": {
+                            "outputs": "<class>InferenceHandoffPayload</class>",
+                        },
+                    },
+                ]
+            }
+        }
+
+        good = tmp_path / "good"
+        _write(
+            good,
+            "services/stream_ingest/entrypoint.sh",
+            'AUDIO_PIPE="/tmp/ipc/audio_stream.raw"\nwait_for_device() { :; }\n',
+        )
+        _write(
+            good,
+            "packages/schemas/inference_handoff.py",
+            "class InferenceHandoffPayload:\n    pass\n",
+        )
+        # Module C scans pipeline/, schemas/, ml_core/ — the schemas hit covers it.
+        (good / "services" / "worker" / "pipeline").mkdir(parents=True)
+        (good / "packages" / "ml_core").mkdir(parents=True)
+
+        result = verify_module_contracts(_context(good, spec), _item("13.10"))
+        _assert_pass_evidence(
+            result,
+            "§4/§13.10: extracted",
+            "module A contract.outputs <path>/tmp/ipc/audio_stream.raw</path>: present",
+            "module A contract.failure_modes <func>wait_for_device()</func>: present",
+            "module C contract.outputs <class>InferenceHandoffPayload</class>: present",
+        )
+
+        bad = tmp_path / "bad"
+        # entrypoint.sh missing the audio path.
+        _write(
+            bad,
+            "services/stream_ingest/entrypoint.sh",
+            "wait_for_device() { :; }\n",
+        )
+        _write(
+            bad,
+            "packages/schemas/inference_handoff.py",
+            "class InferenceHandoffPayload:\n    pass\n",
+        )
+        (bad / "services" / "worker" / "pipeline").mkdir(parents=True)
+        (bad / "packages" / "ml_core").mkdir(parents=True)
+
+        result_fail = verify_module_contracts(_context(bad, spec), _item("13.10"))
+        _assert_fail_evidence(
+            result_fail,
+            "module A contract.outputs <path>/tmp/ipc/audio_stream.raw</path>: MISSING",
+        )
+
+    def test_verify_module_contracts_documents_x_max_carve_out(self, tmp_path: Path) -> None:
+        spec = {
+            "core_modules": {
+                "modules": [
+                    {
+                        "module_id": "C",
+                        "contract": {"outputs": "<field>_x_max</field>"},
+                    }
+                ]
+            }
+        }
+        # No source declares _x_max, but the spec carve-out should still PASS.
+        empty = tmp_path / "empty"
+        (empty / "services" / "worker" / "pipeline").mkdir(parents=True)
+        (empty / "packages" / "schemas").mkdir(parents=True)
+        (empty / "packages" / "ml_core").mkdir(parents=True)
+        result = verify_module_contracts(_context(empty, spec), _item("13.10"))
+        _assert_pass_evidence(
+            result,
+            "<field>_x_max</field>: documented carve-out",
         )
