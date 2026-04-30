@@ -299,10 +299,12 @@ def _iso_z(value: datetime) -> str:
 
 
 def _expected_segment_id(payload: dict[str, Any]) -> str:
-    stable_identity = (
-        f"{uuid.UUID(payload['session_id'])}"
-        f"{_iso_z(_parse_dt(payload['segment_window_start_utc']))}"
-        f"{_iso_z(_parse_dt(payload['segment_window_end_utc']))}"
+    stable_identity = "|".join(
+        (
+            f"{uuid.UUID(payload['session_id'])}",
+            _iso_z(_parse_dt(payload["segment_window_start_utc"])),
+            _iso_z(_parse_dt(payload["segment_window_end_utc"])),
+        )
     )
     return hashlib.sha256(stable_identity.encode("utf-8")).hexdigest()
 
@@ -607,8 +609,13 @@ def _run_physiology_cycle(
     return payload, chunk_events
 
 
+@pytest.mark.audit_item("13.17")
+@pytest.mark.audit_item("13.18")
+@pytest.mark.audit_item("13.19")
+@pytest.mark.audit_item("13.20")
+@pytest.mark.audit_item("13.23")
 def test_notification_hydration_chunk_derivation_and_scalar_persistence_end_to_end() -> None:
-    """Full webhook -> hydration -> chunk -> derivation -> scalar persistence regression."""
+    """§13.17, §13.18, §13.19, §13.20, §13.23."""
     secret = "integration-secret"
     fake_redis = _FakeRedis()
     session_id = "00000000-0000-4000-8000-000000000123"
@@ -695,6 +702,9 @@ def test_notification_hydration_chunk_derivation_and_scalar_persistence_end_to_e
 
         assert len(store.metrics_rows) == index + 1
         _assert_canonical_acoustic_payload(store.metrics_rows[-1])
+        assert "_audio_data" not in store.metrics_rows[-1]
+        assert "raw_audio" not in store.metrics_rows[-1]
+        assert "voiceprint" not in store.metrics_rows[-1]
         assert len(store.physiology_rows) == (index + 1) * 2
         assert len(store.comodulation_rows) == index + 1
         assert len(store.arm_updates) == index + 1
@@ -781,8 +791,10 @@ def test_notification_hydration_chunk_derivation_and_scalar_persistence_end_to_e
     assert store.physiology_rows[-2]["rmssd_ms"] is None
 
 
+@pytest.mark.audit_item("13.17")
+@pytest.mark.audit_item("13.21")
 def test_reward_pipeline_is_invariant_with_optional_physiology_context() -> None:
-    """§13.17 / §13.21 — payloads without physiology stay valid and TS reward is unchanged."""
+    """§13.17, §13.21."""
     session_id = "00000000-0000-4000-8000-000000000321"
 
     plain_orchestrator = Orchestrator(session_id=session_id, experiment_id="exp-1")
@@ -859,8 +871,11 @@ def test_reward_pipeline_is_invariant_with_optional_physiology_context() -> None
     assert len(physio_store.physiology_rows) == 2
 
 
+@pytest.mark.audit_item("13.21")
+@pytest.mark.audit_item("13.22")
+@pytest.mark.audit_item("13.23")
 def test_acoustic_invalidity_is_local_and_reward_is_preserved_end_to_end() -> None:
-    """Local acoustic invalidity degrades only §7D outputs; reward math remains unchanged."""
+    """§13.21, §13.22, §13.23."""
     session_id = "00000000-0000-4000-8000-000000000654"
     orchestrator = Orchestrator(session_id=session_id, experiment_id="exp-1")
     orchestrator._active_arm = "arm-a"
@@ -944,6 +959,9 @@ def test_acoustic_invalidity_is_local_and_reward_is_preserved_end_to_end() -> No
         assert result["semantic"]["is_match"] is True
         assert result["transcription"] == "hello welcome to the stream"
         assert len(store.metrics_rows) == 1
+        assert "_audio_data" not in store.metrics_rows[0]
+        assert "raw_audio" not in store.metrics_rows[0]
+        assert "voiceprint" not in store.metrics_rows[0]
         assert len(store.arm_updates) == 1
         assert len(store.encounter_rows) == 1
 
@@ -1027,8 +1045,9 @@ def _run_physiology_sequence_through_module_e(
     return store
 
 
+@pytest.mark.audit_item("13.20")
 def test_comodulation_returns_null_for_zero_variance_series_end_to_end() -> None:
-    """§13.20 — four aligned valid bins with zero variance persist a null co-mod row."""
+    """§13.20."""
     analytics_now = datetime.now(UTC).replace(second=0, microsecond=0)
     first_cycle_end = analytics_now.replace(second=3, microsecond=0) - timedelta(minutes=4)
     zero_variance_streamer_series = [30.0] + ([30.0 * math.sqrt(1.5)] * 3)
@@ -1074,11 +1093,9 @@ def test_comodulation_returns_null_for_zero_variance_series_end_to_end() -> None
     )
 
 
+@pytest.mark.audit_item("13.20")
 def test_comodulation_is_deterministic_and_routes_through_pearsonr_end_to_end() -> None:
-    """§13.20 — identical physiology input persists identical co-mod rows.
-
-    The integration path must route the correlation through scipy.stats.pearsonr.
-    """
+    """§13.20."""
     from scipy.stats import pearsonr as scipy_pearsonr
 
     analytics_now = datetime.now(UTC).replace(second=0, microsecond=0)

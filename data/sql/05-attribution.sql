@@ -52,7 +52,7 @@ ALTER TABLE attribution_event
 
 ALTER TABLE attribution_event
     ADD CONSTRAINT ck_attribution_event_semantic_method
-    CHECK (semantic_method IN ('cross_encoder', 'llm_gray_band')) NOT VALID;
+    CHECK (semantic_method IN ('cross_encoder', 'llm_gray_band', 'azure_llm_legacy')) NOT VALID;
 
 CREATE TABLE IF NOT EXISTS outcome_event (
     outcome_id          UUID PRIMARY KEY,

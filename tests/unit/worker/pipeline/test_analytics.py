@@ -569,6 +569,10 @@ class TestMetricsStore:
         mock_conn.commit.assert_called_once()
         store._put_conn.assert_called_once_with(mock_conn)
 
+    @pytest.mark.audit_item("13.24")
+    @pytest.mark.audit_item("13.26")
+    @pytest.mark.audit_item("13.28")
+    @pytest.mark.audit_item("13.29")
     def test_attribution_ledger_persistence_uses_deterministic_upserts(
         self,
         store: MetricsStore,
@@ -684,6 +688,9 @@ class TestMetricsStore:
         assert ledger.event.event_id == expected_event_id
         assert ledger.outcomes[0].outcome_id == expected_outcome_id
         assert ledger.links[0].link_id == expected_link_id
+        assert ledger.links[0].lag_s == replay_ledger.links[0].lag_s == 60.0
+        assert ledger.links[0].horizon_s == replay_ledger.links[0].horizon_s
+        assert ledger.links[0].link_rule_version == DEFAULT_LINK_RULE_VERSION
         assert ledger.event.event_id == replay_ledger.event.event_id
         assert ledger.outcomes[0].outcome_id == replay_ledger.outcomes[0].outcome_id
         assert ledger.links[0].link_id == replay_ledger.links[0].link_id
@@ -724,11 +731,21 @@ class TestMetricsStore:
         assert event_params["semantic_method"] == "cross_encoder"
         assert event_params["semantic_method_version"] == "ce-v1.2.3"
         assert event_params["semantic_p_match"] == pytest.approx(0.75)
+        assert event_params["finality"] == "online_provisional"
+        assert event_params["schema_version"] == "v3.4"
         assert isinstance(event_params["bandit_decision_snapshot"], str)
         assert json.loads(event_params["bandit_decision_snapshot"])["selected_arm_id"] == "arm-a"
         assert first_pass[1].args[1]["outcome_id"] == str(expected_outcome_id)
+        assert first_pass[1].args[1]["finality"] == "online_provisional"
+        assert first_pass[1].args[1]["schema_version"] == "v3.4"
         assert first_pass[2].args[1]["link_id"] == str(expected_link_id)
+        assert first_pass[2].args[1]["lag_s"] == 60.0
+        assert first_pass[2].args[1]["link_rule_version"] == DEFAULT_LINK_RULE_VERSION
+        assert first_pass[2].args[1]["finality"] == "online_provisional"
+        assert first_pass[2].args[1]["schema_version"] == "v3.4"
         assert first_pass[3].args[1]["score_id"] == str(ledger.scores[0].score_id)
+        assert first_pass[3].args[1]["finality"] == "online_provisional"
+        assert first_pass[3].args[1]["schema_version"] == "v3.4"
 
         first_ids = [call_args.args[1].get("event_id") for call_args in first_pass]
         first_ids += [first_pass[1].args[1]["outcome_id"], first_pass[2].args[1]["link_id"]]
@@ -926,6 +943,7 @@ class TestMetricsStore:
         assert payload["event"]["event_id"] == str(ledger.event.event_id)
         assert len(payload["scores"]) == 6
 
+    @pytest.mark.audit_item("13.28")
     def test_attribution_flush_replays_with_upserts_without_duplicate_identities(
         self,
         store: MetricsStore,
@@ -961,6 +979,8 @@ class TestMetricsStore:
         assert current_ids == flushed_ids
         assert mock_conn.commit.call_count == 2
 
+    @pytest.mark.audit_item("13.24")
+    @pytest.mark.audit_item("13.28")
     def test_attribution_score_id_stable_across_finality_transition(
         self,
         store: MetricsStore,

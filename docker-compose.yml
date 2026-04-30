@@ -107,7 +107,7 @@ services:
       stream_scrcpy:
         condition: service_started
 
-  # --- Orchestrator (§4.C — segment producer, Gap 6 fix) ---
+  # --- Orchestrator Container (§4.C, Gap 6 fix) ---
   # Runs the Module C orchestration loop that reads from IPC pipes,
   # processes video frames for AU12, assembles 30-second segments,
   # and dispatches them as Celery tasks to the worker.

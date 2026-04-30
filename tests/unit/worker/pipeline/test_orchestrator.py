@@ -24,6 +24,8 @@ from datetime import UTC, datetime
 from typing import Any, Literal
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from packages.schemas.inference_handoff import InferenceHandoffPayload
 from packages.schemas.physiology import PhysiologicalChunkEvent, PhysiologicalChunkPayload
 from services.worker.pipeline.orchestrator import (
@@ -49,10 +51,12 @@ def _canonical_utc_timestamp(value: str) -> str:
 
 
 def _expected_segment_id(payload: dict[str, Any]) -> str:
-    stable_identity = (
-        f"{uuid.UUID(payload['session_id'])}"
-        f"{_canonical_utc_timestamp(payload['segment_window_start_utc'])}"
-        f"{_canonical_utc_timestamp(payload['segment_window_end_utc'])}"
+    stable_identity = "|".join(
+        (
+            f"{uuid.UUID(payload['session_id'])}",
+            _canonical_utc_timestamp(payload["segment_window_start_utc"]),
+            _canonical_utc_timestamp(payload["segment_window_end_utc"]),
+        )
     )
     return hashlib.sha256(stable_identity.encode("utf-8")).hexdigest()
 
@@ -1026,6 +1030,7 @@ class TestOrchestrator:
         assert orch._face_mesh is None
         assert orch._au12_series == []
 
+    @pytest.mark.audit_item("13.25")
     def test_segment_id_replay_stable_for_identical_window_boundaries(self) -> None:
         session_id = "66666666-6666-4666-8666-666666666666"
         anchor = datetime(2026, 3, 13, 12, 0, 0, tzinfo=UTC)
@@ -1040,14 +1045,32 @@ class TestOrchestrator:
         with patch("services.worker.pipeline.orchestrator.time.time", return_value=1710000999.0):
             second_payload = second.assemble_segment(b"\x00", [])
 
+        expected_serialization = "|".join(
+            (
+                session_id,
+                _canonical_utc_timestamp(first_payload["segment_window_start_utc"]),
+                _canonical_utc_timestamp(first_payload["segment_window_end_utc"]),
+            )
+        )
+        unseparated_serialization = expected_serialization.replace("|", "")
+
         assert (
             first_payload["segment_window_start_utc"] == second_payload["segment_window_start_utc"]
         )
         assert first_payload["segment_window_end_utc"] == second_payload["segment_window_end_utc"]
         assert first_payload["segment_id"] == second_payload["segment_id"]
         assert first_payload["segment_id"] == _expected_segment_id(first_payload)
+        assert (
+            first_payload["segment_id"]
+            == hashlib.sha256(expected_serialization.encode("utf-8")).hexdigest()
+        )
+        assert (
+            first_payload["segment_id"]
+            != hashlib.sha256(unseparated_serialization.encode("utf-8")).hexdigest()
+        )
         assert first_payload["timestamp_utc"] != second_payload["timestamp_utc"]
 
+    @pytest.mark.audit_item("13.26")
     def test_bandit_snapshot_copies_pre_update_state_and_omits_absent_optionals(self) -> None:
         orch = Orchestrator(session_id="77777777-7777-4777-8777-777777777777")
         orch._active_arm = "arm_a"

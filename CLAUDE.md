@@ -59,6 +59,6 @@ pytest tests/ -x -q
 # Docker topology
 docker compose config --quiet
 # Canonical name audit — must return 0 results
-# Run .claude/commands/audit.md item 15 exactly: use its grep -rnE pattern
-# against services/ packages/ scripts/ and do not filter comments or docstrings.
+# Run the canonical-name grep recipe in .claude/commands/audit.md exactly:
+# use its grep -rnE pattern against services/ packages/ scripts/ and do not filter comments or docstrings.
 ```

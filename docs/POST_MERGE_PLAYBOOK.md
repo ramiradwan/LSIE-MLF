@@ -13,9 +13,9 @@ The playbook is operator-facing: each chore should be runnable from a clean chec
 
 ### 1. Canonical Terminology Sweep
 
-**Purpose.** Enforce §0.3 of the spec: only the canonical identifiers listed in `CLAUDE.md` (IPC Pipe, Ephemeral Vault, InferenceHandoffPayload, ML Worker, API Server, Message Broker, Persistent Store, Capture Container, Physiological Chunk Event, Physiological Context, Physiological State Buffer, subject_role, Co-Modulation Index) may appear in code and docstrings. Retired synonyms (Celery node, GPU worker, FIFO, named pipe, 24-hour vault, handoff schema, FastAPI server, etc.) erode shared vocabulary and confuse the ADO agent's refactor planner.
+**Purpose.** Enforce §0.3 of the spec: only the canonical identifiers listed in `CLAUDE.md` (IPC Pipe, Ephemeral Vault, InferenceHandoffPayload, ML Worker, API Server, Message Broker, Persistent Store, Capture Container, PhysiologicalChunkEvent, Physiological Context, Physiological State Buffer, subject_role, Co-Modulation Index) may appear in code and docstrings. Retired synonyms (Celery node, GPU worker, FIFO, named pipe, 24-hour vault, handoff schema, FastAPI server, etc.) erode shared vocabulary and confuse the ADO agent's refactor planner.
 
-**Inputs.** The retired-synonym grep from `CLAUDE.md` and the longer extended list in `.claude/commands/audit.md` (item 15), run against `services/`, `packages/`, and `docker-compose.yml`.
+**Inputs.** The retired-synonym grep from `CLAUDE.md`, run against `services/`, `packages/`, and `docker-compose.yml`. The executable §13 audit harness in Chore #8 is the authoritative automated gate for canonical-name verifier results.
 
 **Outputs.** Either a clean (zero-match) report committed to the merge cycle log, or a follow-up commit that renames the offenders. README narrative prose is exempt; code, comments, and docstrings are not.
 
@@ -83,11 +83,20 @@ The playbook is operator-facing: each chore should be runnable from a clean chec
 
 ### 8. §13 Audit Checklist Execution
 
-**Purpose.** Run the autonomous implementation audit from §13 of the current spec (see `.claude/commands/audit.md`). This is the final gate on every merge — the sum of items 1–7 above plus the items they do not cover (canonical name list integrity, requirements pin compliance, image-separation enforcement, `from __future__ import annotations` usage, and extension-specific audit items).
+**Purpose.** Run the autonomous implementation audit from §13 of the current spec through the executable harness (see `.claude/commands/audit.md`). This is the final gate on every merge — the sum of items 1–7 above plus the items they do not cover (canonical name list integrity, requirements pin compliance, image-separation enforcement, `from __future__ import annotations` usage, and extension-specific audit items).
 
 **Inputs.** The current state of `main` after the merge, plus any follow-up commits triggered by chores 1–7.
 
-**Outputs.** A pass/fail table for every current §13 audit item appended to the merge cycle log. Any fail must point to either a follow-up commit or a SPEC-AMEND entry that justifies the deviation.
+**Run.** Capture the harness-generated Markdown report from stdout and append it verbatim to the merge cycle log:
+
+```bash
+python scripts/run_audit.py --strict > /tmp/section13-audit.md
+cat /tmp/section13-audit.md >> docs/artifacts/<cycle-log>.md
+```
+
+The harness renders a deterministic Markdown table in runtime-enumerated spec order with stable single-line cells, so adjacent cycle logs should produce meaningful diffs when the spec, verifiers, or evidence changes.
+
+**Outputs.** The appended harness Markdown report for every current §13 audit item. Any fail must point to either a follow-up commit or a SPEC-AMEND entry that justifies the deviation.
 
 **Success.** All current §13 items pass, OR every fail is justified by a registered amendment. **Failure.** Any unjustified fail, or the audit was not run.
 

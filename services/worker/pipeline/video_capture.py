@@ -43,7 +43,7 @@ VIDEO_PIPE_PATH: str = "/tmp/ipc/video_stream.mkv"
 # §12 Queue overload: deque eviction prevents unbounded memory growth
 MAX_FRAME_BUFFER: int = 5
 
-# Retry delay when video pipe is not yet available
+# Retry delay when the video IPC Pipe is not yet available
 VIDEO_PIPE_RETRY_DELAY: float = 2.0
 VIDEO_PIPE_MAX_RETRIES: int = 30
 
@@ -112,18 +112,18 @@ class VideoCapture:
                     format=None,
                     options={"fflags": "nobuffer", "flags": "low_delay"},
                 )
-                logger.info("Video pipe opened via PyAV (attempt %d)", attempt + 1)
+                logger.info("Video IPC Pipe opened via PyAV (attempt %d)", attempt + 1)
                 return container
             except Exception as exc:
                 logger.warning(
-                    "Video pipe not ready (attempt %d/%d): %s",
+                    "Video IPC Pipe not ready (attempt %d/%d): %s",
                     attempt + 1,
                     VIDEO_PIPE_MAX_RETRIES,
                     exc,
                 )
                 time.sleep(VIDEO_PIPE_RETRY_DELAY)
 
-        logger.error("Failed to open video pipe after %d attempts", VIDEO_PIPE_MAX_RETRIES)
+        logger.error("Failed to open video IPC Pipe after %d attempts", VIDEO_PIPE_MAX_RETRIES)
         return None
 
     def _decode_loop(self) -> None:

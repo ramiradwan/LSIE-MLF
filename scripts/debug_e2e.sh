@@ -246,7 +246,7 @@ if docker compose logs orchestrator 2>/dev/null | grep -q "Video capture thread 
     ok "Video capture thread running"
 elif docker compose logs orchestrator 2>/dev/null | grep -q "Video capture unavailable"; then
     broken "Video capture unavailable"
-    hint "Check video pipe: docker compose exec orchestrator test -p /tmp/ipc/video_stream.mkv"
+    hint "Check IPC Pipe video endpoint: docker compose exec orchestrator test -p /tmp/ipc/video_stream.mkv"
     hint "Check PyAV installed: docker compose exec orchestrator python3.11 -c 'import av; print(av.__version__)'"
 else
     broken "No video capture log entry"

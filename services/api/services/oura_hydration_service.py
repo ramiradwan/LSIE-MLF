@@ -9,6 +9,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from packages.schemas.data_tiers import DataTier, mark_data_tier
 from packages.schemas.physiology import PhysiologicalChunkEvent
 from services.api.clients.oura_client import OuraAPIClient, create_oura_client_from_env
 
@@ -81,7 +82,12 @@ class OuraHydrationService:
         return self._oura_client
 
     def _pop_notification(self) -> str | None:
-        raw = self._redis.lpop(self._hydrate_queue)
+        raw = mark_data_tier(
+            self._redis.lpop(self._hydrate_queue),
+            DataTier.TRANSIENT,
+            spec_ref="§5.2.1",
+            purpose="Oura hydration notification while in Redis transit",
+        )  # §5.2.1 Transient Data
         if raw is None:
             return None
         if isinstance(raw, bytes):
@@ -111,14 +117,25 @@ class OuraHydrationService:
             except ValidationError:
                 logger.warning("Malformed Oura provider record skipped", exc_info=True)
                 continue
+            event_json = mark_data_tier(
+                validated.model_dump_json(),
+                DataTier.TRANSIENT,
+                spec_ref="§5.2.1",
+                purpose="Normalized PhysiologicalChunkEvent while in Redis transit",
+            )  # §5.2.1 Transient Data
             self._redis.rpush(
                 self._events_queue,
-                validated.model_dump_json(),
+                event_json,
             )
 
     def _parse_notification(self, raw_notification: str) -> dict[str, Any] | None:
         try:
-            payload = json.loads(raw_notification)
+            payload = mark_data_tier(
+                json.loads(raw_notification),
+                DataTier.TRANSIENT,
+                spec_ref="§5.2.1",
+                purpose="Raw Oura hydration notification decoded from Redis transit",
+            )  # §5.2.1 Transient Data
         except json.JSONDecodeError:
             logger.warning("Malformed Oura hydration notification skipped")
             return None
@@ -160,13 +177,19 @@ class OuraHydrationService:
         source_kind: str,
     ) -> dict[str, Any] | None:
         try:
-            return oura_client.get_json(
-                self._resource_path_for_source_kind(source_kind),
-                query={
-                    "start_datetime": notification["start_datetime"],
-                    "end_datetime": notification["end_datetime"],
-                },
-            )
+            resource = mark_data_tier(
+                oura_client.get_json(
+                    self._resource_path_for_source_kind(source_kind),
+                    query={
+                        "start_datetime": notification["start_datetime"],
+                        "end_datetime": notification["end_datetime"],
+                    },
+                ),
+                DataTier.TRANSIENT,
+                spec_ref="§5.2.1",
+                purpose="Hydrated raw Oura provider response before chunk normalization",
+            )  # §5.2.1 Transient Data
+            return resource
         except Exception:
             logger.warning("Oura resource fetch failed; notification skipped", exc_info=True)
             return None

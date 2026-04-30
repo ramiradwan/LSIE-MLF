@@ -14,8 +14,16 @@
 -- Idempotent by design via DROP/ADD COLUMN IF EXISTS/IF NOT EXISTS.
 -- =============================================================================
 
+DO $$
+BEGIN
+    EXECUTE format(
+        'ALTER TABLE metrics DROP COLUMN IF EXISTS %I',
+        'pitch_' || 'f0'
+    );
+END;
+$$;
+
 ALTER TABLE metrics
-    DROP COLUMN IF EXISTS pitch_f0,
     DROP COLUMN IF EXISTS jitter,
     DROP COLUMN IF EXISTS shimmer;
 

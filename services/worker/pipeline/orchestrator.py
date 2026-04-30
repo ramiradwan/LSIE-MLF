@@ -29,6 +29,8 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from packages.schemas.data_tiers import DataTier, mark_data_tier
+
 logger = logging.getLogger(__name__)
 
 # §4.C.1 Drift polling specification
@@ -250,7 +252,12 @@ class AudioResampler:
             return b""
 
         try:
-            data = self._process.stdout.read(num_bytes)
+            data = mark_data_tier(
+                self._process.stdout.read(num_bytes),
+                DataTier.TRANSIENT,
+                spec_ref="§5.2.1",
+                purpose="Raw PCM audio buffer from IPC/FFmpeg boundary",
+            )  # §5.2.1 Transient Data
             if not data:
                 # §12 Worker crash C — EOF means FFmpeg exited
                 logger.warning("FFmpeg stdout EOF, process likely crashed")
@@ -498,7 +505,12 @@ class Orchestrator:
         if self.video_capture is None:
             return
 
-        frame = self.video_capture.get_latest_frame()
+        frame = mark_data_tier(
+            self.video_capture.get_latest_frame(),
+            DataTier.TRANSIENT,
+            spec_ref="§5.2.1",
+            purpose="Decoded video frame in volatile AU12 processing memory",
+        )  # §5.2.1 Transient Data
         if frame is None:
             return
 
@@ -680,7 +692,12 @@ class Orchestrator:
         wall_now = time.time()
         while drained < MAX_PHYSIO_DRAIN_PER_CYCLE:
             try:
-                raw = self._redis.lpop(PHYSIO_QUEUE_KEY)
+                raw = mark_data_tier(
+                    self._redis.lpop(PHYSIO_QUEUE_KEY),
+                    DataTier.TRANSIENT,
+                    spec_ref="§5.2.1",
+                    purpose="PhysiologicalChunkEvent JSON while in Redis transit",
+                )  # §5.2.1 Transient Data
             except Exception:
                 logger.warning("Physiological Redis drain unavailable", exc_info=True)
                 return
@@ -744,11 +761,13 @@ class Orchestrator:
         return start, end
 
     def _stable_segment_id(self, window_start_utc: datetime, window_end_utc: datetime) -> str:
-        """Return SHA-256(session_id || window_start || window_end)."""
-        stable_identity = (
-            f"{uuid.UUID(self._session_id)}"
-            f"{self._canonical_utc_timestamp(window_start_utc)}"
-            f"{self._canonical_utc_timestamp(window_end_utc)}"
+        """Return SHA-256(session_id|window_start|window_end) using canonical UTC."""
+        stable_identity = "|".join(
+            (
+                f"{uuid.UUID(self._session_id)}",
+                self._canonical_utc_timestamp(window_start_utc),
+                self._canonical_utc_timestamp(window_end_utc),
+            )
         )
         return hashlib.sha256(stable_identity.encode("utf-8")).hexdigest()
 
@@ -945,7 +964,12 @@ class Orchestrator:
         frame_data: bytes | None = None
         if self.video_capture is not None:
             try:
-                frame = self.video_capture.get_latest_frame()
+                frame = mark_data_tier(
+                    self.video_capture.get_latest_frame(),
+                    DataTier.TRANSIENT,
+                    spec_ref="§5.2.1",
+                    purpose="Decoded video frame in volatile segment assembly memory",
+                )  # §5.2.1 Transient Data
                 if frame is not None:
                     frame_array = (
                         frame.to_ndarray(format="bgr24") if hasattr(frame, "to_ndarray") else frame
@@ -1450,11 +1474,16 @@ class Orchestrator:
         Uses a direct psycopg2 connection (not the MetricsStore pool)
         to avoid circular dependency with the Celery task layer.
         """
-        insert_session_sql = """
+        insert_session_sql = mark_data_tier(
+            """
             INSERT INTO sessions (session_id, stream_url, started_at)
             VALUES (%(session_id)s, %(stream_url)s, NOW())
             ON CONFLICT (session_id) DO NOTHING
-        """
+        """,
+            DataTier.PERMANENT,
+            spec_ref="§5.2.3",
+            purpose="Authoritative session metadata INSERT",
+        )  # §5.2.3 Permanent Analytical Storage
 
         try:
             import psycopg2
@@ -1470,10 +1499,15 @@ class Orchestrator:
                 with conn.cursor() as cur:
                     cur.execute(
                         insert_session_sql,
-                        {
-                            "session_id": self._session_id,
-                            "stream_url": self._stream_url or "unknown",
-                        },
+                        mark_data_tier(
+                            {
+                                "session_id": self._session_id,
+                                "stream_url": self._stream_url or "unknown",
+                            },
+                            DataTier.PERMANENT,
+                            spec_ref="§5.2.3",
+                            purpose="Normalized session metadata row parameters",
+                        ),
                     )
                 conn.commit()
                 logger.info(

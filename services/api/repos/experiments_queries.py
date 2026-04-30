@@ -12,6 +12,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from packages.schemas.data_tiers import DataTier, mark_data_tier
+
 # ----------------------------------------------------------------------
 # Legacy read shape (preserved)
 # ----------------------------------------------------------------------
@@ -73,7 +75,8 @@ _SELECT_ARM_ADMIN_ROW_SQL: str = """
     LIMIT 1
 """
 
-_INSERT_EXPERIMENT_ARM_SQL: str = """
+_INSERT_EXPERIMENT_ARM_SQL: str = mark_data_tier(
+    """
     INSERT INTO experiments (
         experiment_id,
         label,
@@ -96,7 +99,11 @@ _INSERT_EXPERIMENT_ARM_SQL: str = """
         %(end_dated_at)s,
         NOW()
     )
-"""
+""",
+    DataTier.PERMANENT,
+    spec_ref="§5.2.3",
+    purpose="Experiment arm analytical configuration INSERT",
+)  # §5.2.3 Permanent Analytical Storage
 
 _UPDATE_EXPERIMENT_ARM_METADATA_SQL: str = """
     UPDATE experiments
@@ -226,16 +233,21 @@ def insert_experiment_arm(
 ) -> None:
     cursor.execute(
         _INSERT_EXPERIMENT_ARM_SQL,
-        {
-            "experiment_id": experiment_id,
-            "label": label,
-            "arm": arm,
-            "greeting_text": greeting_text,
-            "alpha_param": alpha_param,
-            "beta_param": beta_param,
-            "enabled": enabled,
-            "end_dated_at": end_dated_at,
-        },
+        mark_data_tier(
+            {
+                "experiment_id": experiment_id,
+                "label": label,
+                "arm": arm,
+                "greeting_text": greeting_text,
+                "alpha_param": alpha_param,
+                "beta_param": beta_param,
+                "enabled": enabled,
+                "end_dated_at": end_dated_at,
+            },
+            DataTier.PERMANENT,
+            spec_ref="§5.2.3",
+            purpose="Normalized experiment arm configuration row parameters",
+        ),
     )
 
 

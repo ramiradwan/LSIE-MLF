@@ -22,15 +22,15 @@ IOD = 3D Euclidean distance between e_l and e_r.
 d_mouth = norm(L291 - L61)            # 3D Euclidean
 raw_ratio = d_mouth / iod
 i_au12 = raw_ratio - b_neutral        # baseline-subtracted
-score_au12 = max(0, alpha * i_au12)    # alpha default 5.0
+score_au12_bounded = tanh(alpha * max(0, i_au12))  # alpha default 6.0
 ```
 
-Output MUST be clamped to [0.0, 5.0]. Epsilon guard (1e-6) on IOD to prevent division by zero.
+Output MUST be bounded to [0.0, 1.0] via tanh soft-saturation. Epsilon guard (1e-6) on IOD to prevent division by zero.
 
 ## Calibration
 
 During calibration phase (`is_calibrating=True`): accumulate raw_ratio into buffer, set `b_neutral = mean(buffer)`, return 0.0. Inference requires calibrated baseline or raises `ValueError`.
 
-## v2.0 corrections
+## Implementation corrections
 
-Landmark indexing uses `landmarks[i]` not `landmarks.landmark[i]`. Full type annotations required. Output hard-clamped to 5.0.
+Landmark indexing uses `landmarks[i]` not `landmarks.landmark[i]`. Full type annotations required. Output uses tanh soft-saturation with default `alpha=6.0` and remains bounded to [0.0, 1.0].

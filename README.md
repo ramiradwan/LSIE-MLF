@@ -50,13 +50,13 @@ External telemetry / webhook ingress
   -> api
     -> redis (physio:hydrate)
       -> api hydration worker
-        -> redis (physio:events, Physiological Chunk Event)
+        -> redis (physio:events, PhysiologicalChunkEvent)
           -> orchestrator
             -> worker
               -> postgres
 ```
 
-Oura webhook deliveries are treated as change notifications: the API Server enqueues hydration work, fetches provider resources, and emits Physiological Chunk Event records before Module C derives scalar physiological context for each segment.
+Oura webhook deliveries are treated as change notifications: the API Server enqueues hydration work, fetches provider resources, and emits PhysiologicalChunkEvent records before Module C derives scalar physiological context for each segment.
 
 ---
 

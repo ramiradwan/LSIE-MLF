@@ -12,8 +12,11 @@ import base64
 import importlib
 import sys
 from dataclasses import asdict
-from typing import Any
+from types import ModuleType
+from typing import Any, cast
 from unittest.mock import MagicMock, call, patch
+
+import pytest
 
 
 def _get_inference_module() -> Any:
@@ -21,7 +24,22 @@ def _get_inference_module() -> Any:
     mock_app = MagicMock()
     mock_app.task.return_value = lambda f: f
 
-    with patch("services.worker.celery_app.celery_app", mock_app):
+    celery_dependency = cast(Any, ModuleType("celery"))
+    celery_dependency.Task = type("Task", (), {})
+    celery_app_module = cast(Any, ModuleType("services.worker.celery_app"))
+    celery_app_module.celery_app = mock_app
+    worker_pkg = importlib.import_module("services.worker")
+
+    with (
+        patch.dict(
+            sys.modules,
+            {
+                "celery": celery_dependency,
+                "services.worker.celery_app": celery_app_module,
+            },
+        ),
+        patch.object(worker_pkg, "celery_app", celery_app_module, create=True),
+    ):
         mod_name = "services.worker.tasks.inference"
         if mod_name in sys.modules:
             del sys.modules[mod_name]
@@ -206,6 +224,7 @@ class TestBase64Decode:
             # (bytes is not str, so decode is a no-op) and be written as-is
             mock_file.write.assert_called_once_with(raw_audio)
 
+    @pytest.mark.audit_item("13.27")
     def test_semantic_payload_contains_only_live_channel(self) -> None:
         """§8 — v3 handoff enriches only the live semantic payload."""
         mod = _get_inference_module()
@@ -266,6 +285,155 @@ class TestBase64Decode:
         dispatched = mock_persist.delay.call_args.args[0]
         assert dispatched["semantic"] == expected_live_semantic
         assert set(dispatched["semantic"]) == set(result["semantic"])
+
+    @pytest.mark.audit_item("13.27")
+    def test_semantic_shadow_mode_is_observational_for_reward_and_updates(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """§8/§13.27 — Divergent semantic shadow output cannot change live reward/update paths."""
+        mod = _get_inference_module()
+        from packages.ml_core.semantic import SemanticEvaluator
+        from services.worker.pipeline.reward import RewardResult
+
+        raw_audio = b"\x00\x01" * 1600
+        b64_audio = base64.b64encode(raw_audio).decode("ascii")
+        payload = _make_payload(
+            _audio_data=b64_audio,
+            _active_arm="arm-a",
+            _experiment_id="exp-1",
+            _expected_greeting="hello welcome",
+            _stimulus_time=100.0,
+            _au12_series=[
+                {"timestamp_s": 100.5, "intensity": 0.40},
+                {"timestamp_s": 101.0, "intensity": 0.70},
+            ],
+        )
+
+        def _fixed_score(value: float) -> Any:
+            def scorer(_expected: str, _actual: str) -> float:
+                return value
+
+            return scorer
+
+        def _process_with_shadow_flag(enabled: bool) -> tuple[dict[str, Any], dict[str, Any], Any]:
+            if enabled:
+                monkeypatch.setenv("SEMANTIC_SHADOW_MODE_ENABLED", "1")
+            else:
+                monkeypatch.delenv("SEMANTIC_SHADOW_MODE_ENABLED", raising=False)
+
+            semantic_instances: list[SemanticEvaluator] = []
+
+            def evaluator_factory() -> SemanticEvaluator:
+                evaluator = SemanticEvaluator(
+                    primary_scorer=_fixed_score(0.84),
+                    gray_band_fallback_enabled=False,
+                    shadow_scorer=_fixed_score(0.12),
+                    shadow_mode_enabled=None,
+                )
+                semantic_instances.append(evaluator)
+                return evaluator
+
+            mock_persist = MagicMock()
+            mock_engine = MagicMock()
+            mock_engine.transcribe.return_value = "hello welcome"
+            mock_preprocessor = MagicMock()
+            mock_preprocessor.preprocess.return_value = "hello welcome"
+
+            with (
+                patch.object(mod, "persist_metrics", mock_persist),
+                patch(
+                    "packages.ml_core.transcription.TranscriptionEngine",
+                    return_value=mock_engine,
+                ),
+                patch(
+                    "packages.ml_core.preprocessing.TextPreprocessor",
+                    return_value=mock_preprocessor,
+                ),
+                patch("packages.ml_core.semantic.SemanticEvaluator", side_effect=evaluator_factory),
+                patch("subprocess.run"),
+                patch("os.remove"),
+                patch("tempfile.NamedTemporaryFile") as mock_tmpfile,
+            ):
+                mock_file = MagicMock()
+                mock_file.__enter__ = MagicMock(return_value=mock_file)
+                mock_file.__exit__ = MagicMock(return_value=False)
+                mock_file.name = "/tmp/test-shadow.raw" if enabled else "/tmp/test-live.raw"
+                mock_tmpfile.return_value = mock_file
+
+                result = mod.process_segment(MagicMock(), dict(payload))
+
+            assert len(semantic_instances) == 1
+            dispatched = mock_persist.delay.call_args.args[0]
+            return result, dispatched, semantic_instances[0]
+
+        live_result, live_dispatched, live_evaluator = _process_with_shadow_flag(False)
+        shadow_result, shadow_dispatched, shadow_evaluator = _process_with_shadow_flag(True)
+
+        expected_live_semantic = {
+            "reasoning": "cross_encoder_high_match",
+            "is_match": True,
+            "confidence_score": 0.84,
+            "semantic_method": "cross_encoder",
+            "semantic_method_version": (
+                "lsie-greeting-cross-encoder-v1.0.0+semantic-greeting-calibration-v1.0.0"
+            ),
+        }
+        assert live_evaluator.last_shadow_semantic is None
+        assert shadow_evaluator.last_shadow_semantic == {
+            "reasoning": "shadow_candidate_nonmatch",
+            "is_match": False,
+            "confidence_score": 0.12,
+        }
+        assert live_result["semantic"] == expected_live_semantic
+        assert shadow_result["semantic"] == expected_live_semantic
+        assert live_dispatched["semantic"] == expected_live_semantic
+        assert shadow_dispatched["semantic"] == expected_live_semantic
+        assert "_semantic_shadow" not in shadow_result
+        assert "semantic_shadow" not in shadow_result
+        assert "_semantic_shadow" not in shadow_dispatched
+        assert "semantic_shadow" not in shadow_dispatched
+
+        reward_result = RewardResult(
+            gated_reward=0.42,
+            p90_intensity=0.70,
+            semantic_gate=1,
+            n_frames_in_window=2,
+            au12_baseline_pre=None,
+        )
+        mock_store = MagicMock()
+        mock_store.compute_comodulation.return_value = None
+        mock_engine = MagicMock()
+
+        with (
+            patch("services.worker.pipeline.analytics.MetricsStore", return_value=mock_store),
+            patch(
+                "services.worker.pipeline.analytics.ThompsonSamplingEngine",
+                return_value=mock_engine,
+            ),
+            patch(
+                "services.worker.pipeline.reward.compute_reward",
+                return_value=reward_result,
+            ) as mock_compute_reward,
+            patch.object(mod, "_log_encounter", MagicMock()),
+        ):
+            mod.persist_metrics(MagicMock(), live_result)
+            mod.persist_metrics(MagicMock(), shadow_result)
+
+        assert len(mock_compute_reward.call_args_list) == 2
+        assert (
+            mock_compute_reward.call_args_list[0].kwargs
+            == mock_compute_reward.call_args_list[1].kwargs
+        )
+        reward_kwargs = mock_compute_reward.call_args_list[1].kwargs
+        assert set(reward_kwargs) == {"au12_series", "stimulus_time_s", "is_match"}
+        assert reward_kwargs["is_match"] is True
+        assert "confidence_score" not in reward_kwargs
+        assert "semantic_shadow" not in reward_kwargs
+        assert mock_engine.update.call_args_list == [
+            call("exp-1", "arm-a", 0.42),
+            call("exp-1", "arm-a", 0.42),
+        ]
 
 
 class TestPersistMetricsRewardInvariance:
@@ -465,6 +633,7 @@ class TestPersistMetricsRewardInvariance:
         assert len(ledger.scores) == 6
         assert {score.outcome_id for score in ledger.scores} == {None}
 
+    @pytest.mark.audit_item("13.31")
     def test_differential_payloads_produce_identical_reward_result(self) -> None:
         """§7E writes preserve §7B reward result and posterior invariance."""
         mod = _get_inference_module()
@@ -474,7 +643,36 @@ class TestPersistMetricsRewardInvariance:
         base_metrics = self._reward_eligible_metrics()
         differential_metrics = self._reward_eligible_metrics(**self._side_channel_overrides())
 
+        from services.worker.pipeline.analytics import ThompsonSamplingEngine
         from services.worker.pipeline.reward import compute_reward as real_compute_reward
+
+        arm_priors = [
+            {"arm": "arm-a", "alpha_param": 3.0, "beta_param": 2.0},
+            {"arm": "arm-b", "alpha_param": 2.0, "beta_param": 3.0},
+        ]
+        base_selection_store = MagicMock()
+        differential_selection_store = MagicMock()
+        base_selection_store.get_experiment_arms.return_value = arm_priors
+        differential_selection_store.get_experiment_arms.return_value = arm_priors
+        with patch("scipy.stats.beta.rvs", side_effect=[0.73, 0.44, 0.73, 0.44]) as mock_beta_rvs:
+            base_selected_arm = ThompsonSamplingEngine(base_selection_store).select_arm(
+                base_metrics["_experiment_id"]
+            )
+            differential_selected_arm = ThompsonSamplingEngine(
+                differential_selection_store
+            ).select_arm(differential_metrics["_experiment_id"])
+
+        assert "attribution_score" not in base_metrics
+        assert differential_metrics["attribution_score"]["soft_reward_candidate"] == 0.99
+        assert base_selected_arm == differential_selected_arm == "arm-a"
+        assert base_selection_store.get_experiment_arms.call_args_list == [call("exp-1")]
+        assert differential_selection_store.get_experiment_arms.call_args_list == [call("exp-1")]
+        assert mock_beta_rvs.call_args_list == [
+            call(3.0, 2.0),
+            call(2.0, 3.0),
+            call(3.0, 2.0),
+            call(2.0, 3.0),
+        ]
 
         reward_results: list[Any] = []
 

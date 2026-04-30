@@ -16,7 +16,7 @@ Design constraints:
 Spec references:
   §4.B.2  — Physiological Ingestion Adapter
   §2.8    — API Server → Orchestrator Container transition
-  §5      — Raw payloads are Transient Sensitive Data
+  §5      — Raw payloads are Transient Data
   §12     — Failure matrix: invalid sig, duplicate, enqueue failure
 """
 
@@ -34,6 +34,7 @@ from typing import Any
 
 from fastapi import APIRouter, Header, HTTPException, Query, Request
 
+from packages.schemas.data_tiers import DataTier, mark_data_tier
 from services.api.db.connection import get_connection, put_connection
 
 logger = logging.getLogger(__name__)
@@ -122,14 +123,24 @@ async def oura_webhook(
       - Malformed payload → 422
       - Message Broker enqueue failure → 503
     """
-    body = await request.body()
+    body = mark_data_tier(
+        await request.body(),
+        DataTier.TRANSIENT,
+        spec_ref="§5.2.1",
+        purpose="Raw Oura webhook JSON bytes at API ingress",
+    )  # §5.2.1 Transient Data
 
     if not _verify_oura_signature(body, x_oura_signature, _get_webhook_secret()):
         logger.warning("Oura webhook signature verification failed")
         raise HTTPException(status_code=401, detail="Invalid signature")
 
     try:
-        raw = json.loads(body)
+        raw = mark_data_tier(
+            json.loads(body),
+            DataTier.TRANSIENT,
+            spec_ref="§5.2.1",
+            purpose="Raw Oura webhook JSON object before hydration normalization",
+        )  # §5.2.1 Transient Data
     except json.JSONDecodeError as exc:
         raise HTTPException(status_code=422, detail="Malformed JSON") from exc
 
@@ -160,15 +171,20 @@ async def oura_webhook(
         raise HTTPException(status_code=422, detail="Invalid or missing end_datetime")
 
     event_uuid = _derive_event_uuid(raw, body)
-    hydration_payload = {
-        "unique_id": str(event_uuid),
-        "subject_role": subject_role,
-        "event_type": event_type,
-        "data_type": data_type,
-        "start_datetime": start_datetime,
-        "end_datetime": end_datetime,
-        "notification_received_utc": datetime.now(UTC).isoformat(),
-    }
+    hydration_payload = mark_data_tier(
+        {
+            "unique_id": str(event_uuid),
+            "subject_role": subject_role,
+            "event_type": event_type,
+            "data_type": data_type,
+            "start_datetime": start_datetime,
+            "end_datetime": end_datetime,
+            "notification_received_utc": datetime.now(UTC).isoformat(),
+        },
+        DataTier.TRANSIENT,
+        spec_ref="§5.2.1",
+        purpose="Whitelisted Oura hydration notification in Redis transit",
+    )  # §5.2.1 Transient Data
     idem_key = f"{_IDEMPOTENCY_PREFIX}{event_uuid}"
 
     redis_client = None

@@ -1,0 +1,544 @@
+{
+  "schema_version": 1,
+  "registry_ref": "§12 Error Handling and Recovery Specification",
+  "audit_item": "§13.11 Error handling",
+  "row_count_expected": 24,
+  "modules": [
+    {
+      "module": "A",
+      "module_name": "Capture Container",
+      "section": "§12.1",
+      "failures": [
+        {
+          "category": "Network Disconnection",
+          "section": "§12.1.1",
+          "behavior": "N/A",
+          "evidence": [
+            {
+              "path": "docs/SPEC_REFERENCE.md",
+              "mode": "documented_degradation",
+              "patterns": [
+                "Network disconnection: Module A=N/A"
+              ]
+            }
+          ]
+        },
+        {
+          "category": "Hardware Device Loss",
+          "section": "§12.1.2",
+          "behavior": "USB reconnection polling every 2s for 60s then container restart",
+          "evidence": [
+            {
+              "path": "services/stream_ingest/entrypoint.sh",
+              "mode": "section_comment",
+              "patterns": [
+                "§12.1.2",
+                "while ! adb devices",
+                "timeout=60",
+                "sleep 2"
+              ]
+            },
+            {
+              "path": "docker-compose.yml",
+              "mode": "documented_degradation",
+              "patterns": [
+                "stream_scrcpy:",
+                "restart: \"on-failure:3\""
+              ]
+            }
+          ]
+        },
+        {
+          "category": "Worker Process Crash",
+          "section": "§12.1.3",
+          "behavior": "Pipe overflow handled via EAGAIN non-blocking writes",
+          "evidence": [
+            {
+              "path": "services/stream_ingest/entrypoint.sh",
+              "mode": "section_comment",
+              "patterns": [
+                "§12.1.3",
+                "wait -n",
+                "Pipeline break detected"
+              ]
+            }
+          ]
+        },
+        {
+          "category": "Queue Overload",
+          "section": "§12.1.4",
+          "behavior": "Kernel pipe overflow discards data silently",
+          "evidence": [
+            {
+              "path": "services/stream_ingest/entrypoint.sh",
+              "mode": "section_comment",
+              "patterns": [
+                "§12.1.4",
+                "AUDIO_PIPE",
+                "VIDEO_PIPE"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "module": "B",
+      "module_name": "Ground Truth Ingestion",
+      "section": "§12.2",
+      "failures": [
+        {
+          "category": "Network Disconnection",
+          "section": "§12.2.1",
+          "behavior": "Exponential WebSocket reconnection up to 10 retries; physiological webhook ingress relies on provider retries after timeout or HTTP 503",
+          "evidence": [
+            {
+              "path": "services/worker/pipeline/ground_truth.py",
+              "mode": "ast_try_except",
+              "exceptions": [
+                "Exception"
+              ],
+              "patterns": [
+                "§12.1 Module B",
+                "BACKOFF_MAX_RETRIES",
+                "asyncio.sleep(backoff)"
+              ],
+              "qualname": "GroundTruthIngester.run"
+            },
+            {
+              "path": "services/api/routes/physiology.py",
+              "mode": "ast_try_except",
+              "exceptions": [
+                "Exception"
+              ],
+              "patterns": [
+                "status_code=503",
+                "Service temporarily unavailable"
+              ],
+              "qualname": "oura_webhook"
+            }
+          ]
+        },
+        {
+          "category": "Hardware Device Loss",
+          "section": "§12.2.2",
+          "behavior": "N/A",
+          "evidence": [
+            {
+              "path": "docs/SPEC_REFERENCE.md",
+              "mode": "documented_degradation",
+              "patterns": [
+                "Hardware device loss: Module A=USB",
+                "Module B=N/A"
+              ]
+            }
+          ]
+        },
+        {
+          "category": "Worker Process Crash",
+          "section": "§12.2.3",
+          "behavior": "Reconnect WebSocket on restart",
+          "evidence": [
+            {
+              "path": "services/worker/pipeline/ground_truth.py",
+              "mode": "section_comment",
+              "patterns": [
+                "§12.1 Module B",
+                "Main ingestion loop with reconnection logic",
+                "await self.connect()"
+              ]
+            }
+          ]
+        },
+        {
+          "category": "Queue Overload",
+          "section": "§12.2.4",
+          "behavior": "Deque ring buffer evicts oldest entries; physiological enqueue backpressure returns HTTP 503",
+          "evidence": [
+            {
+              "path": "services/worker/pipeline/ground_truth.py",
+              "mode": "section_comment",
+              "patterns": [
+                "§12 Queue overload B",
+                "deque(maxlen=10000)"
+              ]
+            },
+            {
+              "path": "services/api/routes/physiology.py",
+              "mode": "ast_try_except",
+              "exceptions": [
+                "Exception"
+              ],
+              "patterns": [
+                "_PHYSIO_HYDRATE_QUEUE",
+                "status_code=503"
+              ],
+              "qualname": "oura_webhook"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "module": "C",
+      "module_name": "Orchestrator Container",
+      "section": "§12.3",
+      "failures": [
+        {
+          "category": "Network Disconnection",
+          "section": "§12.3.1",
+          "behavior": "N/A",
+          "evidence": [
+            {
+              "path": "docs/SPEC_REFERENCE.md",
+              "mode": "documented_degradation",
+              "patterns": [
+                "Network disconnection: Module A=N/A",
+                "Module C=N/A"
+              ]
+            }
+          ]
+        },
+        {
+          "category": "Hardware Device Loss",
+          "section": "§12.3.2",
+          "behavior": "Freeze drift offset after 3 ADB poll failures; reset after 300 seconds",
+          "evidence": [
+            {
+              "path": "services/worker/pipeline/orchestrator.py",
+              "mode": "ast_try_except",
+              "exceptions": [
+                "Exception"
+              ],
+              "patterns": [
+                "§12 Hardware loss C",
+                "DRIFT_FREEZE_AFTER_FAILURES",
+                "DRIFT_RESET_TIMEOUT"
+              ],
+              "qualname": "DriftCorrector.poll"
+            }
+          ]
+        },
+        {
+          "category": "Worker Process Crash",
+          "section": "§12.3.3",
+          "behavior": "Restart FFmpeg within 1 second and recreate/restart VideoCapture after IPC/PyAV break",
+          "evidence": [
+            {
+              "path": "services/worker/pipeline/orchestrator.py",
+              "mode": "section_comment",
+              "patterns": [
+                "§12 Worker crash C",
+                "FFMPEG_RESTART_DELAY",
+                "self.start()"
+              ]
+            },
+            {
+              "path": "services/worker/pipeline/video_capture.py",
+              "mode": "ast_try_except",
+              "exceptions": [
+                "Exception"
+              ],
+              "patterns": [
+                "§12 Worker crash",
+                "time.sleep(1.0)"
+              ],
+              "qualname": "VideoCapture._decode_loop"
+            }
+          ]
+        },
+        {
+          "category": "Queue Overload",
+          "section": "§12.3.4",
+          "behavior": "Deque maxlen eviction plus bounded physiological drain and malformed-event discard",
+          "evidence": [
+            {
+              "path": "services/worker/pipeline/video_capture.py",
+              "mode": "section_comment",
+              "patterns": [
+                "§12 Queue overload",
+                "deque(maxlen=MAX_FRAME_BUFFER)"
+              ]
+            },
+            {
+              "path": "services/worker/pipeline/orchestrator.py",
+              "mode": "ast_try_except",
+              "exceptions": [
+                "Exception"
+              ],
+              "patterns": [
+                "MAX_PHYSIO_DRAIN_PER_CYCLE",
+                "Malformed physiological event discarded"
+              ],
+              "qualname": "Orchestrator._drain_physio_events"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "module": "D",
+      "module_name": "ML Inference Worker",
+      "section": "§12.4",
+      "failures": [
+        {
+          "category": "Network Disconnection",
+          "section": "§12.4.1",
+          "behavior": "Retry Azure OpenAI gray-band fallback once; emit deterministic semantic error reason code and bounded false/null-compatible outputs",
+          "evidence": [
+            {
+              "path": "packages/ml_core/semantic.py",
+              "mode": "ast_try_except",
+              "exceptions": [
+                "Exception"
+              ],
+              "patterns": [
+                "for attempt in range(2):",
+                "Semantic gray-band fallback attempt",
+                "semantic_timeout",
+                "semantic_error"
+              ],
+              "qualname": "SemanticEvaluator._evaluate_gray_band_fallback"
+            }
+          ]
+        },
+        {
+          "category": "Hardware Device Loss",
+          "section": "§12.4.2",
+          "behavior": "Terminate worker container if GPU unavailable",
+          "evidence": [
+            {
+              "path": "docker-compose.yml",
+              "mode": "documented_degradation",
+              "patterns": [
+                "worker:",
+                "capabilities: [gpu]",
+                "restart: \"on-failure:5\""
+              ]
+            },
+            {
+              "path": "packages/ml_core/transcription.py",
+              "mode": "section_comment",
+              "patterns": [
+                "CUDA",
+                "device: str = \"cuda\""
+              ]
+            }
+          ]
+        },
+        {
+          "category": "Worker Process Crash",
+          "section": "§12.4.3",
+          "behavior": "Docker restart policy on-failure:5",
+          "evidence": [
+            {
+              "path": "docker-compose.yml",
+              "mode": "documented_degradation",
+              "patterns": [
+                "worker:",
+                "restart: \"on-failure:5\""
+              ]
+            }
+          ]
+        },
+        {
+          "category": "Queue Overload",
+          "section": "§12.4.4",
+          "behavior": "Celery queue buffers tasks in Redis",
+          "evidence": [
+            {
+              "path": "docker-compose.yml",
+              "mode": "documented_degradation",
+              "patterns": [
+                "redis-server",
+                "--appendonly",
+                "yes",
+                "celery -A services.worker.celery_app worker"
+              ]
+            },
+            {
+              "path": "services/worker/tasks/inference.py",
+              "mode": "section_comment",
+              "patterns": [
+                "@celery_app.task",
+                "acks_late=True"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "module": "E",
+      "module_name": "Persistent Analytics",
+      "section": "§12.5",
+      "failures": [
+        {
+          "category": "Network Disconnection",
+          "section": "§12.5.1",
+          "behavior": "Buffer database writes and retry every 5s",
+          "evidence": [
+            {
+              "path": "services/worker/pipeline/analytics.py",
+              "mode": "ast_try_except",
+              "qualname": "MetricsStore.insert_metrics",
+              "exceptions": [
+                "Exception"
+              ],
+              "patterns": [
+                "DB write failed, buffering record",
+                "self._buffer.append(metrics)"
+              ]
+            },
+            {
+              "path": "services/worker/pipeline/analytics.py",
+              "mode": "ast_try_except",
+              "qualname": "MetricsStore._flush_buffer",
+              "exceptions": [
+                "Exception"
+              ],
+              "patterns": [
+                "DB_RETRY_INTERVAL",
+                "time.sleep(DB_RETRY_INTERVAL)",
+                "self._overflow_to_csv(still_failing)"
+              ]
+            }
+          ]
+        },
+        {
+          "category": "Hardware Device Loss",
+          "section": "§12.5.2",
+          "behavior": "N/A",
+          "evidence": [
+            {
+              "path": "docs/SPEC_REFERENCE.md",
+              "mode": "documented_degradation",
+              "patterns": [
+                "Hardware device loss: Module A=USB",
+                "Module E=N/A"
+              ]
+            }
+          ]
+        },
+        {
+          "category": "Worker Process Crash",
+          "section": "§12.5.3",
+          "behavior": "Log Celery task failure and continue",
+          "evidence": [
+            {
+              "path": "services/worker/tasks/inference.py",
+              "mode": "ast_try_except",
+              "exceptions": [
+                "Exception"
+              ],
+              "patterns": [
+                "Metrics persistence failed",
+                "exc_info=True"
+              ],
+              "qualname": "persist_metrics"
+            }
+          ]
+        },
+        {
+          "category": "Queue Overload",
+          "section": "§12.5.4",
+          "behavior": "Overflow to CSV fallback; incomplete physiology produces null co-modulation rather than pipeline failure",
+          "evidence": [
+            {
+              "path": "services/worker/pipeline/analytics.py",
+              "mode": "section_comment",
+              "patterns": [
+                "§12.5.4",
+                "_overflow_to_csv",
+                "co_modulation_index"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "module": "F",
+      "module_name": "Context Enrichment",
+      "section": "§12.6",
+      "failures": [
+        {
+          "category": "Network Disconnection",
+          "section": "§12.6.1",
+          "behavior": "Return empty scrape result",
+          "evidence": [
+            {
+              "path": "services/worker/tasks/enrichment.py",
+              "mode": "ast_try_except",
+              "exceptions": [
+                "Exception"
+              ],
+              "patterns": [
+                "HTTP blocking: empty result",
+                "return result"
+              ],
+              "qualname": "scrape_context"
+            }
+          ]
+        },
+        {
+          "category": "Hardware Device Loss",
+          "section": "§12.6.2",
+          "behavior": "N/A",
+          "evidence": [
+            {
+              "path": "docs/SPEC_REFERENCE.md",
+              "mode": "documented_degradation",
+              "patterns": [
+                "Hardware device loss: Module A=USB",
+                "Module F=N/A"
+              ]
+            }
+          ]
+        },
+        {
+          "category": "Worker Process Crash",
+          "section": "§12.6.3",
+          "behavior": "Retry scraping task up to two times",
+          "evidence": [
+            {
+              "path": "services/worker/tasks/enrichment.py",
+              "mode": "ast_try_except",
+              "exceptions": [
+                "Exception"
+              ],
+              "patterns": [
+                "max_retries=2",
+                "self.retry(exc=exc)"
+              ],
+              "qualname": "scrape_context"
+            }
+          ]
+        },
+        {
+          "category": "Queue Overload",
+          "section": "§12.6.4",
+          "behavior": "Limit concurrent scraping tasks",
+          "evidence": [
+            {
+              "path": "docker-compose.yml",
+              "mode": "documented_degradation",
+              "patterns": [
+                "CELERYD_CONCURRENCY=1",
+                "--concurrency=1"
+              ]
+            },
+            {
+              "path": "services/worker/tasks/enrichment.py",
+              "mode": "section_comment",
+              "patterns": [
+                "@celery_app.task",
+                "max_retries=2"
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

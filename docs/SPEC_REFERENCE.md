@@ -4,6 +4,9 @@ This file extracts the key implementation-governing details from the currently c
 
 For the signed base spec, see the single `docs/tech-spec-v*.pdf` file committed in this repository; the extracted JSON index is `docs/content.json`, generated via `python scripts/spec_ref_check.py --extract > docs/content.json`. The amendment registry defines the current governing behavior wherever an amendment overrides the base spec.
 
+Authoritative artifact: `docs/registries/error_handling_matrix.yaml` is the review-controlled §12 failure-category registry used by the §13.11 structural audit.
+Authoritative artifact: `docs/registries/variable_traceability.yaml` is the review-controlled §11 variable-producer registry used by the §13.13 structural audit.
+
 ## Version-agnostic current vocabulary additions (§0, §0.3, §6.1, §6.4, §7E, §8, §13.15)
 
 Use the current canonical identifiers consistently in code, schemas, comments, and operator-facing implementation notes. §0 and §0.3 define canonical terminology and retired synonyms; §13.15 is the canonical-terminology audit guard.

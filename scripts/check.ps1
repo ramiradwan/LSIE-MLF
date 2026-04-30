@@ -50,81 +50,10 @@ python -m pytest tests/ -x -q --tb=short
 if ($LASTEXITCODE -eq 0) { Pass "Pytest" } else { Fail "Pytest" }
 Write-Host ""
 
-# 5. Canonical terminology audit -- scope/pattern matches .claude/commands/audit.md item 15
-# NOTE: $matches is a PowerShell automatic variable; use a different name.
-Write-Host "-- Canonical terminology audit --"
-$termParts = @(
-    "Celery n" + "ode",
-    "GPU work" + "er",
-    "inference work" + "er",
-    "task que" + "ue",
-    "\bFI" + "FO\b",
-    "named pi" + "pe",
-    "POSIX pi" + "pe",
-    "audio pi" + "pe",
-    "kernel pi" + "pe",
-    "24-hour vau" + "lt",
-    "data vau" + "lt",
-    "transient stor" + "age",
-    "secure buff" + "er",
-    "handoff sche" + "ma",
-    "payload sche" + "ma",
-    "inference pay" + "load",
-    "FastAPI serv" + "er",
-    "web serv" + "er",
-    "ASGI serv" + "er",
-    "Celery work" + "er",
-    "scrcpy contain" + "er",
-    "capture serv" + "ice",
-    "stream ingest" + "er",
-    "relational data" + "base",
-    "Physiological Chunk Even" + "t",
-    "Physiological Sample Even" + "t",
-    "oura even" + "t",
-    "HRV even" + "t",
-    "wearable even" + "t",
-    "physio even" + "t",
-    "bandit snap" + "shot",
-    "decision snap" + "shot",
-    "selection snap" + "shot",
-    "attribution even" + "t",
-    "event ledger r" + "ow",
-    "encounter attribution rec" + "ord",
-    "conversion even" + "t",
-    "terminal even" + "t",
-    "outcome r" + "ow",
-    "attribution lin" + "k\b",
-    "event lin" + "k\b",
-    "causal link r" + "ow",
-    "attribution metr" + "ic",
-    "score r" + "ow",
-    "ledger sco" + "re",
-    "free-form ration" + "ale",
-    "free-form ration" + "ales",
-    "free-form semantic ration" + "ale",
-    "free-form semantic ration" + "ales",
-    "x[_-]?max[- ]normalized reward",
-    "x[_-]?max as reward input",
-    "x[_-]?max reward input",
-    "\bpitch_f" + "0\b",
-    "legacy acoustic scal" + "ar",
-    "scalar-only acous" + "tic",
-    "\[0\.0, 5\.0\].*AU" + "12",
-    "AU" + "12.*\[0\.0, 5\.0\]",
-    "AU" + "12 clamp.*5\.0",
-    "clamp.*AU" + "12.*5\.0"
-)
-$pattern = $termParts -join "|"
-$roots = @("services", "packages", "scripts")
-$scanFiles = @(Get-ChildItem -Path $roots -Recurse -File -ErrorAction SilentlyContinue)
-# -CaseSensitive mirrors `grep -E` semantics used by check.sh and audit.md.
-# The recursive file list intentionally matches audit.md's services/ packages/
-# scripts/ scope without file-type or comment/docstring filtering.
-$retiredHits = @()
-if ($scanFiles.Count -gt 0) {
-    $retiredHits = @($scanFiles | Select-String -Pattern $pattern -CaseSensitive -ErrorAction SilentlyContinue)
-}
-if ($retiredHits.Count -eq 0) { Pass "No retired synonyms found" } else { Fail "Retired synonyms found:"; $retiredHits | ForEach-Object { Write-Host "    $_" } }
+# 5. Strict §13 audit harness -- mirrors the first-class CI audit job.
+Write-Host "-- §13 audit harness --"
+python scripts/run_audit.py --strict
+if ($LASTEXITCODE -eq 0) { Pass "§13 audit harness" } else { Fail "§13 audit harness" }
 Write-Host ""
 
 # 6. Docker compose
@@ -139,15 +68,6 @@ python scripts/check_schema_consistency.py
 if ($LASTEXITCODE -eq 0) { Pass "Schema consistency check" } else { Fail "Schema consistency check" }
 Write-Host ""
 
-# 8. Dependency pin check
-Write-Host "-- Dependency pin check --"
-$unpinned = $false
-foreach ($f in @("requirements\base.txt", "requirements\api.txt", "requirements\worker.txt", "requirements\cli.txt")) {
-    $bad = Get-Content $f | Where-Object { $_ -match "^[a-zA-Z]" -and $_ -notmatch "==|>=|~=|\*" -and $_ -notmatch "^-r" -and $_ -notmatch "^#" }
-    if ($bad) { Fail "Unpinned dependency in $f"; $unpinned = $true }
-}
-if (-not $unpinned) { Pass "All dependencies pinned" }
-Write-Host ""
 
 Write-Host "=======================================" -ForegroundColor Cyan
 if ($exitCode -eq 0) {

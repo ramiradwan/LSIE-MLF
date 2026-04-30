@@ -62,3 +62,50 @@ def smiling_landmarks(sample_landmarks: LandmarkArray) -> LandmarkArray:
     lm[61] = [0.25, 0.55, 0.0]  # left lip pulled wider and up
     lm[291] = [0.75, 0.55, 0.0]  # right lip pulled wider and up
     return lm
+
+
+def pytest_addoption(parser: Any) -> None:
+    """Add audit-item test selection for executable §13 verifiers."""
+    parser.addoption(
+        "--audit-item",
+        action="store",
+        default=None,
+        help="Run only tests marked with pytest.mark.audit_item(<item_id>).",
+    )
+
+
+def pytest_configure(config: Any) -> None:
+    """Register the audit_item marker for local plugin consumers."""
+    config.addinivalue_line(
+        "markers",
+        "audit_item(item_id): bind a test to a §13 audit checklist item",
+    )
+
+
+def pytest_collection_modifyitems(config: Any, items: list[Any]) -> None:
+    """Deselect tests whose audit_item argument does not match --audit-item."""
+    requested_item_id = config.getoption("--audit-item")
+    if requested_item_id is None:
+        return
+
+    selected: list[Any] = []
+    deselected: list[Any] = []
+    for item in items:
+        has_matching_marker = False
+        for marker in item.iter_markers(name="audit_item"):
+            positional_item_ids = [str(arg) for arg in marker.args]
+            keyword_item_id = marker.kwargs.get("item_id")
+            if (
+                str(requested_item_id) in positional_item_ids
+                or str(keyword_item_id) == requested_item_id
+            ):
+                has_matching_marker = True
+                break
+        if has_matching_marker:
+            selected.append(item)
+        else:
+            deselected.append(item)
+
+    if deselected:
+        config.hook.pytest_deselected(items=deselected)
+    items[:] = selected

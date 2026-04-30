@@ -23,7 +23,7 @@ Failures: disconnect → exponential backoff (1s initial, 30s max, 10 retries). 
 
 ### Module B.2 — Physiological Ingestion Adapter (§4.B.2)
 Inputs: authenticated `POST /api/v1/ingest/oura/webhook` requests with `x-oura-signature`, `subject_role`, and Oura notification metadata (`event_type`, `data_type`, `start_datetime`, `end_datetime`).
-Outputs: hydration notifications enqueued to Redis list `physio:hydrate`; API-hosted `OuraHydrationService` fetches provider resources and emits validated Physiological Chunk Event objects (`event_type="physiological_chunk"`, `provider="oura"`) to Redis list `physio:events`; HTTP 200 response body `{status, event_id}` for accepted or duplicate deliveries.
+Outputs: hydration notifications enqueued to Redis list `physio:hydrate`; API-hosted `OuraHydrationService` fetches provider resources and emits validated PhysiologicalChunkEvent objects (`event_type="physiological_chunk"`, `provider="oura"`) to Redis list `physio:events`; HTTP 200 response body `{status, event_id}` for accepted or duplicate deliveries.
 Side effects: HMAC-SHA256 verification against `OURA_WEBHOOK_SECRET`; UUID derivation for idempotency; Redis `SETNX` idempotency keys under `physio:seen:*`; Redis-mediated API Server → hydration worker → Orchestrator transport; OAuth2-backed provider fetch; no raw webhook persistence.
 Failures: invalid signature → 401. Malformed JSON, missing/invalid `subject_role`, or invalid notification fields → 422. Duplicate delivery → 200 with `status="duplicate"` and no second enqueue. Redis enqueue/idempotency failure → 503. Provider fetch or chunk-normalization failure → hydration worker logs and skips the offending notification/provider record.
 
@@ -37,7 +37,7 @@ Side effects: persistent FFmpeg subprocess, in-memory deque buffer, Celery task 
 Failures: missing pipe → poll 30s. FFmpeg crash → auto-restart. ADB failure → freeze drift, reset after 5min. Video pipe break → revival attempt, graceful degradation to audio-only.
 
 ### Module C.4 — Physiological State Buffer (`PhysiologicalStateBuffer`) (§4.C.4)
-Inputs: non-blocking `LPOP` drain from Redis list `physio:events`; validated Physiological Chunk Event JSON keyed by `subject_role` (`streamer` or `operator`).
+Inputs: non-blocking `LPOP` drain from Redis list `physio:events`; validated PhysiologicalChunkEvent JSON keyed by `subject_role` (`streamer` or `operator`).
 Outputs: derived `_physiological_context` injected into the segment payload with per-role snapshots containing `rmssd_ms`, `heart_rate_bpm`, `source_timestamp_utc`, `freshness_s`, `is_stale`, `provider`, `source_kind`, `derivation_method`, `window_s`, `validity_ratio`, and `is_valid`.
 Staleness policy: bounded drain with `MAX_PHYSIO_DRAIN_PER_CYCLE=100`; derive over the trailing 5-minute window from rolling chunk buffers; prefer overlapping `ibi` chunks before `session` chunks; freshness computed at `assemble_segment()` wall-clock time (not ADB drift-corrected device time); mark stale when `freshness_s > 600.0`; include stale snapshots in payloads without blocking dispatch.
 Side effects: maintains an in-memory Physiological State Buffer (`self._physio_buffer`) keyed by `subject_role`; reuses the orchestrator Redis connection already used for stimulus flow.

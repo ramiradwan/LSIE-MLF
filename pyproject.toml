@@ -9,6 +9,7 @@ markers = [
     "unit: Unit tests with no external dependencies",
     "integration: Tests requiring PostgreSQL or Redis",
     "gpu: Tests requiring CUDA GPU access",
+    "audit_item(item_id): Bind a test to a §13 audit checklist item",
 ]
 filterwarnings = [
     # spacy 3.7.x imports a click internal path that click 8.3 deprecated

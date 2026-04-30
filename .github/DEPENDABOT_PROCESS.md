@@ -17,7 +17,7 @@ A Dependabot PR is auto-mergeable when **every** condition below holds:
 3. **The full CI suite passes**, including:
    - `ruff check` and `ruff format --check` on `packages/`, `services/`, `tests/`
    - `mypy` on `packages/` and `services/` with `--python-version 3.11`
-   - `pytest tests/ -x -q` — and explicitly the **v3.0 math recipe regression tests in `tests/unit/test_v3_math_recipe.py`** must be green. These guard the Thompson Sampling / reward / AU12 mathematical contract; a failure there is never a flake.
+   - `pytest tests/ -x -q` — and explicitly the **mathematical recipe regression tests in `tests/unit/test_v3_math_recipe.py`** must be green. These guard the Thompson Sampling / reward / AU12 mathematical contract; a failure there is never a flake.
    - `scripts/check_schema_consistency.py` (the four-source schema gate)
    - `docker compose config --quiet`
    - The §0.3 canonical-terminology audit
@@ -29,7 +29,7 @@ A Dependabot PR is auto-mergeable when **every** condition below holds:
 When all six conditions hold, Claude Code approves and enables auto-merge:
 
 ```bash
-gh pr review <number> --approve --body "Auto-merge: patch/minor bump, non-§10.2 package, CI green (incl. v3 math recipe), no ml_core/schemas changes."
+gh pr review <number> --approve --body "Auto-merge: patch/minor bump, non-§10.2 package, CI green (incl. math recipe regressions), no ml_core/schemas changes."
 gh pr merge <number> --auto --squash
 ```
 

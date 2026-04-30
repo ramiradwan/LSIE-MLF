@@ -154,8 +154,9 @@ class TestStimulusWindowing:
             for i in range(n)
         ]
 
+    @pytest.mark.audit_item("13.16")
     def test_extracts_correct_window(self) -> None:
-        """Window [+0.5s, +5.0s] relative to stimulus onset."""
+        """§13.16."""
         # 30 seconds of data, stimulus at t=15.0
         series = self._make_series(0.0, 30.0)
         window = extract_stimulus_window(series, stimulus_time_s=15.0)
@@ -180,21 +181,24 @@ class TestStimulusWindowing:
 class TestP90Aggregation:
     """90th percentile robust aggregation."""
 
+    @pytest.mark.audit_item("13.16")
     def test_p90_known_distribution(self) -> None:
-        """P90 of uniform [0, 1] data with 1000 samples ≈ 0.90."""
+        """§13.16."""
         np.random.seed(42)
         values = np.random.uniform(0.0, 1.0, 1000).tolist()
         p90 = compute_p90(values)
         assert 0.85 < p90 < 0.95
 
+    @pytest.mark.audit_item("13.16")
     def test_p90_ignores_single_spike(self) -> None:
-        """P90 robust to single-frame noise spike at 1.0."""
+        """§13.16."""
         values = [0.3] * 99 + [1.0]
         p90 = compute_p90(values)
         assert p90 < 0.5
 
+    @pytest.mark.audit_item("13.16")
     def test_p90_captures_sustained_peak(self) -> None:
-        """P90 captures sustained high values (>10% of frames)."""
+        """§13.16."""
         values = [0.1] * 70 + [0.8] * 30
         p90 = compute_p90(values)
         assert p90 >= 0.8
@@ -226,29 +230,33 @@ class TestComputeReward:
             series.append(TimestampedAU12(timestamp_s=t, intensity=post_stim_intensity))
         return series
 
+    @pytest.mark.audit_item("13.16")
     def test_semantic_gate_crushes_reward(self) -> None:
-        """is_match=False → gated_reward = 0.0 regardless of AU12."""
+        """§13.16."""
         series = self._make_encounter(post_stim_intensity=0.9)
         result = compute_reward(series, stimulus_time_s=15.0, is_match=False)
         assert result.gated_reward == 0.0
         assert result.semantic_gate == 0
         assert result.p90_intensity > 0.0
 
+    @pytest.mark.audit_item("13.16")
     def test_valid_encounter_produces_positive_reward(self) -> None:
-        """is_match=True with strong smile → positive gated reward."""
+        """§13.16."""
         series = self._make_encounter(post_stim_intensity=0.7)
         result = compute_reward(series, stimulus_time_s=15.0, is_match=True)
         assert result.gated_reward > 0.0
         assert result.semantic_gate == 1
 
+    @pytest.mark.audit_item("13.16")
     def test_reward_bounded_zero_one(self) -> None:
-        """Gated reward is always in [0.0, 1.0]."""
+        """§13.16."""
         series = self._make_encounter(post_stim_intensity=0.95)
         result = compute_reward(series, stimulus_time_s=15.0, is_match=True)
         assert 0.0 <= result.gated_reward <= 1.0
 
+    @pytest.mark.audit_item("13.16")
     def test_sparse_non_empty_window_computes_p90(self) -> None:
-        """§7B — sparse non-empty windows compute P90 instead of invalidating."""
+        """§13.16."""
         series = [
             TimestampedAU12(timestamp_s=15.6, intensity=0.8),
             TimestampedAU12(timestamp_s=15.7, intensity=0.9),
@@ -258,8 +266,9 @@ class TestComputeReward:
         assert result.p90_intensity == pytest.approx(0.89)
         assert result.gated_reward == pytest.approx(0.89)
 
+    @pytest.mark.audit_item("13.16")
     def test_empty_measurement_window_yields_zero_p90(self) -> None:
-        """§7B — zero-frame measurement windows yield P90=0.0, not invalidation."""
+        """§13.16."""
         series = [
             TimestampedAU12(timestamp_s=10.0, intensity=0.2),
             TimestampedAU12(timestamp_s=12.0, intensity=0.4),
@@ -271,8 +280,9 @@ class TestComputeReward:
         assert result.semantic_gate == 1
         assert result.au12_baseline_pre == pytest.approx(0.3)
 
+    @pytest.mark.audit_item("13.21")
     def test_reward_result_exposes_canonical_fields_only(self) -> None:
-        """§7B — RewardResult has the canonical five-field surface."""
+        """§13.21."""
         series = self._make_encounter(
             pre_stim_intensity=0.1,
             post_stim_intensity=0.5,
@@ -312,8 +322,9 @@ class TestFractionalUpdate:
         monkeypatch.setitem(sys.modules, "psycopg2.pool", _mock_psycopg2.pool)
         monkeypatch.setitem(sys.modules, "psycopg2.extensions", _mock_psycopg2.extensions)
 
+    @pytest.mark.audit_item("13.16")
     def test_fractional_update_high_reward(self) -> None:
-        """r_t = 0.85 → α += 0.85, β += 0.15."""
+        """§13.16."""
         from services.worker.pipeline.analytics import MetricsStore, ThompsonSamplingEngine
 
         mock_store = MagicMock(spec=MetricsStore)
@@ -326,8 +337,9 @@ class TestFractionalUpdate:
         engine.update("exp-1", "arm_a", reward=0.85)
         mock_store.update_experiment_arm.assert_called_once_with("exp-1", "arm_a", 5.85, 3.15)
 
+    @pytest.mark.audit_item("13.16")
     def test_fractional_update_low_reward(self) -> None:
-        """r_t = 0.2 → α += 0.2, β += 0.8."""
+        """§13.16."""
         from services.worker.pipeline.analytics import MetricsStore, ThompsonSamplingEngine
 
         mock_store = MagicMock(spec=MetricsStore)
@@ -340,8 +352,9 @@ class TestFractionalUpdate:
         engine.update("exp-1", "arm_a", reward=0.2)
         mock_store.update_experiment_arm.assert_called_once_with("exp-1", "arm_a", 5.2, 3.8)
 
+    @pytest.mark.audit_item("13.16")
     def test_fractional_update_zero_reward(self) -> None:
-        """r_t = 0.0 (gated to zero) → α += 0, β += 1."""
+        """§13.16."""
         from services.worker.pipeline.analytics import MetricsStore, ThompsonSamplingEngine
 
         mock_store = MagicMock(spec=MetricsStore)
@@ -354,8 +367,9 @@ class TestFractionalUpdate:
         engine.update("exp-1", "arm_a", reward=0.0)
         mock_store.update_experiment_arm.assert_called_once_with("exp-1", "arm_a", 1.0, 2.0)
 
+    @pytest.mark.audit_item("13.16")
     def test_fractional_update_max_reward(self) -> None:
-        """r_t = 1.0 → α += 1, β += 0."""
+        """§13.16."""
         from services.worker.pipeline.analytics import MetricsStore, ThompsonSamplingEngine
 
         mock_store = MagicMock(spec=MetricsStore)
@@ -368,8 +382,9 @@ class TestFractionalUpdate:
         engine.update("exp-1", "arm_a", reward=1.0)
         mock_store.update_experiment_arm.assert_called_once_with("exp-1", "arm_a", 2.0, 1.0)
 
+    @pytest.mark.audit_item("13.16")
     def test_posterior_mean_convergence(self) -> None:
-        """After many fractional updates, E[α/(α+β)] → true mean."""
+        """§13.16."""
         alpha = 1.0
         beta = 1.0
         true_mean = 0.7
@@ -382,8 +397,9 @@ class TestFractionalUpdate:
         posterior_mean = alpha / (alpha + beta)
         assert abs(posterior_mean - true_mean) < 0.05
 
+    @pytest.mark.audit_item("13.16")
     def test_rejects_out_of_bounds_reward(self) -> None:
-        """Reward outside [0, 1] raises ValueError."""
+        """§13.16."""
         from services.worker.pipeline.analytics import MetricsStore, ThompsonSamplingEngine
 
         mock_store = MagicMock(spec=MetricsStore)

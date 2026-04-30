@@ -133,6 +133,7 @@ def _llm_response(*, is_match: bool, confidence_score: float) -> MagicMock:
 class TestCrossEncoderPrimaryRouting:
     """§8.1 / §8.2.1 — Local Cross-Encoder live path and boundaries."""
 
+    @pytest.mark.audit_item("13.27")
     @pytest.mark.parametrize(
         ("score", "expected_reason", "expected_match"),
         [
@@ -163,6 +164,7 @@ class TestCrossEncoderPrimaryRouting:
         assert result["confidence_score"] == score
         mock_openai.AzureOpenAI.assert_not_called()
 
+    @pytest.mark.audit_item("13.27")
     @pytest.mark.parametrize(
         ("score", "llm_match", "llm_confidence", "expected_reason"),
         [

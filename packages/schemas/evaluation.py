@@ -34,11 +34,12 @@ SEMANTIC_REASON_CODES: tuple[str, ...] = (
     "semantic_error",
 )
 
-SemanticMethod = Literal["cross_encoder", "llm_gray_band"]
+SemanticMethod = Literal["cross_encoder", "llm_gray_band", "azure_llm_legacy"]
 
 SEMANTIC_METHODS: tuple[str, ...] = (
     "cross_encoder",
     "llm_gray_band",
+    "azure_llm_legacy",
 )
 
 

@@ -10,7 +10,7 @@
 --
 -- Data governance (§5):
 --   Only normalized analytical derivatives enter these tables.
---   Raw Oura webhook JSON payloads are Transient Sensitive Data and
+--   Raw Oura webhook JSON payloads are Transient Data and
 --   MUST NOT be persisted here. The physiology_log stores per-segment
 --   snapshots (scalar RMSSD/HR + quality metadata), not raw provider
 --   payloads.

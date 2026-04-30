@@ -28,6 +28,8 @@ setup_pipes() {
 }
 
 # 2. ADB Connectivity Check
+# §12.1.2 Module A — Hardware Device Loss: poll USB/ADB every 2s for
+# 60s, then exit so the container restart policy can recover capture.
 wait_for_device() {
     echo "[stream_ingest] waiting for adb device..."
     local elapsed=0
@@ -50,6 +52,11 @@ start_capture() {
     echo "[stream_ingest] Video scrcpy launched"
     
     while true; do
+        # §12.1.3 Module A — Worker Process Crash: scrcpy/pipe breaks are
+        # detected by wait -n below and the capture loop recreates both streams.
+        # §12.1.4 Module A — Queue Overload: the IPC boundary is the bounded
+        # kernel pipe (AUDIO_PIPE/VIDEO_PIPE); no unbounded user-space queue is
+        # allocated in this container.
         # 1. Cleanup: Kill zombie ADB network tunnels from previous runs
         adb forward --remove-all 2>/dev/null || true
         adb reverse --remove-all 2>/dev/null || true

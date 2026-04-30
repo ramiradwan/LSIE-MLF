@@ -269,18 +269,29 @@ class SemanticEvaluator:
         device_mode: str | None = None,
         primary_scorer: PrimaryScorer | LocalCrossEncoderScorer | None = None,
         gray_band_fallback_enabled: bool | None = None,
+        shadow_mode_enabled: bool | None = None,
+        shadow_scorer: PrimaryScorer | LocalCrossEncoderScorer | None = None,
     ) -> None:
         self.gray_band_fallback_enabled = (
             _env_flag("SEMANTIC_GRAY_BAND_FALLBACK_ENABLED")
             if gray_band_fallback_enabled is None
             else gray_band_fallback_enabled
         )
+        self.shadow_mode_enabled = (
+            _env_flag("SEMANTIC_SHADOW_MODE_ENABLED")
+            if shadow_mode_enabled is None
+            else shadow_mode_enabled
+        )
         self._primary_scorer = primary_scorer or LocalCrossEncoderScorer(
             model_id=model_id,
             device_mode=device_mode,
         )
+        self._shadow_scorer = shadow_scorer
         self.last_semantic_method: str | None = None
         self.last_semantic_method_version: str | None = None
+        self.last_shadow_semantic: dict[str, Any] | None = None
+        self.last_shadow_semantic_method: str | None = None
+        self.last_shadow_semantic_method_version: str | None = None
         self.endpoint: str | None = os.environ.get("AZURE_OPENAI_ENDPOINT")
         self.api_key: str | None = os.environ.get("AZURE_OPENAI_API_KEY")
         self.deployment: str | None = os.environ.get("AZURE_OPENAI_DEPLOYMENT")
@@ -443,12 +454,17 @@ class SemanticEvaluator:
         ``is_match``, and ``confidence_score``. Route-specific method/version
         attribution is retained separately on ``last_semantic_method`` and
         ``last_semantic_method_version`` for the D→E transport boundary.
+        The optional shadow scorer records candidate outputs on shadow-only
+        sidecar attributes and never changes the returned live payload.
         The only normal path returning ``None`` is an unexpected validation failure
         after all deterministic degradation paths have been exhausted.
         """
 
         self.last_semantic_method = None
         self.last_semantic_method_version = None
+        self.last_shadow_semantic = None
+        self.last_shadow_semantic_method = None
+        self.last_shadow_semantic_method_version = None
 
         try:
             primary_score = calibrate_cross_encoder_score(
@@ -460,11 +476,13 @@ class SemanticEvaluator:
                 semantic_method="cross_encoder",
                 semantic_method_version=CROSS_ENCODER_METHOD_VERSION,
             )
-            return self._validated_result(
+            result = self._validated_result(
                 reasoning="semantic_local_failure_fallback",
                 is_match=False,
                 confidence_score=0.0,
             )
+            self._evaluate_shadow(expected_greeting, actual_utterance)
+            return result
 
         # §8.2.1 — score = 0.72 is direct match and is NOT gray-band routed.
         if primary_score >= MATCH_THRESHOLD or primary_score < GRAY_BAND_LOWER_THRESHOLD:
@@ -472,16 +490,21 @@ class SemanticEvaluator:
                 semantic_method="cross_encoder",
                 semantic_method_version=CROSS_ENCODER_METHOD_VERSION,
             )
-            return self._primary_result(primary_score)
+            result = self._primary_result(primary_score)
+            self._evaluate_shadow(expected_greeting, actual_utterance)
+            return result
 
         # §8.1 — Azure is reachable only for explicitly enabled true gray band.
         if self.gray_band_fallback_enabled:
-            return self._evaluate_gray_band_fallback(
+            result = self._evaluate_gray_band_fallback(
                 expected_greeting,
                 actual_utterance,
                 primary_score,
             )
-        return self._gray_band_without_fallback(primary_score)
+        else:
+            result = self._gray_band_without_fallback(primary_score)
+        self._evaluate_shadow(expected_greeting, actual_utterance)
+        return result
 
     def _record_attribution(
         self,
@@ -493,3 +516,33 @@ class SemanticEvaluator:
 
         self.last_semantic_method = semantic_method
         self.last_semantic_method_version = semantic_method_version
+
+    def _evaluate_shadow(self, expected_greeting: str, actual_utterance: str) -> None:
+        """Run an optional candidate scorer without changing live semantic outputs."""
+        if not self.shadow_mode_enabled or self._shadow_scorer is None:
+            return
+
+        try:
+            scorer = self._shadow_scorer
+            if isinstance(scorer, LocalCrossEncoderScorer):
+                raw_score = scorer.score(expected_greeting, actual_utterance)
+            else:
+                raw_score = scorer(expected_greeting, actual_utterance)
+            score = calibrate_cross_encoder_score(raw_score)
+            is_match = score >= MATCH_THRESHOLD
+            self.last_shadow_semantic = {
+                "reasoning": "shadow_candidate_match" if is_match else "shadow_candidate_nonmatch",
+                "is_match": is_match,
+                "confidence_score": score,
+            }
+            self.last_shadow_semantic_method = "semantic_shadow_candidate"
+            self.last_shadow_semantic_method_version = "candidate-unpromoted"
+        except Exception:
+            logger.warning("Semantic shadow scoring failed", exc_info=True)
+            self.last_shadow_semantic = {
+                "reasoning": "shadow_candidate_error",
+                "is_match": False,
+                "confidence_score": 0.0,
+            }
+            self.last_shadow_semantic_method = "semantic_shadow_candidate"
+            self.last_shadow_semantic_method_version = "candidate-unpromoted"

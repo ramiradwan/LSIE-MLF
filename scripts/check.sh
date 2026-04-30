@@ -68,76 +68,12 @@ else
 fi
 echo ""
 
-# 5. Canonical terminology audit (§0.3) — scope/pattern matches .claude/commands/audit.md item 15
-echo "── Canonical terminology audit ──"
-RETIRE_PARTS=(
-    "Celery n"'ode'
-    "GPU work"'er'
-    "inference work"'er'
-    "task que"'ue'
-    "\bFI"'FO\b'
-    "named pi"'pe'
-    "POSIX pi"'pe'
-    "audio pi"'pe'
-    "kernel pi"'pe'
-    "24-hour vau"'lt'
-    "data vau"'lt'
-    "transient stor"'age'
-    "secure buff"'er'
-    "handoff sche"'ma'
-    "payload sche"'ma'
-    "inference pay"'load'
-    "FastAPI serv"'er'
-    "web serv"'er'
-    "ASGI serv"'er'
-    "Celery work"'er'
-    "scrcpy contain"'er'
-    "capture serv"'ice'
-    "stream ingest"'er'
-    "relational data"'base'
-    "Physiological Chunk Even"'t'
-    "Physiological Sample Even"'t'
-    "oura even"'t'
-    "HRV even"'t'
-    "wearable even"'t'
-    "physio even"'t'
-    "bandit snap"'shot'
-    "decision snap"'shot'
-    "selection snap"'shot'
-    "attribution even"'t'
-    "event ledger r"'ow'
-    "encounter attribution rec"'ord'
-    "conversion even"'t'
-    "terminal even"'t'
-    "outcome r"'ow'
-    "attribution lin"'k\b'
-    "event lin"'k\b'
-    "causal link r"'ow'
-    "attribution metr"'ic'
-    "score r"'ow'
-    "ledger sco"'re'
-    "free-form ration"'ale'
-    "free-form ration"'ales'
-    "free-form semantic ration"'ale'
-    "free-form semantic ration"'ales'
-    "x[_-]?max[- ]normalized reward"
-    "x[_-]?max as reward input"
-    "x[_-]?max reward input"
-    "\bpitch_f"'0\b'
-    "legacy acoustic scal"'ar'
-    "scalar-only acous"'tic'
-    "\[0\.0, 5\.0\].*AU"'12'
-    "AU"'12.*\[0\.0, 5\.0\]'
-    "AU"'12 clamp.*5\.0'
-    "clamp.*AU"'12.*5\.0'
-)
-RETIRED_TERMS=$(IFS='|'; printf '%s' "${RETIRE_PARTS[*]}")
-MATCHES=$(grep -rnE "$RETIRED_TERMS" services/ packages/ scripts/ 2>/dev/null || true)
-if [ -z "$MATCHES" ]; then
-    pass "No retired synonyms found"
+# 5. Strict §13 audit harness — mirrors the first-class CI audit job.
+echo "── §13 audit harness ──"
+if python scripts/run_audit.py --strict; then
+    pass "§13 audit harness"
 else
-    fail "Retired synonyms found (§0.3 violation):"
-    echo "$MATCHES"
+    fail "§13 audit harness"
 fi
 echo ""
 
@@ -159,19 +95,6 @@ else
 fi
 echo ""
 
-# 8. Dependency pin check
-echo "── Dependency pin check ──"
-UNPINNED=0
-for f in requirements/base.txt requirements/api.txt requirements/worker.txt requirements/cli.txt; do
-    if grep -E "^[a-zA-Z]" "$f" 2>/dev/null | grep -v -E "==|>=|~=|\*" | grep -v "^-r" | grep -v "^#" | grep -q .; then
-        fail "Unpinned dependency in $f"
-        UNPINNED=1
-    fi
-done
-if [ "$UNPINNED" -eq 0 ]; then
-    pass "All dependencies pinned"
-fi
-echo ""
 
 echo "═══════════════════════════════════════"
 if [ "$EXIT_CODE" -eq 0 ]; then

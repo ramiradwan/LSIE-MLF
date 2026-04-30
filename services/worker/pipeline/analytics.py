@@ -22,6 +22,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, ClassVar
 
+from packages.schemas.data_tiers import DataTier, mark_data_tier
+
 if TYPE_CHECKING:
     from psycopg2 import pool
 
@@ -68,7 +70,8 @@ _METRICS_OVERFLOW_CORE_FIELDS: tuple[str, ...] = (
 )
 
 # §2 step 7 — Parameterized INSERT for metrics table
-_INSERT_METRICS_SQL: str = """
+_INSERT_METRICS_SQL: str = mark_data_tier(
+    """
     INSERT INTO metrics (
         session_id, segment_id, timestamp_utc,
         au12_intensity,
@@ -89,14 +92,55 @@ _INSERT_METRICS_SQL: str = """
         %(jitter_mean_measure)s, %(jitter_mean_baseline)s, %(jitter_delta)s,
         %(shimmer_mean_measure)s, %(shimmer_mean_baseline)s, %(shimmer_delta)s
     )
-"""
+""",
+    DataTier.PERMANENT,
+    spec_ref="§5.2.3",
+    purpose="Module E derived acoustic/AU12 metrics INSERT",
+)  # §5.2.3 Permanent Analytical Storage
 
 
 def _metrics_insert_params(metrics: dict[str, Any]) -> dict[str, Any]:
-    """Build the metrics INSERT parameter mapping without coercing null/bool values."""
+    """Build normalized metrics INSERT params without coercing null/bool values."""
     params = {field: metrics[field] for field in _METRICS_REQUIRED_FIELDS}
     params.update({field: metrics.get(field) for field in _METRICS_OPTIONAL_FIELDS})
-    return params
+    return mark_data_tier(
+        params,
+        DataTier.PERMANENT,
+        spec_ref="§5.2.3",
+        purpose="Normalized derived metrics row parameters",
+    )  # §5.2.3 Permanent Analytical Storage
+
+
+def _transcript_insert_params(metrics: dict[str, Any]) -> dict[str, Any]:
+    """Build normalized transcript INSERT parameters from a metrics record."""
+    return mark_data_tier(
+        {
+            "session_id": metrics["session_id"],
+            "segment_id": metrics["segment_id"],
+            "timestamp_utc": metrics["timestamp_utc"],
+            "text": metrics["transcription"],
+        },
+        DataTier.PERMANENT,
+        spec_ref="§5.2.3",
+        purpose="Normalized derived transcript row parameters",
+    )  # §5.2.3 Permanent Analytical Storage
+
+
+def _evaluation_insert_params(metrics: dict[str, Any], semantic: dict[str, Any]) -> dict[str, Any]:
+    """Build normalized bounded evaluation INSERT parameters."""
+    return mark_data_tier(
+        {
+            "session_id": metrics["session_id"],
+            "segment_id": metrics["segment_id"],
+            "timestamp_utc": metrics["timestamp_utc"],
+            "reasoning": semantic.get("reasoning"),
+            "is_match": semantic.get("is_match"),
+            "confidence": semantic.get("confidence_score"),
+        },
+        DataTier.PERMANENT,
+        spec_ref="§5.2.3",
+        purpose="Normalized bounded evaluation row parameters",
+    )  # §5.2.3 Permanent Analytical Storage
 
 
 def _overflow_fieldnames(_records: list[dict[str, Any]]) -> list[str]:
@@ -121,21 +165,32 @@ def _overflow_record(record: dict[str, Any], fieldnames: list[str]) -> dict[str,
 
 
 # §2 step 7 — Parameterized INSERT for transcripts table
-_INSERT_TRANSCRIPT_SQL: str = """
+_INSERT_TRANSCRIPT_SQL: str = mark_data_tier(
+    """
     INSERT INTO transcripts (session_id, segment_id, timestamp_utc, text)
     VALUES (%(session_id)s, %(segment_id)s, %(timestamp_utc)s, %(text)s)
-"""
+""",
+    DataTier.PERMANENT,
+    spec_ref="§5.2.3",
+    purpose="Module E derived transcript INSERT",
+)  # §5.2.3 Permanent Analytical Storage
 
 # §2 step 7 — Parameterized INSERT for evaluations table
-_INSERT_EVALUATION_SQL: str = """
+_INSERT_EVALUATION_SQL: str = mark_data_tier(
+    """
     INSERT INTO evaluations (session_id, segment_id, timestamp_utc,
                              reasoning, is_match, confidence)
     VALUES (%(session_id)s, %(segment_id)s, %(timestamp_utc)s,
             %(reasoning)s, %(is_match)s, %(confidence)s)
-"""
+""",
+    DataTier.PERMANENT,
+    spec_ref="§5.2.3",
+    purpose="Module E bounded semantic evaluation INSERT",
+)  # §5.2.3 Permanent Analytical Storage
 
 # §4.E.2 — Parameterized INSERT for per-segment physiology snapshots
-_INSERT_PHYSIOLOGY_SQL: str = """
+_INSERT_PHYSIOLOGY_SQL: str = mark_data_tier(
+    """
     INSERT INTO physiology_log
         (session_id, segment_id, subject_role, rmssd_ms, heart_rate_bpm,
          freshness_s, is_stale, provider, source_kind, derivation_method,
@@ -145,10 +200,58 @@ _INSERT_PHYSIOLOGY_SQL: str = """
          %(heart_rate_bpm)s, %(freshness_s)s, %(is_stale)s, %(provider)s,
          %(source_kind)s, %(derivation_method)s, %(window_s)s,
          %(validity_ratio)s, %(is_valid)s, %(source_timestamp_utc)s)
-"""
+""",
+    DataTier.PERMANENT,
+    spec_ref="§5.2.3",
+    purpose="Module E scalar physiological metrics INSERT",
+)  # §5.2.3 Permanent Analytical Storage
+
+
+def _physiology_insert_params(
+    session_id: str,
+    segment_id: str,
+    subject_role: str,
+    snapshot: dict[str, Any],
+) -> dict[str, Any]:
+    """Normalize transient physiology context into scalar Permanent Store fields.
+
+    §5.3 forbids raw Oura/provider/chunk payload bodies in the Persistent Store;
+    this whitelist only emits scalar/timestamp derivatives named by the
+    physiology_log INSERT schema.
+    """
+    source_kind = snapshot.get("source_kind")
+    derivation_method = snapshot.get("derivation_method")
+    window_s = snapshot.get("window_s")
+    if window_s is None:
+        window_s = snapshot.get("window_length_s")
+    validity_ratio = snapshot.get("validity_ratio")
+    is_valid = snapshot.get("is_valid")
+    return mark_data_tier(
+        {
+            "session_id": session_id,
+            "segment_id": segment_id,
+            "subject_role": subject_role,
+            "rmssd_ms": snapshot.get("rmssd_ms"),
+            "heart_rate_bpm": snapshot.get("heart_rate_bpm"),
+            "freshness_s": snapshot["freshness_s"],
+            "is_stale": snapshot["is_stale"],
+            "provider": snapshot["provider"],
+            "source_kind": source_kind,
+            "derivation_method": derivation_method,
+            "window_s": window_s,
+            "validity_ratio": validity_ratio,
+            "is_valid": is_valid,
+            "source_timestamp_utc": snapshot.get("source_timestamp_utc"),
+        },
+        DataTier.PERMANENT,
+        spec_ref="§5.2.3",
+        purpose="Normalized scalar physiology_log row parameters",
+    )  # §5.2.3 Permanent Analytical Storage
+
 
 # §7C — Parameterized INSERT for rolling co-modulation analytics
-_INSERT_COMODULATION_SQL: str = """
+_INSERT_COMODULATION_SQL: str = mark_data_tier(
+    """
     INSERT INTO comodulation_log
         (session_id, window_start_utc, window_end_utc, window_minutes,
          co_modulation_index, n_paired_observations, coverage_ratio,
@@ -158,7 +261,11 @@ _INSERT_COMODULATION_SQL: str = """
          %(window_minutes)s, %(co_modulation_index)s,
          %(n_paired_observations)s, %(coverage_ratio)s,
          %(streamer_rmssd_mean)s, %(operator_rmssd_mean)s)
-"""
+""",
+    DataTier.PERMANENT,
+    spec_ref="§5.2.3",
+    purpose="Module E co-modulation analytics INSERT",
+)  # §5.2.3 Permanent Analytical Storage
 
 # §7C — Minimum paired observations for valid co-modulation output
 MIN_COMOD_PAIRS: int = 4
@@ -335,26 +442,14 @@ class MetricsStore:
                 if metrics.get("transcription"):
                     cur.execute(
                         _INSERT_TRANSCRIPT_SQL,
-                        {
-                            "session_id": metrics["session_id"],
-                            "segment_id": metrics["segment_id"],
-                            "timestamp_utc": metrics["timestamp_utc"],
-                            "text": metrics["transcription"],
-                        },
+                        _transcript_insert_params(metrics),
                     )
 
                 if metrics.get("semantic") is not None:
                     semantic = metrics["semantic"]
                     cur.execute(
                         _INSERT_EVALUATION_SQL,
-                        {
-                            "session_id": metrics["session_id"],
-                            "segment_id": metrics["segment_id"],
-                            "timestamp_utc": metrics["timestamp_utc"],
-                            "reasoning": semantic.get("reasoning"),
-                            "is_match": semantic.get("is_match"),
-                            "confidence": semantic.get("confidence_score"),
-                        },
+                        _evaluation_insert_params(metrics, semantic),
                     )
 
             conn.commit()
@@ -508,14 +603,8 @@ class MetricsStore:
         subject_role: str,
         snapshot: dict[str, Any],
     ) -> None:
-        """§4.E.2 — Persist a single physiological snapshot to physiology_log."""
-        source_kind = snapshot.get("source_kind")
-        derivation_method = snapshot.get("derivation_method")
-        window_s = snapshot.get("window_s")
-        if window_s is None:
-            window_s = snapshot.get("window_length_s")
-        validity_ratio = snapshot.get("validity_ratio")
-        is_valid = snapshot.get("is_valid")
+        """§4.E.2 — Persist a normalized scalar physiological snapshot."""
+        params = _physiology_insert_params(session_id, segment_id, subject_role, snapshot)
 
         psycopg2 = _import_psycopg2()
         conn = self._get_conn()
@@ -524,22 +613,7 @@ class MetricsStore:
             with conn.cursor() as cur:
                 cur.execute(
                     _INSERT_PHYSIOLOGY_SQL,
-                    {
-                        "session_id": session_id,
-                        "segment_id": segment_id,
-                        "subject_role": subject_role,
-                        "rmssd_ms": snapshot.get("rmssd_ms"),
-                        "heart_rate_bpm": snapshot.get("heart_rate_bpm"),
-                        "freshness_s": snapshot["freshness_s"],
-                        "is_stale": snapshot["is_stale"],
-                        "provider": snapshot["provider"],
-                        "source_kind": source_kind,
-                        "derivation_method": derivation_method,
-                        "window_s": window_s,
-                        "validity_ratio": validity_ratio,
-                        "is_valid": is_valid,
-                        "source_timestamp_utc": snapshot.get("source_timestamp_utc"),
-                    },
+                    params,
                 )
             conn.commit()
         except Exception:
@@ -682,7 +756,15 @@ class MetricsStore:
                 )
 
             with conn.cursor() as cur:
-                cur.execute(_INSERT_COMODULATION_SQL, result)
+                cur.execute(
+                    _INSERT_COMODULATION_SQL,
+                    mark_data_tier(
+                        result,
+                        DataTier.PERMANENT,
+                        spec_ref="§5.2.3",
+                        purpose="Normalized co-modulation analytics row parameters",
+                    ),
+                )
             conn.commit()
             return result
         except Exception:
@@ -738,7 +820,8 @@ class MetricsStore:
         if ledger is None:
             return
 
-        insert_event_sql = """
+        insert_event_sql = mark_data_tier(
+            """
     INSERT INTO attribution_event (
         event_id, session_id, segment_id, event_type, event_time_utc,
         stimulus_time_utc, selected_arm_id, expected_rule_text_hash,
@@ -772,8 +855,13 @@ class MetricsStore:
         evidence_flags = EXCLUDED.evidence_flags,
         finality = EXCLUDED.finality,
         schema_version = EXCLUDED.schema_version
-"""
-        insert_outcome_sql = """
+""",
+            DataTier.PERMANENT,
+            spec_ref="§5.2.3",
+            purpose="Attribution event analytics INSERT",
+        )  # §5.2.3 Permanent Analytical Storage
+        insert_outcome_sql = mark_data_tier(
+            """
     INSERT INTO outcome_event (
         outcome_id, session_id, outcome_type, outcome_value,
         outcome_time_utc, source_system, source_event_ref,
@@ -794,8 +882,13 @@ class MetricsStore:
         confidence = EXCLUDED.confidence,
         finality = EXCLUDED.finality,
         schema_version = EXCLUDED.schema_version
-"""
-        insert_link_sql = """
+""",
+            DataTier.PERMANENT,
+            spec_ref="§5.2.3",
+            purpose="Attribution outcome analytics INSERT",
+        )  # §5.2.3 Permanent Analytical Storage
+        insert_link_sql = mark_data_tier(
+            """
     INSERT INTO event_outcome_link (
         link_id, event_id, outcome_id, lag_s, horizon_s,
         link_rule_version, eligibility_flags, finality,
@@ -815,8 +908,13 @@ class MetricsStore:
         eligibility_flags = EXCLUDED.eligibility_flags,
         finality = EXCLUDED.finality,
         schema_version = EXCLUDED.schema_version
-"""
-        insert_score_sql = """
+""",
+            DataTier.PERMANENT,
+            spec_ref="§5.2.3",
+            purpose="Attribution event/outcome link INSERT",
+        )  # §5.2.3 Permanent Analytical Storage
+        insert_score_sql = mark_data_tier(
+            """
     INSERT INTO attribution_score (
         score_id, event_id, outcome_id, attribution_method,
         method_version, score_raw, score_normalized, confidence,
@@ -838,7 +936,11 @@ class MetricsStore:
         evidence_flags = EXCLUDED.evidence_flags,
         finality = EXCLUDED.finality,
         schema_version = EXCLUDED.schema_version
-"""
+""",
+            DataTier.PERMANENT,
+            spec_ref="§5.2.3",
+            purpose="Attribution score analytics INSERT",
+        )  # §5.2.3 Permanent Analytical Storage
 
         event_params = ledger.event.model_dump(mode="json")
         event_params["bandit_decision_snapshot"] = json.dumps(
@@ -855,13 +957,45 @@ class MetricsStore:
         try:
             conn.set_isolation_level(psycopg2.extensions.ISOLATION_LEVEL_READ_COMMITTED)
             with conn.cursor() as cur:
-                cur.execute(insert_event_sql, event_params)
+                cur.execute(
+                    insert_event_sql,
+                    mark_data_tier(
+                        event_params,
+                        DataTier.PERMANENT,
+                        spec_ref="§5.2.3",
+                        purpose="Normalized attribution event row parameters",
+                    ),
+                )
                 for params in outcome_params:
-                    cur.execute(insert_outcome_sql, params)
+                    cur.execute(
+                        insert_outcome_sql,
+                        mark_data_tier(
+                            params,
+                            DataTier.PERMANENT,
+                            spec_ref="§5.2.3",
+                            purpose="Normalized attribution outcome row parameters",
+                        ),
+                    )
                 for params in link_params:
-                    cur.execute(insert_link_sql, params)
+                    cur.execute(
+                        insert_link_sql,
+                        mark_data_tier(
+                            params,
+                            DataTier.PERMANENT,
+                            spec_ref="§5.2.3",
+                            purpose="Normalized attribution link row parameters",
+                        ),
+                    )
                 for params in score_params:
-                    cur.execute(insert_score_sql, params)
+                    cur.execute(
+                        insert_score_sql,
+                        mark_data_tier(
+                            params,
+                            DataTier.PERMANENT,
+                            spec_ref="§5.2.3",
+                            purpose="Normalized attribution score row parameters",
+                        ),
+                    )
             conn.commit()
         except Exception:
             conn.rollback()
