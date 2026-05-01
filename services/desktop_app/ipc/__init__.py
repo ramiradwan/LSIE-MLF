@@ -27,9 +27,12 @@ class IpcChannels:
     """The set of multiprocessing channels shared across the graph.
 
     Constructed by the parent before spawn and pickled into each child
-    via the launcher. Phase 2 wires only ``ml_inbox``; future phases
-    add ``analytics_inbox`` (gpu_ml_worker → analytics_state_worker)
-    and ``cloud_outbox`` (analytics_state_worker → cloud_sync_worker).
+    via the launcher. Phase 2 wired ``ml_inbox`` (orchestrator →
+    gpu_ml_worker). Phase 3 adds ``drift_updates`` (capture_supervisor
+    → module_c_orchestrator). Future phases add ``analytics_inbox``
+    (gpu_ml_worker → analytics_state_worker) and ``cloud_outbox``
+    (analytics_state_worker → cloud_sync_worker).
     """
 
     ml_inbox: Queue[object] = field(repr=False)
+    drift_updates: Queue[object] = field(repr=False)

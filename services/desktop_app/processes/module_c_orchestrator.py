@@ -1,32 +1,90 @@
-"""Module C orchestrator process (v4.0 §4.C / WS3 P1 stub).
+"""Module C orchestrator process (v4.0 §4.C / WS3 P1 + P3).
 
 Wraps the existing ``services.worker.pipeline.orchestrator.Orchestrator``
-class (drift correction, segment assembly, AU12 derivation, the
-physiological state buffer). The Phase 2 _desktop_ipc_mode flag will
-gate whether ``assemble_segment`` dispatches via Celery (legacy, dying)
-or via the IPC control queue + SharedMemory route.
+class (drift-corrected segment assembly, AU12 derivation, the
+physiological state buffer). The IPC channel from
+``module_c_orchestrator`` to ``gpu_ml_worker`` is wired by the
+orchestrator's ``_dispatch_payload`` (WS3 P2). The drift offset is
+delivered by ``capture_supervisor`` over
+``IpcChannels.drift_updates`` and applied here (WS3 P3).
 
 ML import discipline: ``Orchestrator`` itself transitively touches
 neither torch nor mediapipe nor faster_whisper nor ctranslate2 — the
-heavy ML libs live in ``processes.gpu_ml_worker`` only. This stub MUST
-not regress that.
+heavy ML libs live in ``processes.gpu_ml_worker`` only.
 """
 
 from __future__ import annotations
 
 import logging
 import multiprocessing.synchronize as mpsync
+import queue
+import threading
 
 from services.desktop_app.ipc import IpcChannels
 
 logger = logging.getLogger(__name__)
 
+DRIFT_DRAIN_POLL_TIMEOUT_S = 0.5
+
+
+def _drain_drift_updates(
+    channels: IpcChannels,
+    orchestrator: object,
+    shutdown_event: mpsync.Event,
+) -> None:
+    """Apply each ``drift_updates`` payload to the orchestrator's corrector.
+
+    The supervisor pushes ``{"drift_offset": float, ...}`` dicts on
+    every poll cycle (~30 s). We update the orchestrator's drift
+    corrector inline; the orchestrator's apply-side
+    ``correct_timestamp`` calls then pick up the new offset on the
+    next read.
+    """
+    corrector = getattr(orchestrator, "drift_corrector", None)
+    if corrector is None:
+        logger.error("orchestrator has no drift_corrector — drift updates will be dropped")
+        return
+
+    while not shutdown_event.is_set():
+        try:
+            payload = channels.drift_updates.get(timeout=DRIFT_DRAIN_POLL_TIMEOUT_S)
+        except queue.Empty:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        offset = payload.get("drift_offset")
+        if isinstance(offset, int | float):
+            corrector.drift_offset = float(offset)
+
 
 def run(shutdown_event: mpsync.Event, channels: IpcChannels) -> None:
-    # Phase 2 wires the IPC channel into the orchestrator's dispatch
-    # path. Live audio feed from capture_supervisor lands in WS3 P3;
-    # until then this stub holds the channel reference for inspection.
-    del channels
     logger.info("module_c_orchestrator started")
-    shutdown_event.wait()
-    logger.info("module_c_orchestrator stopped")
+
+    # Late import: keeps the parent's import-isolation canary clean.
+    from services.worker.pipeline.orchestrator import Orchestrator
+
+    orchestrator = Orchestrator(ipc_queue=channels.ml_inbox)
+
+    drift_thread = threading.Thread(
+        target=_drain_drift_updates,
+        args=(channels, orchestrator, shutdown_event),
+        name="module-c-drift-drain",
+        daemon=True,
+    )
+    drift_thread.start()
+
+    try:
+        # Phase-3 stub: the live capture-supervisor → orchestrator
+        # audio/video pipe-through is not wired yet (Orchestrator.run()
+        # still expects the v3.4 IPC pipe path under /tmp/ipc/). Until
+        # WS3 P3c lands, this process holds the orchestrator instance
+        # alive so the drift consumer can keep applying offsets and
+        # the segment-id math stays available to test fixtures.
+        shutdown_event.wait()
+    finally:
+        try:
+            orchestrator.close_inflight_blocks()
+        except Exception:  # noqa: BLE001
+            logger.debug("inflight cleanup failed", exc_info=True)
+        drift_thread.join(timeout=5.0)
+        logger.info("module_c_orchestrator stopped")

@@ -80,7 +80,10 @@ class ProcessGraph:
     def start_all(self) -> None:
         ctx = mp.get_context("spawn")
         if self.channels is None:
-            self.channels = IpcChannels(ml_inbox=ctx.Queue())
+            self.channels = IpcChannels(
+                ml_inbox=ctx.Queue(),
+                drift_updates=ctx.Queue(),
+            )
         for name, module in PROCESS_MODULES.items():
             evt = ctx.Event()
             proc = ctx.Process(

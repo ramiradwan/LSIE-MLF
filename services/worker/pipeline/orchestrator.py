@@ -33,12 +33,30 @@ from packages.schemas.data_tiers import DataTier, mark_data_tier
 
 logger = logging.getLogger(__name__)
 
-# §4.C.1 Drift polling specification
-DRIFT_POLL_INTERVAL: int = 30  # seconds
-MAX_TOLERATED_DRIFT_MS: int = 150  # milliseconds
-ADB_COMMAND: str = "adb shell 'echo $EPOCHREALTIME'"
-DRIFT_FREEZE_AFTER_FAILURES: int = 3
-DRIFT_RESET_TIMEOUT: int = 300  # 5 minutes in seconds
+# §4.C.1 drift correction now lives in services.desktop_app.drift; it is
+# polled by services.desktop_app.processes.capture_supervisor (WS3 P3)
+# and the offset is shipped to module_c_orchestrator over the IPC
+# drift_updates channel. Orchestrator keeps a DriftCorrector instance
+# only for the apply-side correct_timestamp() call.
+from services.desktop_app.drift import (  # noqa: E402
+    ADB_COMMAND,
+    DRIFT_FREEZE_AFTER_FAILURES,
+    DRIFT_POLL_INTERVAL,
+    DRIFT_RESET_TIMEOUT,
+    MAX_TOLERATED_DRIFT_MS,
+    DriftCorrector,
+)
+
+# Re-export the symbols above for backwards compatibility with the v3.4
+# test suite that imports them from this module.
+__all__ = [
+    "ADB_COMMAND",
+    "DRIFT_FREEZE_AFTER_FAILURES",
+    "DRIFT_POLL_INTERVAL",
+    "DRIFT_RESET_TIMEOUT",
+    "MAX_TOLERATED_DRIFT_MS",
+    "DriftCorrector",
+]
 
 # §4.C.2 FFmpeg resampling command
 FFMPEG_RESAMPLE_CMD: list[str] = [
@@ -104,94 +122,6 @@ ORCHESTRATOR_HEARTBEAT_INTERVAL_S: float = 1.0
 
 def _live_session_state_key(session_id: str) -> str:
     return f"{LIVE_SESSION_STATE_KEY_PREFIX}{session_id}"
-
-
-class DriftCorrector:
-    """
-    Maintain drift-corrected UTC timestamps for Module C.
-
-    Accepts host time and Android epoch readings from the configured ADB poll,
-    produces the current seconds offset, and applies it to media/event
-    timestamps. It freezes the last offset after repeated poll failures and
-    resets after the configured timeout (§13.5); it does not block segment
-    assembly on ADB loss or persist drift history.
-    """
-
-    def __init__(self) -> None:
-        self.drift_offset: float = 0.0
-        self._consecutive_failures: int = 0
-        self._frozen: bool = False
-        self._frozen_at: float = 0.0
-
-    def poll(self) -> float:
-        """
-        Execute ADB epoch poll and update drift_offset.
-
-        §4.C.1 — drift_offset = host_utc - android_epoch.
-        §12 Hardware loss C: freeze drift after 3 failures; reset to
-        zero after 5 minutes of frozen state.
-
-        Returns:
-            Current drift_offset in seconds.
-        """
-        # §12 Hardware loss C — check if frozen drift should reset
-        if self._frozen:
-            elapsed = time.monotonic() - self._frozen_at
-            if elapsed >= DRIFT_RESET_TIMEOUT:
-                # §12 — reset to zero after 5 minutes
-                logger.warning("Drift frozen for %ds, resetting to zero", int(elapsed))
-                self.drift_offset = 0.0
-                self._frozen = False
-                self._consecutive_failures = 0
-            return self.drift_offset
-
-        try:
-            # §4.C.1 — Execute ADB epoch command
-            host_utc = time.time()
-            result = subprocess.run(
-                ADB_COMMAND,
-                shell=True,
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
-            if result.returncode != 0:
-                raise RuntimeError(f"ADB returned code {result.returncode}")
-
-            android_epoch = float(result.stdout.strip())
-
-            # §4.C.1 — drift_offset = host_utc - android_epoch
-            self.drift_offset = host_utc - android_epoch
-            self._consecutive_failures = 0
-
-            drift_ms = abs(self.drift_offset * 1000)
-            if drift_ms > MAX_TOLERATED_DRIFT_MS:
-                logger.warning(
-                    "Drift %.1fms exceeds %dms tolerance",
-                    drift_ms,
-                    MAX_TOLERATED_DRIFT_MS,
-                )
-
-        except Exception as exc:
-            self._consecutive_failures += 1
-            logger.error(
-                "ADB poll failed (%d/%d): %s",
-                self._consecutive_failures,
-                DRIFT_FREEZE_AFTER_FAILURES,
-                exc,
-            )
-
-            # §12 Hardware loss C — freeze after 3 failures
-            if self._consecutive_failures >= DRIFT_FREEZE_AFTER_FAILURES and not self._frozen:
-                logger.warning("Freezing drift at %.6f", self.drift_offset)
-                self._frozen = True
-                self._frozen_at = time.monotonic()
-
-        return self.drift_offset
-
-    def correct_timestamp(self, original_ts: float) -> float:
-        """Apply drift correction: corrected_ts = original_ts + drift_offset."""
-        return original_ts + self.drift_offset
 
 
 class AudioResampler:
@@ -1454,18 +1384,18 @@ class Orchestrator:
         # Read audio in 1/30th second chunks to match 30 FPS video
         chunk_size = int(bytes_per_second / 30)
 
-        last_drift_poll = 0.0
-
         while self._running:
             self._drain_session_lifecycle_intents()
             now = time.monotonic()
             self._publish_orchestrator_heartbeat_if_due(now)
 
-            # §4.C.1 — Poll drift at configured interval. Replay mode keeps the
-            # zero/cached offset and intentionally avoids ADB/USB dependencies.
-            if not self._using_replay_capture and now - last_drift_poll >= DRIFT_POLL_INTERVAL:
-                self.drift_corrector.poll()
-                last_drift_poll = now
+            # §4.C.1 / WS3 P3 — Drift correction is polled by
+            # services.desktop_app.processes.capture_supervisor and
+            # delivered to this process over IpcChannels.drift_updates;
+            # module_c_orchestrator drains the queue and updates
+            # self.drift_corrector.drift_offset directly. In replay
+            # mode this loop runs in a unit-test process without a
+            # supervisor, so the offset stays at its zero default.
 
             # §4.C.2 — Read resampled audio chunk. When no session is active we
             # still drain the pipe, but intentionally discard the bytes so a later

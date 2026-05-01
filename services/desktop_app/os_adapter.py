@@ -19,12 +19,69 @@ from __future__ import annotations
 import contextlib
 import logging
 import os
+import shutil
 import signal
 import subprocess
 import sys
+from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+
+def find_executable(name: str, env_override: str | None = None) -> str:
+    """Resolve a system tool's full path. ``PATH`` first, then known fallbacks.
+
+    Designed for ``capture_supervisor`` (WS3 P3) to locate ``scrcpy`` /
+    ``adb`` / ``ffmpeg`` reliably even when the shell PATH was not
+    refreshed after a winget install. Resolution order:
+
+      1. If ``env_override`` is set in the environment, use it verbatim.
+         (E.g. ``LSIE_SCRCPY_PATH`` for operator overrides.)
+      2. ``shutil.which(name)`` — honours the current process's PATH.
+      3. Windows-specific package-manager scan: walk
+         ``%LOCALAPPDATA%\\Microsoft\\WinGet\\Packages`` for
+         ``{name}*.exe`` so a freshly winget-installed tool resolves
+         even before the shell picks up the PATH update.
+      4. Common fixed installation paths
+         (``C:\\Program Files\\<name>\\<name>.exe`` etc.).
+
+    Raises ``FileNotFoundError`` with a friendly message if every
+    candidate fails — the caller turns that into an operator-readable
+    health-page surface.
+    """
+    if env_override:
+        override_path = os.environ.get(env_override, "").strip()
+        if override_path:
+            if not os.path.isfile(override_path):
+                raise FileNotFoundError(
+                    f"{env_override}={override_path!r} does not point at an existing file"
+                )
+            return override_path
+
+    found = shutil.which(name)
+    if found:
+        return found
+
+    if sys.platform == "win32":
+        winget_root = Path(os.environ.get("LOCALAPPDATA", "")) / "Microsoft" / "WinGet" / "Packages"
+        if winget_root.is_dir():
+            target = f"{name}.exe"
+            for candidate in winget_root.rglob(target):
+                if candidate.is_file():
+                    return str(candidate)
+
+        program_files = Path(os.environ.get("PROGRAMFILES", "C:/Program Files"))
+        for layout in (
+            program_files / name / f"{name}.exe",
+            program_files / name.capitalize() / f"{name}.exe",
+        ):
+            if layout.is_file():
+                return str(layout)
+
+    raise FileNotFoundError(
+        f"could not locate executable {name!r}: PATH lookup failed and no fallback path matched"
+    )
 
 
 def cleanup_orphan_ipc_blocks(prefix: str) -> int:
