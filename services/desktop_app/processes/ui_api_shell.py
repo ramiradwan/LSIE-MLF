@@ -1,4 +1,4 @@
-"""UI + API shell process (v4.0 §9 / WS3 P1b).
+"""UI + API shell process (v4.0 §9 / WS3 P1b + WS4 P1b).
 
 Hosts the in-process FastAPI server (``services.api.main.app``) on a
 daemon thread bound to ``127.0.0.1:8000`` and the PySide6 ``MainWindow``
@@ -7,11 +7,17 @@ port via ``LSIE_API_URL`` so the existing
 ``services.operator_console.api_client`` reaches the in-process API
 without code changes.
 
-Phase 1b transitional accommodation: if ``POSTGRES_USER`` is unset, the
-FastAPI app's lifespan is replaced with a no-op so uvicorn can start
-without a backing Persistent Store. This lets the GUI render the
-empty/default state on a developer host with no Postgres running. WS4
-P1 swaps in the SQLite-backed lifespan.
+WS4 P1b wires the FastAPI route layer to the local SQLite store:
+
+* Bootstrap ``services.desktop_app.state.sqlite_schema`` under the
+  resolved app-data directory if the file is fresh.
+* Replace ``services.api.main.app``'s lifespan (which calls
+  ``init_pool()`` on the psycopg2 pool) with a no-op — the desktop
+  runtime owns its persistence layer through the SQLite store.
+* Override ``services.api.routes.operator.get_read_service`` with
+  :class:`SqliteOperatorReadService` so the operator console's
+  ``/api/v1/operator/*`` aggregate endpoints render real seed-experiment
+  rows + any analytics_state_worker writes that have landed.
 
 ML import discipline: this module MUST NOT import ``torch`` /
 ``mediapipe`` / ``faster_whisper`` / ``ctranslate2`` at any scope. The
@@ -38,6 +44,7 @@ API_HOST = "127.0.0.1"
 API_PORT_PREFERRED = 8000
 SHUTDOWN_POLL_INTERVAL_MS = 250
 UVICORN_READY_TIMEOUT_S = 5.0
+SQLITE_FILENAME = "desktop.sqlite"
 
 
 def _allocate_port(preferred: int) -> int:
@@ -60,85 +67,6 @@ def _allocate_port(preferred: int) -> int:
     raise RuntimeError("ui_api_shell: failed to allocate any local port")
 
 
-class _EmptyCursor:
-    """psycopg2-shaped cursor that returns no rows for every query.
-
-    Phase 1b transitional stand-in for ``services.api.db.connection``
-    when ``POSTGRES_USER`` is unset. Read routes get empty payloads
-    instead of ``RuntimeError("Connection pool not initialized")`` so
-    the operator console renders its empty/default state. WS4 P1
-    replaces this with the real SQLite reader.
-    """
-
-    rowcount = 0
-    description: object = None
-
-    def execute(self, *_args: object, **_kwargs: object) -> None:
-        return None
-
-    def executemany(self, *_args: object, **_kwargs: object) -> None:
-        return None
-
-    def fetchall(self) -> list[object]:
-        return []
-
-    def fetchone(self) -> object | None:
-        return None
-
-    def fetchmany(self, *_args: object, **_kwargs: object) -> list[object]:
-        return []
-
-    def close(self) -> None:
-        return None
-
-    def __enter__(self) -> _EmptyCursor:
-        return self
-
-    def __exit__(self, *_args: object) -> None:
-        return None
-
-    def __iter__(self) -> _EmptyCursor:
-        return self
-
-    def __next__(self) -> object:
-        raise StopIteration
-
-
-class _EmptyConnection:
-    """psycopg2-shaped connection that hands out :class:`_EmptyCursor`."""
-
-    def cursor(self, *_args: object, **_kwargs: object) -> _EmptyCursor:
-        return _EmptyCursor()
-
-    def commit(self) -> None:
-        return None
-
-    def rollback(self) -> None:
-        return None
-
-    def close(self) -> None:
-        return None
-
-    def __enter__(self) -> _EmptyConnection:
-        return self
-
-    def __exit__(self, *_args: object) -> None:
-        return None
-
-
-class _EmptyPool:
-    """Pool that vends :class:`_EmptyConnection`. ``closeall`` is a no-op."""
-
-    def getconn(self) -> _EmptyConnection:
-        return _EmptyConnection()
-
-    def putconn(self, _conn: object) -> None:
-        return None
-
-    def closeall(self) -> None:
-        return None
-
-
 def run(shutdown_event: mpsync.Event, channels: IpcChannels) -> None:
     del channels  # ui_api_shell does not consume IPC channels directly.
     logger.info("ui_api_shell starting")
@@ -146,6 +74,7 @@ def run(shutdown_event: mpsync.Event, channels: IpcChannels) -> None:
 
     # Late imports — preserves the WS3 P1 ML-isolation canary contract
     # and keeps the parent process free of FastAPI/Qt state.
+    import sqlite3
     from collections.abc import AsyncIterator
     from contextlib import asynccontextmanager
 
@@ -155,6 +84,13 @@ def run(shutdown_event: mpsync.Event, channels: IpcChannels) -> None:
     from PySide6.QtWidgets import QApplication
 
     from services.api.main import app as api_app
+    from services.api.routes.operator import get_read_service
+    from services.desktop_app.os_adapter import resolve_state_dir
+    from services.desktop_app.state.sqlite_operator_read_service import (
+        SqliteOperatorReadService,
+    )
+    from services.desktop_app.state.sqlite_reader import SqliteReader
+    from services.desktop_app.state.sqlite_schema import bootstrap_schema
     from services.operator_console.app import (
         build_api_client,
         build_main_window,
@@ -164,39 +100,43 @@ def run(shutdown_event: mpsync.Event, channels: IpcChannels) -> None:
     from services.operator_console.config import load_config
     from services.operator_console.theme import build_stylesheet
 
+    # ------------------------------------------------------------------
+    # WS4 P1b — local SQLite bootstrap + read service wiring
+    # ------------------------------------------------------------------
+    # Bootstrap the schema (and the four-arm seed) under the platform's
+    # standard application-data directory. Idempotent: re-running on a
+    # fresh install creates the file and tables; re-running on a
+    # populated store is a no-op (CREATE TABLE IF NOT EXISTS + INSERT
+    # OR IGNORE on the seed). The writer-only connection lives just
+    # long enough to bootstrap; the long-lived writer is owned by
+    # analytics_state_worker.
+    state_dir = resolve_state_dir()
+    db_path = state_dir / SQLITE_FILENAME
+    bootstrap_conn = sqlite3.connect(str(db_path), isolation_level=None)
+    try:
+        bootstrap_schema(bootstrap_conn)
+    finally:
+        bootstrap_conn.close()
+    logger.info("desktop sqlite store bootstrapped at %s", db_path)
+
+    reader = SqliteReader(db_path)
+    read_service = SqliteOperatorReadService(reader)
+
+    def _read_service_dependency() -> SqliteOperatorReadService:
+        return read_service
+
+    api_app.dependency_overrides[get_read_service] = _read_service_dependency
+
     # The v3.4 lifespan in services.api.main calls init_pool() which
-    # KeyErrors when POSTGRES_USER is unset, and individual route
-    # handlers call get_connection() which raises until the pool is
-    # initialized. WS4 P1 replaces both with a SQLite-backed lifespan;
-    # until then, install an empty-pool stand-in so the GUI renders its
-    # default state instead of "Connection pool not initialized" errors.
-    if not os.environ.get("POSTGRES_USER"):
-        from services.api.db import connection as _db_conn
-        from services.api.routes.operator import get_read_service
-        from services.api.services.operator_read_service import OperatorReadService
+    # KeyErrors when POSTGRES_USER is unset. The desktop runtime owns
+    # its persistence layer through SqliteReader/Writer, so the FastAPI
+    # lifespan becomes a no-op.
+    @asynccontextmanager
+    async def _desktop_lifespan(_app: FastAPI) -> AsyncIterator[None]:
+        logger.info("ui_api_shell FastAPI lifespan: SQLite-backed (Postgres pool skipped)")
+        yield
 
-        _db_conn._pool = _EmptyPool()  # type: ignore[attr-defined]
-
-        # The /api/v1/operator/* routes wire in _default_redis_factory
-        # which lazy-imports `redis`. The desktop runtime does not ship
-        # redis (the Message Broker is replaced by IPC in WS3 P2), so
-        # override the dependency to a service with redis_factory=None.
-        # OperatorReadService treats that as "no live-session pub/sub"
-        # and yields None inside _live_state_client.
-        def _stub_read_service() -> OperatorReadService:
-            return OperatorReadService(redis_factory=None)
-
-        api_app.dependency_overrides[get_read_service] = _stub_read_service
-
-        @asynccontextmanager
-        async def _noop_lifespan(_app: FastAPI) -> AsyncIterator[None]:
-            logger.warning(
-                "POSTGRES_USER unset — using empty-row pool stub "
-                "(transitional; WS4 P1 swaps in the SQLite lifespan)"
-            )
-            yield
-
-        api_app.router.lifespan_context = _noop_lifespan
+    api_app.router.lifespan_context = _desktop_lifespan
 
     # Resolve port: env override → preferred 8000 → ephemeral fallback.
     requested_port_raw = os.environ.get("LSIE_API_PORT", "").strip()

@@ -40,6 +40,7 @@ from collections.abc import Awaitable, Callable, Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal, InvalidOperation
+from types import ModuleType
 from typing import Any, Literal, Protocol, cast
 from uuid import UUID, uuid4
 
@@ -121,12 +122,19 @@ class OperatorReadService:
         subsystem_probe_runner: Callable[
             ..., Awaitable[list[ProbeResult]]
         ] = collect_subsystem_probes,
+        queries: ModuleType | Any = q,
     ) -> None:
         self._get_conn = get_conn
         self._put_conn = put_conn
         self._redis_factory = redis_factory
         self._clock = clock
         self._subsystem_probe_runner = subsystem_probe_runner
+        # Query backend — either ``services.api.repos.operator_queries``
+        # (Postgres, the default) or ``services.desktop_app.state
+        # .sqlite_operator_queries`` (SQLite). Both expose the same
+        # ``fetch_*`` callable surface returning identically-shaped row
+        # dicts so the DTO builders below stay backend-agnostic.
+        self._queries = queries
 
     # ------------------------------------------------------------------
     # Public surface
@@ -136,7 +144,7 @@ class OperatorReadService:
         """§4.E.1 — composed Overview card set."""
         now = self._clock()
         with self._cursor() as cur, self._live_state_client() as live_state_client:
-            active_row = q.fetch_active_session(cur)
+            active_row = self._queries.fetch_active_session(cur)
             active_session = (
                 self._build_session_summary(active_row, live_state_client)
                 if active_row is not None
@@ -148,13 +156,13 @@ class OperatorReadService:
             physiology: SessionPhysiologySnapshot | None = None
 
             if active_session is not None:
-                enc_row = q.fetch_latest_encounter(cur, active_session.session_id)
+                enc_row = self._queries.fetch_latest_encounter(cur, active_session.session_id)
                 latest_encounter = self._build_latest_encounter_summary(enc_row)
 
                 exp_id = (enc_row or {}).get("experiment_id")
                 if isinstance(exp_id, str) and exp_id:
-                    arm_rows = q.fetch_experiment_arms(cur, exp_id)
-                    active_arm_row = q.fetch_active_arm_for_experiment(cur, exp_id)
+                    arm_rows = self._queries.fetch_experiment_arms(cur, exp_id)
+                    active_arm_row = self._queries.fetch_active_arm_for_experiment(cur, exp_id)
                     experiment_summary = self._build_experiment_summary(
                         exp_id, arm_rows, active_arm_row, enc_row
                     )
@@ -176,12 +184,12 @@ class OperatorReadService:
 
     def list_sessions(self, *, limit: int = 50) -> list[SessionSummary]:
         with self._cursor() as cur, self._live_state_client() as live_state_client:
-            rows = q.fetch_recent_sessions(cur, limit=limit)
+            rows = self._queries.fetch_recent_sessions(cur, limit=limit)
             return [self._build_session_summary(row, live_state_client) for row in rows]
 
     def get_session(self, session_id: UUID) -> SessionSummary | None:
         with self._cursor() as cur, self._live_state_client() as live_state_client:
-            row = q.fetch_session_by_id(cur, session_id)
+            row = self._queries.fetch_session_by_id(cur, session_id)
             if row is None:
                 return None
             return self._build_session_summary(row, live_state_client)
@@ -194,15 +202,17 @@ class OperatorReadService:
         before_utc: datetime | None = None,
     ) -> list[EncounterSummary]:
         with self._cursor() as cur:
-            rows = q.fetch_session_encounters(cur, session_id, limit=limit, before_utc=before_utc)
+            rows = self._queries.fetch_session_encounters(
+                cur, session_id, limit=limit, before_utc=before_utc
+            )
         return [self._build_encounter_summary(row) for row in rows]
 
     def get_experiment_detail(self, experiment_id: str) -> ExperimentDetail | None:
         with self._cursor() as cur:
-            arm_rows = q.fetch_experiment_arms(cur, experiment_id)
+            arm_rows = self._queries.fetch_experiment_arms(cur, experiment_id)
             if not arm_rows:
                 return None
-            active_arm_row = q.fetch_active_arm_for_experiment(cur, experiment_id)
+            active_arm_row = self._queries.fetch_active_arm_for_experiment(cur, experiment_id)
 
         arms = [self._build_arm_summary(row) for row in arm_rows]
         active_arm_id = (active_arm_row or {}).get("arm") if active_arm_row is not None else None
@@ -220,7 +230,7 @@ class OperatorReadService:
     def get_session_physiology(self, session_id: UUID) -> SessionPhysiologySnapshot | None:
         now = self._clock()
         with self._cursor() as cur:
-            session = q.fetch_session_by_id(cur, session_id)
+            session = self._queries.fetch_session_by_id(cur, session_id)
             if session is None:
                 return None
             return self._build_session_physiology(cur, session_id, now)
@@ -250,33 +260,23 @@ class OperatorReadService:
     # Connection lifecycle
     # ------------------------------------------------------------------
 
-    class _CursorContext:
-        def __init__(
-            self,
-            get_conn: Callable[[], Any],
-            put_conn: Callable[[Any], None],
-        ) -> None:
-            self._get_conn = get_conn
-            self._put_conn = put_conn
-            self._conn: Any = None
-            self._cur: Any = None
+    @contextmanager
+    def _cursor(self) -> Iterator[Any]:
+        """Yield a backend cursor inside a get_conn / put_conn envelope.
 
-        def __enter__(self) -> Any:
-            self._conn = self._get_conn()
-            self._cur = self._conn.cursor()
-            # psycopg2 cursors are context managers themselves; use the
-            # raw cursor so callers can stay cursor-only.
-            return self._cur.__enter__()
-
-        def __exit__(self, *exc: Any) -> None:
-            try:
-                self._cur.__exit__(*exc)
-            finally:
-                if self._conn is not None:
-                    self._put_conn(self._conn)
-
-    def _cursor(self) -> _CursorContext:
-        return self._CursorContext(self._get_conn, self._put_conn)
+        The Postgres path (psycopg2) cursors are themselves context
+        managers, so the inner ``with`` is required for proper close.
+        Backends that do not implement ``__enter__`` on their cursor
+        (e.g. ``sqlite3.Cursor``) must override this method — the
+        ``SqliteOperatorReadService`` subclass does exactly that.
+        """
+        conn = self._get_conn()
+        try:
+            cur = conn.cursor()
+            with cur as scoped:
+                yield scoped
+        finally:
+            self._put_conn(conn)
 
     @contextmanager
     def _live_state_client(self) -> Iterator[RedisLiveStateClientLike | None]:
@@ -662,7 +662,7 @@ class OperatorReadService:
     def _build_session_physiology(
         self, cur: Any, session_id: UUID, now: datetime
     ) -> SessionPhysiologySnapshot:
-        rows = q.fetch_latest_physiology_rows(cur, session_id)
+        rows = self._queries.fetch_latest_physiology_rows(cur, session_id)
         streamer: PhysiologyCurrentSnapshot | None = None
         operator: PhysiologyCurrentSnapshot | None = None
         for row in rows:
@@ -671,7 +671,7 @@ class OperatorReadService:
                 streamer = snap
             elif snap.subject_role == "operator":
                 operator = snap
-        comod_row = q.fetch_latest_comodulation_row(cur, session_id)
+        comod_row = self._queries.fetch_latest_comodulation_row(cur, session_id)
         comodulation = self._build_co_modulation_summary(session_id, comod_row)
         return SessionPhysiologySnapshot(
             session_id=session_id,
@@ -769,7 +769,7 @@ class OperatorReadService:
         return rows
 
     def _build_health_snapshot(self, cur: Any, now: datetime) -> HealthSnapshot:
-        pulse = q.fetch_subsystem_pulse(cur)
+        pulse = self._queries.fetch_subsystem_pulse(cur)
         rows = self._build_health_rows(pulse, now)
         degraded = sum(1 for r in rows if r.state is HealthState.DEGRADED)
         recovering = sum(1 for r in rows if r.state is HealthState.RECOVERING)
@@ -803,7 +803,9 @@ class OperatorReadService:
         self, cur: Any, *, limit: int, since_utc: datetime | None
     ) -> list[AlertEvent]:
         alerts: list[AlertEvent] = []
-        stale_rows = q.fetch_recent_stale_physiology(cur, since_utc=since_utc, limit=limit)
+        stale_rows = self._queries.fetch_recent_stale_physiology(
+            cur, since_utc=since_utc, limit=limit
+        )
         for row in stale_rows:
             alerts.append(
                 AlertEvent(
@@ -819,7 +821,9 @@ class OperatorReadService:
                     emitted_at_utc=_ensure_utc_strict(row["created_at"]),
                 )
             )
-        ended_rows = q.fetch_recently_ended_sessions(cur, since_utc=since_utc, limit=limit)
+        ended_rows = self._queries.fetch_recently_ended_sessions(
+            cur, since_utc=since_utc, limit=limit
+        )
         for row in ended_rows:
             alerts.append(
                 AlertEvent(
@@ -970,6 +974,11 @@ def _latest_datetime(values: Any) -> datetime | None:
 def _ensure_utc(value: Any) -> datetime | None:
     if value is None:
         return None
+    if isinstance(value, str):
+        parsed = _parse_iso_utc(value)
+        if parsed is None:
+            return None
+        value = parsed
     if not isinstance(value, datetime):
         return None
     if value.tzinfo is None:
@@ -980,8 +989,28 @@ def _ensure_utc(value: Any) -> datetime | None:
 def _ensure_utc_strict(value: Any) -> datetime:
     result = _ensure_utc(value)
     if result is None:
-        raise ValueError("expected UTC-aware datetime, got None")
+        raise ValueError(f"expected UTC-aware datetime, got {value!r}")
     return result
+
+
+def _parse_iso_utc(text: str) -> datetime | None:
+    """Parse a UTC datetime from common ISO-8601 / SQLite encodings.
+
+    Accepts ``'2026-05-01T12:34:56+00:00'``, ``'2026-05-01T12:34:56Z'``,
+    and the SQLite-default ``'2026-05-01 12:34:56'`` (space separator,
+    naive). Naive results are stamped UTC by ``_ensure_utc``.
+    """
+    candidate = text.strip()
+    if not candidate:
+        return None
+    if candidate.endswith("Z"):
+        candidate = candidate[:-1] + "+00:00"
+    if "T" not in candidate and " " in candidate:
+        candidate = candidate.replace(" ", "T", 1)
+    try:
+        return datetime.fromisoformat(candidate)
+    except ValueError:
+        return None
 
 
 def _stimulus_epoch_to_utc(value: Any) -> datetime | None:
