@@ -29,6 +29,41 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
+def resolve_state_dir() -> Path:
+    """Return the directory the desktop app uses for its local state.
+
+    Resolution order:
+
+      1. ``LSIE_STATE_DIR`` env override (operator-set, e.g. for tests).
+      2. Windows: ``%LOCALAPPDATA%\\LSIE-MLF\\state`` (the standard
+         per-user roaming-free path on Windows 10+).
+      3. POSIX: ``$XDG_DATA_HOME/lsie-mlf/state`` if the XDG variable
+         is set, else ``~/.local/share/lsie-mlf/state``.
+
+    The directory is created (with parents) before return so callers
+    can immediately ``open(path / 'foo.sqlite', 'a')`` without an
+    ``os.makedirs`` of their own.
+    """
+    override = os.environ.get("LSIE_STATE_DIR", "").strip()
+    if override:
+        target = Path(override).expanduser()
+    elif sys.platform == "win32":
+        local_appdata = os.environ.get("LOCALAPPDATA")
+        if local_appdata:
+            target = Path(local_appdata) / "LSIE-MLF" / "state"
+        else:
+            target = Path.home() / "AppData" / "Local" / "LSIE-MLF" / "state"
+    else:
+        xdg = os.environ.get("XDG_DATA_HOME", "").strip()
+        if xdg:
+            target = Path(xdg) / "lsie-mlf" / "state"
+        else:
+            target = Path.home() / ".local" / "share" / "lsie-mlf" / "state"
+
+    target.mkdir(parents=True, exist_ok=True)
+    return target
+
+
 def find_executable(name: str, env_override: str | None = None) -> str:
     """Resolve a system tool's full path. ``PATH`` first, then known fallbacks.
 
