@@ -54,10 +54,15 @@ def _launch(
     """Pickleable child entrypoint — runs only inside the spawned child.
 
     Spawn-mode children re-import this module to find ``_launch``, then
-    invoke it. The first thing the child does is ``importlib.import_module``
-    on its target — that brings in ``torch`` etc. only for
-    ``gpu_ml_worker``.
+    invoke it. The first thing the child does is install the WS4 P3
+    crash-privacy guards (crash-dialog state is per-process on Windows
+    so the parent's install does not propagate to spawn-mode children),
+    then ``importlib.import_module`` on its target — that brings in
+    ``torch`` etc. only for ``gpu_ml_worker``.
     """
+    from services.desktop_app.privacy.crash_dumps import install_crash_privacy_guards
+
+    install_crash_privacy_guards()
     mod = importlib.import_module(module_name)
     mod.run(shutdown_event=shutdown_event, channels=channels)
 

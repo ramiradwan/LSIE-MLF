@@ -119,6 +119,107 @@ def find_executable(name: str, env_override: str | None = None) -> str:
     )
 
 
+def zeroize_shared_memory(shm: Any) -> int:
+    """Overwrite a :class:`multiprocessing.shared_memory.SharedMemory`'s bytes.
+
+    Calls ``ctypes.memset`` against the raw ``SharedMemory.buf``-backing
+    buffer so transient PCM media never survives a leaked block.
+    Returns the number of bytes zeroed (or ``0`` if the buffer is already
+    detached). Idempotent: repeated calls are safe; a closed buffer
+    short-circuits.
+
+    Why ctypes.memset rather than ``buf[:] = b'\\x00' * len``: the
+    former is a single libc call against the mapping address and works
+    even when the producer has already closed its Python-side memoryview
+    handle but the underlying mapping is still live. The latter goes
+    through Python's bytes-allocation path and asserts the memoryview
+    is writable.
+
+    POSIX and Windows behave identically — ``shm.buf`` is a
+    ``memoryview`` over an mmap on POSIX and a ``CreateFileMapping``
+    on Windows, but the underlying ctypes pointer is uniform.
+    """
+    import ctypes
+
+    buf = getattr(shm, "buf", None)
+    if buf is None:
+        return 0
+    try:
+        nbytes = len(buf)
+    except (TypeError, ValueError):
+        return 0
+    if nbytes == 0:
+        return 0
+    addr = ctypes.addressof(ctypes.c_byte.from_buffer(buf))
+    ctypes.memset(addr, 0, nbytes)
+    return int(nbytes)
+
+
+def suppress_crash_dialogs() -> None:
+    """Disable the OS crash-dialog popup so a child crash dies silently.
+
+    Windows: ``SetErrorMode(SEM_NOGPFAULTERRORBOX |
+    SEM_FAILCRITICALERRORS)`` suppresses the "application has stopped
+    working" dialog and the "no disk in drive" critical-error popup.
+    Without this, an ungraceful exit in any child process surfaces a
+    modal dialog that prevents the parent from cleanly observing the
+    child exit code.
+
+    POSIX: no-op. Linux / macOS do not raise modal dialogs on crash.
+
+    Idempotent: callable multiple times without side effects.
+    """
+    if sys.platform != "win32":
+        return
+    import ctypes
+
+    # Win32 SetErrorMode flag values from winbase.h:
+    # SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX | SEM_NOOPENFILEERRORBOX.
+    flags = 0x0001 | 0x0002 | 0x8000
+    try:
+        ctypes.windll.kernel32.SetErrorMode(flags)
+    except OSError as exc:
+        logger.debug("SetErrorMode failed: %s", exc)
+
+
+def register_localdumps_exclusion(app_name: str = "lsie-mlf-desktop.exe") -> bool:
+    """Suppress Windows Error Reporting LocalDumps for our app binary.
+
+    Per §5.2 the Ephemeral Vault contract is that no biometric media
+    survives the 24h secure-deletion window. WER's LocalDumps feature,
+    when configured globally, will write a ``.dmp`` of any crashing
+    process under ``%LOCALAPPDATA%\\CrashDumps\\``. A crash mid-segment
+    would therefore freeze raw PCM into a dump file outside the vault
+    perimeter. Adding our own ``...\\LocalDumps\\<app_name>`` subkey
+    with ``DumpType=0`` overrides any global config and keeps WER from
+    writing the dump.
+
+    Returns ``True`` if the key was successfully written, ``False`` on
+    POSIX or any registry failure. Non-fatal: a failure to write the
+    key logs and continues — the absence of the override is no worse
+    than a default Windows install.
+    """
+    if sys.platform != "win32":
+        return False
+    try:
+        import winreg
+    except ImportError:  # pragma: no cover — winreg is stdlib on Windows
+        return False
+
+    subkey = r"Software\Microsoft\Windows\Windows Error Reporting\LocalDumps\\" + app_name
+    try:
+        with winreg.CreateKeyEx(winreg.HKEY_CURRENT_USER, subkey, 0, winreg.KEY_SET_VALUE) as key:
+            # DumpType=0 means "custom" with the dump-file count below;
+            # combined with DumpCount=0 this is the documented "do not
+            # write a dump" combination.
+            winreg.SetValueEx(key, "DumpType", 0, winreg.REG_DWORD, 0)
+            winreg.SetValueEx(key, "DumpCount", 0, winreg.REG_DWORD, 0)
+        return True
+    except OSError as exc:
+        logger.warning("LocalDumps exclusion for %s failed: %s", app_name, exc)
+        return False
+
+
 def cleanup_orphan_ipc_blocks(prefix: str) -> int:
     """Unlink leftover SharedMemory blocks whose name starts with ``prefix``.
 

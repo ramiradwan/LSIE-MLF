@@ -67,10 +67,24 @@ class PcmBlock:
     _closed: bool = field(default=False, repr=False)
 
     def close_and_unlink(self) -> None:
-        """Release the producer handle and remove the OS name. Idempotent."""
+        """Zeroize the buffer, release the producer handle, remove the OS name.
+
+        Idempotent. The zeroize-before-close ordering is deliberate per
+        §5.2: ``close()`` releases the local handle and on POSIX may
+        immediately make the page reusable by another process, so we
+        wipe the bytes while we still own the live mapping.
+        """
         if self._closed:
             return
         self._closed = True
+        # Late import keeps shared_buffers free of a privacy → ipc
+        # cycle if the privacy package ever needs PcmBlock.
+        from services.desktop_app.privacy.zeroize import zeroize_pcm_block
+
+        try:
+            zeroize_pcm_block(self._shm)
+        except Exception:  # noqa: BLE001
+            logger.debug("PcmBlock zeroize failed for %s", self.metadata.name, exc_info=True)
         try:
             self._shm.close()
         except Exception:  # noqa: BLE001

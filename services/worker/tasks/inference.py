@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import logging
 import math
-import tempfile
 import time
 from dataclasses import asdict
 from datetime import UTC, datetime
@@ -354,9 +353,6 @@ def process_segment(self: Task, payload: dict[str, Any]) -> dict[str, Any]:
     transcription: str = ""
     if audio_data:
         try:
-            import os
-            import subprocess
-
             from services.worker.health import (
                 record_whisper_model_error,
                 record_whisper_model_ready,
@@ -366,37 +362,25 @@ def process_segment(self: Task, payload: dict[str, Any]) -> dict[str, Any]:
             if getattr(engine, "_model", None) is None:
                 logger.info("Initializing faster-whisper (first run downloads ~3GB model)")
 
-            # Write the raw PCM bytes to disk
-            with tempfile.NamedTemporaryFile(suffix=".raw", delete=False) as raw_file:
-                raw_file.write(audio_data)
-                raw_path = raw_file.name
+            # WS4 P3 / §5.2 — Convert raw PCM s16le @ 16 kHz to a WAV
+            # stream entirely in memory: ffmpeg reads from stdin and
+            # writes to stdout, so transient biometric audio never
+            # touches a tempfile. The Ephemeral Vault perimeter
+            # therefore stays intact even on a host without LocalDumps
+            # exclusion.
+            from packages.ml_core.audio_pipe import pcm_to_wav_bytes
 
-            # Use FFmpeg to translate the raw PCM into a pristine WAV container
-            wav_path = raw_path.replace(".raw", ".wav")
-            subprocess.run(
-                [
-                    "ffmpeg",
-                    "-y",
-                    "-loglevel",
-                    "error",
-                    "-f",
-                    "s16le",
-                    "-ar",
-                    "16000",
-                    "-ac",
-                    "1",
-                    "-i",
-                    raw_path,
-                    wav_path,
-                ],
-                check=True,
-            )
+            wav_bytes = pcm_to_wav_bytes(audio_data)
 
-            # Transcribe the pristine WAV file. ``TranscriptionEngine`` lazily
-            # loads on first use; after success, the cached engine holds the
-            # initialized model that the health process reports via marker.
+            # Transcribe the in-memory WAV. ``TranscriptionEngine`` lazily
+            # loads on first use; after success, the cached engine holds
+            # the initialized model that the health process reports via
+            # marker. ``faster_whisper.WhisperModel.transcribe`` accepts
+            # an ``io.BytesIO`` directly per its public surface.
+            import io
+
             try:
-                transcription = engine.transcribe(wav_path)
+                transcription = engine.transcribe(io.BytesIO(wav_bytes))
             except Exception as exc:
                 if getattr(engine, "_model", None) is None:
                     record_whisper_model_error(engine, exc)
@@ -404,10 +388,6 @@ def process_segment(self: Task, payload: dict[str, Any]) -> dict[str, Any]:
             else:
                 record_whisper_model_ready(engine)
                 logger.info("Whisper model ready")
-
-            # Clean up the temp files
-            os.remove(raw_path)
-            os.remove(wav_path)
 
         except Exception:
             # §12 Network disconnect D — retry once then null

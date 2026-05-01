@@ -2,14 +2,18 @@
 faster-whisper transcription wrapper for Module D audio input (§4.D.1).
 
 The module lazy-loads the CTranslate2-backed Whisper model and transcribes
-16 kHz audio files to UTF-8 text from a caller-provided audio path. Runtime is
-constrained to CUDA with cuDNN 8 and INT8 compute for the target ML Worker
-topology (§9, §10.2); compute type is not operator-configurable.
+16 kHz audio to UTF-8 text. The :meth:`TranscriptionEngine.transcribe`
+method accepts either a filesystem path (legacy v3.4 callers) or a
+binary file-like object such as :class:`io.BytesIO` — WS4 P3 wires the
+desktop runtime's pipe:0/pipe:1 FFmpeg path to feed the bytes in
+memory so transient PCM never lands on disk. Runtime is constrained to
+CUDA with cuDNN 8 and INT8 compute for the target ML Worker topology
+(§9, §10.2); compute type is not operator-configurable.
 """
 
 from __future__ import annotations
 
-from typing import Any
+from typing import IO, Any
 
 
 class TranscriptionEngine:
@@ -49,14 +53,22 @@ class TranscriptionEngine:
             compute_type=self.compute_type,
         )
 
-    def transcribe(self, audio_path: str, language: str | None = None) -> str:
+    def transcribe(
+        self,
+        audio: str | IO[bytes],
+        language: str | None = None,
+    ) -> str:
         """
-        Transcribe a 16 kHz audio segment from a filesystem path.
+        Transcribe a 16 kHz audio segment from a path or in-memory stream.
 
         §4.D.1 — faster-whisper CTranslate2 inference backend.
 
         Args:
-            audio_path: Path to a PCM s16le 16 kHz audio file.
+            audio: Either a filesystem path to a 16 kHz audio file
+                (legacy v3.4 path) or a binary file-like object
+                (WS4 P3 pipe:0/pipe:1 desktop path).
+                ``faster_whisper.WhisperModel.transcribe`` accepts both
+                shapes natively.
             language: Optional language hint.
 
         Returns:
@@ -67,7 +79,7 @@ class TranscriptionEngine:
 
         # §4.D.1 — Transcribe with beam_size=5 default
         segments, _info = self._model.transcribe(
-            audio_path,
+            audio,
             language=language,
             beam_size=5,
             vad_filter=True,
