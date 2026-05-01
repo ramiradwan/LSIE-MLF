@@ -317,6 +317,38 @@ SCHEMA_DDL: Final[tuple[str, ...]] = (
         created_at              TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     )
     """,
+    # --- WS4 P2 — process heartbeats and capture-child manifest ------
+    # ``process_heartbeat`` carries one row per v4 desktop process,
+    # keyed by canonical process name. Each child writes a 1 Hz
+    # ``INSERT OR REPLACE`` from its own short-lived SQLite connection;
+    # WAL mode + ``busy_timeout=5000`` absorb the cross-process write
+    # contention. The table fuels both the operator console health
+    # rollup and the next startup's recovery sweep ("which processes
+    # were running last time?").
+    """
+    CREATE TABLE IF NOT EXISTS process_heartbeat (
+        process_name        TEXT PRIMARY KEY,
+        pid                 INTEGER NOT NULL,
+        started_at_utc      TEXT NOT NULL,
+        last_heartbeat_utc  TEXT NOT NULL
+    )
+    """,
+    # ``capture_pid_manifest`` records every external child
+    # (scrcpy / adb / ffmpeg) that capture_supervisor spawns through
+    # :class:`SupervisedProcess`. Win32 Job Objects auto-clean these
+    # on parent crash; POSIX has no kernel equivalent and relies on
+    # this manifest for the recovery sweep to terminate orphans on
+    # the next startup.
+    """
+    CREATE TABLE IF NOT EXISTS capture_pid_manifest (
+        pid                 INTEGER PRIMARY KEY,
+        process_kind        TEXT NOT NULL CHECK (
+            process_kind IN ('scrcpy', 'adb', 'ffmpeg')
+        ),
+        parent_process      TEXT NOT NULL,
+        spawned_at_utc      TEXT NOT NULL
+    )
+    """,
 )
 
 
@@ -348,6 +380,10 @@ INDEX_DDL: Final[tuple[str, ...]] = (
     "CREATE INDEX IF NOT EXISTS idx_attribution_score_event ON attribution_score(event_id)",
     "CREATE INDEX IF NOT EXISTS idx_attribution_score_outcome ON attribution_score(outcome_id)",
     "CREATE INDEX IF NOT EXISTS idx_attribution_score_finality ON attribution_score(finality)",
+    "CREATE INDEX IF NOT EXISTS idx_process_heartbeat_freshness "
+    "ON process_heartbeat(last_heartbeat_utc)",
+    "CREATE INDEX IF NOT EXISTS idx_capture_pid_manifest_parent "
+    "ON capture_pid_manifest(parent_process)",
 )
 
 

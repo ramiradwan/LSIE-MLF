@@ -1,4 +1,4 @@
-"""Analytics + state worker process (v4.0 §4.E / WS3 P1 + WS4 P1b).
+"""Analytics + state worker process (v4.0 §4.E / WS3 P1 + WS4 P1b + P2).
 
 Sole writer to the local SQLite store (WS4 P1) and the only process
 that runs the §7B reward computation and the Beta-Bernoulli posterior
@@ -14,6 +14,10 @@ WS4 P1b owns the SQLite writer's lifecycle here:
   any rows the worker enqueues.
 * Drain pending records on cooperative shutdown so the WAL flushes
   cleanly before process teardown.
+
+WS4 P2 adds a per-process :class:`HeartbeatRecorder` so the next
+ui_api_shell startup recovery sweep can spot a process that crashed
+mid-flight and the operator console can render freshness.
 
 The full reward-pipeline / analytics-inbox wiring lands in WS5 P4; for
 now this process owns the writer and idles on the shutdown event,
@@ -42,6 +46,7 @@ def run(shutdown_event: mpsync.Event, channels: IpcChannels) -> None:
     # Late imports preserve the ML-isolation canary contract and keep
     # the parent process free of SQLite handles.
     from services.desktop_app.os_adapter import resolve_state_dir
+    from services.desktop_app.state.heartbeats import HeartbeatRecorder
     from services.desktop_app.state.sqlite_writer import SqliteWriter
 
     state_dir = resolve_state_dir()
@@ -50,8 +55,12 @@ def run(shutdown_event: mpsync.Event, channels: IpcChannels) -> None:
     writer.start()
     logger.info("sqlite writer opened at %s", db_path)
 
+    heartbeat = HeartbeatRecorder(db_path, "analytics_state_worker")
+    heartbeat.start()
+
     try:
         shutdown_event.wait()
     finally:
+        heartbeat.stop()
         writer.close()
         logger.info("analytics_state_worker stopped")

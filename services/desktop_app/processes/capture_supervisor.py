@@ -1,4 +1,4 @@
-"""Capture supervisor process (v4.0 §4.A + §4.C.1 / WS3 P3).
+"""Capture supervisor process (v4.0 §4.A + §4.C.1 / WS3 P3 + WS4 P2).
 
 Replaces the v3.4 ``services/stream_ingest/entrypoint.sh`` shell loop.
 Owns:
@@ -20,8 +20,15 @@ Owns:
   - Restart loop: when either scrcpy exits, both are torn down and the
     device-wait + spawn cycle restarts after a short backoff.
 
-ML import discipline: this module MUST NOT import ``torch`` /
-``mediapipe`` / ``faster_whisper`` / ``ctranslate2`` at any scope.
+WS4 P2 adds two persistence touches:
+
+  - ``capture_pid_manifest`` — every spawned scrcpy PID is recorded
+    against the SQLite store via
+    :func:`services.desktop_app.state.recovery.record_capture_pid`.
+    The next ui_api_shell startup recovery sweep reads this manifest
+    and reaps any PID still alive from an ungraceful prior exit
+    (Job Objects cover Windows; this is the POSIX gap).
+  - :class:`HeartbeatRecorder` — 1 Hz process-heartbeat row.
 """
 
 from __future__ import annotations
@@ -41,6 +48,12 @@ from services.desktop_app.ipc import IpcChannels
 from services.desktop_app.os_adapter import (
     SupervisedProcess,
     find_executable,
+    resolve_state_dir,
+)
+from services.desktop_app.state.heartbeats import HeartbeatRecorder
+from services.desktop_app.state.recovery import (
+    forget_capture_pid,
+    record_capture_pid,
 )
 
 logger = logging.getLogger(__name__)
@@ -56,6 +69,8 @@ SCRCPY_STAGGER_S: float = 4.0
 
 # Restart backoff after one of the scrcpy instances dies.
 RESTART_BACKOFF_S: float = 2.0
+
+SQLITE_FILENAME = "desktop.sqlite"
 
 
 @dataclass(frozen=True)
@@ -202,17 +217,29 @@ class _DriftPollThread:
 def _spawn_scrcpy_pair(
     scrcpy_path: str,
     layout: CaptureLayout,
+    db_path: Path,
 ) -> tuple[SupervisedProcess, SupervisedProcess]:
-    """Spawn audio scrcpy first, wait the SPEC-AMEND-004 stagger, spawn video."""
+    """Spawn audio scrcpy first, wait the SPEC-AMEND-004 stagger, spawn video.
+
+    Each PID is registered in ``capture_pid_manifest`` immediately
+    after spawn so the next boot's recovery sweep can reap the child
+    if this supervisor exits ungracefully.
+    """
     audio = SupervisedProcess(_build_audio_scrcpy_args(scrcpy_path, layout))
+    record_capture_pid(db_path, audio.pid, process_kind="scrcpy")
     logger.info("audio scrcpy launched pid=%s", audio.pid)
     time.sleep(SCRCPY_STAGGER_S)
     video = SupervisedProcess(_build_video_scrcpy_args(scrcpy_path, layout))
+    record_capture_pid(db_path, video.pid, process_kind="scrcpy")
     logger.info("video scrcpy launched pid=%s", video.pid)
     return audio, video
 
 
-def _kill_pair(audio: SupervisedProcess | None, video: SupervisedProcess | None) -> None:
+def _kill_pair(
+    audio: SupervisedProcess | None,
+    video: SupervisedProcess | None,
+    db_path: Path,
+) -> None:
     for proc in (audio, video):
         if proc is None:
             continue
@@ -220,6 +247,12 @@ def _kill_pair(audio: SupervisedProcess | None, video: SupervisedProcess | None)
             proc.terminate(grace_s=3.0)
         except Exception:  # noqa: BLE001
             logger.debug("terminate failed for pid=%s", proc.pid, exc_info=True)
+        # Always forget — even on terminate failure the manifest entry
+        # is stale by definition once we've left the spawn pair.
+        try:
+            forget_capture_pid(db_path, proc.pid)
+        except Exception:  # noqa: BLE001
+            logger.debug("manifest cleanup failed for pid=%s", proc.pid, exc_info=True)
 
 
 def run(shutdown_event: mpsync.Event, channels: IpcChannels) -> None:
@@ -227,6 +260,10 @@ def run(shutdown_event: mpsync.Event, channels: IpcChannels) -> None:
 
     layout = _resolve_capture_layout()
     logger.info("capture layout: %s", layout.capture_dir)
+
+    db_path = resolve_state_dir() / SQLITE_FILENAME
+    heartbeat = HeartbeatRecorder(db_path, "capture_supervisor")
+    heartbeat.start()
 
     corrector = DriftCorrector()
     drift_thread = _DriftPollThread(corrector, channels, shutdown_event)
@@ -242,6 +279,7 @@ def run(shutdown_event: mpsync.Event, channels: IpcChannels) -> None:
         # scrcpy restart loop only.
         shutdown_event.wait()
         drift_thread.join(timeout=5.0)
+        heartbeat.stop()
         logger.info("capture_supervisor stopped (no scrcpy)")
         return
 
@@ -255,7 +293,7 @@ def run(shutdown_event: mpsync.Event, channels: IpcChannels) -> None:
                     break
                 continue
 
-            audio_proc, video_proc = _spawn_scrcpy_pair(scrcpy_path, layout)
+            audio_proc, video_proc = _spawn_scrcpy_pair(scrcpy_path, layout, db_path)
 
             # §12.1.3 — block on whichever scrcpy exits first, then
             # tear both down and re-enter the device-wait loop.
@@ -270,7 +308,7 @@ def run(shutdown_event: mpsync.Event, channels: IpcChannels) -> None:
                 if shutdown_event.wait(timeout=0.5):
                     break
 
-            _kill_pair(audio_proc, video_proc)
+            _kill_pair(audio_proc, video_proc, db_path)
             audio_proc = None
             video_proc = None
 
@@ -278,6 +316,7 @@ def run(shutdown_event: mpsync.Event, channels: IpcChannels) -> None:
                 break
             shutdown_event.wait(timeout=RESTART_BACKOFF_S)
     finally:
-        _kill_pair(audio_proc, video_proc)
+        _kill_pair(audio_proc, video_proc, db_path)
         drift_thread.join(timeout=5.0)
+        heartbeat.stop()
         logger.info("capture_supervisor stopped")

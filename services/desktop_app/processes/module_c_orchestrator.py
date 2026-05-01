@@ -25,6 +25,7 @@ from services.desktop_app.ipc import IpcChannels
 logger = logging.getLogger(__name__)
 
 DRIFT_DRAIN_POLL_TIMEOUT_S = 0.5
+SQLITE_FILENAME = "desktop.sqlite"
 
 
 def _drain_drift_updates(
@@ -60,7 +61,9 @@ def _drain_drift_updates(
 def run(shutdown_event: mpsync.Event, channels: IpcChannels) -> None:
     logger.info("module_c_orchestrator started")
 
-    # Late import: keeps the parent's import-isolation canary clean.
+    # Late imports: keeps the parent's import-isolation canary clean.
+    from services.desktop_app.os_adapter import resolve_state_dir
+    from services.desktop_app.state.heartbeats import HeartbeatRecorder
     from services.worker.pipeline.orchestrator import Orchestrator
 
     orchestrator = Orchestrator(ipc_queue=channels.ml_inbox)
@@ -73,6 +76,10 @@ def run(shutdown_event: mpsync.Event, channels: IpcChannels) -> None:
     )
     drift_thread.start()
 
+    state_dir = resolve_state_dir()
+    heartbeat = HeartbeatRecorder(state_dir / SQLITE_FILENAME, "module_c_orchestrator")
+    heartbeat.start()
+
     try:
         # Phase-3 stub: the live capture-supervisor → orchestrator
         # audio/video pipe-through is not wired yet (Orchestrator.run()
@@ -82,6 +89,7 @@ def run(shutdown_event: mpsync.Event, channels: IpcChannels) -> None:
         # the segment-id math stays available to test fixtures.
         shutdown_event.wait()
     finally:
+        heartbeat.stop()
         try:
             orchestrator.close_inflight_blocks()
         except Exception:  # noqa: BLE001

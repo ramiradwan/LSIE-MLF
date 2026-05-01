@@ -36,7 +36,6 @@ import threading
 import time
 
 from services.desktop_app.ipc import IpcChannels
-from services.desktop_app.ipc.cleanup import recover_orphan_ipc_blocks
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +69,6 @@ def _allocate_port(preferred: int) -> int:
 def run(shutdown_event: mpsync.Event, channels: IpcChannels) -> None:
     del channels  # ui_api_shell does not consume IPC channels directly.
     logger.info("ui_api_shell starting")
-    recover_orphan_ipc_blocks()
 
     # Late imports — preserves the WS3 P1 ML-isolation canary contract
     # and keeps the parent process free of FastAPI/Qt state.
@@ -86,6 +84,8 @@ def run(shutdown_event: mpsync.Event, channels: IpcChannels) -> None:
     from services.api.main import app as api_app
     from services.api.routes.operator import get_read_service
     from services.desktop_app.os_adapter import resolve_state_dir
+    from services.desktop_app.state.heartbeats import HeartbeatRecorder
+    from services.desktop_app.state.recovery import run_recovery_sweep
     from services.desktop_app.state.sqlite_operator_read_service import (
         SqliteOperatorReadService,
     )
@@ -119,8 +119,20 @@ def run(shutdown_event: mpsync.Event, channels: IpcChannels) -> None:
         bootstrap_conn.close()
     logger.info("desktop sqlite store bootstrapped at %s", db_path)
 
+    # ------------------------------------------------------------------
+    # WS4 P2 — dirty-state recovery sweep
+    # ------------------------------------------------------------------
+    # Must run after schema bootstrap (so capture_pid_manifest exists)
+    # and before any other process spawns (so a leftover scrcpy from
+    # a previous crash cannot fight the fresh capture_supervisor for
+    # the USB device).
+    run_recovery_sweep(db_path)
+
     reader = SqliteReader(db_path)
     read_service = SqliteOperatorReadService(reader)
+
+    heartbeat = HeartbeatRecorder(db_path, "ui_api_shell")
+    heartbeat.start()
 
     def _read_service_dependency() -> SqliteOperatorReadService:
         return read_service
@@ -201,8 +213,10 @@ def run(shutdown_event: mpsync.Event, channels: IpcChannels) -> None:
     shutdown_timer.start()
 
     logger.info("ui_api_shell Qt event loop active")
-    qt_app.exec()
-
-    uv_server.should_exit = True
-    uv_thread.join(timeout=5.0)
-    logger.info("ui_api_shell stopped")
+    try:
+        qt_app.exec()
+    finally:
+        uv_server.should_exit = True
+        uv_thread.join(timeout=5.0)
+        heartbeat.stop()
+        logger.info("ui_api_shell stopped")
