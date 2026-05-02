@@ -3,23 +3,23 @@
 check_schema_consistency.py — Cross-source schema drift detector
 =================================================================
 
-The v4.0 desktop pivot retired the PostgreSQL DDL surface (``data/sql/``
-+ ``services.api.db.schema.SCHEMA_SQL``). Local persistence is now
-SQLite-backed via :mod:`services.desktop_app.state.sqlite_schema`, where
-intentional storage-class compromises (UUID and TIMESTAMPTZ both stored
-as ``TEXT``, JSONB as ``TEXT``) make a column-type cross-check
-meaningless. The cloud Postgres surface lands in WS5 P1; until then the
-two contract-bearing surfaces are:
+The v4.0 desktop pivot retired the local PostgreSQL DDL surface
+(``data/sql/`` + ``services.api.db.schema.SCHEMA_SQL``). Local
+persistence is now SQLite-backed via
+:mod:`services.desktop_app.state.sqlite_schema`, where intentional
+storage-class compromises (UUID and TIMESTAMPTZ both stored as ``TEXT``,
+JSONB as ``TEXT``) make a column-type cross-check meaningless. WS5 P1
+restores cloud-owned PostgreSQL DDL under ``services/cloud_api/db/sql/``.
+The contract-bearing surfaces are:
 
   1. **Pydantic models** in ``packages/schemas/`` — runtime payload validation
-  2. **JSON Schema blocks** under ``interface_contracts.schemas`` in the
-     extracted ``content.json`` payload from the committed
-     ``docs/tech-spec-v*.pdf`` (the spec contract surface that the
-     review agent loads)
+  2. **JSON Schema blocks** under ``interface_contracts`` in the extracted
+     ``content.json`` payload from the committed ``docs/tech-spec-v*.pdf``
+  3. **Cloud PostgreSQL tables** loaded from ``services.cloud_api.db.schema``
 
-This script normalizes both onto a common type / nullability vocabulary
-and compares them entity-by-entity using an explicit registry that maps
-a logical entity name (e.g. ``PhysiologicalSnapshot``) to its
+This script normalizes each source onto a common type / nullability
+vocabulary and compares them entity-by-entity using an explicit registry
+that maps a logical entity name (e.g. ``PhysiologicalSnapshot``) to its
 representation in each source. It reports every field that:
 
   - is present in one source but absent in another,
@@ -116,6 +116,7 @@ class EntityMapping:
     name: str
     pydantic_class: str | None
     json_schema_key: str | None
+    sql_table: str | None = None
     ignore_fields: frozenset[str] = field(default_factory=frozenset)
 
 
@@ -149,6 +150,13 @@ DEFAULT_REGISTRY: tuple[EntityMapping, ...] = (
         name="SemanticEvaluationResult",
         pydantic_class="packages.schemas.evaluation:SemanticEvaluationResult",
         json_schema_key="SemanticEvaluationResult",
+    ),
+    EntityMapping(
+        name="PosteriorDelta",
+        pydantic_class="packages.schemas.cloud:PosteriorDelta",
+        json_schema_key="PosteriorDelta",
+        sql_table="posterior_delta_log",
+        ignore_fields=frozenset({"received_at"}),
     ),
 )
 
@@ -285,7 +293,7 @@ def parse_json_schema(schema: dict[str, Any], name: str) -> EntitySpec:
 
 
 def extract_json_schemas(content: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    """Pull the schemas dict out of supported content.json layouts."""
+    """Pull JSON Schema objects out of supported content.json layouts."""
     contracts = content.get("interface_contracts") or {}
     if not isinstance(contracts, dict):
         return {}
@@ -297,7 +305,99 @@ def extract_json_schemas(content: dict[str, Any]) -> dict[str, dict[str, Any]]:
         inner = nested.get("schemas")
         if isinstance(inner, dict):
             return inner
-    return {}
+
+    schemas: dict[str, dict[str, Any]] = {}
+    for block in contracts.values():
+        if not isinstance(block, dict) or block.get("language") != "json":
+            continue
+        source = block.get("source")
+        if not isinstance(source, str):
+            continue
+        try:
+            schema = json.loads(source)
+        except json.JSONDecodeError:
+            continue
+        title = schema.get("title")
+        if isinstance(title, str) and isinstance(schema, dict):
+            schemas[title] = schema
+    return schemas
+
+
+# =====================================================================
+# SQL loader
+# =====================================================================
+
+POSTGRES_TYPE_MAP: dict[str, str] = {
+    "integer": "integer",
+    "bigint": "integer",
+    "bigserial": "integer",
+    "double precision": "number",
+    "text": "string",
+    "uuid": "uuid",
+    "timestamptz": "datetime",
+    "timestamp": "datetime",
+    "boolean": "boolean",
+    "jsonb": "object",
+}
+
+
+def parse_postgres_sql_tables(sql_text: str) -> dict[str, EntitySpec]:
+    tables: dict[str, EntitySpec] = {}
+    for statement in sql_text.split(";"):
+        lowered = statement.lower()
+        marker = "create table if not exists"
+        if marker not in lowered:
+            continue
+        table_name = _extract_table_name(statement, lowered.index(marker) + len(marker))
+        if table_name is None:
+            continue
+        body_start = statement.find("(")
+        body_end = statement.rfind(")")
+        if body_start < 0 or body_end <= body_start:
+            continue
+        tables[table_name] = _parse_sql_table_body(table_name, statement[body_start + 1 : body_end])
+    return tables
+
+
+def _extract_table_name(statement: str, start: int) -> str | None:
+    remainder = statement[start:].strip()
+    if not remainder:
+        return None
+    return remainder.split()[0].strip('"').lower()
+
+
+def _parse_sql_table_body(table_name: str, body: str) -> EntitySpec:
+    entity = EntitySpec(name=table_name)
+    for raw_line in body.splitlines():
+        line = raw_line.strip().rstrip(",")
+        if not line or line.startswith("--"):
+            continue
+        first = line.split()[0].lower()
+        if first in {"constraint", "primary", "unique", "foreign", "check"}:
+            continue
+        field = _parse_sql_column(line)
+        if field is not None:
+            entity.fields[field.name] = field
+    return entity
+
+
+def _parse_sql_column(line: str) -> FieldSpec | None:
+    parts = line.split()
+    if len(parts) < 2:
+        return None
+    name = parts[0].strip('"').lower()
+    type_token = _sql_type_token(parts[1:])
+    canonical = POSTGRES_TYPE_MAP.get(type_token, "unknown")
+    normalized = line.lower()
+    nullable = "not null" not in normalized and "primary key" not in normalized
+    return FieldSpec(name=name, type=canonical, nullable=nullable)
+
+
+def _sql_type_token(parts: list[str]) -> str:
+    first = parts[0].lower()
+    if len(parts) >= 2 and f"{first} {parts[1].lower()}" in POSTGRES_TYPE_MAP:
+        return f"{first} {parts[1].lower()}"
+    return first
 
 
 # =====================================================================
@@ -375,15 +475,18 @@ def check_consistency(
     registry: tuple[EntityMapping, ...],
     pydantic_entities: dict[str, EntitySpec],
     json_schema_entities: dict[str, EntitySpec],
+    sql_entities: dict[str, EntitySpec] | None = None,
 ) -> list[Inconsistency]:
     """Run ``compare_entity`` for every mapping in ``registry``."""
     all_issues: list[Inconsistency] = []
+    sql_entities = sql_entities or {}
     for mapping in registry:
         sources: dict[str, EntitySpec | None] = {
             "pydantic": (pydantic_entities.get(mapping.name) if mapping.pydantic_class else None),
             "json_schema": (
                 json_schema_entities.get(mapping.name) if mapping.json_schema_key else None
             ),
+            "sql": (sql_entities.get(mapping.sql_table) if mapping.sql_table else None),
         }
         all_issues.extend(compare_entity(mapping.name, sources, mapping.ignore_fields))
     return all_issues
@@ -407,9 +510,10 @@ def load_default_sources(
 ) -> tuple[
     dict[str, EntitySpec],
     dict[str, EntitySpec],
+    dict[str, EntitySpec],
     list[str],
 ]:
-    """Load both sources from their canonical locations in the repo."""
+    """Load schema sources from their canonical locations in the repo."""
     warnings: list[str] = []
 
     # 1. Pydantic
@@ -448,9 +552,20 @@ def load_default_sources(
             if isinstance(sch, dict):
                 json_schema_entities[mapping.name] = parse_json_schema(sch, mapping.name)
 
+    sql_entities: dict[str, EntitySpec] = {}
+    sql_path = repo_root / "services" / "cloud_api" / "db" / "schema.py"
+    if any(mapping.sql_table for mapping in registry) and sql_path.is_file():
+        try:
+            from services.cloud_api.db.schema import SCHEMA_SQL
+
+            sql_entities = parse_postgres_sql_tables(SCHEMA_SQL)
+        except Exception as exc:
+            warnings.append(f"Could not load cloud SQL schema {sql_path}: {exc}")
+
     return (
         pydantic_entities,
         json_schema_entities,
+        sql_entities,
         warnings,
     )
 
@@ -476,7 +591,7 @@ def format_report(issues: list[Inconsistency], warnings: list[str]) -> str:
 
     if not issues:
         lines.append("")
-        lines.append("No drift detected across pydantic and JSON Schema sources.")
+        lines.append("No drift detected across configured schema sources.")
         return "\n".join(lines)
 
     lines.append("")
@@ -517,6 +632,7 @@ def main(argv: list[str] | None = None) -> int:
     (
         pydantic_entities,
         json_schema_entities,
+        sql_entities,
         warnings,
     ) = load_default_sources(DEFAULT_REGISTRY, args.repo_root)
 
@@ -524,6 +640,7 @@ def main(argv: list[str] | None = None) -> int:
         DEFAULT_REGISTRY,
         pydantic_entities,
         json_schema_entities,
+        sql_entities,
     )
 
     print(format_report(issues, warnings))

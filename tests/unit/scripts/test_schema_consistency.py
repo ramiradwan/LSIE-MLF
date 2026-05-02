@@ -1,8 +1,8 @@
 """Tests for ``scripts.check_schema_consistency``.
 
-These tests seed the two schema sources (Pydantic models + JSON Schema
-blocks from the extracted spec content) with synthetic known-good and
-known-bad combinations to verify the detector catches the specific
+These tests seed the schema sources (Pydantic models, JSON Schema
+blocks from the extracted spec content, and optional cloud SQL tables)
+with synthetic known-good and known-bad combinations to verify the detector catches the specific
 drift cases it is designed to catch:
 
   * Field present in one source but missing from another
@@ -11,12 +11,12 @@ drift cases it is designed to catch:
   * Single-source entities are not falsely flagged
   * The all-aligned case yields zero issues and exit code 0
 
-The v4.0 desktop pivot retired the PostgreSQL DDL surface
+The v4.0 desktop pivot retired the local PostgreSQL DDL surface
 (``data/sql/`` + ``services.api.db.schema.SCHEMA_SQL``); see the
 docstring of ``scripts/check_schema_consistency.py`` for context. The
 SQLite local store ports those columns as ``TEXT`` for UUID/datetime/
-JSONB by design, so a column-type cross-check against SQLite would
-produce noise rather than catch real drift.
+JSONB by design, so the SQL source here is limited to the restored WS5
+cloud PostgreSQL bootstrap.
 """
 
 from __future__ import annotations
@@ -50,6 +50,7 @@ from scripts.check_schema_consistency import (
     format_report,
     main,
     parse_json_schema,
+    parse_postgres_sql_tables,
     pydantic_to_entity,
 )
 
@@ -133,8 +134,19 @@ class TestJsonSchemaLoader:
         nested = {
             "interface_contracts": {"schema_definition": {"schemas": {"Bar": {"type": "object"}}}}
         }
+        extracted_block = {
+            "interface_contracts": {
+                "posterior_delta_schema": {
+                    "language": "json",
+                    "source": '{"title":"PosteriorDelta","type":"object"}',
+                }
+            }
+        }
         assert extract_json_schemas(direct) == {"Foo": {"type": "object"}}
         assert extract_json_schemas(nested) == {"Bar": {"type": "object"}}
+        assert extract_json_schemas(extracted_block) == {
+            "PosteriorDelta": {"title": "PosteriorDelta", "type": "object"}
+        }
         assert extract_json_schemas({}) == {}
         assert extract_json_schemas({"interface_contracts": "not-a-dict"}) == {}
 
@@ -183,11 +195,85 @@ class TestJsonSchemaLoader:
             ),
         )
 
-        _, json_schema_entities, warnings = load_default_sources(registry, tmp_path)
+        _, json_schema_entities, sql_entities, warnings = load_default_sources(registry, tmp_path)
 
         assert "ActiveSchema" in json_schema_entities
+        assert sql_entities == {}
         assert "FrozenSchema" not in json_schema_entities
         assert not any("docs/artifacts/content.json" in warning for warning in warnings)
+
+
+# =====================================================================
+# PostgreSQL SQL loader
+# =====================================================================
+
+
+class TestPostgresSqlLoader:
+    def test_parse_posterior_delta_log_table(self) -> None:
+        sql = """
+        CREATE TABLE IF NOT EXISTS posterior_delta_log (
+            event_id UUID PRIMARY KEY,
+            experiment_id INTEGER NOT NULL,
+            arm_id TEXT NOT NULL,
+            delta_alpha DOUBLE PRECISION NOT NULL CHECK (delta_alpha >= 0.0),
+            delta_beta DOUBLE PRECISION NOT NULL CHECK (delta_beta >= 0.0),
+            segment_id TEXT NOT NULL CHECK (segment_id ~ '^[a-f0-9]{64}$'),
+            client_id TEXT NOT NULL,
+            applied_at_utc TIMESTAMPTZ NOT NULL,
+            decision_context_hash TEXT CHECK (decision_context_hash IS NULL),
+            received_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            UNIQUE (segment_id, client_id, arm_id)
+        );
+        """
+
+        tables = parse_postgres_sql_tables(sql)
+        entity = tables["posterior_delta_log"]
+
+        assert entity.fields["event_id"] == FieldSpec("event_id", "uuid", False)
+        assert entity.fields["experiment_id"] == FieldSpec("experiment_id", "integer", False)
+        assert entity.fields["delta_alpha"] == FieldSpec("delta_alpha", "number", False)
+        assert entity.fields["delta_beta"] == FieldSpec("delta_beta", "number", False)
+        assert entity.fields["applied_at_utc"] == FieldSpec("applied_at_utc", "datetime", False)
+        assert entity.fields["decision_context_hash"] == FieldSpec(
+            "decision_context_hash", "string", True
+        )
+        assert entity.fields["received_at"] == FieldSpec("received_at", "datetime", False)
+        assert "unique" not in entity.fields
+
+    def test_sql_source_participates_when_mapping_names_table(self) -> None:
+        pyd = {
+            "PosteriorDelta": _spec(
+                ("event_id", "uuid", False),
+                ("delta_alpha", "number", False),
+            )
+        }
+        jsn = {
+            "PosteriorDelta": _spec(
+                ("event_id", "uuid", False),
+                ("delta_alpha", "number", False),
+            )
+        }
+        sql = {
+            "posterior_delta_log": _spec(
+                ("event_id", "uuid", False),
+                ("delta_alpha", "integer", False),
+            )
+        }
+        registry = (
+            EntityMapping(
+                name="PosteriorDelta",
+                pydantic_class="packages.schemas.cloud:PosteriorDelta",
+                json_schema_key="PosteriorDelta",
+                sql_table="posterior_delta_log",
+            ),
+        )
+
+        issues = check_consistency(registry, pyd, jsn, sql)
+
+        assert len(issues) == 1
+        assert issues[0].field == "delta_alpha"
+        assert issues[0].kind == "type_mismatch"
+        assert "sql=integer" in issues[0].detail
 
 
 # =====================================================================
@@ -438,10 +524,11 @@ class TestMain:
         ) -> tuple[
             dict[str, EntitySpec],
             dict[str, EntitySpec],
+            dict[str, EntitySpec],
             list[str],
         ]:
             pyd, jsn = _build_sources()
-            return pyd, jsn, []
+            return pyd, jsn, {}, []
 
         monkeypatch.setattr(mod, "load_default_sources", fake_loader)
         monkeypatch.setattr(mod, "DEFAULT_REGISTRY", _TEST_REGISTRY)
@@ -461,12 +548,13 @@ class TestMain:
         ) -> tuple[
             dict[str, EntitySpec],
             dict[str, EntitySpec],
+            dict[str, EntitySpec],
             list[str],
         ]:
             bad_schema = _snap_json_schema()
             bad_schema["properties"]["rmssd_ms"] = {"type": "integer"}
             pyd, jsn = _build_sources(json_schema=bad_schema)
-            return pyd, jsn, []
+            return pyd, jsn, {}, []
 
         monkeypatch.setattr(mod, "load_default_sources", fake_loader)
         monkeypatch.setattr(mod, "DEFAULT_REGISTRY", _TEST_REGISTRY)
