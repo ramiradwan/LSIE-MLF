@@ -64,6 +64,27 @@ def resolve_state_dir() -> Path:
     return target
 
 
+def is_dev_machine() -> bool:
+    """Return ``True`` if the operator has declared this host a developer machine.
+
+    The marker is the file ``.dev_machine`` placed at the parent of
+    :func:`resolve_state_dir` — i.e. ``%LOCALAPPDATA%\\LSIE-MLF\\.dev_machine``
+    on Windows or ``$XDG_DATA_HOME/lsie-mlf/.dev_machine`` on POSIX.
+    The operator creates the marker once with ``touch`` (or
+    ``ni -ItemType File`` on PowerShell) to declare "I accept the
+    documented dev-mode constraints" — most notably the
+    ``LSIE_DEV_FORCE_CPU_SPEECH=1`` override needed on Pascal hosts.
+    The WS2 P3 preflight gate fails closed on sub-Turing hardware
+    unless the marker is present.
+
+    The marker is per-machine, never per-user-session — it is
+    deliberately a filesystem artefact rather than an env variable so
+    that opening a fresh shell does not silently re-enable production
+    semantics on a dev box.
+    """
+    return (resolve_state_dir().parent / ".dev_machine").is_file()
+
+
 def find_executable(name: str, env_override: str | None = None) -> str:
     """Resolve a system tool's full path. ``PATH`` first, then known fallbacks.
 

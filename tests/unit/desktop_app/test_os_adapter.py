@@ -20,6 +20,7 @@ from pathlib import Path
 import psutil
 import pytest
 
+from services.desktop_app import os_adapter
 from services.desktop_app.os_adapter import SupervisedProcess
 
 
@@ -80,6 +81,18 @@ def _wait_for_dead(pid: int, timeout_s: float = 5.0) -> bool:
             return True
         time.sleep(0.1)
     return False
+
+
+def test_is_dev_machine_checks_marker_parent(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    state_dir = tmp_path / "state"
+    monkeypatch.setenv("LSIE_STATE_DIR", str(state_dir))
+
+    assert os_adapter.is_dev_machine() is False
+    (tmp_path / ".dev_machine").write_text("", encoding="utf-8")
+    assert os_adapter.is_dev_machine() is True
 
 
 def test_terminate_kills_child(tmp_path: Path) -> None:

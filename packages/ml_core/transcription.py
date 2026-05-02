@@ -18,15 +18,14 @@ from __future__ import annotations
 
 import logging
 import os
-import subprocess
 from typing import IO, Any
+
+from packages.ml_core.gpu_probe import query_max_compute_capability
 
 logger = logging.getLogger(__name__)
 
 _TURING_COMPUTE_CAP: float = 7.5
 """Production GPU floor for the v4.0 speech path (NVIDIA Turing)."""
-
-_NVIDIA_SMI_TIMEOUT_S: float = 5.0
 
 
 def resolve_speech_device() -> str:
@@ -52,7 +51,7 @@ def resolve_speech_device() -> str:
     if os.environ.get("LSIE_DEV_FORCE_CPU_SPEECH") == "1":
         logger.info("LSIE_DEV_FORCE_CPU_SPEECH=1 — speech path routed to CPU")
         return "cpu"
-    cap = _query_max_compute_capability()
+    cap = query_max_compute_capability()
     if cap is not None and cap >= _TURING_COMPUTE_CAP:
         return "cuda"
     if cap is not None:
@@ -62,40 +61,6 @@ def resolve_speech_device() -> str:
             _TURING_COMPUTE_CAP,
         )
     return "cpu"
-
-
-def _query_max_compute_capability() -> float | None:
-    """Return the highest NVIDIA compute capability nvidia-smi reports.
-
-    Returns ``None`` if ``nvidia-smi`` is missing, exits non-zero,
-    times out, or every reported row fails to parse as a float.
-    Multi-GPU hosts return the maximum of all queried capabilities
-    on the assumption that the CUDA runtime selects the most capable
-    device by default.
-    """
-    try:
-        result = subprocess.run(
-            ["nvidia-smi", "--query-gpu=compute_cap", "--format=csv,noheader"],
-            capture_output=True,
-            text=True,
-            timeout=_NVIDIA_SMI_TIMEOUT_S,
-            check=False,
-        )
-    except (FileNotFoundError, OSError, subprocess.SubprocessError):
-        return None
-    if result.returncode != 0:
-        return None
-
-    capabilities: list[float] = []
-    for raw in result.stdout.splitlines():
-        line = raw.strip()
-        if not line:
-            continue
-        try:
-            capabilities.append(float(line))
-        except ValueError:
-            continue
-    return max(capabilities) if capabilities else None
 
 
 class TranscriptionEngine:

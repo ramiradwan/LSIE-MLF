@@ -11,7 +11,6 @@ resolver's host-dependent return.
 
 from __future__ import annotations
 
-import subprocess
 import sys
 from unittest.mock import MagicMock
 
@@ -157,7 +156,7 @@ class TestResolveSpeechDevice:
         # Must short-circuit before nvidia-smi is even consulted.
         monkeypatch.setattr(
             transcription,
-            "_query_max_compute_capability",
+            "query_max_compute_capability",
             lambda: pytest.fail("resolver must not query nvidia-smi when env override is set"),
         )
         assert resolve_speech_device() == "cpu"
@@ -170,7 +169,7 @@ class TestResolveSpeechDevice:
         for sneaky in ("0", "true", "True", "yes", "  1  ", ""):
             monkeypatch.setenv("LSIE_DEV_FORCE_CPU_SPEECH", sneaky)
             monkeypatch.setattr(
-                transcription, "_query_max_compute_capability", lambda: 7.5,
+                transcription, "query_max_compute_capability", lambda: 7.5,
             )
             assert resolve_speech_device() == "cuda", (
                 f"value {sneaky!r} unexpectedly triggered CPU override"
@@ -182,7 +181,7 @@ class TestResolveSpeechDevice:
         clear_speech_env: None,
     ) -> None:
         for cap in (7.5, 8.0, 8.6, 8.9, 9.0):
-            monkeypatch.setattr(transcription, "_query_max_compute_capability", lambda c=cap: c)
+            monkeypatch.setattr(transcription, "query_max_compute_capability", lambda c=cap: c)
             assert resolve_speech_device() == "cuda", f"cap {cap} should route to cuda"
 
     def test_pascal_routes_to_cpu(
@@ -190,7 +189,7 @@ class TestResolveSpeechDevice:
         monkeypatch: pytest.MonkeyPatch,
         clear_speech_env: None,
     ) -> None:
-        monkeypatch.setattr(transcription, "_query_max_compute_capability", lambda: 6.1)
+        monkeypatch.setattr(transcription, "query_max_compute_capability", lambda: 6.1)
         assert resolve_speech_device() == "cpu"
 
     def test_no_gpu_routes_to_cpu(
@@ -198,71 +197,5 @@ class TestResolveSpeechDevice:
         monkeypatch: pytest.MonkeyPatch,
         clear_speech_env: None,
     ) -> None:
-        monkeypatch.setattr(transcription, "_query_max_compute_capability", lambda: None)
+        monkeypatch.setattr(transcription, "query_max_compute_capability", lambda: None)
         assert resolve_speech_device() == "cpu"
-
-
-class TestQueryMaxComputeCapability:
-    """v4.0 §11.x — nvidia-smi parsing of --query-gpu=compute_cap."""
-
-    def test_parses_single_gpu(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        def fake_run(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
-            return subprocess.CompletedProcess(
-                args=["nvidia-smi"], returncode=0, stdout="7.5\n", stderr=""
-            )
-
-        monkeypatch.setattr(subprocess, "run", fake_run)
-        assert transcription._query_max_compute_capability() == 7.5
-
-    def test_returns_max_across_multi_gpu(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        def fake_run(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
-            return subprocess.CompletedProcess(
-                args=["nvidia-smi"], returncode=0, stdout="6.1\n8.6\n7.5\n", stderr=""
-            )
-
-        monkeypatch.setattr(subprocess, "run", fake_run)
-        assert transcription._query_max_compute_capability() == 8.6
-
-    def test_missing_nvidia_smi_returns_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        def fake_run(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
-            raise FileNotFoundError("nvidia-smi not on PATH")
-
-        monkeypatch.setattr(subprocess, "run", fake_run)
-        assert transcription._query_max_compute_capability() is None
-
-    def test_nonzero_exit_returns_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        def fake_run(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
-            return subprocess.CompletedProcess(
-                args=["nvidia-smi"], returncode=9, stdout="", stderr="No devices found"
-            )
-
-        monkeypatch.setattr(subprocess, "run", fake_run)
-        assert transcription._query_max_compute_capability() is None
-
-    def test_unparseable_rows_skip(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        def fake_run(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
-            return subprocess.CompletedProcess(
-                args=["nvidia-smi"],
-                returncode=0,
-                stdout="not a float\n7.5\n\n",
-                stderr="",
-            )
-
-        monkeypatch.setattr(subprocess, "run", fake_run)
-        assert transcription._query_max_compute_capability() == 7.5
-
-    def test_empty_output_returns_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        def fake_run(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
-            return subprocess.CompletedProcess(
-                args=["nvidia-smi"], returncode=0, stdout="", stderr=""
-            )
-
-        monkeypatch.setattr(subprocess, "run", fake_run)
-        assert transcription._query_max_compute_capability() is None
-
-    def test_timeout_returns_none(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        def fake_run(*_args: object, **_kwargs: object) -> subprocess.CompletedProcess[str]:
-            raise subprocess.TimeoutExpired(cmd=["nvidia-smi"], timeout=5.0)
-
-        monkeypatch.setattr(subprocess, "run", fake_run)
-        assert transcription._query_max_compute_capability() is None
