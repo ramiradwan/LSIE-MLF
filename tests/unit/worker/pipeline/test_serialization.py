@@ -187,7 +187,7 @@ class TestSanitizeJsonPayload:
                 "selection_method": "thompson_sampling",
                 "sampled_theta_by_arm": None,
                 "decision_context_hash": "a" * 64,
-                "random_seed": None,
+                "random_seed": 42,
             }
         }
 
@@ -196,7 +196,7 @@ class TestSanitizeJsonPayload:
         snapshot = payload["_bandit_decision_snapshot"]
         assert "sampled_theta_by_arm" not in snapshot
         assert snapshot["decision_context_hash"] == "a" * 64
-        assert "random_seed" not in snapshot
+        assert snapshot["random_seed"] == 42
 
 
 class TestRoundTrip:

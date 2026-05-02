@@ -37,6 +37,7 @@ from typing import TypedDict
 
 import pytest
 
+from packages.schemas.inference_handoff import InferenceHandoffPayload
 from services.worker.pipeline.reward import TimestampedAU12, compute_reward
 
 
@@ -52,6 +53,7 @@ class _Fixture(TypedDict):
     segment_window_end_utc: str
     _stimulus_time: float
     _au12_series: list[_Au12Obs]
+
 
 GATE0_FIXTURE_DIR = Path(__file__).parent.parent / "fixtures" / "v4_gate0"
 
@@ -108,6 +110,17 @@ def test_segment_id_derives_from_stable_identity(fixture: _Fixture) -> None:
     )
     expected = hashlib.sha256(stable_identity.encode("utf-8")).hexdigest()
     assert fixture["segment_id"] == expected
+
+
+@pytest.mark.parametrize("fixture", _load_fixtures(), ids=_fixture_ids())
+def test_gate0_fixture_validates_against_handoff_schema(fixture: _Fixture) -> None:
+    handoff_data = dict(fixture)
+    handoff_data.pop("_experiment_code", None)
+    payload = InferenceHandoffPayload.model_validate(handoff_data)
+    snapshot = payload.bandit_decision_snapshot
+
+    assert snapshot.decision_context_hash
+    assert isinstance(snapshot.random_seed, int)
 
 
 @pytest.mark.parametrize("fixture", _load_fixtures(), ids=_fixture_ids())

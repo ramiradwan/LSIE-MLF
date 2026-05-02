@@ -88,8 +88,8 @@ class BanditDecisionSnapshot(AttributionBaseModel):
     posterior_by_arm: dict[str, ArmPosterior] = Field(..., min_length=1)
     sampled_theta_by_arm: dict[str, float] | None = None
     expected_greeting: str
-    decision_context_hash: str | None = Field(default=None, pattern="^[0-9a-f]{64}$")
-    random_seed: int | None = None
+    decision_context_hash: str = Field(..., pattern="^[0-9a-f]{64}$")
+    random_seed: int = Field(..., ge=0, le=18446744073709551615)
 
     @field_validator("candidate_arm_ids")
     @classmethod

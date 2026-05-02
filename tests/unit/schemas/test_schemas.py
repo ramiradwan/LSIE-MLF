@@ -17,6 +17,7 @@ from pydantic import ValidationError
 from packages.schemas.attribution import (
     AttributionEvent,
     AttributionScore,
+    BanditDecisionSnapshot,
     EventOutcomeLink,
     OutcomeEvent,
 )
@@ -113,6 +114,25 @@ def _attribution_event_data(sample_timestamp: datetime) -> dict[str, Any]:
         "schema_version": "v3.4",
         "created_at": sample_timestamp,
     }
+
+
+class TestBanditDecisionSnapshot:
+    def test_replay_identity_fields_are_required(self, sample_timestamp: datetime) -> None:
+        schema = BanditDecisionSnapshot.model_json_schema()
+        required = set(schema["required"])
+
+        assert "decision_context_hash" in required
+        assert "random_seed" in required
+
+        missing_hash = _bandit_snapshot_data(sample_timestamp)
+        missing_hash.pop("decision_context_hash")
+        with pytest.raises(ValidationError):
+            BanditDecisionSnapshot.model_validate(missing_hash)
+
+        missing_seed = _bandit_snapshot_data(sample_timestamp)
+        missing_seed.pop("random_seed")
+        with pytest.raises(ValidationError):
+            BanditDecisionSnapshot.model_validate(missing_seed)
 
 
 class TestInferenceHandoffPayload:

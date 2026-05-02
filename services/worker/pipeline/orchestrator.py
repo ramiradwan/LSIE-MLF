@@ -208,7 +208,7 @@ class AudioResampler:
             except (subprocess.TimeoutExpired, OSError):
                 self._process.kill()
             finally:
-                self._process = None  # type: ignore[assignment]
+                self._process = None
             logger.info("FFmpeg resampler stopped")
 
 
@@ -773,10 +773,27 @@ class Orchestrator:
         encoded = json.dumps(context, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
+    def _bandit_random_seed(
+        self,
+        *,
+        segment_window_start_utc: datetime,
+        stimulus_time: float | None,
+    ) -> int:
+        seed_material = "".join(
+            (
+                f"{uuid.UUID(self._session_id)}",
+                self._canonical_utc_timestamp(segment_window_start_utc),
+                str(stimulus_time),
+                BANDIT_POLICY_VERSION,
+            )
+        )
+        return int.from_bytes(hashlib.sha256(seed_material.encode("utf-8")).digest()[:8], "big")
+
     def _capture_bandit_decision_snapshot(
         self,
         *,
         selection_time_utc: datetime,
+        segment_window_start_utc: datetime,
         candidate_arm_ids: list[str],
         posterior_by_arm: dict[str, dict[str, float]],
         sampled_theta_by_arm: dict[str, float] | None,
@@ -810,6 +827,13 @@ class Orchestrator:
         if self._active_arm not in posterior_copy:
             posterior_copy[self._active_arm] = {"alpha": 1.0, "beta": 1.0}
 
+        resolved_random_seed = random_seed
+        if resolved_random_seed is None:
+            resolved_random_seed = self._bandit_random_seed(
+                segment_window_start_utc=segment_window_start_utc,
+                stimulus_time=self._stimulus_time,
+            )
+
         snapshot: dict[str, Any] = {
             "selection_method": "thompson_sampling",
             "selection_time_utc": selection_time_utc,
@@ -824,17 +848,21 @@ class Orchestrator:
                 posterior_by_arm=posterior_copy,
                 selected_arm_id=self._active_arm,
             ),
+            "random_seed": int(resolved_random_seed),
         }
         if sampled_theta_by_arm is not None:
             snapshot["sampled_theta_by_arm"] = {
                 str(arm_id): float(theta) for arm_id, theta in sampled_theta_by_arm.items()
             }
-        if random_seed is not None:
-            snapshot["random_seed"] = int(random_seed)
 
         self._bandit_decision_snapshot = snapshot
 
-    def _ensure_bandit_decision_snapshot(self, selection_time_utc: datetime) -> None:
+    def _ensure_bandit_decision_snapshot(
+        self,
+        *,
+        selection_time_utc: datetime,
+        segment_window_start_utc: datetime,
+    ) -> None:
         """Populate a fallback snapshot when tests assemble without live arm selection."""
         if self._bandit_decision_snapshot is not None:
             return
@@ -846,6 +874,7 @@ class Orchestrator:
         )
         self._capture_bandit_decision_snapshot(
             selection_time_utc=selection_time_utc,
+            segment_window_start_utc=segment_window_start_utc,
             candidate_arm_ids=[fallback_arm],
             posterior_by_arm={fallback_arm: {"alpha": 1.0, "beta": 1.0}},
             sampled_theta_by_arm=None,
@@ -921,7 +950,10 @@ class Orchestrator:
             except Exception:
                 logger.warning("Assemble segment frame extraction failed", exc_info=True)
 
-        self._ensure_bandit_decision_snapshot(selection_time_utc=timestamp)
+        self._ensure_bandit_decision_snapshot(
+            selection_time_utc=timestamp,
+            segment_window_start_utc=segment_window_start_utc,
+        )
 
         physiological_context: dict[str, Any] | None = None
         now_wall = time.time()
@@ -1251,7 +1283,7 @@ class Orchestrator:
             try:
                 import redis
 
-                client = redis.from_url(  # type: ignore[no-untyped-call]
+                client = redis.from_url(
                     redis_url,
                     decode_responses=True,
                 )
@@ -1543,16 +1575,27 @@ class Orchestrator:
             self.drift_corrector.correct_timestamp(time.time()),
             tz=UTC,
         )
+        segment_window_start_utc = self._segment_window_anchor_utc or selection_time
+        if segment_window_start_utc.tzinfo is None:
+            segment_window_start_utc = segment_window_start_utc.replace(tzinfo=UTC)
+        segment_window_start_utc = segment_window_start_utc.astimezone(UTC)
+        random_seed = self._bandit_random_seed(
+            segment_window_start_utc=segment_window_start_utc,
+            stimulus_time=self._stimulus_time,
+        )
 
         try:
-            from scipy.stats import beta as beta_dist
+            import numpy as np
 
             from services.worker.pipeline.analytics import MetricsStore
 
             store = MetricsStore()
             store.connect()
             try:
-                arms = store.get_experiment_arms(self._experiment_id)
+                arms = sorted(
+                    store.get_experiment_arms(self._experiment_id),
+                    key=lambda arm_data: str(arm_data["arm"]),
+                )
                 if not arms:
                     raise ValueError(f"No arms found for experiment '{self._experiment_id}'")
 
@@ -1560,13 +1603,14 @@ class Orchestrator:
                 sampled_theta_by_arm: dict[str, float] = {}
                 selected_arm_data: dict[str, Any] | None = None
                 best_sample = -1.0
+                rng = np.random.Generator(np.random.PCG64(random_seed))
 
                 for arm_data in arms:
                     arm_id = str(arm_data["arm"])
                     alpha = float(arm_data["alpha_param"])
                     beta_param = float(arm_data["beta_param"])
                     posterior_by_arm[arm_id] = {"alpha": alpha, "beta": beta_param}
-                    sample = float(beta_dist.rvs(alpha, beta_param))
+                    sample = float(rng.beta(alpha, beta_param))
                     sampled_theta_by_arm[arm_id] = sample
                     if sample > best_sample:
                         best_sample = sample
@@ -1592,9 +1636,11 @@ class Orchestrator:
                 candidate_arm_ids = list(posterior_by_arm)
                 self._capture_bandit_decision_snapshot(
                     selection_time_utc=selection_time,
+                    segment_window_start_utc=segment_window_start_utc,
                     candidate_arm_ids=candidate_arm_ids,
                     posterior_by_arm=posterior_by_arm,
                     sampled_theta_by_arm=sampled_theta_by_arm,
+                    random_seed=random_seed,
                 )
 
                 logger.info(
@@ -1612,9 +1658,11 @@ class Orchestrator:
             self._experiment_row_id = DEFAULT_EXPERIMENT_ROW_ID
             self._capture_bandit_decision_snapshot(
                 selection_time_utc=selection_time,
+                segment_window_start_utc=segment_window_start_utc,
                 candidate_arm_ids=[self._active_arm],
                 posterior_by_arm={self._active_arm: {"alpha": 1.0, "beta": 1.0}},
                 sampled_theta_by_arm=None,
+                random_seed=random_seed,
             )
             logger.warning(
                 "Thompson Sampling unavailable, using fallback arm: %s",

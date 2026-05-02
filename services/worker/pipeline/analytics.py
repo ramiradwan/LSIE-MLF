@@ -294,12 +294,14 @@ _SELECT_ACTIVE_ARMS_SQL: str = """
     WHERE experiment_id = %(experiment_id)s
       AND COALESCE(enabled, TRUE) = TRUE
       AND end_dated_at IS NULL
+    ORDER BY arm ASC
 """
 
 # Legacy fallback when rollout-safe arm-status columns are not present yet.
 _SELECT_ARMS_SQL: str = """
     SELECT arm, alpha_param, beta_param FROM experiments
     WHERE experiment_id = %(experiment_id)s
+    ORDER BY arm ASC
 """
 
 # Historical-arm lookup for posterior updates. Intentionally unfiltered so a

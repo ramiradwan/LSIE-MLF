@@ -152,6 +152,11 @@ DEFAULT_REGISTRY: tuple[EntityMapping, ...] = (
         json_schema_key="SemanticEvaluationResult",
     ),
     EntityMapping(
+        name="BanditDecisionSnapshot",
+        pydantic_class="packages.schemas.attribution:BanditDecisionSnapshot",
+        json_schema_key="BanditDecisionSnapshot",
+    ),
+    EntityMapping(
         name="PosteriorDelta",
         pydantic_class="packages.schemas.cloud:PosteriorDelta",
         json_schema_key="PosteriorDelta",

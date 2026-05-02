@@ -12,15 +12,13 @@ Verifies DriftCorrector, AudioResampler, and Orchestrator against:
 from __future__ import annotations
 
 import asyncio
-import base64
 import hashlib
 import json
 import logging
 import subprocess
-import time
 import uuid
 from collections import deque
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 from unittest.mock import MagicMock, patch
 
@@ -29,8 +27,7 @@ import pytest
 from packages.schemas.inference_handoff import InferenceHandoffPayload
 from packages.schemas.physiology import PhysiologicalChunkEvent, PhysiologicalChunkPayload
 from services.worker.pipeline.orchestrator import (
-    DRIFT_FREEZE_AFTER_FAILURES,
-    DRIFT_RESET_TIMEOUT,
+    BANDIT_POLICY_VERSION,
     FFMPEG_RESAMPLE_CMD,
     LIVE_SESSION_CALIBRATION_FRAMES_REQUIRED,
     LIVE_SESSION_STATE_TTL_S,
@@ -40,7 +37,6 @@ from services.worker.pipeline.orchestrator import (
     PHYSIO_STALENESS_THRESHOLD_S,
     SEGMENT_WINDOW_SECONDS,
     AudioResampler,
-    DriftCorrector,
     Orchestrator,
 )
 
@@ -59,6 +55,45 @@ def _expected_segment_id(payload: dict[str, Any]) -> str:
         )
     )
     return hashlib.sha256(stable_identity.encode("utf-8")).hexdigest()
+
+
+class _FakeMetricsStore:
+    arms: list[dict[str, Any]] = [
+        {
+            "id": 11,
+            "arm": "warm_welcome",
+            "alpha_param": 2.0,
+            "beta_param": 5.0,
+            "greeting_text": "Warm welcome",
+        },
+        {
+            "id": 12,
+            "arm": "direct_question",
+            "alpha_param": 4.0,
+            "beta_param": 3.0,
+            "greeting_text": "Direct question",
+        },
+        {
+            "id": 13,
+            "arm": "simple_hello",
+            "alpha_param": 1.5,
+            "beta_param": 2.5,
+            "greeting_text": "Simple hello",
+        },
+    ]
+
+    def __init__(self) -> None:
+        self.connected = False
+        self.closed = False
+
+    def connect(self) -> None:
+        self.connected = True
+
+    def close(self) -> None:
+        self.closed = True
+
+    def get_experiment_arms(self, _experiment_id: str) -> list[dict[str, Any]]:
+        return [dict(arm) for arm in self.arms]
 
 
 def _physio_chunk_json(
@@ -404,6 +439,113 @@ class TestOrchestrator:
             orch._drain_physio_events()
 
         assert mock_redis.lpop.call_count == MAX_PHYSIO_DRAIN_PER_CYCLE
+
+    def test_select_experiment_arm_replays_same_arm_and_theta(self) -> None:
+        session_id = "11111111-1111-4111-8111-111111111111"
+        window_start = datetime(2027, 1, 15, 8, 0, 0, tzinfo=UTC)
+
+        def select(store_type: type[_FakeMetricsStore] = _FakeMetricsStore) -> dict[str, Any]:
+            orch = Orchestrator(session_id=session_id, experiment_id="greeting_line_v1")
+            orch._segment_window_anchor_utc = window_start
+            orch._stimulus_time = 1800000000.75
+            with (
+                patch("services.worker.pipeline.analytics.MetricsStore", store_type),
+                patch("services.worker.pipeline.orchestrator.time.time", return_value=1800000003.0),
+            ):
+                orch._select_experiment_arm()
+            assert orch._bandit_decision_snapshot is not None
+            return orch._bandit_decision_snapshot
+
+        first = select()
+        second = select()
+
+        assert second["selected_arm_id"] == first["selected_arm_id"]
+        assert second["sampled_theta_by_arm"] == first["sampled_theta_by_arm"]
+        assert second["decision_context_hash"] == first["decision_context_hash"]
+        assert second["random_seed"] == first["random_seed"]
+
+    def test_select_experiment_arm_replay_ignores_store_arm_order(self) -> None:
+        session_id = "11111111-1111-4111-8111-111111111111"
+        window_start = datetime(2027, 1, 15, 8, 0, 0, tzinfo=UTC)
+
+        class ReversedMetricsStore(_FakeMetricsStore):
+            arms = list(reversed(_FakeMetricsStore.arms))
+
+        def select(store_type: type[_FakeMetricsStore]) -> dict[str, Any]:
+            orch = Orchestrator(session_id=session_id, experiment_id="greeting_line_v1")
+            orch._segment_window_anchor_utc = window_start
+            orch._stimulus_time = 1800000000.75
+            with (
+                patch("services.worker.pipeline.analytics.MetricsStore", store_type),
+                patch("services.worker.pipeline.orchestrator.time.time", return_value=1800000003.0),
+            ):
+                orch._select_experiment_arm()
+            assert orch._bandit_decision_snapshot is not None
+            return orch._bandit_decision_snapshot
+
+        first = select(_FakeMetricsStore)
+        second = select(ReversedMetricsStore)
+
+        assert second["selected_arm_id"] == first["selected_arm_id"]
+        assert second["candidate_arm_ids"] == first["candidate_arm_ids"]
+        assert second["sampled_theta_by_arm"] == first["sampled_theta_by_arm"]
+        assert second["decision_context_hash"] == first["decision_context_hash"]
+        assert second["random_seed"] == first["random_seed"]
+
+    def test_changed_seed_input_changes_random_seed(self) -> None:
+        session_id = "22222222-2222-4222-8222-222222222222"
+        window_start = datetime(2027, 1, 15, 8, 0, 0, tzinfo=UTC)
+        orch = Orchestrator(session_id=session_id, experiment_id="greeting_line_v1")
+
+        base_seed = orch._bandit_random_seed(
+            segment_window_start_utc=window_start,
+            stimulus_time=1800000000.75,
+        )
+        changed_window_seed = orch._bandit_random_seed(
+            segment_window_start_utc=window_start + timedelta(seconds=SEGMENT_WINDOW_SECONDS),
+            stimulus_time=1800000000.75,
+        )
+        changed_stimulus_seed = orch._bandit_random_seed(
+            segment_window_start_utc=window_start,
+            stimulus_time=1800000001.75,
+        )
+
+        expected_material = "".join(
+            (
+                f"{uuid.UUID(session_id)}",
+                window_start.isoformat().replace("+00:00", "Z"),
+                "1800000000.75",
+                BANDIT_POLICY_VERSION,
+            )
+        )
+        expected_seed = int.from_bytes(
+            hashlib.sha256(expected_material.encode("utf-8")).digest()[:8],
+            "big",
+        )
+        assert base_seed == expected_seed
+        assert changed_window_seed != base_seed
+        assert changed_stimulus_seed != base_seed
+
+    def test_fallback_snapshot_includes_required_replay_fields(self) -> None:
+        selection_time = datetime(2027, 1, 15, 8, 0, 3, tzinfo=UTC)
+        orch = Orchestrator(session_id="33333333-3333-4333-8333-333333333333")
+        orch._segment_window_anchor_utc = datetime(2027, 1, 15, 8, 0, 0, tzinfo=UTC)
+        orch._stimulus_time = 1800000000.75
+
+        orch._ensure_bandit_decision_snapshot(
+            selection_time_utc=selection_time,
+            segment_window_start_utc=orch._segment_window_anchor_utc,
+        )
+
+        snapshot = orch._bandit_decision_snapshot
+        assert snapshot is not None
+        assert snapshot["decision_context_hash"]
+        assert len(snapshot["decision_context_hash"]) == 64
+        assert isinstance(snapshot["random_seed"], int)
+        assert snapshot["random_seed"] == orch._bandit_random_seed(
+            segment_window_start_utc=orch._segment_window_anchor_utc,
+            stimulus_time=orch._stimulus_time,
+        )
 
     def test_assemble_segment_validates_payload(self) -> None:
         orch = Orchestrator(stream_url="https://example.com/stream")
@@ -979,6 +1121,7 @@ class TestOrchestrator:
         orch._expected_greeting = "hello before update"
         orch._experiment_row_id = 17
         selection_time = datetime(2026, 3, 13, 12, 0, 0, tzinfo=UTC)
+        segment_window_start = datetime(2026, 3, 13, 11, 59, 30, tzinfo=UTC)
         candidate_arm_ids = ["arm_a", "arm_b"]
         posterior_by_arm = {
             "arm_a": {"alpha": 2.0, "beta": 3.0},
@@ -987,6 +1130,7 @@ class TestOrchestrator:
 
         orch._capture_bandit_decision_snapshot(
             selection_time_utc=selection_time,
+            segment_window_start_utc=segment_window_start,
             candidate_arm_ids=candidate_arm_ids,
             posterior_by_arm=posterior_by_arm,
             sampled_theta_by_arm=None,
@@ -1005,14 +1149,14 @@ class TestOrchestrator:
         assert snapshot["posterior_by_arm"]["arm_a"] == {"alpha": 2.0, "beta": 3.0}
         assert snapshot["expected_greeting"] == "hello before update"
         assert len(snapshot["decision_context_hash"]) == 64
+        assert isinstance(snapshot["random_seed"], int)
         assert "sampled_theta_by_arm" not in snapshot
-        assert "random_seed" not in snapshot
 
         payload = orch.assemble_segment(b"\x00", [])
         payload_snapshot = payload["_bandit_decision_snapshot"]
         assert payload_snapshot["posterior_by_arm"]["arm_a"] == {"alpha": 2.0, "beta": 3.0}
         assert "sampled_theta_by_arm" not in payload_snapshot
-        assert "random_seed" not in payload_snapshot
+        assert isinstance(payload_snapshot["random_seed"], int)
 
     def test_dispatch_payload_validates_model_and_omits_ineligible_physio(self) -> None:
         """WS3 P2: dispatch validates handoff and pushes IPC control message.
@@ -1048,7 +1192,7 @@ class TestOrchestrator:
             InferenceHandoffPayload.model_validate(msg.handoff)
             assert "_physiological_context" not in msg.handoff
             assert "sampled_theta_by_arm" not in msg.handoff["_bandit_decision_snapshot"]
-            assert "random_seed" not in msg.handoff["_bandit_decision_snapshot"]
+            assert isinstance(msg.handoff["_bandit_decision_snapshot"]["random_seed"], int)
 
             recovered = read_pcm_block(
                 PcmBlockMetadata(
