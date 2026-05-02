@@ -46,7 +46,7 @@ async def trigger_stimulus() -> dict[str, Any]:
     try:
         import redis as redis_lib
 
-        client = redis_lib.from_url(redis_url)  # type: ignore[no-untyped-call]
+        client = redis_lib.from_url(redis_url)
         receivers: int = client.publish("stimulus:inject", "inject")
         client.close()
 

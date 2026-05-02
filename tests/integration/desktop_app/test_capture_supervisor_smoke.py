@@ -112,7 +112,11 @@ def test_capture_supervisor_full_lifecycle_leaves_no_orphans(
     assert pre_orphans == set(), f"pre-test orphans present: {pre_orphans}"
 
     ctx = mp.get_context("spawn")
-    channels = IpcChannels(ml_inbox=ctx.Queue(), drift_updates=ctx.Queue())
+    channels = IpcChannels(
+        ml_inbox=ctx.Queue(),
+        drift_updates=ctx.Queue(),
+        analytics_inbox=ctx.Queue(),
+    )
     shutdown = ctx.Event()
 
     capture_dir = str(tmp_path)

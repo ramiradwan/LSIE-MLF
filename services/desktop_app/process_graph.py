@@ -88,6 +88,7 @@ class ProcessGraph:
             self.channels = IpcChannels(
                 ml_inbox=ctx.Queue(),
                 drift_updates=ctx.Queue(),
+                analytics_inbox=ctx.Queue(),
             )
         for name, module in PROCESS_MODULES.items():
             evt = ctx.Event()

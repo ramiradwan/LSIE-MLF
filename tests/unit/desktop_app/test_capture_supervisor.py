@@ -41,7 +41,11 @@ from services.desktop_app.processes.capture_supervisor import (
 
 def _make_channels() -> IpcChannels:
     ctx = mp.get_context("spawn")
-    return IpcChannels(ml_inbox=ctx.Queue(), drift_updates=ctx.Queue())
+    return IpcChannels(
+        ml_inbox=ctx.Queue(),
+        drift_updates=ctx.Queue(),
+        analytics_inbox=ctx.Queue(),
+    )
 
 
 def test_wait_for_device_returns_true_on_device_line() -> None:

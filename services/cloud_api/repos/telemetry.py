@@ -11,6 +11,11 @@ from packages.schemas.cloud import PosteriorDelta, TelemetrySegmentBatch
 from packages.schemas.inference_handoff import InferenceHandoffPayload
 from services.cloud_api.repos.common import model_to_json_dict
 
+
+class PosteriorDeltaApplyError(RuntimeError):
+    pass
+
+
 _INSERT_SEGMENT_SQL = """
     INSERT INTO segment_telemetry (segment_id, session_id, payload, client_id)
     VALUES (%(segment_id)s, %(session_id)s, %(payload)s, %(client_id)s)
@@ -84,7 +89,17 @@ _INSERT_POSTERIOR_DELTA_SQL = """
         %(applied_at_utc)s,
         %(decision_context_hash)s
     )
-    ON CONFLICT (segment_id, client_id, arm_id) DO NOTHING
+    ON CONFLICT DO NOTHING
+"""
+
+_APPLY_POSTERIOR_DELTA_SQL = """
+    UPDATE experiments
+    SET
+        alpha_param = alpha_param + %(delta_alpha)s,
+        beta_param = beta_param + %(delta_beta)s,
+        updated_at = NOW()
+    WHERE id = %(experiment_id)s
+      AND arm = %(arm_id)s
 """
 
 
@@ -146,18 +161,25 @@ def insert_posterior_delta_batch(cur: Any, deltas: list[PosteriorDelta]) -> int:
 
 
 def insert_posterior_delta(cur: Any, delta: PosteriorDelta) -> int:
-    cur.execute(
-        _INSERT_POSTERIOR_DELTA_SQL,
-        {
-            "event_id": str(delta.event_id),
-            "experiment_id": delta.experiment_id,
-            "arm_id": delta.arm_id,
-            "delta_alpha": delta.delta_alpha,
-            "delta_beta": delta.delta_beta,
-            "segment_id": delta.segment_id,
-            "client_id": delta.client_id,
-            "applied_at_utc": delta.applied_at_utc,
-            "decision_context_hash": delta.decision_context_hash,
-        },
-    )
-    return int(cur.rowcount)
+    params = {
+        "event_id": str(delta.event_id),
+        "experiment_id": delta.experiment_id,
+        "arm_id": delta.arm_id,
+        "delta_alpha": delta.delta_alpha,
+        "delta_beta": delta.delta_beta,
+        "segment_id": delta.segment_id,
+        "client_id": delta.client_id,
+        "applied_at_utc": delta.applied_at_utc,
+        "decision_context_hash": delta.decision_context_hash,
+    }
+    cur.execute(_INSERT_POSTERIOR_DELTA_SQL, params)
+    inserted = int(cur.rowcount)
+    if inserted == 0:
+        return 0
+    cur.execute(_APPLY_POSTERIOR_DELTA_SQL, params)
+    if int(cur.rowcount) != 1:
+        raise PosteriorDeltaApplyError(
+            f"Posterior delta target arm not found: experiment_id={delta.experiment_id}, "
+            f"arm_id={delta.arm_id!r}"
+        )
+    return inserted

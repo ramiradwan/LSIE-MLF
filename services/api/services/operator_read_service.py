@@ -92,7 +92,7 @@ def _default_redis_factory() -> RedisLiveStateClientLike:
     import redis as redis_lib
 
     url = os.environ.get("REDIS_URL", "redis://redis:6379/0")
-    return redis_lib.Redis.from_url(url, decode_responses=True)  # type: ignore[no-any-return,no-untyped-call]
+    return redis_lib.Redis.from_url(url, decode_responses=True)  # type: ignore[no-any-return]
 
 
 # Subsystem-freshness thresholds drive §12 degraded/recovering/error

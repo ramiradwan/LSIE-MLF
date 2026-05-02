@@ -32,6 +32,7 @@ EXPECTED_TABLES: set[str] = {
     "event_outcome_link",
     "attribution_score",
     "pending_uploads",
+    "analytics_message_ledger",
 }
 
 # Subset of v3.4 column names per table that MUST survive the port —
@@ -166,6 +167,13 @@ EXPECTED_COLUMNS: dict[str, set[str]] = {
         "locked_at_utc",
         "last_error",
         "status",
+    },
+    "analytics_message_ledger": {
+        "message_id",
+        "segment_id",
+        "client_id",
+        "arm",
+        "processed_at_utc",
     },
 }
 

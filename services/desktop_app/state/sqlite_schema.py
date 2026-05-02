@@ -184,6 +184,15 @@ SCHEMA_DDL: Final[tuple[str, ...]] = (
     )
     """,
     """
+    CREATE TABLE IF NOT EXISTS analytics_message_ledger (
+        message_id      TEXT PRIMARY KEY,
+        segment_id      TEXT NOT NULL,
+        client_id       TEXT NOT NULL,
+        arm             TEXT NOT NULL,
+        processed_at_utc TEXT NOT NULL
+    )
+    """,
+    """
     CREATE TABLE IF NOT EXISTS context (
         id              INTEGER PRIMARY KEY AUTOINCREMENT,
         session_id      TEXT REFERENCES sessions(session_id),

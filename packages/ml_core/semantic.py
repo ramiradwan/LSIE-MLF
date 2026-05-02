@@ -243,7 +243,7 @@ class LocalCrossEncoderScorer:
         if self._model is None:
             self._init_model()
 
-        raw_score = self._model.predict(  # type: ignore[union-attr]
+        raw_score = self._model.predict(
             [(expected_greeting, actual_utterance)],
             show_progress_bar=False,
         )
