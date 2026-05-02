@@ -6,7 +6,10 @@ __pycache__/
 *.egg-info/
 .eggs/
 dist/
-build/
+build/*
+!build/
+!build/sign_windows.ps1
+!build/MACOS_DEFERRED.md
 .venv/
 venv/
 

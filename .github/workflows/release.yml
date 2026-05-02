@@ -1,0 +1,79 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  windows-release:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Set up Python 3.11
+        run: uv python install 3.11
+
+      - name: Sync release build environment
+        run: uv sync --frozen --group dev
+
+      - name: Install PyInstaller
+        run: uv run python -m pip install pyinstaller==6.11.*
+
+      - name: Build desktop launcher artifact
+        shell: pwsh
+        run: >-
+          uv run pyinstaller --clean --noconfirm --onedir --windowed
+          --name LSIE-MLF-Launcher
+          --collect-submodules services.desktop_launcher
+          --collect-submodules services.desktop_app
+          -p ${{ github.workspace }}
+          services/desktop_launcher/ui.py
+
+      - name: Sign Windows binaries
+        uses: azure/artifact-signing-action@v1
+        with:
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: ${{ secrets.AZURE_ARTIFACT_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ secrets.AZURE_ARTIFACT_SIGNING_ACCOUNT_NAME }}
+          certificate-profile-name: ${{ secrets.AZURE_ARTIFACT_SIGNING_CERTIFICATE_PROFILE_NAME }}
+          files-folder: ${{ github.workspace }}\dist\LSIE-MLF-Launcher
+          files-folder-filter: exe,dll
+          files-folder-recurse: true
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+          correlation-id: ${{ github.run_id }}
+          exclude-environment-credential: false
+          exclude-workload-identity-credential: true
+          exclude-managed-identity-credential: true
+          exclude-shared-token-cache-credential: true
+          exclude-visual-studio-credential: true
+          exclude-visual-studio-code-credential: true
+          exclude-azure-cli-credential: true
+          exclude-azure-powershell-credential: true
+          exclude-azure-developer-cli-credential: true
+          exclude-interactive-browser-credential: true
+
+      - name: Archive signed artifact
+        shell: pwsh
+        run: Compress-Archive -Path dist\LSIE-MLF-Launcher\* -DestinationPath dist\LSIE-MLF-windows-${{ github.ref_name }}.zip -Force
+
+      - name: Upload signed artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: LSIE-MLF-windows-${{ github.ref_name }}
+          path: dist\LSIE-MLF-windows-${{ github.ref_name }}.zip
+          if-no-files-found: error
