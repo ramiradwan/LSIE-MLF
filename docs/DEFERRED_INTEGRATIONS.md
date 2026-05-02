@@ -57,6 +57,15 @@ This file inventories code that is **implemented in the repository but not wired
 | **Deferred since** | 2026-04-29 (attribution ledger/backfill support, introduced during the baseline-cleanup merge train and first inventoried in this post-cleanup refresh) |
 | **Justification** | The online attribution ledger path is wired from `persist_metrics()` through `build_attribution_ledger_records()` into `MetricsStore.persist_attribution_ledger()`, but it uses the builder default `online_provisional`. The schemas, SQL constraints, deterministic IDs, and upsert implementation already support the §7E `online_provisional` → `offline_final` lifecycle after attribution horizons close. The missing surface is the runtime finalization/replay driver that decides when horizons are closed and feeds finalized records back through the upsert path. Wiring finalization without that horizon scan and replay contract would either mark records final too early or leave analytics consumers unable to distinguish provisional data from closed-horizon attribution. |
 
+### 6. Desktop Cloud Sync Producers and Interactive Auth Activation
+
+| Field | Value |
+|---|---|
+| **Files** | `services/desktop_app/cloud/outbox.py` (`CloudOutbox.enqueue_inference_handoff`, `enqueue_attribution_event`, `enqueue_posterior_delta`), `services/desktop_app/cloud/auth_flow.py` (`DesktopAuthFlow` PKCE loopback client), `services/desktop_app/cloud/experiment_bundle.py` (`ExperimentBundleClient`, `ExperimentBundleStore`), `services/desktop_app/processes/cloud_sync_worker.py` (registered drain worker), `services/desktop_app/ipc/__init__.py` (future `analytics_state_worker` → `cloud_sync_worker` channel noted but not present) |
+| **Gating dependency** | WS5 P4 desktop analytics-inbox wiring. The current `analytics_state_worker` explicitly idles until WS5 P4 and does not yet receive the `InferenceHandoffPayload` / attribution / posterior-delta DTOs that would be safe to enqueue. Operator-facing interactive cloud sign-in also needs a UI action surface before launching browser auth from the desktop shell. |
+| **Deferred since** | 2026-05-02 (WS5 P2 desktop cloud-sync/offline-cache cycle) |
+| **Justification** | The `cloud_sync_worker` is registered in `ProcessGraph` and can drain `pending_uploads`, but no production desktop process currently constructs the cloud upload DTOs. Forcing producer wiring before the WS5 P4 analytics pipeline lands would require fabricating data from partial SQLite rows or changing the IPC graph ahead of its planned phase. The PKCE and bundle clients are importable and tested, but launching browser auth or replacing local experiment seeds requires an operator-triggered sign-in/sync lifecycle that is not present in the current Operator Console shell. Activation requires WS5 P4 to deliver real analytics DTOs and a desktop UI/API command path for cloud authentication and bundle refresh. |
+
 ---
 
 ## Searched-But-Not-Deferred (negative findings)

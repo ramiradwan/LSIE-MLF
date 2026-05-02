@@ -31,6 +31,7 @@ EXPECTED_TABLES: set[str] = {
     "outcome_event",
     "event_outcome_link",
     "attribution_score",
+    "pending_uploads",
 }
 
 # Subset of v3.4 column names per table that MUST survive the port —
@@ -152,6 +153,19 @@ EXPECTED_COLUMNS: dict[str, set[str]] = {
         "evidence_flags",
         "finality",
         "schema_version",
+    },
+    "pending_uploads": {
+        "upload_id",
+        "endpoint",
+        "payload_type",
+        "dedupe_key",
+        "payload_json",
+        "created_at_utc",
+        "next_attempt_at_utc",
+        "attempt_count",
+        "locked_at_utc",
+        "last_error",
+        "status",
     },
 }
 

@@ -349,6 +349,29 @@ SCHEMA_DDL: Final[tuple[str, ...]] = (
         spawned_at_utc      TEXT NOT NULL
     )
     """,
+    # --- WS5 P2 — cloud upload outbox -------------------------------
+    """
+    CREATE TABLE IF NOT EXISTS pending_uploads (
+        upload_id           TEXT PRIMARY KEY,
+        endpoint            TEXT NOT NULL CHECK (
+            endpoint IN ('telemetry_segments', 'telemetry_posterior_deltas')
+        ),
+        payload_type        TEXT NOT NULL CHECK (
+            payload_type IN ('inference_handoff', 'attribution_event', 'posterior_delta')
+        ),
+        dedupe_key          TEXT NOT NULL,
+        payload_json        TEXT NOT NULL,
+        created_at_utc      TEXT NOT NULL,
+        next_attempt_at_utc TEXT NOT NULL,
+        attempt_count       INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+        locked_at_utc       TEXT,
+        last_error          TEXT,
+        status              TEXT NOT NULL DEFAULT 'pending' CHECK (
+            status IN ('pending', 'in_flight', 'dead_letter')
+        ),
+        UNIQUE (payload_type, dedupe_key)
+    )
+    """,
 )
 
 
@@ -384,6 +407,9 @@ INDEX_DDL: Final[tuple[str, ...]] = (
     "ON process_heartbeat(last_heartbeat_utc)",
     "CREATE INDEX IF NOT EXISTS idx_capture_pid_manifest_parent "
     "ON capture_pid_manifest(parent_process)",
+    "CREATE INDEX IF NOT EXISTS idx_pending_uploads_ready "
+    "ON pending_uploads(endpoint, status, next_attempt_at_utc, created_at_utc)",
+    "CREATE INDEX IF NOT EXISTS idx_pending_uploads_lock ON pending_uploads(status, locked_at_utc)",
 )
 
 
