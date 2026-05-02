@@ -25,13 +25,13 @@ hatch documented below.
 
 ```powershell
 # from the repo root
-uv sync --frozen --group dev
+uv sync --frozen --extra ml_backend --group dev
 ```
 
-`uv sync --frozen` hydrates the virtual environment to the exact
-versions checked into `uv.lock`. Add `--group dev` for pytest, mypy,
-and ruff. The launcher (WS1 P2) wraps this command for end users — as
-a developer you call it directly.
+`uv sync --frozen --extra ml_backend` hydrates the virtual environment
+to the exact versions checked into `uv.lock`, including the heavy GPU
+backend wheels that the first-run launcher hydrates progressively for
+end users. Add `--group dev` for pytest, mypy, and ruff.
 
 ## 3. GPU / compute-capability matrix
 
