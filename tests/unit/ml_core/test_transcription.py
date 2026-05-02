@@ -93,6 +93,12 @@ class TestTranscriptionEngine:
         assert engine.compute_type == "int8"
 
     def test_compute_type_enforced_int8(self) -> None:
-        """SPEC-AMEND-001 — compute_type is always int8, cannot be overridden."""
+        """v4.0 §11.x — compute_type is always int8, cannot be overridden.
+
+        Locked at the class level so the production Turing+ GPU path
+        (DP4A + INT8 Tensor Cores) and the Pascal CPU developer escape
+        hatch (LSIE_DEV_FORCE_CPU_SPEECH) share the same accuracy and
+        latency contract.
+        """
         engine = TranscriptionEngine(model_size="small", device="cpu")
         assert engine.compute_type == "int8"
