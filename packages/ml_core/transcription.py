@@ -16,7 +16,86 @@ that cannot host the production GPU speech path.
 
 from __future__ import annotations
 
+import logging
+import os
+import subprocess
 from typing import IO, Any
+
+logger = logging.getLogger(__name__)
+
+_TURING_COMPUTE_CAP: float = 7.5
+"""Production GPU floor for the v4.0 speech path (NVIDIA Turing)."""
+
+_NVIDIA_SMI_TIMEOUT_S: float = 5.0
+
+
+def resolve_speech_device() -> str:
+    """Pick the faster-whisper device per v4.0 §11.x.
+
+    Resolution order:
+
+    1. ``LSIE_DEV_FORCE_CPU_SPEECH=1`` → ``"cpu"`` (developer escape
+       hatch for Pascal hosts that cannot host the cuDNN 9 / CT2 4.5+
+       production GPU stack).
+    2. ``nvidia-smi`` reports a GPU with compute capability ≥ 7.5
+       → ``"cuda"``.
+    3. Otherwise → ``"cpu"`` (no NVIDIA GPU detected; CPU INT8 path).
+
+    The cross-encoder semantic scorer is unaffected; it stays on the
+    GPU because PyTorch alone (without CTranslate2 loaded in the same
+    process) does not trigger the cuDNN-version collision that drove
+    this resolver in the first place.
+
+    Returns the literal device string consumed by
+    :class:`faster_whisper.WhisperModel`.
+    """
+    if os.environ.get("LSIE_DEV_FORCE_CPU_SPEECH") == "1":
+        logger.info("LSIE_DEV_FORCE_CPU_SPEECH=1 — speech path routed to CPU")
+        return "cpu"
+    cap = _query_max_compute_capability()
+    if cap is not None and cap >= _TURING_COMPUTE_CAP:
+        return "cuda"
+    if cap is not None:
+        logger.warning(
+            "speech path falling back to CPU: detected compute capability %.1f < %.1f",
+            cap,
+            _TURING_COMPUTE_CAP,
+        )
+    return "cpu"
+
+
+def _query_max_compute_capability() -> float | None:
+    """Return the highest NVIDIA compute capability nvidia-smi reports.
+
+    Returns ``None`` if ``nvidia-smi`` is missing, exits non-zero,
+    times out, or every reported row fails to parse as a float.
+    Multi-GPU hosts return the maximum of all queried capabilities
+    on the assumption that the CUDA runtime selects the most capable
+    device by default.
+    """
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=compute_cap", "--format=csv,noheader"],
+            capture_output=True,
+            text=True,
+            timeout=_NVIDIA_SMI_TIMEOUT_S,
+            check=False,
+        )
+    except (FileNotFoundError, OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+
+    capabilities: list[float] = []
+    for raw in result.stdout.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        try:
+            capabilities.append(float(line))
+        except ValueError:
+            continue
+    return max(capabilities) if capabilities else None
 
 
 class TranscriptionEngine:
@@ -43,10 +122,15 @@ class TranscriptionEngine:
     def __init__(
         self,
         model_size: str = "large-v3",
-        device: str = "cuda",
+        device: str | None = None,
     ) -> None:
         self.model_size = model_size
-        self.device = device
+        # device=None defers to the v4.0 §11.x resolver so a Pascal
+        # developer host with LSIE_DEV_FORCE_CPU_SPEECH=1 routes to CPU
+        # automatically without the caller plumbing the env check.
+        # Explicit overrides ("cuda" / "cpu") still take precedence —
+        # tests and the WS5 cloud worker need the deterministic path.
+        self.device = device if device is not None else resolve_speech_device()
         self.compute_type = self._COMPUTE_TYPE
         self._model: Any = None  # Lazy-loaded WhisperModel
 
