@@ -5,6 +5,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[3]
 SIGN_SCRIPT = ROOT / "build" / "sign_windows.ps1"
 RELEASE_WORKFLOW = ROOT / ".github" / "workflows" / "release.yml"
+GPU_REPLAY_WORKFLOW = ROOT / ".github" / "workflows" / "gpu_replay_parity.yml"
 MACOS_DEFERRED = ROOT / "build" / "MACOS_DEFERRED.md"
 
 
@@ -39,6 +40,20 @@ def test_release_workflow_runs_on_tags_and_signs_release_artifact() -> None:
     assert "files-folder-recurse: true" in workflow
     assert "timestamp-rfc3161: http://timestamp.acs.microsoft.com" in workflow
     assert "actions/upload-artifact@v4" in workflow
+
+
+def test_gpu_replay_workflow_runs_gate0_on_self_hosted_turing_runner() -> None:
+    workflow = GPU_REPLAY_WORKFLOW.read_text(encoding="utf-8")
+
+    assert "name: Gate 0 GPU Replay Parity" in workflow
+    assert "runs-on: [self-hosted, linux, x64, gpu, turing]" in workflow
+    assert "nvidia-smi --query-gpu=name,compute_cap --format=csv,noheader" in workflow
+    assert "uv sync --frozen --extra ml_backend --group dev" in workflow
+    assert "uv run python scripts/gate0_gpu_replay.py" in workflow
+    assert "LSIE_GATE0_WHISPER_MODEL: large-v3" in workflow
+    assert "actions/upload-artifact@v4" in workflow
+    assert '"packages/ml_core/**"' in workflow
+    assert '"tests/fixtures/capture/baseline/**"' in workflow
 
 
 def test_macos_signing_is_documented_as_deferred() -> None:
