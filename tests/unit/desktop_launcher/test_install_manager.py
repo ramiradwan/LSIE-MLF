@@ -149,8 +149,54 @@ def test_run_uv_sync_uses_ml_backend_extra(
     cmd, cwd, env = calls[0]
     assert cwd == tmp_path
     assert cmd[:5] == ["uv", "sync", "--frozen", "--extra", "ml_backend"]
+    assert "--reinstall" not in cmd
     assert "--python" in cmd
     assert env["UV_PROJECT_ENVIRONMENT"] == str(tmp_path / "runtime.staging" / ".venv")
+
+
+def test_run_uv_sync_can_force_reinstall(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    calls: list[list[str]] = []
+
+    class FakeStdout:
+        def __iter__(self) -> Self:
+            return self
+
+        def __next__(self) -> str:
+            raise StopIteration
+
+    class FakeProcess:
+        stdout = FakeStdout()
+
+        def wait(self) -> int:
+            return 0
+
+    def fake_popen(
+        cmd: list[str],
+        *,
+        cwd: Path,
+        env: dict[str, str],
+        stdout: int,
+        stderr: int,
+        text: bool,
+    ) -> FakeProcess:
+        del cwd, env, stdout, stderr, text
+        calls.append(cmd)
+        return FakeProcess()
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    install_manager.run_uv_sync(
+        repo_root=tmp_path,
+        staging_dir=tmp_path / "runtime",
+        python_exe=tmp_path / "python.exe",
+        log=lambda _line: None,
+        reinstall=True,
+    )
+
+    assert "--reinstall" in calls[0]
 
 
 def test_install_manager_starts_background_thread(

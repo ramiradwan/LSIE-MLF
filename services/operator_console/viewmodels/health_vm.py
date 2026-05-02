@@ -17,13 +17,16 @@ Spec references:
 
 from __future__ import annotations
 
-from PySide6.QtCore import QObject
+from collections.abc import Callable
+
+from PySide6.QtCore import QObject, Signal
 
 from packages.schemas.operator_console import HealthSnapshot, HealthSubsystemProbe
 from services.operator_console.state import OperatorStore
 from services.operator_console.table_models.alerts_table_model import AlertsTableModel
 from services.operator_console.table_models.health_table_model import HealthTableModel
 from services.operator_console.viewmodels.base import ViewModelBase
+from services.operator_console.workers import OneShotSignals
 
 _PROBE_ORDER: tuple[str, ...] = (
     "postgres",
@@ -34,8 +37,13 @@ _PROBE_ORDER: tuple[str, ...] = (
 )
 
 
+RepairAction = Callable[[], OneShotSignals]
+
+
 class HealthViewModel(ViewModelBase):
     """Owns the subsystem table + alerts feed."""
+
+    repair_requested = Signal()
 
     def __init__(
         self,
@@ -47,6 +55,7 @@ class HealthViewModel(ViewModelBase):
         super().__init__(store, parent)
         self._health_model = model
         self._alerts_model = alerts_model
+        self._repair_action: RepairAction | None = None
         store.health_changed.connect(self._on_health_changed)
         store.alerts_changed.connect(self._on_alerts_changed)
         store.error_changed.connect(self._on_error)
@@ -76,6 +85,19 @@ class HealthViewModel(ViewModelBase):
         ordered = [probes[key] for key in _PROBE_ORDER if key in probes]
         ordered.extend(probe for key, probe in sorted(probes.items()) if key not in _PROBE_ORDER)
         return ordered
+
+    def bind_repair_action(self, action: RepairAction) -> None:
+        self._repair_action = action
+
+    def repair_available(self) -> bool:
+        return self._repair_action is not None
+
+    def request_repair(self) -> bool:
+        if self._repair_action is None:
+            return False
+        self.repair_requested.emit()
+        self._repair_action()
+        return True
 
     def degraded_count(self) -> int:
         """Count of subsystems currently DEGRADED or RECOVERING.

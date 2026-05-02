@@ -60,6 +60,7 @@ from services.operator_console.polling import (
     JOB_LIVE_SESSION,
     JOB_OVERVIEW,
     JOB_PHYSIOLOGY,
+    JOB_REPAIR_INSTALL,
     JOB_SESSION_END,
     JOB_SESSION_START,
     JOB_SESSIONS,
@@ -415,6 +416,59 @@ class TestStimulusOneShot:
 
 
 # ----------------------------------------------------------------------
+# Repair one-shot — success refreshes health; failure surfaces
+# ----------------------------------------------------------------------
+
+
+class TestRepairOneShot:
+    def _patch_one_shot(self, mode: str) -> tuple[Any, list[_FakeOneShot]]:
+        registry: list[_FakeOneShot] = []
+
+        def fake_run_one_shot(job_name: str, fn: Callable[[], object]) -> OneShotSignals:
+            inst = _FakeOneShot(job_name, fn, mode)
+            registry.append(inst)
+            return inst.signals
+
+        return fake_run_one_shot, registry
+
+    def test_success_clears_error_and_refreshes_health_surfaces(
+        self, harness: _CoordinatorHarness
+    ) -> None:
+        coord = harness.coordinator
+        coord._store.set_error(JOB_REPAIR_INSTALL, "previous repair failure")
+        fake, registry = self._patch_one_shot("success")
+
+        with (
+            patch("services.operator_console.polling.repair_runtime", lambda: "repaired"),
+            patch("services.operator_console.polling.run_one_shot", fake, create=False),
+        ):
+            coord.repair_install()
+            assert len(coord._inflight_repairs) == 1
+            assert registry, "run_one_shot not invoked"
+            registry[0].fire()
+
+        assert coord._store.error(JOB_REPAIR_INSTALL) is None
+        assert JOB_HEALTH in harness.refresh_calls
+        assert JOB_ALERTS in harness.refresh_calls
+        assert coord._inflight_repairs == {}
+
+    def test_failure_surfaces_error_and_job_failed(self, harness: _CoordinatorHarness) -> None:
+        coord = harness.coordinator
+        fake, registry = self._patch_one_shot("failure")
+        emissions: list[tuple[str, str]] = []
+        coord.job_failed.connect(lambda *args: emissions.append(tuple(args)))
+
+        with patch("services.operator_console.polling.run_one_shot", fake, create=False):
+            coord.repair_install()
+            registry[0].fire()
+
+        assert coord._store.error(JOB_REPAIR_INSTALL) == "boom"
+        assert (JOB_REPAIR_INSTALL, "boom") in emissions
+        assert JOB_HEALTH not in harness.refresh_calls
+        assert coord._inflight_repairs == {}
+
+
+# ----------------------------------------------------------------------
 # Experiment management one-shots — success updates store and refreshes
 # ----------------------------------------------------------------------
 
@@ -454,7 +508,7 @@ class TestExperimentManagementOneShot:
                 ],
             )
 
-        coord._client.create_experiment = fake_create  # type: ignore[assignment,method-assign]
+        coord._client.create_experiment = fake_create  # type: ignore[method-assign]
         request = ExperimentCreateRequest(
             experiment_id="exp-new",
             label="Greeting v2",
@@ -507,7 +561,7 @@ class TestExperimentManagementOneShot:
                 enabled=True,
             )
 
-        coord._client.patch_experiment_arm = fake_patch  # type: ignore[assignment,method-assign]
+        coord._client.patch_experiment_arm = fake_patch  # type: ignore[method-assign]
         with patch("services.operator_console.polling.run_one_shot", fake, create=False):
             coord.rename_experiment_arm("exp1", "a1", "new")
             registry[0].fire()
@@ -554,7 +608,7 @@ class TestExperimentManagementOneShot:
                 enabled=False,
             )
 
-        coord._client.patch_experiment_arm = fake_patch  # type: ignore[assignment,method-assign]
+        coord._client.patch_experiment_arm = fake_patch  # type: ignore[method-assign]
         with patch("services.operator_console.polling.run_one_shot", fake, create=False):
             coord.disable_experiment_arm("exp1", "a1")
             registry[0].fire()
@@ -598,7 +652,7 @@ class TestExperimentManagementOneShot:
                 reason="unused arm hard-deleted",
             )
 
-        coord._client.delete_experiment_arm = fake_delete  # type: ignore[assignment,method-assign]
+        coord._client.delete_experiment_arm = fake_delete  # type: ignore[method-assign]
         with patch("services.operator_console.polling.run_one_shot", fake, create=False):
             coord.delete_experiment_arm("exp-non-default", "unused")
             registry[0].fire()
@@ -643,7 +697,7 @@ class TestSessionLifecycleOneShot:
                 received_at_utc=_utc(2026, 4, 18, 10, 3),
             )
 
-        coord._client.post_session_start = fake_post  # type: ignore[assignment,method-assign]
+        coord._client.post_session_start = fake_post  # type: ignore[method-assign]
 
         with patch("services.operator_console.polling.run_one_shot", fake, create=False):
             req = SessionCreateRequest(

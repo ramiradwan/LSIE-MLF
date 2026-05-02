@@ -229,6 +229,18 @@ def test_action_bar_ignores_live_session_of_other_session() -> None:
 # ---------------------------------------------------------------------
 
 
+def test_health_vm_repair_action_routes_to_coordinator() -> None:
+    config = _make_config()
+    store = build_store()
+    coord = build_polling_coordinator(config, MagicMock(), store)
+    returned_signals = OneShotSignals()
+    coord.repair_install = MagicMock(return_value=returned_signals)  # type: ignore[method-assign]
+    window = build_main_window(config, store, coord)
+
+    assert window._health_vm.request_repair() is True
+    coord.repair_install.assert_called_once_with()
+
+
 def test_experiment_management_vm_signals_route_to_coordinator() -> None:
     config = _make_config()
     store = build_store()

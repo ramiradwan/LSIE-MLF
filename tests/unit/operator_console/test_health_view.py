@@ -28,6 +28,7 @@ from services.operator_console.table_models.alerts_table_model import AlertsTabl
 from services.operator_console.table_models.health_table_model import HealthTableModel
 from services.operator_console.viewmodels.health_vm import HealthViewModel
 from services.operator_console.views.health_view import HealthView
+from services.operator_console.workers import OneShotSignals
 
 pytestmark = pytest.mark.usefixtures("qt_app")
 
@@ -41,6 +42,14 @@ def _view() -> tuple[HealthView, OperatorStore]:
     alerts_model = AlertsTableModel()
     vm = HealthViewModel(store, health_model, alerts_model)
     return HealthView(vm), store
+
+
+def _view_with_vm() -> tuple[HealthView, HealthViewModel, OperatorStore]:
+    store = OperatorStore()
+    health_model = HealthTableModel()
+    alerts_model = AlertsTableModel()
+    vm = HealthViewModel(store, health_model, alerts_model)
+    return HealthView(vm), vm, store
 
 
 def _snapshot(
@@ -66,17 +75,43 @@ def _snapshot(
 
 def test_health_view_empty_until_snapshot_set() -> None:
     view, _store = _view()
-    assert view._empty_state.isHidden() is False  # type: ignore[attr-defined]
-    assert view._body_container.isHidden() is True  # type: ignore[attr-defined]
+    assert view._empty_state.isHidden() is False
+    assert view._body_container.isHidden() is True
+
+
+def test_health_view_repair_button_tracks_action_binding() -> None:
+    view, vm, store = _view_with_vm()
+    assert view._repair_button.isEnabled() is False
+    vm.bind_repair_action(lambda: OneShotSignals())
+    store.set_health(_snapshot(HealthState.OK))
+
+    assert view._repair_button.isEnabled() is True
+
+
+def test_health_view_repair_click_invokes_bound_action() -> None:
+    view, vm, store = _view_with_vm()
+    calls: list[str] = []
+
+    def request_repair() -> OneShotSignals:
+        calls.append("repair")
+        return OneShotSignals()
+
+    vm.bind_repair_action(request_repair)
+    store.set_health(_snapshot(HealthState.OK))
+
+    view._repair_button.click()
+    assert calls == ["repair"]
+    assert view._repair_status.isHidden() is False
+    assert view._repair_status.text() == "Repair requested"
 
 
 def test_health_view_renders_ok_snapshot() -> None:
     view, store = _view()
     store.set_health(_snapshot(HealthState.OK))
-    assert view._overall_card._status._kind is UiStatusKind.OK  # type: ignore[attr-defined]
-    assert view._degraded_card._primary.text() == "0"  # type: ignore[attr-defined]
-    assert view._recovering_card._primary.text() == "0"  # type: ignore[attr-defined]
-    assert view._error_card._primary.text() == "0"  # type: ignore[attr-defined]
+    assert view._overall_card._status._kind is UiStatusKind.OK
+    assert view._degraded_card._primary.text() == "0"
+    assert view._recovering_card._primary.text() == "0"
+    assert view._error_card._primary.text() == "0"
 
 
 def test_health_view_probe_matrix_renders_not_configured_as_neutral() -> None:
@@ -96,8 +131,8 @@ def test_health_view_probe_matrix_renders_not_configured_as_neutral() -> None:
             ],
         )
     )
-    pill = view._probe_matrix._state_pills[0]  # type: ignore[attr-defined]
-    latency = view._probe_matrix._latency_labels[0]  # type: ignore[attr-defined]
+    pill = view._probe_matrix._state_pills[0]
+    latency = view._probe_matrix._latency_labels[0]
     assert pill.kind() is UiStatusKind.NEUTRAL
     assert pill.text() == "not configured"
     assert latency.text() == "—"
@@ -106,18 +141,18 @@ def test_health_view_probe_matrix_renders_not_configured_as_neutral() -> None:
 def test_health_view_degraded_pill_is_warn_not_error() -> None:
     view, store = _view()
     store.set_health(_snapshot(HealthState.DEGRADED, degraded=2))
-    assert view._overall_card._status._kind is UiStatusKind.WARN  # type: ignore[attr-defined]
-    assert view._degraded_card._status._kind is UiStatusKind.WARN  # type: ignore[attr-defined]
-    assert view._degraded_card._primary.text() == "2"  # type: ignore[attr-defined]
+    assert view._overall_card._status._kind is UiStatusKind.WARN
+    assert view._degraded_card._status._kind is UiStatusKind.WARN
+    assert view._degraded_card._primary.text() == "2"
 
 
 def test_health_view_recovering_pill_is_progress_not_warn() -> None:
     # §12: recovering is distinct from degraded — self-healing in flight.
     view, store = _view()
     store.set_health(_snapshot(HealthState.RECOVERING, recovering=1))
-    assert view._overall_card._status._kind is UiStatusKind.PROGRESS  # type: ignore[attr-defined]
-    assert view._recovering_card._status._kind is UiStatusKind.PROGRESS  # type: ignore[attr-defined]
-    assert view._recovering_card._primary.text() == "1"  # type: ignore[attr-defined]
+    assert view._overall_card._status._kind is UiStatusKind.PROGRESS
+    assert view._recovering_card._status._kind is UiStatusKind.PROGRESS
+    assert view._recovering_card._primary.text() == "1"
 
 
 def test_health_view_error_card_surfaces_operator_action_hint() -> None:
@@ -136,11 +171,9 @@ def test_health_view_error_card_surfaces_operator_action_hint() -> None:
             ],
         )
     )
-    assert view._error_card._status._kind is UiStatusKind.ERROR  # type: ignore[attr-defined]
+    assert view._error_card._status._kind is UiStatusKind.ERROR
     # The first error row's operator-action hint should be pulled through.
-    assert (
-        "restart" in view._error_card._secondary.text()  # type: ignore[attr-defined]
-    )
+    assert "restart" in view._error_card._secondary.text()
 
 
 def test_health_view_alerts_model_rows_insert_triggers_scroll() -> None:
@@ -159,4 +192,4 @@ def test_health_view_alerts_model_rows_insert_triggers_scroll() -> None:
         ]
     )
     # Model now holds the row; the timeline widget exists.
-    assert view._vm.alerts_model().rowCount() == 1  # type: ignore[attr-defined]
+    assert view._vm.alerts_model().rowCount() == 1

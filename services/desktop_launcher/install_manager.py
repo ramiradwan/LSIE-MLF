@@ -264,10 +264,14 @@ def run_uv_sync(
     staging_dir: Path,
     python_exe: Path,
     log: LogCallback,
+    reinstall: bool = False,
 ) -> None:
     env = os.environ.copy()
     env["UV_PROJECT_ENVIRONMENT"] = str(staging_dir / ".venv")
-    cmd = ["uv", "sync", "--frozen", "--extra", "ml_backend", "--python", str(python_exe)]
+    cmd = ["uv", "sync", "--frozen", "--extra", "ml_backend"]
+    if reinstall:
+        cmd.append("--reinstall")
+    cmd.extend(["--python", str(python_exe)])
     process = subprocess.Popen(
         cmd,
         cwd=repo_root,

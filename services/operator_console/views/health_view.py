@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QPushButton,
     QTableView,
     QVBoxLayout,
     QWidget,
@@ -94,6 +95,14 @@ class HealthView(QWidget):
             "Subsystem rollup — degraded, recovering, and error states kept distinct.",
             self,
         )
+        self._repair_button = QPushButton("Repair install", self)
+        self._repair_button.setObjectName("RepairInstallButton")
+        self._repair_button.setToolTip("Rebuild the local runtime without touching desktop.sqlite.")
+        self._repair_button.setEnabled(False)
+        self._repair_button.clicked.connect(self._on_repair_clicked)
+        self._repair_status = QLabel("", self)
+        self._repair_status.setObjectName("PanelSubtitle")
+        self._repair_status.setVisible(False)
         self._error_banner = AlertBanner(self)
         self._empty_state = EmptyStateWidget(self)
         self._empty_state.set_title("No health snapshot")
@@ -149,10 +158,17 @@ class HealthView(QWidget):
         self._body_container = QWidget(self)
         self._body_container.setLayout(body)
 
+        header_row = QHBoxLayout()
+        header_row.setContentsMargins(0, 0, 0, 0)
+        header_row.setSpacing(14)
+        header_row.addWidget(self._header, 1)
+        header_row.addWidget(self._repair_status)
+        header_row.addWidget(self._repair_button)
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 24, 24, 24)
         layout.setSpacing(14)
-        layout.addWidget(self._header)
+        layout.addLayout(header_row)
         layout.addWidget(self._error_banner)
         layout.addWidget(self._empty_state)
         layout.addWidget(self._body_container, 1)
@@ -160,6 +176,7 @@ class HealthView(QWidget):
 
         self._vm.changed.connect(self._refresh)
         self._vm.error_changed.connect(self._on_error_changed)
+        self._vm.repair_requested.connect(self._on_repair_started)
         # Keep the alert timeline auto-scrolled to the latest event when
         # new rows land — operators watch the tail.
         self._vm.alerts_model().rowsInserted.connect(self._on_alerts_rows_inserted)
@@ -203,6 +220,7 @@ class HealthView(QWidget):
 
     def _refresh(self) -> None:
         snapshot = self._vm.snapshot()
+        self._repair_button.setEnabled(self._vm.repair_available())
         if snapshot is None:
             self._empty_state.setVisible(True)
             self._body_container.setVisible(False)
@@ -259,6 +277,14 @@ class HealthView(QWidget):
             self._error_banner.set_alert(AlertSeverity.WARNING, message)
         else:
             self._error_banner.set_alert(None, None)
+
+    def _on_repair_clicked(self) -> None:
+        if not self._vm.request_repair():
+            return
+
+    def _on_repair_started(self) -> None:
+        self._repair_status.setText("Repair requested")
+        self._repair_status.setVisible(True)
 
     @Slot(QModelIndex, int, int)
     def _on_alerts_rows_inserted(

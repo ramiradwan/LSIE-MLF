@@ -208,6 +208,7 @@ class MainWindow(QMainWindow):
         self._experiments_vm.disable_arm_requested.connect(self._coordinator.disable_experiment_arm)
         self._physiology_vm = PhysiologyViewModel(self._store, self)
         self._health_vm = HealthViewModel(self._store, self._health_model, self._alerts_model, self)
+        self._health_vm.bind_repair_action(self._coordinator.repair_install)
         self._sessions_vm = SessionsViewModel(self._store, self._sessions_model, self)
 
         overview_view = OverviewView(self._overview_vm, self)

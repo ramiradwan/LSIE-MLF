@@ -63,6 +63,7 @@ from packages.schemas.operator_console import (
     SessionSummary,
     StimulusRequest,
 )
+from services.desktop_launcher.repair import repair_runtime
 from services.operator_console.api_client import ApiClient, ApiError
 from services.operator_console.config import OperatorConsoleConfig
 from services.operator_console.state import AppRoute, OperatorStore
@@ -88,6 +89,7 @@ JOB_ALERTS = "alerts"
 JOB_STIMULUS = "stimulus"
 JOB_SESSION_START = "session_start"
 JOB_SESSION_END = "session_end"
+JOB_REPAIR_INSTALL = "repair_install"
 
 
 @dataclass(frozen=True)
@@ -147,6 +149,7 @@ class PollingCoordinator(QObject):
         self._inflight_stimulus: dict[str, OneShotSignals] = {}
         self._inflight_session_lifecycle: dict[str, OneShotSignals] = {}
         self._inflight_experiment_mutations: dict[str, OneShotSignals] = {}
+        self._inflight_repairs: dict[str, OneShotSignals] = {}
         self._started = False
 
         # Wire store-driven job lifecycle
@@ -405,6 +408,29 @@ class PollingCoordinator(QObject):
             return self._client.delete_experiment_arm(experiment_id, arm_id)
 
         return self._run_experiment_mutation(fn)
+
+    def repair_install(self) -> OneShotSignals:
+        signals = run_one_shot(JOB_REPAIR_INSTALL, repair_runtime)
+        handle_key = str(uuid4())
+        self._inflight_repairs[handle_key] = signals
+
+        def on_succeeded(_job: str, _payload: object) -> None:
+            self._store.clear_error(JOB_REPAIR_INSTALL)
+            for target in (JOB_HEALTH, JOB_ALERTS):
+                self.refresh_now(target)
+
+        def on_failed(_job: str, error: object) -> None:
+            message = str(error) if not isinstance(error, ApiError) else error.message
+            self._store.set_error(JOB_REPAIR_INSTALL, message)
+            self.job_failed.emit(JOB_REPAIR_INSTALL, message)
+
+        def on_finished(_job: str) -> None:
+            self._inflight_repairs.pop(handle_key, None)
+
+        signals.succeeded.connect(on_succeeded)
+        signals.failed.connect(on_failed)
+        signals.finished.connect(on_finished)
+        return signals
 
     def _run_experiment_mutation(self, fn: Callable[[], object]) -> OneShotSignals:
         signals = run_one_shot(JOB_EXPERIMENT, fn)
