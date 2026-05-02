@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 
 from services.cloud_api.db.connection import close_pool, init_pool
+from services.cloud_api.middleware.forbid_raw import forbid_raw_payload_middleware
 from services.cloud_api.routes import auth, experiments, sessions, telemetry
 
 
@@ -27,6 +28,7 @@ app = FastAPI(
     version="4.0.0-ws5-p1",
     lifespan=lifespan,
 )
+app.middleware("http")(forbid_raw_payload_middleware)
 
 app.include_router(telemetry.router, prefix="/v4", tags=["telemetry"])
 app.include_router(experiments.router, prefix="/v4", tags=["experiments"])
