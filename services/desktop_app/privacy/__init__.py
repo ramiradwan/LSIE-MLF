@@ -1,6 +1,6 @@
-"""Privacy / data-governance helpers for the v4.0 desktop graph (WS4 P3).
+"""Privacy / data-governance helpers for the v4.0 desktop graph (WS4 P3+P4).
 
-The two surfaces that live here:
+The surfaces that live here:
 
 * :mod:`zeroize` — wipe transient PCM SharedMemory before unlink so a
   leaked block cannot be scavenged from ``/dev/shm`` or a Windows
@@ -9,6 +9,10 @@ The two surfaces that live here:
   our app binary from Windows Error Reporting LocalDumps so a crash
   mid-segment does not freeze raw PCM into a ``.dmp`` outside the
   Ephemeral Vault perimeter.
+* :mod:`secrets` — persist long-lived credentials (cloud OAuth refresh
+  token, Oura webhook secret slot) in the OS secret store so no secret
+  literal ships inside the signed binary or the operator-readable
+  install tree.
 
 All Win32 / POSIX branching is delegated to
 :mod:`services.desktop_app.os_adapter` per the Platform Abstraction

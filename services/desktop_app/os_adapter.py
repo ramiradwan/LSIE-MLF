@@ -220,6 +220,83 @@ def register_localdumps_exclusion(app_name: str = "lsie-mlf-desktop.exe") -> boo
         return False
 
 
+class SecretStoreUnavailableError(RuntimeError):
+    """No functional keyring backend exists on this host.
+
+    Raised by the secret-store primitives when ``keyring`` resolves to
+    ``keyring.backends.fail.Keyring`` (the well-known sentinel that every
+    operation will throw ``NoKeyringError``). Callers — most notably
+    ``cloud_sync_worker`` — turn this into a hard health-page failure
+    because the OAuth refresh token cannot be persisted across restarts
+    without a Credential Manager / DPAPI-backed store.
+    """
+
+
+def set_secret(service: str, key: str, value: str) -> None:
+    """Persist ``value`` under ``(service, key)`` in the OS secret store.
+
+    Windows: routed to ``WinVaultKeyring`` which is DPAPI-backed (and
+    TPM-backed where available). POSIX: routed to whichever recommended
+    backend ``keyring`` resolves at process start (Secret Service /
+    KWallet on Linux, macOS Keychain — though macOS is Tier 2 deferred).
+
+    Raises :class:`SecretStoreUnavailableError` if ``keyring`` resolves
+    to the fail backend. Other ``keyring.errors.KeyringError`` subclasses
+    propagate so the caller sees the real fault rather than a misleading
+    ``unavailable`` translation.
+    """
+    import keyring
+    import keyring.errors
+
+    try:
+        keyring.set_password(service, key, value)
+    except keyring.errors.NoKeyringError as exc:
+        raise SecretStoreUnavailableError(str(exc)) from exc
+
+
+def get_secret(service: str, key: str) -> str | None:
+    """Read the secret stored under ``(service, key)``; ``None`` if absent.
+
+    The ``None`` sentinel matches ``keyring.get_password``'s native
+    contract for missing entries — calling code typically chains a
+    ``token = get_secret(...) or refresh_via_oauth(...)``.
+
+    Raises :class:`SecretStoreUnavailableError` if no keyring backend is
+    available. Other backend faults propagate.
+    """
+    import keyring
+    import keyring.errors
+
+    try:
+        return keyring.get_password(service, key)
+    except keyring.errors.NoKeyringError as exc:
+        raise SecretStoreUnavailableError(str(exc)) from exc
+
+
+def delete_secret(service: str, key: str) -> bool:
+    """Remove the secret at ``(service, key)``. Returns ``True`` if removed.
+
+    A missing entry returns ``False`` rather than raising — this makes
+    teardown paths idempotent without forcing every caller to wrap the
+    call in a try/except. ``keyring.delete_password`` raises
+    ``PasswordDeleteError`` (a subclass of ``KeyringError``, NOT of
+    ``NoKeyringError``) for both "key not present" and "backend failure"
+    on most backends, so we conservatively translate any
+    ``PasswordDeleteError`` to ``False``. ``NoKeyringError`` still
+    surfaces as :class:`SecretStoreUnavailableError`.
+    """
+    import keyring
+    import keyring.errors
+
+    try:
+        keyring.delete_password(service, key)
+    except keyring.errors.NoKeyringError as exc:
+        raise SecretStoreUnavailableError(str(exc)) from exc
+    except keyring.errors.PasswordDeleteError:
+        return False
+    return True
+
+
 def cleanup_orphan_ipc_blocks(prefix: str) -> int:
     """Unlink leftover SharedMemory blocks whose name starts with ``prefix``.
 
