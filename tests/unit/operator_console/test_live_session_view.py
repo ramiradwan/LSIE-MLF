@@ -19,6 +19,9 @@ from packages.schemas.operator_console import (
     AttributionSummary,
     EncounterState,
     EncounterSummary,
+    HealthSnapshot,
+    HealthState,
+    HealthSubsystemStatus,
     ObservationalAcousticSummary,
     SemanticEvaluationSummary,
     SessionSummary,
@@ -132,6 +135,123 @@ def test_live_session_view_shows_empty_state_without_session() -> None:
     # show the empty state rather than the body container.
     assert view._empty_state.isHidden() is False  # type: ignore[attr-defined]
     assert view._body_container.isHidden() is True  # type: ignore[attr-defined]
+
+
+def test_live_session_view_ttv_waiting_for_device_uses_instructional_empty_state() -> None:
+    view, _store, _vm = _build_view()
+    assert view._empty_state.isHidden() is False  # type: ignore[attr-defined]
+    assert view._body_container.isHidden() is True  # type: ignore[attr-defined]
+    assert "Waiting for phone" in view._empty_state._title.text()  # type: ignore[attr-defined]
+
+
+def test_live_session_view_ttv_gate_shows_connected_capture_status() -> None:
+    view, store, _vm = _build_view()
+    store.set_health(
+        HealthSnapshot(
+            generated_at_utc=_NOW,
+            overall_state=HealthState.OK,
+            subsystems=[
+                HealthSubsystemStatus(
+                    subsystem_key="adb",
+                    label="Android Device Bridge",
+                    state=HealthState.OK,
+                ),
+                HealthSubsystemStatus(
+                    subsystem_key="audio_capture",
+                    label="Audio Capture",
+                    state=HealthState.OK,
+                ),
+                HealthSubsystemStatus(
+                    subsystem_key="video_capture",
+                    label="Video Capture",
+                    state=HealthState.OK,
+                ),
+            ],
+        )
+    )
+
+    assert view._empty_state.isHidden() is False  # type: ignore[attr-defined]
+    assert view._body_container.isHidden() is True  # type: ignore[attr-defined]
+    assert "Phone connected" in view._empty_state._title.text()  # type: ignore[attr-defined]
+    assert "Audio capture ok" in view._empty_state._message.text()  # type: ignore[attr-defined]
+    assert "Video capture ok" in view._empty_state._message.text()  # type: ignore[attr-defined]
+
+
+def test_live_session_view_ttv_waiting_for_face_shows_muted_dashboard_overlay() -> None:
+    view, store, _vm = _build_view()
+    session = _session(
+        is_calibrating=True,
+        calibration_frames_accumulated=12,
+        calibration_frames_required=45,
+    )
+    store.set_selected_session_id(session.session_id)
+    store.set_live_session(session)
+    assert view._empty_state.isHidden() is True  # type: ignore[attr-defined]
+    assert view._body_container.isHidden() is False  # type: ignore[attr-defined]
+    assert view._setup_overlay.isHidden() is False  # type: ignore[attr-defined]
+    assert view._phone_preview.isEnabled() is False  # type: ignore[attr-defined]
+    assert "visible face" in view._setup_overlay._message.text()  # type: ignore[attr-defined]
+    assert "12/45 frames" in view._setup_overlay._detail.text()  # type: ignore[attr-defined]
+
+
+def test_live_session_view_ttv_ready_shows_dashboard_and_smile_timeline() -> None:
+    view, store, _vm = _build_view()
+    session = _session(
+        is_calibrating=True,
+        calibration_frames_accumulated=45,
+        calibration_frames_required=45,
+    )
+    store.set_selected_session_id(session.session_id)
+    store.set_live_session(session)
+    store.set_encounters([_encounter("e-smile", session_id=session.session_id, p90=0.64)])
+
+    assert view._empty_state.isHidden() is True  # type: ignore[attr-defined]
+    assert view._body_container.isHidden() is False  # type: ignore[attr-defined]
+    assert view._setup_overlay.isHidden() is True  # type: ignore[attr-defined]
+    assert view._phone_preview.isEnabled() is True  # type: ignore[attr-defined]
+    assert view._live_analytics_notice.isHidden() is True  # type: ignore[attr-defined]
+    assert view._smile_card._primary.text() == "64%"  # type: ignore[attr-defined]
+    assert view._timeline_model.rowCount() == 1  # type: ignore[attr-defined]
+
+
+def test_live_session_view_ready_shows_no_producer_notice_without_error_banner() -> None:
+    view, store, _vm = _build_view()
+    session = _session(is_calibrating=True)
+    store.set_selected_session_id(session.session_id)
+    store.set_live_session(session)
+    store.set_health(
+        HealthSnapshot(
+            generated_at_utc=_NOW,
+            overall_state=HealthState.DEGRADED,
+            degraded_count=1,
+            subsystems=[
+                HealthSubsystemStatus(
+                    subsystem_key="adb",
+                    label="Android Device Bridge",
+                    state=HealthState.OK,
+                ),
+                HealthSubsystemStatus(
+                    subsystem_key="gpu_ml_worker",
+                    label="GPU ML Worker",
+                    state=HealthState.OK,
+                ),
+                HealthSubsystemStatus(
+                    subsystem_key="live_analytics_producer",
+                    label="Live Analytics Producer",
+                    state=HealthState.DEGRADED,
+                ),
+            ],
+        )
+    )
+
+    assert view._empty_state.isHidden() is True  # type: ignore[attr-defined]
+    assert view._body_container.isHidden() is False  # type: ignore[attr-defined]
+    assert view._setup_overlay.isHidden() is True  # type: ignore[attr-defined]
+    assert view._error_banner.isHidden() is True  # type: ignore[attr-defined]
+    assert view._live_analytics_notice.isHidden() is False  # type: ignore[attr-defined]
+    assert "No live reward analytics" in view._live_analytics_notice._message.text()  # type: ignore[attr-defined]
+    assert view._smile_card._primary.text() == "—"  # type: ignore[attr-defined]
+    assert view._smile_card._secondary.text() == "Live analytics producer unavailable"  # type: ignore[attr-defined]
 
 
 def test_live_session_view_header_reads_from_live_session_dto() -> None:

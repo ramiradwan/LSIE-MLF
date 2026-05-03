@@ -96,7 +96,7 @@ SELECT
     s.ended_at                                         AS ended_at,
     (julianday(COALESCE(s.ended_at, datetime('now'))) - julianday(s.started_at)) * 86400.0
                                                        AS duration_s,
-    le.experiment_id                                   AS experiment_id,
+    COALESCE(le.experiment_id, s.experiment_id)       AS experiment_id,
     le.arm                                             AS active_arm,
     le.timestamp_utc                                   AS last_segment_completed_at_utc,
     le.gated_reward                                    AS latest_reward,
@@ -121,7 +121,7 @@ SELECT
     s.ended_at                                         AS ended_at,
     (julianday(COALESCE(s.ended_at, datetime('now'))) - julianday(s.started_at)) * 86400.0
                                                        AS duration_s,
-    le.experiment_id                                   AS experiment_id,
+    COALESCE(le.experiment_id, s.experiment_id)       AS experiment_id,
     le.arm                                             AS active_arm,
     le.timestamp_utc                                   AS last_segment_completed_at_utc,
     le.gated_reward                                    AS latest_reward,
@@ -145,7 +145,7 @@ SELECT
     s.ended_at                                         AS ended_at,
     (julianday(datetime('now')) - julianday(s.started_at)) * 86400.0
                                                        AS duration_s,
-    le.experiment_id                                   AS experiment_id,
+    COALESCE(le.experiment_id, s.experiment_id)       AS experiment_id,
     le.arm                                             AS active_arm,
     le.timestamp_utc                                   AS last_segment_completed_at_utc,
     le.gated_reward                                    AS latest_reward,
@@ -444,10 +444,101 @@ LIMIT 1
 
 _SUBSYSTEM_PULSE_SQL: str = """
 SELECT
-    (SELECT MAX(m.created_at) FROM metrics m)          AS last_metric_at,
-    (SELECT MAX(p.created_at) FROM physiology_log p)   AS last_physio_at,
-    (SELECT MAX(c.created_at) FROM comodulation_log c) AS last_comod_at,
-    (SELECT MAX(e.created_at) FROM encounter_log e)    AS last_encounter_at
+    (
+        SELECT MAX(h.last_heartbeat_utc)
+        FROM process_heartbeat h
+        WHERE h.process_name = 'ui_api_shell'
+    )                                                  AS last_ui_api_shell_at,
+    (
+        SELECT MAX(h.last_heartbeat_utc)
+        FROM process_heartbeat h
+        WHERE h.process_name = 'capture_supervisor'
+    )                                                  AS last_capture_supervisor_at,
+    (
+        SELECT MAX(h.last_heartbeat_utc)
+        FROM process_heartbeat h
+        WHERE h.process_name = 'module_c_orchestrator'
+    )                                                  AS last_module_c_orchestrator_at,
+    (
+        SELECT MAX(h.last_heartbeat_utc)
+        FROM process_heartbeat h
+        WHERE h.process_name = 'gpu_ml_worker'
+    )                                                  AS last_gpu_ml_worker_at,
+    (
+        SELECT MAX(h.last_heartbeat_utc)
+        FROM process_heartbeat h
+        WHERE h.process_name = 'analytics_state_worker'
+    )                                                  AS last_analytics_state_worker_at,
+    (
+        SELECT MAX(h.last_heartbeat_utc)
+        FROM process_heartbeat h
+        WHERE h.process_name = 'cloud_sync_worker'
+    )                                                  AS last_cloud_sync_worker_at,
+    (
+        SELECT c.state
+        FROM capture_status c
+        WHERE c.status_key = 'adb'
+    )                                                  AS adb_state,
+    (
+        SELECT c.label
+        FROM capture_status c
+        WHERE c.status_key = 'adb'
+    )                                                  AS adb_label,
+    (
+        SELECT c.detail
+        FROM capture_status c
+        WHERE c.status_key = 'adb'
+    )                                                  AS adb_detail,
+    (
+        SELECT c.operator_action_hint
+        FROM capture_status c
+        WHERE c.status_key = 'adb'
+    )                                                  AS adb_hint,
+    (
+        SELECT c.updated_at_utc
+        FROM capture_status c
+        WHERE c.status_key = 'adb'
+    )                                                  AS last_adb_at,
+    (
+        SELECT c.state
+        FROM capture_status c
+        WHERE c.status_key = 'audio_capture'
+    )                                                  AS audio_capture_state,
+    (
+        SELECT c.detail
+        FROM capture_status c
+        WHERE c.status_key = 'audio_capture'
+    )                                                  AS audio_capture_detail,
+    (
+        SELECT c.operator_action_hint
+        FROM capture_status c
+        WHERE c.status_key = 'audio_capture'
+    )                                                  AS audio_capture_hint,
+    (
+        SELECT c.updated_at_utc
+        FROM capture_status c
+        WHERE c.status_key = 'audio_capture'
+    )                                                  AS last_audio_capture_at,
+    (
+        SELECT c.state
+        FROM capture_status c
+        WHERE c.status_key = 'video_capture'
+    )                                                  AS video_capture_state,
+    (
+        SELECT c.detail
+        FROM capture_status c
+        WHERE c.status_key = 'video_capture'
+    )                                                  AS video_capture_detail,
+    (
+        SELECT c.operator_action_hint
+        FROM capture_status c
+        WHERE c.status_key = 'video_capture'
+    )                                                  AS video_capture_hint,
+    (
+        SELECT c.updated_at_utc
+        FROM capture_status c
+        WHERE c.status_key = 'video_capture'
+    )                                                  AS last_video_capture_at
 """
 
 

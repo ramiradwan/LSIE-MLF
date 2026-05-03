@@ -681,7 +681,9 @@ def operator_ready_for_submit(snapshot: SessionSummary | None) -> bool:
         return True
     accumulated = snapshot.calibration_frames_accumulated
     required = snapshot.calibration_frames_required
-    return accumulated is not None and required is not None and accumulated >= required
+    if accumulated is None or required is None:
+        return True
+    return accumulated >= required
 
 
 def format_calibration_status(snapshot: SessionSummary | None) -> tuple[UiStatusKind, str]:
@@ -694,7 +696,7 @@ def format_calibration_status(snapshot: SessionSummary | None) -> tuple[UiStatus
     accumulated = snapshot.calibration_frames_accumulated
     required = snapshot.calibration_frames_required
     if accumulated is None or required is None:
-        return UiStatusKind.PROGRESS, "Calibrating"
+        return UiStatusKind.OK, "Ready"
     current = min(max(accumulated, 0), required)
     return UiStatusKind.PROGRESS, f"Calibrating · {current}/{required} frames"
 

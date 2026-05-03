@@ -26,6 +26,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any
 
+from packages.schemas.operator_console import HealthState, HealthSubsystemStatus
 from services.api.services.operator_read_service import OperatorReadService
 from services.api.services.subsystem_probes import ProbeResult
 from services.desktop_app.state import sqlite_operator_queries
@@ -56,6 +57,170 @@ class SqliteOperatorReadService(OperatorReadService):
             queries=sqlite_operator_queries,
         )
         self._reader = reader
+
+    def _build_health_rows(
+        self,
+        pulse: dict[str, Any],
+        now: Any,
+    ) -> list[HealthSubsystemStatus]:
+        return self._build_desktop_process_health_rows(pulse, now)
+
+    def _build_desktop_process_health_rows(
+        self,
+        pulse: dict[str, Any],
+        now: Any,
+    ) -> list[HealthSubsystemStatus]:
+        subsystems: list[tuple[str, str, str, str, str, str | None, str | None, str | None]] = [
+            (
+                "ui_api_shell",
+                "UI API Shell",
+                "last_ui_api_shell_at",
+                "process_restart",
+                "verify ui_api_shell process is running",
+                None,
+                None,
+                None,
+            ),
+            (
+                "capture_supervisor",
+                "Capture Supervisor",
+                "last_capture_supervisor_at",
+                "process_restart",
+                "verify capture_supervisor process is running",
+                None,
+                None,
+                None,
+            ),
+            (
+                "module_c_orchestrator",
+                "Module C Orchestrator",
+                "last_module_c_orchestrator_at",
+                "process_restart",
+                "verify module_c_orchestrator process is running",
+                None,
+                None,
+                None,
+            ),
+            (
+                "gpu_ml_worker",
+                "GPU ML Worker",
+                "last_gpu_ml_worker_at",
+                "process_restart",
+                "verify gpu_ml_worker process is running",
+                None,
+                None,
+                None,
+            ),
+            (
+                "analytics_state_worker",
+                "Analytics State Worker",
+                "last_analytics_state_worker_at",
+                "process_restart",
+                "verify analytics_state_worker process is running",
+                None,
+                None,
+                None,
+            ),
+            (
+                "cloud_sync_worker",
+                "Cloud Sync Worker",
+                "last_cloud_sync_worker_at",
+                "process_restart",
+                "verify cloud_sync_worker process is running",
+                None,
+                None,
+                None,
+            ),
+            (
+                "adb",
+                "Android Device Bridge",
+                "last_adb_at",
+                "device_reconnect",
+                "connect Android device via USB and allow debugging",
+                "adb_state",
+                "adb_detail",
+                "adb_hint",
+            ),
+            (
+                "audio_capture",
+                "Audio Capture",
+                "last_audio_capture_at",
+                "capture_restart",
+                "verify scrcpy audio recording is running",
+                "audio_capture_state",
+                "audio_capture_detail",
+                "audio_capture_hint",
+            ),
+            (
+                "video_capture",
+                "Video Capture",
+                "last_video_capture_at",
+                "capture_restart",
+                "verify scrcpy video recording is running",
+                "video_capture_state",
+                "video_capture_detail",
+                "video_capture_hint",
+            ),
+        ]
+        rows: list[HealthSubsystemStatus] = []
+        for (
+            key,
+            label,
+            field,
+            recovery_mode,
+            hint,
+            state_field,
+            detail_field,
+            hint_field,
+        ) in subsystems:
+            state, detail = self._classify_subsystem_for_desktop(pulse.get(field), now)
+            if state_field is not None and isinstance(pulse.get(state_field), str):
+                state = HealthState(pulse[state_field])
+            if detail_field is not None and pulse.get(detail_field) is not None:
+                detail = str(pulse[detail_field])
+            row_hint = hint
+            if hint_field is not None and pulse.get(hint_field) is not None:
+                row_hint = str(pulse[hint_field])
+            needs_action = state.value in {"degraded", "recovering", "unknown"}
+            rows.append(
+                HealthSubsystemStatus(
+                    subsystem_key=key,
+                    label=label,
+                    state=state,
+                    last_success_utc=self._ensure_utc_for_desktop(pulse.get(field)),
+                    detail=detail,
+                    recovery_mode=recovery_mode if needs_action else None,
+                    operator_action_hint=row_hint if needs_action else None,
+                )
+            )
+        rows.append(
+            HealthSubsystemStatus(
+                subsystem_key="live_analytics_producer",
+                label="Live Analytics Producer",
+                state=HealthState.DEGRADED,
+                last_success_utc=None,
+                detail=(
+                    "Desktop Module C live dispatch is release-gated; connected capture "
+                    "and ML worker health do not create encounter analytics."
+                ),
+                recovery_mode="deferred_activation",
+                operator_action_hint=(
+                    "Smile, semantic, reward, and transcription rows require a future "
+                    "desktop-safe inference producer with authoritative stimulus timing."
+                ),
+            )
+        )
+        return rows
+
+    def _classify_subsystem_for_desktop(self, value: Any, now: Any) -> Any:
+        from services.api.services.operator_read_service import _classify_subsystem
+
+        return _classify_subsystem(self._ensure_utc_for_desktop(value), now)
+
+    def _ensure_utc_for_desktop(self, value: Any) -> Any:
+        from services.api.services.operator_read_service import _ensure_utc
+
+        return _ensure_utc(value)
 
     @staticmethod
     def _unused_get_conn() -> Any:

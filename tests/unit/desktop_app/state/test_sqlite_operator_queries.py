@@ -48,6 +48,7 @@ def _seed_session(
     *,
     stream_url: str,
     started_at: str,
+    experiment_id: str | None = None,
     ended_at: str | None = None,
 ) -> None:
     payload: dict[str, str] = {
@@ -55,6 +56,8 @@ def _seed_session(
         "stream_url": stream_url,
         "started_at": started_at,
     }
+    if experiment_id is not None:
+        payload["experiment_id"] = experiment_id
     if ended_at is not None:
         payload["ended_at"] = ended_at
     writer.enqueue("sessions", payload)
@@ -94,7 +97,13 @@ def test_fetch_session_by_id_returns_row(tmp_path: Path) -> None:
     db = tmp_path / "desktop.sqlite"
     writer = SqliteWriter(db)
     try:
-        _seed_session(writer, SESSION_A, stream_url="x", started_at="2026-04-01 12:00:00")
+        _seed_session(
+            writer,
+            SESSION_A,
+            stream_url="x",
+            started_at="2026-04-01 12:00:00",
+            experiment_id="greeting_line_v1",
+        )
         writer.flush()
     finally:
         writer.close()
@@ -104,6 +113,7 @@ def test_fetch_session_by_id_returns_row(tmp_path: Path) -> None:
         row = q.fetch_session_by_id(cur, SESSION_A)
     assert row is not None
     assert row["session_id"] == str(SESSION_A)
+    assert row["experiment_id"] == "greeting_line_v1"
     assert row["ended_at"] is None
     # duration_s computed from started_at to NOW()
     assert isinstance(row["duration_s"], float)
@@ -441,11 +451,90 @@ def test_fetch_subsystem_pulse_empty_returns_nulls(tmp_path: Path) -> None:
     with _cursor(reader) as cur:
         pulse = q.fetch_subsystem_pulse(cur)
     assert pulse == {
-        "last_metric_at": None,
-        "last_physio_at": None,
-        "last_comod_at": None,
-        "last_encounter_at": None,
+        "last_ui_api_shell_at": None,
+        "last_capture_supervisor_at": None,
+        "last_module_c_orchestrator_at": None,
+        "last_gpu_ml_worker_at": None,
+        "last_analytics_state_worker_at": None,
+        "last_cloud_sync_worker_at": None,
+        "adb_state": None,
+        "adb_label": None,
+        "adb_detail": None,
+        "adb_hint": None,
+        "last_adb_at": None,
+        "audio_capture_state": None,
+        "audio_capture_detail": None,
+        "audio_capture_hint": None,
+        "last_audio_capture_at": None,
+        "video_capture_state": None,
+        "video_capture_detail": None,
+        "video_capture_hint": None,
+        "last_video_capture_at": None,
     }
+
+
+def test_fetch_subsystem_pulse_includes_desktop_process_signals(tmp_path: Path) -> None:
+    db = _bootstrap(tmp_path)
+    conn = sqlite3.connect(str(db), isolation_level=None)
+    try:
+        conn.execute(
+            "INSERT INTO process_heartbeat "
+            "(process_name, pid, started_at_utc, last_heartbeat_utc) "
+            "VALUES (?, ?, ?, ?)",
+            (
+                "gpu_ml_worker",
+                123,
+                "2026-04-01 12:00:00",
+                "2026-04-01 12:00:05",
+            ),
+        )
+        conn.executemany(
+            "INSERT INTO capture_status "
+            "(status_key, state, label, detail, operator_action_hint, updated_at_utc) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            [
+                (
+                    "adb",
+                    "ok",
+                    "Android Device Bridge",
+                    "Connected device: Pixel 8 (abc123) · Active app: com.example.app",
+                    None,
+                    "2026-04-01 12:00:10",
+                ),
+                (
+                    "audio_capture",
+                    "ok",
+                    "Audio Capture",
+                    "Audio stream recording: audio_stream.wav · 1,024 bytes",
+                    None,
+                    "2026-04-01 12:00:11",
+                ),
+                (
+                    "video_capture",
+                    "ok",
+                    "Video Capture",
+                    "Video stream recording: video_stream.mkv · 2,048 bytes",
+                    None,
+                    "2026-04-01 12:00:12",
+                ),
+            ],
+        )
+    finally:
+        conn.close()
+
+    reader = SqliteReader(db)
+    with _cursor(reader) as cur:
+        pulse = q.fetch_subsystem_pulse(cur)
+    assert pulse["last_gpu_ml_worker_at"] == "2026-04-01 12:00:05"
+    assert pulse["adb_state"] == "ok"
+    assert pulse["adb_detail"] == "Connected device: Pixel 8 (abc123) · Active app: com.example.app"
+    assert pulse["last_adb_at"] == "2026-04-01 12:00:10"
+    assert pulse["audio_capture_state"] == "ok"
+    assert pulse["audio_capture_detail"] == "Audio stream recording: audio_stream.wav · 1,024 bytes"
+    assert pulse["last_audio_capture_at"] == "2026-04-01 12:00:11"
+    assert pulse["video_capture_state"] == "ok"
+    assert pulse["video_capture_detail"] == "Video stream recording: video_stream.mkv · 2,048 bytes"
+    assert pulse["last_video_capture_at"] == "2026-04-01 12:00:12"
 
 
 def test_fetch_recent_stale_physiology_filters_is_stale(tmp_path: Path) -> None:

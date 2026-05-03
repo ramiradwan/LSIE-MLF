@@ -126,9 +126,11 @@ def test_window_registers_six_pages_in_nav_order() -> None:
     assert stack.count() == 6
 
 
-def test_initial_route_is_overview_and_action_bar_disabled() -> None:
+def test_initial_route_is_live_session_and_action_bar_disabled() -> None:
     window, store, _coord = _make_window()
-    assert store.route() == AppRoute.OVERVIEW
+    assert store.route() == AppRoute.LIVE_SESSION
+    assert window._stack.currentWidget() is window._pages[AppRoute.LIVE_SESSION]
+    assert window._nav_buttons[AppRoute.LIVE_SESSION].isChecked() is True
     bar = window._action_bar
     # No session selected yet — submit disabled.
     assert bar._submit_button.isEnabled() is False

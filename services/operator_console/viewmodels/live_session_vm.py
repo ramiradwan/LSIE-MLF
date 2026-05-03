@@ -39,7 +39,9 @@ Spec references:
 from __future__ import annotations
 
 from collections.abc import Callable
-from datetime import datetime
+from dataclasses import dataclass
+from datetime import UTC, datetime, timedelta
+from typing import Literal
 from uuid import UUID, uuid4
 
 from pydantic import ValidationError
@@ -48,6 +50,7 @@ from PySide6.QtCore import QObject, Signal
 from packages.schemas.operator_console import (
     EncounterState,
     EncounterSummary,
+    HealthSubsystemStatus,
     ObservationalAcousticSummary,
     SessionCreateRequest,
     SessionEndRequest,
@@ -65,6 +68,7 @@ from services.operator_console.formatters import (
     format_calibration_status,
     operator_ready_for_submit,
     semantic_attribution_diagnostics_for_encounter,
+    ui_status_for_health,
 )
 from services.operator_console.state import OperatorStore, StimulusUiContext
 from services.operator_console.table_models.encounters_table_model import (
@@ -79,11 +83,62 @@ from services.operator_console.workers import OneShotSignals
 # used only for countdown display; the authoritative encounter state
 # transition remains orchestrator-driven.
 _MEASUREMENT_WINDOW_S: float = 30.0
+_SMILE_TIMELINE_WINDOW_S: float = 60.0
 _SESSION_START_SCOPE = "session_start"
 _SESSION_END_SCOPE = "session_end"
 
+WAITING_FOR_DEVICE = "WAITING_FOR_DEVICE"
+WAITING_FOR_FACE = "WAITING_FOR_FACE"
+READY = "READY"
+
+TtvDashboardMode = Literal["gate", "calibrating", "ready"]
+
+_ADB_HEALTH_KEYS = frozenset(
+    {
+        "adb",
+        "android_debug_bridge",
+        "phone",
+        "device",
+    }
+)
+_ML_BACKEND_HEALTH_KEYS = frozenset(
+    {
+        "ml_backend",
+        "ml_worker",
+        "gpu_ml_worker",
+        "inference",
+        "facial_metrics",
+    }
+)
+_AUDIO_CAPTURE_HEALTH_KEYS = frozenset({"audio_capture", "scrcpy_audio"})
+_VIDEO_CAPTURE_HEALTH_KEYS = frozenset({"video_capture", "scrcpy_video"})
+_LIVE_ANALYTICS_HEALTH_KEYS = frozenset({"live_analytics_producer"})
+_LIVE_ANALYTICS_NOTICE = (
+    "No live reward analytics are being produced in this desktop build. ADB/ML health "
+    "and a visible face confirm setup, but smile, semantic, reward, and transcription "
+    "rows require an active desktop-safe inference producer with authoritative stimulus_time."
+)
+
 SessionStartSubmitter = Callable[[SessionCreateRequest], OneShotSignals]
 SessionEndSubmitter = Callable[[UUID, SessionEndRequest], OneShotSignals]
+
+
+@dataclass(frozen=True)
+class SmileTimelinePoint:
+    timestamp_utc: datetime
+    label: str
+    intensity_percent: int | None = None
+    marker: str | None = None
+
+
+@dataclass(frozen=True)
+class TtvSetupDisplay:
+    state: str
+    step_label: str
+    title: str
+    message: str
+    dashboard_mode: TtvDashboardMode
+    detail: str | None = None
 
 
 class LiveSessionViewModel(ViewModelBase):
@@ -92,6 +147,7 @@ class LiveSessionViewModel(ViewModelBase):
     # fmt: off
     selection_changed    = Signal(object)  # str | None (encounter_id)
     action_state_changed = Signal(object)  # StimulusUiContext
+    state_changed        = Signal(str)
     # fmt: on
 
     def __init__(
@@ -110,6 +166,9 @@ class LiveSessionViewModel(ViewModelBase):
         self._end_request_inflight = False
         self._pending_start_session_id: UUID | None = None
         self._pending_end_session_id: UUID | None = None
+        self._ttv_state = WAITING_FOR_DEVICE
+        self._timeline_markers: list[SmileTimelinePoint] = []
+        self._last_marker_action_id: UUID | None = None
 
         # Subscriptions — the VM does not refresh the model on its own
         # tick; it reacts to store mutations the coordinator drives.
@@ -117,6 +176,7 @@ class LiveSessionViewModel(ViewModelBase):
         store.encounters_changed.connect(self._on_encounters_changed)
         store.live_session_changed.connect(self._on_live_session_changed)
         store.stimulus_state_changed.connect(self._on_stimulus_state_changed)
+        store.health_changed.connect(self._on_health_changed)
         store.error_changed.connect(self._on_error)
         store.error_cleared.connect(self._on_error_cleared)
 
@@ -124,6 +184,7 @@ class LiveSessionViewModel(ViewModelBase):
         # is constructed after a first poll has already landed.
         self._sync_encounters_model()
         self._reconcile_session_lifecycle_waiters()
+        self._ttv_state = self._derive_ttv_state()
 
     # ------------------------------------------------------------------
     # Lifecycle binding
@@ -198,6 +259,144 @@ class LiveSessionViewModel(ViewModelBase):
     def expected_greeting(self) -> str | None:
         session = self.session()
         return session.expected_greeting if session is not None else None
+
+    def ttv_state(self) -> str:
+        return self._ttv_state
+
+    def ttv_empty_title(self) -> str:
+        if self._ttv_state == WAITING_FOR_FACE:
+            return "Waiting for face"
+        if self._ttv_state == READY:
+            return "Face locked"
+        return "Waiting for phone"
+
+    def ttv_empty_message(self) -> str:
+        if self._ttv_state == WAITING_FOR_FACE:
+            return "Open a stream or video with a visible face on your phone."
+        if self._ttv_state == READY:
+            return "Face locked. Ready to measure!"
+        return "Waiting for phone... Please connect your Android device via USB."
+
+    def ttv_setup_display(self) -> TtvSetupDisplay:
+        if self._ttv_state == WAITING_FOR_FACE:
+            return TtvSetupDisplay(
+                state=self._ttv_state,
+                step_label="Step 2 of 3",
+                title="Face Tracking calibration",
+                message="Open a stream or video with a visible face on your phone.",
+                dashboard_mode="calibrating",
+                detail=self._face_tracking_detail(),
+            )
+        if self._ttv_state == READY:
+            return TtvSetupDisplay(
+                state=self._ttv_state,
+                step_label="Step 3 of 3",
+                title="Face locked. Ready to measure!",
+                message="Watch Smile Intensity, then send a test message.",
+                dashboard_mode="ready",
+                detail=self._face_tracking_detail(),
+            )
+        adb_kind, adb_text = self.adb_status()
+        detail = self.capture_status_detail()
+        if adb_kind is UiStatusKind.OK:
+            return TtvSetupDisplay(
+                state=self._ttv_state,
+                step_label="Step 1 of 3",
+                title="Phone connected",
+                message="Phone connected. Start or select a Live Session to begin Face Tracking.",
+                dashboard_mode="gate",
+                detail=detail,
+            )
+        return TtvSetupDisplay(
+            state=self._ttv_state,
+            step_label="Step 1 of 3",
+            title="Waiting for phone",
+            message="Waiting for phone... Please connect your Android device via USB.",
+            dashboard_mode="gate",
+            detail=detail,
+        )
+
+    def current_smile_intensity_percent(self) -> int | None:
+        latest = _latest_encounter(self._current_session_encounters())
+        if latest is None:
+            return None
+        return _smile_intensity_percent(latest.p90_intensity)
+
+    def smile_timeline_points(self) -> list[SmileTimelinePoint]:
+        encounters = self._current_session_encounters()
+        latest = _latest_encounter(encounters)
+        anchor = latest.segment_timestamp_utc if latest is not None else None
+        if anchor is None and self._timeline_markers:
+            anchor = max(marker.timestamp_utc for marker in self._timeline_markers)
+        if anchor is None:
+            return []
+        window_start = anchor - timedelta(seconds=_SMILE_TIMELINE_WINDOW_S)
+        points: list[SmileTimelinePoint] = []
+        for encounter in encounters:
+            if encounter.segment_timestamp_utc < window_start:
+                continue
+            points.append(
+                SmileTimelinePoint(
+                    timestamp_utc=encounter.segment_timestamp_utc,
+                    label="Smile Intensity (P90 AU12)",
+                    intensity_percent=_smile_intensity_percent(encounter.p90_intensity),
+                    marker=None,
+                )
+            )
+        for marker in self._timeline_markers:
+            if marker.timestamp_utc >= window_start:
+                points.append(marker)
+        return sorted(points, key=lambda point: point.timestamp_utc)
+
+    def adb_status(self) -> tuple[UiStatusKind, str]:
+        row = self._matching_health_row(_ADB_HEALTH_KEYS)
+        if row is None:
+            return UiStatusKind.NEUTRAL, "ADB unknown"
+        return ui_status_for_health(row), f"ADB {row.state.value}"
+
+    def ml_backend_status(self) -> tuple[UiStatusKind, str]:
+        row = self._matching_health_row(_ML_BACKEND_HEALTH_KEYS)
+        if row is None:
+            return UiStatusKind.NEUTRAL, "ML backend unknown"
+        return ui_status_for_health(row), f"ML backend {row.state.value}"
+
+    def audio_capture_status(self) -> tuple[UiStatusKind, str]:
+        row = self._matching_health_row(_AUDIO_CAPTURE_HEALTH_KEYS)
+        if row is None:
+            return UiStatusKind.NEUTRAL, "Audio capture unknown"
+        return ui_status_for_health(row), f"Audio capture {row.state.value}"
+
+    def video_capture_status(self) -> tuple[UiStatusKind, str]:
+        row = self._matching_health_row(_VIDEO_CAPTURE_HEALTH_KEYS)
+        if row is None:
+            return UiStatusKind.NEUTRAL, "Video capture unknown"
+        return ui_status_for_health(row), f"Video capture {row.state.value}"
+
+    def capture_status_detail(self) -> str:
+        statuses = (
+            self.adb_status()[1],
+            self.audio_capture_status()[1],
+            self.video_capture_status()[1],
+            self.ml_backend_status()[1],
+        )
+        return " · ".join(statuses)
+
+    def live_analytics_status(self) -> tuple[UiStatusKind, str]:
+        row = self._matching_health_row(_LIVE_ANALYTICS_HEALTH_KEYS)
+        if row is None:
+            return UiStatusKind.NEUTRAL, "Live analytics unknown"
+        return ui_status_for_health(row), f"Live analytics {row.state.value}"
+
+    def has_live_encounter_analytics(self) -> bool:
+        return bool(self._current_session_encounters())
+
+    def live_analytics_notice(self) -> str | None:
+        if self.session() is None or self.has_live_encounter_analytics():
+            return None
+        kind, _text = self.live_analytics_status()
+        if kind is UiStatusKind.NEUTRAL or kind is UiStatusKind.OK:
+            return None
+        return _LIVE_ANALYTICS_NOTICE
 
     def validate_start_session_inputs(
         self,
@@ -356,7 +555,7 @@ class LiveSessionViewModel(ViewModelBase):
             state=StimulusActionState.SUBMITTING,
             client_action_id=action_id,
             operator_note=note,
-            submitted_at_utc=None,
+            submitted_at_utc=datetime.now(UTC),
             accepted_at_utc=None,
             authoritative_stimulus_time_utc=None,
         )
@@ -492,6 +691,8 @@ class LiveSessionViewModel(ViewModelBase):
 
     def _on_selected_session_changed(self, _session_id: object) -> None:
         self._sync_encounters_model()
+        self._timeline_markers.clear()
+        self._last_marker_action_id = None
         if (
             self._selected_encounter_id is not None
             and self._encounters_model.encounter_by_id(self._selected_encounter_id) is None
@@ -501,6 +702,7 @@ class LiveSessionViewModel(ViewModelBase):
         if self._store.stimulus_ui_context().state != StimulusActionState.IDLE:
             self._store.set_stimulus_ui_context(StimulusUiContext())
         self._reconcile_session_lifecycle_waiters()
+        self._transition_ttv_state()
         self.emit_changed()
 
     def _on_encounters_changed(self, rows: object) -> None:
@@ -522,18 +724,25 @@ class LiveSessionViewModel(ViewModelBase):
         ):
             self._selected_encounter_id = None
             self.selection_changed.emit(None)
+        self._transition_ttv_state()
         self.emit_changed()
 
     def _on_live_session_changed(self, _session: object) -> None:
         # Arm / expected greeting / session-end readback may have moved.
         self._reconcile_session_lifecycle_waiters()
+        self._transition_ttv_state()
         self.emit_changed()
 
     def _on_stimulus_state_changed(self, ctx: object) -> None:
         if isinstance(ctx, StimulusUiContext):
+            self._record_timeline_marker(ctx)
             self.action_state_changed.emit(ctx)
         else:
             self.action_state_changed.emit(self._store.stimulus_ui_context())
+        self.emit_changed()
+
+    def _on_health_changed(self, _snapshot: object) -> None:
+        self._transition_ttv_state()
         self.emit_changed()
 
     def _on_error(self, scope: str, message: str) -> None:
@@ -608,6 +817,61 @@ class LiveSessionViewModel(ViewModelBase):
 
     def _sync_encounters_model(self) -> None:
         self._encounters_model.set_rows(self._current_session_encounters())
+
+    def _derive_ttv_state(self) -> str:
+        adb_row = self._matching_health_row(_ADB_HEALTH_KEYS)
+        if adb_row is not None and ui_status_for_health(adb_row) is not UiStatusKind.OK:
+            return WAITING_FOR_DEVICE
+        if self.session() is None:
+            return WAITING_FOR_DEVICE
+        if not self.operator_ready_for_submit():
+            return WAITING_FOR_FACE
+        return READY
+
+    def _transition_ttv_state(self) -> None:
+        next_state = self._derive_ttv_state()
+        if next_state == self._ttv_state:
+            return
+        self._ttv_state = next_state
+        self.state_changed.emit(next_state)
+
+    def _record_timeline_marker(self, ctx: StimulusUiContext) -> None:
+        if ctx.state != StimulusActionState.SUBMITTING or ctx.client_action_id is None:
+            return
+        if ctx.client_action_id == self._last_marker_action_id:
+            return
+        self._last_marker_action_id = ctx.client_action_id
+        timestamp = ctx.submitted_at_utc or datetime.now(UTC)
+        self._timeline_markers.append(
+            SmileTimelinePoint(
+                timestamp_utc=timestamp,
+                label="Test message requested",
+                marker="Test message requested",
+            )
+        )
+
+    def _face_tracking_detail(self) -> str | None:
+        session = self.session()
+        if session is None:
+            return None
+        accumulated = session.calibration_frames_accumulated
+        required = session.calibration_frames_required
+        if accumulated is None or required is None:
+            return None
+        current = min(max(accumulated, 0), required)
+        return f"Face Tracking calibration · {current}/{required} frames"
+
+    def _matching_health_row(
+        self,
+        keys: frozenset[str],
+    ) -> HealthSubsystemStatus | None:
+        snapshot = self._store.health()
+        if snapshot is None:
+            return None
+        for row in snapshot.subsystems:
+            if row.subsystem_key.lower() in keys:
+                return row
+        return None
 
     def _current_session_encounters(
         self,
@@ -685,6 +949,19 @@ def _latest_completed_encounter(
     if not completed:
         return None
     return max(completed, key=lambda e: e.segment_timestamp_utc)
+
+
+def _latest_encounter(encounters: list[EncounterSummary]) -> EncounterSummary | None:
+    if not encounters:
+        return None
+    return max(encounters, key=lambda e: e.segment_timestamp_utc)
+
+
+def _smile_intensity_percent(value: float | None) -> int | None:
+    if value is None:
+        return None
+    scaled = value * 100.0 if 0.0 <= value <= 1.0 else value
+    return round(min(max(scaled, 0.0), 100.0))
 
 
 def _error_message(error: object, *, default: str) -> str:

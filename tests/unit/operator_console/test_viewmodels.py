@@ -104,11 +104,12 @@ def _encounter(
     frames: int | None = 150,
     stimulus_time: datetime | None = None,
     session_id: UUID | None = None,
+    segment_timestamp_utc: datetime = _NOW,
 ) -> EncounterSummary:
     return EncounterSummary(
         encounter_id=encounter_id,
         session_id=session_id or uuid4(),
-        segment_timestamp_utc=_NOW,
+        segment_timestamp_utc=segment_timestamp_utc,
         state=state,
         active_arm="greeting_v1",
         expected_greeting="hei rakas",
@@ -257,6 +258,218 @@ def test_live_session_vm_surfaces_active_arm_from_live_session() -> None:
     assert vm.expected_greeting() == "hei rakas"
 
 
+def test_live_session_vm_ttv_state_waits_for_live_session_readback() -> None:
+    store = OperatorStore()
+    vm = LiveSessionViewModel(store, EncountersTableModel())
+    assert vm.ttv_state() == "WAITING_FOR_DEVICE"
+    assert (
+        vm.ttv_empty_message() == "Waiting for phone... Please connect your Android device via USB."
+    )
+    display = vm.ttv_setup_display()
+    assert display.step_label == "Step 1 of 3"
+    assert display.dashboard_mode == "gate"
+    assert display.title == "Waiting for phone"
+
+    selected_session_id = uuid4()
+    store.set_selected_session_id(selected_session_id)
+    store.set_live_session(_session(uuid4()))
+    assert vm.ttv_state() == "WAITING_FOR_DEVICE"
+
+
+def test_live_session_vm_ttv_gate_surfaces_connected_capture_until_session_readback() -> None:
+    store = OperatorStore()
+    vm = LiveSessionViewModel(store, EncountersTableModel())
+    emissions: list[str] = []
+    vm.state_changed.connect(emissions.append)
+
+    store.set_health(
+        HealthSnapshot(
+            generated_at_utc=_NOW,
+            overall_state=HealthState.OK,
+            subsystems=[
+                HealthSubsystemStatus(
+                    subsystem_key="adb",
+                    label="Android Device Bridge",
+                    state=HealthState.OK,
+                ),
+                HealthSubsystemStatus(
+                    subsystem_key="audio_capture",
+                    label="Audio Capture",
+                    state=HealthState.OK,
+                ),
+                HealthSubsystemStatus(
+                    subsystem_key="video_capture",
+                    label="Video Capture",
+                    state=HealthState.OK,
+                ),
+            ],
+        )
+    )
+
+    assert vm.ttv_state() == "WAITING_FOR_DEVICE"
+    display = vm.ttv_setup_display()
+    assert display.title == "Phone connected"
+    assert display.message == (
+        "Phone connected. Start or select a Live Session to begin Face Tracking."
+    )
+    assert display.detail == ("ADB ok · Audio capture ok · Video capture ok · ML backend unknown")
+    assert emissions == []
+
+
+def test_live_session_vm_ttv_state_waits_for_face_until_calibration_ready() -> None:
+    store = OperatorStore()
+    selected_session_id = uuid4()
+    store.set_selected_session_id(selected_session_id)
+    vm = LiveSessionViewModel(store, EncountersTableModel())
+    emissions: list[str] = []
+    vm.state_changed.connect(emissions.append)
+
+    store.set_live_session(
+        _session(
+            selected_session_id,
+            is_calibrating=True,
+            calibration_frames_accumulated=12,
+            calibration_frames_required=45,
+        )
+    )
+    assert vm.ttv_state() == "WAITING_FOR_FACE"
+    assert vm.ttv_empty_message() == "Open a stream or video with a visible face on your phone."
+    display = vm.ttv_setup_display()
+    assert display.step_label == "Step 2 of 3"
+    assert display.dashboard_mode == "calibrating"
+    assert display.title == "Face Tracking calibration"
+    assert display.detail == "Face Tracking calibration · 12/45 frames"
+
+    store.set_live_session(
+        _session(
+            selected_session_id,
+            is_calibrating=True,
+            calibration_frames_accumulated=45,
+            calibration_frames_required=45,
+        )
+    )
+    assert vm.ttv_state() == "READY"
+    display = vm.ttv_setup_display()
+    assert display.step_label == "Step 3 of 3"
+    assert display.dashboard_mode == "ready"
+    assert display.title == "Face locked. Ready to measure!"
+    assert display.message == "Watch Smile Intensity, then send a test message."
+    assert emissions == ["WAITING_FOR_FACE", "READY"]
+
+
+def test_live_session_vm_smile_timeline_points_include_rolling_window_and_marker() -> None:
+    store = OperatorStore()
+    session_id = uuid4()
+    store.set_selected_session_id(session_id)
+    store.set_live_session(_session(session_id))
+    vm = LiveSessionViewModel(store, EncountersTableModel())
+    store.set_encounters(
+        [
+            _encounter("old", session_id=session_id, p90=0.1, segment_timestamp_utc=_NOW),
+            _encounter(
+                "latest",
+                session_id=session_id,
+                p90=1.5,
+                segment_timestamp_utc=_NOW + timedelta(seconds=90),
+            ),
+        ]
+    )
+    store.set_stimulus_ui_context(
+        StimulusUiContext(
+            state=StimulusActionState.SUBMITTING,
+            client_action_id=uuid4(),
+            submitted_at_utc=_NOW + timedelta(seconds=91),
+        )
+    )
+    store.set_stimulus_ui_context(store.stimulus_ui_context())
+
+    points = vm.smile_timeline_points()
+    assert [point.label for point in points] == [
+        "Smile Intensity (P90 AU12)",
+        "Test message requested",
+    ]
+    assert points[0].intensity_percent == 2
+    assert points[1].marker == "Test message requested"
+    assert vm.current_smile_intensity_percent() == 2
+
+
+def test_live_session_vm_does_not_treat_capture_supervisor_as_adb() -> None:
+    store = OperatorStore()
+    vm = LiveSessionViewModel(store, EncountersTableModel())
+    store.set_health(
+        HealthSnapshot(
+            generated_at_utc=_NOW,
+            overall_state=HealthState.OK,
+            subsystems=[
+                HealthSubsystemStatus(
+                    subsystem_key="capture_supervisor",
+                    label="Capture supervisor",
+                    state=HealthState.OK,
+                )
+            ],
+        )
+    )
+
+    assert vm.adb_status() == (UiStatusKind.NEUTRAL, "ADB unknown")
+    assert vm.ttv_setup_display().title == "Waiting for phone"
+
+
+def test_live_session_vm_health_helpers_map_adb_ml_and_live_analytics() -> None:
+    store = OperatorStore()
+    vm = LiveSessionViewModel(store, EncountersTableModel())
+    assert vm.adb_status() == (UiStatusKind.NEUTRAL, "ADB unknown")
+    assert vm.audio_capture_status() == (UiStatusKind.NEUTRAL, "Audio capture unknown")
+    assert vm.video_capture_status() == (UiStatusKind.NEUTRAL, "Video capture unknown")
+    assert vm.ml_backend_status() == (UiStatusKind.NEUTRAL, "ML backend unknown")
+    assert vm.live_analytics_status() == (
+        UiStatusKind.NEUTRAL,
+        "Live analytics unknown",
+    )
+
+    store.set_health(
+        HealthSnapshot(
+            generated_at_utc=_NOW,
+            overall_state=HealthState.DEGRADED,
+            degraded_count=1,
+            subsystems=[
+                HealthSubsystemStatus(
+                    subsystem_key="adb",
+                    label="Android Device Bridge",
+                    state=HealthState.OK,
+                ),
+                HealthSubsystemStatus(
+                    subsystem_key="audio_capture",
+                    label="Audio Capture",
+                    state=HealthState.OK,
+                ),
+                HealthSubsystemStatus(
+                    subsystem_key="video_capture",
+                    label="Video Capture",
+                    state=HealthState.DEGRADED,
+                ),
+                HealthSubsystemStatus(
+                    subsystem_key="gpu_ml_worker",
+                    label="GPU ML worker",
+                    state=HealthState.ERROR,
+                ),
+                HealthSubsystemStatus(
+                    subsystem_key="live_analytics_producer",
+                    label="Live Analytics Producer",
+                    state=HealthState.DEGRADED,
+                ),
+            ],
+        )
+    )
+    assert vm.adb_status() == (UiStatusKind.OK, "ADB ok")
+    assert vm.audio_capture_status() == (UiStatusKind.OK, "Audio capture ok")
+    assert vm.video_capture_status() == (UiStatusKind.WARN, "Video capture degraded")
+    assert vm.ml_backend_status() == (UiStatusKind.ERROR, "ML backend error")
+    assert vm.live_analytics_status() == (
+        UiStatusKind.WARN,
+        "Live analytics degraded",
+    )
+
+
 def test_live_session_vm_surfaces_calibration_status_from_live_session() -> None:
     store = OperatorStore()
     model = EncountersTableModel()
@@ -303,6 +516,64 @@ def test_live_session_vm_false_and_none_calibration_are_submit_ready() -> None:
         assert vm.is_calibrating() is False
         assert vm.operator_ready_for_submit() is True
         assert vm.calibration_status() == (UiStatusKind.OK, "Ready")
+
+
+def test_live_session_vm_missing_calibration_frames_are_submit_ready() -> None:
+    store = OperatorStore()
+    session_id = uuid4()
+    store.set_selected_session_id(session_id)
+    model = EncountersTableModel()
+    vm = LiveSessionViewModel(store, model)
+
+    store.set_live_session(_session(session_id, is_calibrating=True))
+
+    assert vm.operator_ready_for_submit() is True
+    assert vm.calibration_status() == (UiStatusKind.OK, "Ready")
+    assert vm.ttv_state() == "READY"
+
+
+def test_live_session_vm_exposes_no_producer_notice_without_blocking_ready() -> None:
+    store = OperatorStore()
+    session_id = uuid4()
+    store.set_selected_session_id(session_id)
+    vm = LiveSessionViewModel(store, EncountersTableModel())
+
+    store.set_live_session(_session(session_id, is_calibrating=True))
+    store.set_health(
+        HealthSnapshot(
+            generated_at_utc=_NOW,
+            overall_state=HealthState.DEGRADED,
+            degraded_count=1,
+            subsystems=[
+                HealthSubsystemStatus(
+                    subsystem_key="adb",
+                    label="Android Device Bridge",
+                    state=HealthState.OK,
+                ),
+                HealthSubsystemStatus(
+                    subsystem_key="gpu_ml_worker",
+                    label="GPU ML worker",
+                    state=HealthState.OK,
+                ),
+                HealthSubsystemStatus(
+                    subsystem_key="live_analytics_producer",
+                    label="Live Analytics Producer",
+                    state=HealthState.DEGRADED,
+                ),
+            ],
+        )
+    )
+
+    assert vm.ttv_state() == "READY"
+    assert vm.has_live_encounter_analytics() is False
+    notice = vm.live_analytics_notice()
+    assert notice is not None
+    assert "No live reward analytics" in notice
+    assert "authoritative stimulus_time" in notice
+
+    store.set_encounters([_encounter("e1", session_id=session_id)])
+    assert vm.has_live_encounter_analytics() is True
+    assert vm.live_analytics_notice() is None
 
 
 def test_live_session_vm_reward_explanation_for_gate_closed() -> None:

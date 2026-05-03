@@ -29,7 +29,8 @@ from services.desktop_app.cloud.experiment_bundle import (
 from services.desktop_app.state.sqlite_schema import bootstrap_schema
 
 ISSUED_AT = datetime(2026, 5, 2, 12, 0, tzinfo=UTC)
-APPLIED_AT = datetime(2026, 5, 2, 13, 0, tzinfo=UTC)
+EXPIRES_AT = datetime(2036, 5, 3, 12, 0, tzinfo=UTC)
+APPLIED_AT = datetime(2036, 5, 2, 13, 0, tzinfo=UTC)
 SECRET = "bundle-secret"
 
 
@@ -37,7 +38,7 @@ def _payload(*, arms: list[ExperimentBundleArm] | None = None) -> ExperimentBund
     return ExperimentBundlePayload(
         bundle_id="bundle-a",
         issued_at_utc=ISSUED_AT,
-        expires_at_utc=ISSUED_AT + timedelta(hours=24),
+        expires_at_utc=EXPIRES_AT,
         policy_version="v4.0",
         experiments=[
             ExperimentBundleExperiment(
@@ -92,6 +93,7 @@ def test_verify_bundle_accepts_hmac_signed_canonical_json() -> None:
     verify_bundle(
         _signed_bundle(),
         config=BundleVerificationConfig(signature_mode="hmac-sha256", hmac_secret=SECRET),
+        now_utc=ISSUED_AT + timedelta(hours=1),
     )
 
 
@@ -103,6 +105,7 @@ def test_verify_bundle_accepts_ed25519_signed_canonical_json() -> None:
         config=BundleVerificationConfig(
             ed25519_public_key=encode_ed25519_public_key(private_key.public_key()).encode("utf-8")
         ),
+        now_utc=ISSUED_AT + timedelta(hours=1),
     )
 
 
@@ -110,7 +113,11 @@ def test_verify_bundle_requires_explicit_ed25519_public_key() -> None:
     bundle, _private_key = _ed25519_signed_bundle()
 
     with pytest.raises(ExperimentBundleVerificationError, match="Ed25519"):
-        verify_bundle(bundle, config=BundleVerificationConfig())
+        verify_bundle(
+            bundle,
+            config=BundleVerificationConfig(),
+            now_utc=ISSUED_AT + timedelta(hours=1),
+        )
 
 
 def test_verify_bundle_rejects_expired_bundle() -> None:
@@ -135,11 +142,13 @@ def test_verify_bundle_rejects_bad_or_missing_signatures() -> None:
         verify_bundle(
             tampered,
             config=BundleVerificationConfig(signature_mode="hmac-sha256", hmac_secret=SECRET),
+            now_utc=ISSUED_AT + timedelta(hours=1),
         )
     with pytest.raises(ExperimentBundleVerificationError):
         verify_bundle(
             unsigned,
             config=BundleVerificationConfig(signature_mode="hmac-sha256", hmac_secret=SECRET),
+            now_utc=ISSUED_AT + timedelta(hours=1),
         )
 
 
@@ -154,6 +163,7 @@ def test_verify_bundle_rejects_bad_ed25519_signature() -> None:
                     "utf-8"
                 )
             ),
+            now_utc=ISSUED_AT + timedelta(hours=1),
         )
 
 
@@ -234,15 +244,15 @@ def test_cache_verified_bundle_upserts_arms_and_disables_missing_arms(tmp_path: 
     }
     conn.close()
 
-    assert rows["arm-a"] == ("Updated A", 4.0, 5.0, 1, None, "2026-05-02T13:00:00Z")
-    assert rows["arm-b"] == ("Hello B", 6.0, 7.0, 1, None, "2026-05-02T13:00:00Z")
+    assert rows["arm-a"] == ("Updated A", 4.0, 5.0, 1, None, "2036-05-02T13:00:00Z")
+    assert rows["arm-b"] == ("Hello B", 6.0, 7.0, 1, None, "2036-05-02T13:00:00Z")
     assert rows["missing-arm"] == (
         "Old",
         1.0,
         1.0,
         0,
-        "2026-05-02T13:00:00Z",
-        "2026-05-02T13:00:00Z",
+        "2036-05-02T13:00:00Z",
+        "2036-05-02T13:00:00Z",
     )
 
 

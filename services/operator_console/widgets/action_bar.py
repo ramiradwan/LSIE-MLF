@@ -37,11 +37,11 @@ from services.operator_console.widgets.status_pill import StatusPill
 # mapping is UI-semantic, not operator-language; formatters are about
 # translating DTO values, not widget internal states.
 _BUTTON_LABEL: dict[StimulusActionState, str] = {
-    StimulusActionState.IDLE: "Send stimulus",
+    StimulusActionState.IDLE: "Send Test Message",
     StimulusActionState.SUBMITTING: "Sending…",
     StimulusActionState.ACCEPTED: "Accepted",
     StimulusActionState.MEASURING: "Measuring…",
-    StimulusActionState.COMPLETED: "Send stimulus",
+    StimulusActionState.COMPLETED: "Send Test Message",
     StimulusActionState.FAILED: "Retry",
 }
 

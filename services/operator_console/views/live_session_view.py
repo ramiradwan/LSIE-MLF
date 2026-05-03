@@ -27,8 +27,17 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import UTC, datetime
+from typing import Any
 
-from PySide6.QtCore import Qt, QTimer, Signal, Slot
+from PySide6.QtCore import (
+    QAbstractTableModel,
+    QModelIndex,
+    QPersistentModelIndex,
+    Qt,
+    QTimer,
+    Signal,
+    Slot,
+)
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QDialog,
@@ -64,9 +73,13 @@ from services.operator_console.formatters import (
     format_timestamp,
     truncate_expected_greeting,
 )
-from services.operator_console.viewmodels.live_session_vm import LiveSessionViewModel
+from services.operator_console.viewmodels.live_session_vm import (
+    LiveSessionViewModel,
+    TtvSetupDisplay,
+)
 from services.operator_console.widgets.alert_banner import AlertBanner
 from services.operator_console.widgets.empty_state import EmptyStateWidget
+from services.operator_console.widgets.event_timeline import EventTimelineWidget
 from services.operator_console.widgets.metric_card import MetricCard
 from services.operator_console.widgets.section_header import SectionHeader
 from services.operator_console.widgets.status_pill import StatusPill
@@ -95,10 +108,12 @@ class LiveSessionView(QWidget):
 
         self._header = SectionHeader(
             "Live Session",
-            "Encounter timeline with per-segment reward explanation.",
+            "Get from connected phone to first smile signal with transparent trust readback.",
             self,
         )
         self._session_panel = _SessionHeaderPanel(self)
+        self._adb_pill = StatusPill(self)
+        self._ml_pill = StatusPill(self)
         self._error_banner = AlertBanner(self)
         self._empty_state = EmptyStateWidget(self)
         self._empty_state.set_title("No session selected")
@@ -106,22 +121,56 @@ class LiveSessionView(QWidget):
             "Pick a session from Overview or Sessions, or start a new session here."
         )
 
+        self._setup_overlay = _TtvSetupOverlay(self)
+        self._phone_preview = _PhonePreviewPanel(self)
+        self._smile_card = MetricCard("Smile Intensity", self)
+        self._live_analytics_notice = AlertBanner(self)
+        self._timeline_model = _LiveSessionTimelineModel(self)
+        self._timeline = EventTimelineWidget(self)
+        self._timeline.set_model(self._timeline_model)
         self._table = self._build_table()
         self._detail_panel = _EncounterDetailPanel(self)
 
-        body = QVBoxLayout()
-        body.setContentsMargins(0, 0, 0, 0)
-        body.setSpacing(14)
-        body.addWidget(self._table, 2)
-        body.addWidget(self._detail_panel, 3)
+        header_status = QHBoxLayout()
+        header_status.setContentsMargins(0, 0, 0, 0)
+        header_status.setSpacing(16)
+        header_status.addWidget(self._header, 1)
+        header_status.addWidget(self._adb_pill)
+        header_status.addWidget(self._ml_pill)
+
+        dashboard_grid = QGridLayout()
+        dashboard_grid.setContentsMargins(0, 0, 0, 0)
+        dashboard_grid.setHorizontalSpacing(14)
+        dashboard_grid.setVerticalSpacing(14)
+        dashboard_grid.addWidget(self._phone_preview, 0, 0, 2, 1)
+        dashboard_grid.addWidget(self._smile_card, 0, 1)
+        dashboard_grid.addWidget(self._timeline, 1, 1)
+        dashboard_grid.setColumnStretch(0, 2)
+        dashboard_grid.setColumnStretch(1, 3)
+        dashboard_grid.setRowStretch(1, 1)
+
+        self._trust_label = QLabel("Secondary trust data", self)
+        self._trust_label.setObjectName("PanelTitle")
+        trust_layout = QVBoxLayout()
+        trust_layout.setContentsMargins(0, 0, 0, 0)
+        trust_layout.setSpacing(10)
+        trust_layout.addWidget(self._trust_label)
+        trust_layout.addWidget(self._table, 2)
+        trust_layout.addWidget(self._detail_panel, 3)
 
         self._body_container = QWidget(self)
-        self._body_container.setLayout(body)
+        body = QVBoxLayout(self._body_container)
+        body.setContentsMargins(0, 0, 0, 0)
+        body.setSpacing(14)
+        body.addWidget(self._setup_overlay)
+        body.addWidget(self._live_analytics_notice)
+        body.addLayout(dashboard_grid, 2)
+        body.addLayout(trust_layout, 3)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 24, 24, 24)
         layout.setSpacing(14)
-        layout.addWidget(self._header)
+        layout.addLayout(header_status)
         layout.addWidget(self._error_banner)
         layout.addWidget(self._session_panel)
         layout.addWidget(self._empty_state)
@@ -137,6 +186,7 @@ class LiveSessionView(QWidget):
 
         # Subscriptions — the VM fans out all relevant store changes.
         self._vm.changed.connect(self._refresh)
+        self._vm.state_changed.connect(self._on_state_changed)
         self._vm.error_changed.connect(self._on_error_changed)
         self._vm.selection_changed.connect(self._on_vm_selection_changed)
         self._vm.action_state_changed.connect(self._on_action_state_changed)
@@ -201,13 +251,24 @@ class LiveSessionView(QWidget):
             start_in_progress=self._vm.session_start_in_progress(),
             end_in_progress=self._vm.session_end_in_progress(),
         )
-        if session is None:
-            self._empty_state.setVisible(True)
+        self._set_status_pill(self._adb_pill, self._vm.adb_status())
+        self._set_status_pill(self._ml_pill, self._vm.ml_backend_status())
+        setup_display = self._vm.ttv_setup_display()
+        if setup_display.dashboard_mode == "gate":
+            self._set_setup_gate(setup_display)
             self._body_container.setVisible(False)
             self._sync_countdown_timer()
             return
         self._empty_state.setVisible(False)
         self._body_container.setVisible(True)
+        self._set_setup_overlay(setup_display)
+        self._set_dashboard_muted(setup_display.dashboard_mode == "calibrating")
+        self._set_phone_preview_status(setup_display.dashboard_mode)
+        live_analytics_notice = self._vm.live_analytics_notice()
+        self._set_live_analytics_notice(live_analytics_notice)
+        self._set_smile_card(self._vm.current_smile_intensity_percent(), live_analytics_notice)
+        self._timeline_model.set_rows(self._vm.smile_timeline_points())
+        self._timeline.scroll_to_latest()
 
         selected = self._vm.selected_encounter()
         if selected is None:
@@ -225,6 +286,75 @@ class LiveSessionView(QWidget):
             self._vm.semantic_attribution_diagnostics_for_encounter(selected),
         )
         self._sync_countdown_timer()
+
+    def _set_setup_gate(self, display: TtvSetupDisplay) -> None:
+        self._empty_state.set_title(display.title)
+        message = display.message
+        if display.detail is not None:
+            message = f"{message}\n\n{display.detail}"
+        self._empty_state.set_message(message)
+        self._empty_state.setVisible(True)
+        self._setup_overlay.setVisible(False)
+        self._set_dashboard_muted(False)
+        self._set_phone_preview_status(display.dashboard_mode)
+
+    def _set_setup_overlay(self, display: TtvSetupDisplay) -> None:
+        if display.dashboard_mode == "ready":
+            self._setup_overlay.setVisible(False)
+            return
+        self._setup_overlay.set_display(display)
+        self._setup_overlay.setVisible(True)
+
+    def _set_dashboard_muted(self, enabled: bool) -> None:
+        widgets = (
+            self._phone_preview,
+            self._smile_card,
+            self._timeline,
+            self._trust_label,
+            self._table,
+            self._detail_panel,
+        )
+        for widget in widgets:
+            widget.setEnabled(not enabled)
+        self._body_container.setObjectName("ContentSurfaceMuted" if enabled else "")
+
+    def _set_phone_preview_status(self, mode: str) -> None:
+        if mode == "calibrating":
+            self._phone_preview.set_status(
+                "Keep the phone stream visible while Face Tracking calibrates."
+            )
+            return
+        if mode == "ready":
+            self._phone_preview.set_status("Watch Smile Intensity after each test message.")
+            return
+        self._phone_preview.set_status("Phone preview pending")
+
+    def _set_status_pill(self, pill: StatusPill, value: object) -> None:
+        if isinstance(value, tuple) and len(value) == 2 and isinstance(value[0], UiStatusKind):
+            pill.set_kind(value[0])
+            pill.set_text(str(value[1]))
+            return
+        pill.set_kind(UiStatusKind.NEUTRAL)
+        pill.set_text(str(value))
+
+    def _set_live_analytics_notice(self, message: str | None) -> None:
+        if message is None:
+            self._live_analytics_notice.set_alert(None, None)
+            return
+        self._live_analytics_notice.set_alert(AlertSeverity.INFO, message)
+
+    def _set_smile_card(self, value: int | None, live_analytics_notice: str | None) -> None:
+        if value is None:
+            self._smile_card.set_primary_text("—")
+            if live_analytics_notice is None:
+                self._smile_card.set_secondary_text("Waiting for first valid smile window")
+            else:
+                self._smile_card.set_secondary_text("Live analytics producer unavailable")
+            self._smile_card.set_status(UiStatusKind.NEUTRAL, None)
+            return
+        self._smile_card.set_primary_text(f"{value}%")
+        self._smile_card.set_secondary_text("Latest valid P90 AU12 smile window")
+        self._smile_card.set_status(UiStatusKind.OK, "ready")
 
     def _sync_countdown_timer(self) -> None:
         """Start/stop the 1s countdown based on stimulus state."""
@@ -294,6 +424,10 @@ class LiveSessionView(QWidget):
     # Error + action-state slots
     # ------------------------------------------------------------------
 
+    @Slot(str)
+    def _on_state_changed(self, _state: str) -> None:
+        self._refresh()
+
     def _on_error_changed(self, message: str) -> None:
         if message:
             self._error_banner.set_alert(AlertSeverity.WARNING, message)
@@ -325,6 +459,137 @@ class LiveSessionView(QWidget):
 # ----------------------------------------------------------------------
 # Panels — small helper widgets kept private to this module
 # ----------------------------------------------------------------------
+
+
+class _LiveSessionTimelineModel(QAbstractTableModel):
+    _HEADERS = ("Time", "Event", "Signal")
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._rows: list[object] = []
+
+    def set_rows(self, rows: object) -> None:
+        self.beginResetModel()
+        self._rows = list(rows) if isinstance(rows, list | tuple) else []
+        self.endResetModel()
+
+    def rowCount(  # noqa: N802 — Qt override
+        self,
+        parent: QModelIndex | QPersistentModelIndex = QModelIndex(),  # noqa: B008
+    ) -> int:
+        if parent.isValid():
+            return 0
+        return len(self._rows)
+
+    def columnCount(  # noqa: N802 — Qt override
+        self,
+        parent: QModelIndex | QPersistentModelIndex = QModelIndex(),  # noqa: B008
+    ) -> int:
+        if parent.isValid():
+            return 0
+        return len(self._HEADERS)
+
+    def data(
+        self,
+        index: QModelIndex | QPersistentModelIndex,
+        role: int = Qt.ItemDataRole.DisplayRole,
+    ) -> Any:
+        if not index.isValid() or role != Qt.ItemDataRole.DisplayRole:
+            return None
+        row = self._rows[index.row()]
+        if index.column() == 0:
+            timestamp = _timeline_value(row, "timestamp_utc")
+            if isinstance(timestamp, datetime):
+                return format_timestamp(timestamp)
+            return str(timestamp) if timestamp is not None else "—"
+        if index.column() == 1:
+            return _timeline_text(row, "label")
+        if index.column() == 2:
+            intensity = _timeline_value(row, "intensity_percent")
+            marker = _timeline_value(row, "marker")
+            if intensity is not None:
+                return f"{intensity}%"
+            return str(marker) if marker is not None else "—"
+        return None
+
+    def headerData(  # noqa: N802 — Qt override
+        self,
+        section: int,
+        orientation: Qt.Orientation,
+        role: int = Qt.ItemDataRole.DisplayRole,
+    ) -> Any:
+        if orientation == Qt.Orientation.Horizontal and role == Qt.ItemDataRole.DisplayRole:
+            return self._HEADERS[section]
+        return None
+
+
+class _TtvSetupOverlay(QFrame):
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("Panel")
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        self._step_label = QLabel("", self)
+        self._step_label.setObjectName("MetricCardSecondary")
+        self._title = QLabel("", self)
+        self._title.setObjectName("PanelTitle")
+        self._message = QLabel("", self)
+        self._message.setObjectName("MetricCardPrimary")
+        self._message.setWordWrap(True)
+        self._detail = QLabel("", self)
+        self._detail.setObjectName("MetricCardSecondary")
+        self._detail.setWordWrap(True)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 14, 16, 14)
+        layout.setSpacing(6)
+        layout.addWidget(self._step_label)
+        layout.addWidget(self._title)
+        layout.addWidget(self._message)
+        layout.addWidget(self._detail)
+
+    def set_display(self, display: TtvSetupDisplay) -> None:
+        self._step_label.setText(display.step_label)
+        self._title.setText(display.title)
+        self._message.setText(display.message)
+        self._detail.setText(display.detail or "")
+        self._detail.setVisible(display.detail is not None)
+
+
+class _PhonePreviewPanel(QFrame):
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("Panel")
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        self._title = QLabel("Phone preview", self)
+        self._title.setObjectName("PanelTitle")
+        self._placeholder = QLabel("Preview placeholder", self)
+        self._placeholder.setObjectName("MetricCardPrimary")
+        self._placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._placeholder.setMinimumHeight(220)
+        self._status = QLabel("Phone preview pending", self)
+        self._status.setObjectName("MetricCardSecondary")
+        self._status.setWordWrap(True)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 12, 16, 16)
+        layout.setSpacing(8)
+        layout.addWidget(self._title)
+        layout.addWidget(self._placeholder, 1)
+        layout.addWidget(self._status)
+
+    def set_status(self, text: str) -> None:
+        self._status.setText(text)
+
+
+def _timeline_value(row: object, name: str) -> object:
+    if isinstance(row, dict):
+        return row.get(name)
+    return getattr(row, name, None)
+
+
+def _timeline_text(row: object, name: str) -> str:
+    value = _timeline_value(row, name)
+    return str(value) if value is not None else "—"
 
 
 class _StartSessionDialog(QDialog):

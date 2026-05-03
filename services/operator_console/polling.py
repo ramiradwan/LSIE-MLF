@@ -33,7 +33,8 @@ Spec references:
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Container
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime
 from time import monotonic
@@ -59,6 +60,7 @@ from packages.schemas.operator_console import (
     OverviewSnapshot,
     SessionCreateRequest,
     SessionEndRequest,
+    SessionLifecycleAccepted,
     SessionPhysiologySnapshot,
     SessionSummary,
     StimulusRequest,
@@ -97,13 +99,14 @@ class PollJobSpec:
     """Static description of a polling job.
 
     `route_scoped=None` means "always run while the coordinator is
-    started". A non-None value means the job only runs while the named
-    route is active; switching away stops it until the operator returns.
+    started". A single route or route collection means the job only runs
+    while one of those routes is active; switching away stops it until the
+    operator returns.
     """
 
     name: str
     interval_ms: int
-    route_scoped: AppRoute | None = None
+    route_scoped: AppRoute | Container[AppRoute] | None = None
     session_scoped: bool = False
 
 
@@ -284,12 +287,21 @@ class PollingCoordinator(QObject):
         handle_key = str(request.client_action_id)
         self._inflight_session_lifecycle[handle_key] = signals
 
-        def on_succeeded(_job: str, _payload: object) -> None:
+        def on_succeeded(_job: str, payload: object) -> None:
             self._store.clear_error(JOB_SESSION_START)
-            # Starting a new session selects a different session id in the
-            # VM after acceptance, which restarts the session-scoped jobs.
-            # Refresh only the non-session-scoped surfaces here.
-            for target in (JOB_OVERVIEW, JOB_SESSIONS, JOB_ALERTS):
+            if (
+                isinstance(payload, SessionLifecycleAccepted)
+                and payload.accepted
+                and payload.action == "start"
+            ):
+                self._store.set_selected_session_id(payload.session_id)
+            for target in (
+                JOB_OVERVIEW,
+                JOB_SESSIONS,
+                JOB_LIVE_SESSION,
+                JOB_ENCOUNTERS,
+                JOB_ALERTS,
+            ):
                 self.refresh_now(target)
 
         def on_failed(_job: str, error: object) -> None:
@@ -501,8 +513,12 @@ class PollingCoordinator(QObject):
                 AppRoute.PHYSIOLOGY,
                 session_scoped=True,
             ),
-            # Health rollup — HEALTH route.
-            PollJobSpec(JOB_HEALTH, cfg.health_poll_ms, AppRoute.HEALTH),
+            # Health rollup — visible on LIVE_SESSION and HEALTH routes.
+            PollJobSpec(
+                JOB_HEALTH,
+                cfg.health_poll_ms,
+                frozenset({AppRoute.LIVE_SESSION, AppRoute.HEALTH}),
+            ),
             # Alerts — always on; attention queue must stay current on
             # every page, per the §4.E.1 multi-page layout.
             PollJobSpec(JOB_ALERTS, cfg.alerts_poll_ms, route_scoped=None),
@@ -519,7 +535,7 @@ class PollingCoordinator(QObject):
         selected = self._store.selected_session_id()
         want: set[str] = set()
         for name, spec in self._specs.items():
-            if spec.route_scoped is not None and spec.route_scoped != current_route:
+            if not _route_matches(spec.route_scoped, current_route):
                 continue
             if spec.session_scoped and selected is None:
                 continue
@@ -558,6 +574,7 @@ class PollingCoordinator(QObject):
         #      `thread.wait()`, so a queued slot on main never runs).
         worker.stopped.connect(worker.deleteLater)
         worker.stopped.connect(thread.quit, Qt.ConnectionType.DirectConnection)
+        thread.finished.connect(lambda handle_worker=worker: self._prune_orphan(handle_worker))
         thread.started.connect(worker.run)
         thread.start()
         self._jobs[spec.name] = _JobHandle(spec, worker, thread)
@@ -579,6 +596,7 @@ class PollingCoordinator(QObject):
         handle = self._jobs.pop(job_name, None)
         if handle is None:
             return
+        self._disconnect_worker_signals(handle.worker)
         QMetaObject.invokeMethod(  # type: ignore[call-overload]
             handle.worker, "stop", Qt.ConnectionType.QueuedConnection
         )
@@ -587,49 +605,30 @@ class PollingCoordinator(QObject):
         # finished its stop slot; quitting first races the queued
         # stop slot and can exit the event loop before the worker is
         # safely deleted on its own thread.
-        # Opportunistically prune orphans whose threads have already
-        # finished so the list does not grow without bound across
-        # many route changes.
-        self._orphan_jobs = [h for h in self._orphan_jobs if h.thread.isRunning()]
-        if handle.thread.isRunning():
-            self._orphan_jobs.append(handle)
+        self._orphan_jobs.append(handle)
+
+    def _disconnect_worker_signals(self, worker: PollingWorker) -> None:
+        for signal, slot in (
+            (worker.data_ready, self._handle_job_data),
+            (worker.error, self._handle_job_error),
+        ):
+            with suppress(RuntimeError, TypeError):
+                signal.disconnect(slot)
+
+    def _prune_orphan(self, worker: PollingWorker) -> None:
+        self._orphan_jobs = [h for h in self._orphan_jobs if h.worker is not worker]
 
     def _drain_orphan_jobs(self) -> None:
-        """Wait briefly for orphaned worker threads to finish.
-
-        Called from `stop()` only. Both wait windows are *shared*
-        across all orphans rather than budgeted per-thread — with
-        several orphans accumulated from rapid route changes, a per-
-        thread wait of even a few hundred ms multiplies out into a
-        perceptible freeze on the close button. Anything still
-        running past the shared grace is forcibly terminated; the
-        process is exiting, so a forceful kill is acceptable — the
-        OS reclaims the socket and `terminate()` is the only lever
-        Qt gives us against a Python thread blocked in C-level
-        network I/O.
-        """
-        # Step 1: shared graceful window. Enough for an idle worker
-        # to process its queued stop slot and exit on its own.
+        """Give orphaned worker threads a short cooperative shutdown window."""
         graceful_deadline = monotonic() + 0.5
+        remaining_orphans: list[_JobHandle] = []
         for handle in self._orphan_jobs:
             remaining_ms = int(max(0.0, graceful_deadline - monotonic()) * 1000)
             if remaining_ms > 0:
                 handle.thread.wait(remaining_ms)
-        # Step 2: fire terminate on every still-running thread in a
-        # single batch so they die concurrently. `terminate()` is
-        # async on Windows, so don't pair each one with its own wait.
-        stuck = [h for h in self._orphan_jobs if h.thread.isRunning()]
-        for handle in stuck:
-            handle.thread.terminate()
-        # Step 3: shared short wait for the terminated threads to
-        # actually clear. ~300ms total is plenty for a TerminateThread
-        # call to settle.
-        terminate_deadline = monotonic() + 0.3
-        for handle in stuck:
-            remaining_ms = int(max(0.0, terminate_deadline - monotonic()) * 1000)
-            if remaining_ms > 0:
-                handle.thread.wait(remaining_ms)
-        self._orphan_jobs.clear()
+            if handle.thread.isRunning():
+                remaining_orphans.append(handle)
+        self._orphan_jobs = remaining_orphans
 
     # ------------------------------------------------------------------
     # Slot endpoints
@@ -662,8 +661,7 @@ class PollingCoordinator(QObject):
             self._store.set_overview(payload)
             # Overview composes several surfaces, so reflect its sub-
             # components into their dedicated store slots too.
-            if payload.active_session is not None:
-                self._store.set_live_session(payload.active_session)
+            self._store.set_live_session(payload.active_session)
             if payload.health is not None:
                 self._store.set_health(payload.health)
             if payload.physiology is not None:
@@ -792,6 +790,17 @@ class PollingCoordinator(QObject):
             return client.list_alerts()
 
         return fetch
+
+
+def _route_matches(
+    route_scoped: AppRoute | Container[AppRoute] | None,
+    current_route: AppRoute,
+) -> bool:
+    if route_scoped is None:
+        return True
+    if isinstance(route_scoped, AppRoute):
+        return route_scoped == current_route
+    return current_route in route_scoped
 
 
 def _detail_from_admin_response(

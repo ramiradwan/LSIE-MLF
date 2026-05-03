@@ -80,6 +80,7 @@ SCHEMA_DDL: Final[tuple[str, ...]] = (
     CREATE TABLE IF NOT EXISTS sessions (
         session_id      TEXT PRIMARY KEY,
         stream_url      TEXT NOT NULL,
+        experiment_id   TEXT,
         started_at      TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
         ended_at        TEXT
     )
@@ -353,6 +354,18 @@ SCHEMA_DDL: Final[tuple[str, ...]] = (
         spawned_at_utc      TEXT NOT NULL
     )
     """,
+    """
+    CREATE TABLE IF NOT EXISTS capture_status (
+        status_key          TEXT PRIMARY KEY,
+        state               TEXT NOT NULL CHECK (
+            state IN ('ok', 'degraded', 'recovering', 'error', 'unknown')
+        ),
+        label               TEXT NOT NULL,
+        detail              TEXT,
+        operator_action_hint TEXT,
+        updated_at_utc      TEXT NOT NULL
+    )
+    """,
     # --- Cloud upload outbox ----------------------------------------
     """
     CREATE TABLE IF NOT EXISTS pending_uploads (
@@ -415,6 +428,7 @@ INDEX_DDL: Final[tuple[str, ...]] = (
     "ON process_heartbeat(last_heartbeat_utc)",
     "CREATE INDEX IF NOT EXISTS idx_capture_pid_manifest_parent "
     "ON capture_pid_manifest(parent_process)",
+    "CREATE INDEX IF NOT EXISTS idx_capture_status_updated ON capture_status(updated_at_utc)",
     "CREATE INDEX IF NOT EXISTS idx_pending_uploads_ready "
     "ON pending_uploads(endpoint, status, next_attempt_at_utc, created_at_utc)",
     "CREATE INDEX IF NOT EXISTS idx_pending_uploads_lock ON pending_uploads(status, locked_at_utc)",
@@ -491,6 +505,7 @@ def bootstrap_schema(conn: sqlite3.Connection, *, seed_experiments: bool = True)
     apply_writer_pragmas(conn)
     for stmt in SCHEMA_DDL:
         conn.execute(stmt)
+    _apply_sessions_migrations(conn)
     _apply_pending_uploads_migrations(conn)
     for stmt in INDEX_DDL:
         conn.execute(stmt)
@@ -503,6 +518,12 @@ def bootstrap_schema(conn: sqlite3.Connection, *, seed_experiments: bool = True)
         len(INDEX_DDL),
         seed_experiments,
     )
+
+
+def _apply_sessions_migrations(conn: sqlite3.Connection) -> None:
+    columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(sessions)").fetchall()}
+    if "experiment_id" not in columns:
+        conn.execute("ALTER TABLE sessions ADD COLUMN experiment_id TEXT")
 
 
 def _apply_pending_uploads_migrations(conn: sqlite3.Connection) -> None:

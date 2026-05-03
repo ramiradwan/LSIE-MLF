@@ -34,10 +34,13 @@ from __future__ import annotations
 
 import logging
 import multiprocessing.synchronize as mpsync
+import sqlite3
+import subprocess
 import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Protocol
 
 from services.desktop_app.drift import (
     DRIFT_POLL_INTERVAL,
@@ -75,6 +78,26 @@ SQLITE_FILENAME = "desktop.sqlite"
 
 
 @dataclass(frozen=True)
+class _AdbDevice:
+    serial: str
+    model: str | None
+    active_app: str | None
+
+
+class _AliveProcess(Protocol):
+    def is_alive(self) -> bool: ...
+
+
+@dataclass(frozen=True)
+class CaptureStatusRecord:
+    status_key: str
+    state: str
+    label: str
+    detail: str | None
+    operator_action_hint: str | None
+
+
+@dataclass(frozen=True)
 class CaptureLayout:
     """File-system locations the supervisor writes to.
 
@@ -100,47 +123,217 @@ def _resolve_capture_layout() -> CaptureLayout:
     )
 
 
+def _run_adb(adb: str, args: list[str], *, timeout_s: float = 5.0) -> str | None:
+    try:
+        result = subprocess.run(
+            [adb, *args],
+            capture_output=True,
+            text=True,
+            timeout=timeout_s,
+        )
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        logger.warning("adb %s probe failed: %s", " ".join(args), exc)
+        return None
+    if result.returncode != 0:
+        logger.debug("adb %s returned %s: %s", " ".join(args), result.returncode, result.stderr)
+        return None
+    return result.stdout.strip()
+
+
+def _connected_adb_serials(adb: str) -> list[str]:
+    output = _run_adb(adb, ["devices"], timeout_s=5.0)
+    if output is None:
+        return []
+    serials: list[str] = []
+    for line in output.splitlines():
+        line = line.strip()
+        if not line or line.startswith("List of devices"):
+            continue
+        parts = line.split()
+        if len(parts) >= 2 and parts[1] == "device":
+            serials.append(parts[0])
+    return serials
+
+
+def _read_adb_device(adb: str) -> _AdbDevice | None:
+    serials = _connected_adb_serials(adb)
+    if not serials:
+        return None
+    serial = serials[0]
+    model = _run_adb(adb, ["-s", serial, "shell", "getprop", "ro.product.model"], timeout_s=2.0)
+    active_app = _run_adb(
+        adb,
+        ["-s", serial, "shell", "dumpsys", "window", "windows"],
+        timeout_s=2.0,
+    )
+    return _AdbDevice(
+        serial=serial,
+        model=model or None,
+        active_app=_parse_active_app(active_app),
+    )
+
+
+def _parse_active_app(output: str | None) -> str | None:
+    if not output:
+        return None
+    for line in output.splitlines():
+        if "mCurrentFocus" not in line and "mFocusedApp" not in line:
+            continue
+        marker = " u0 "
+        if marker in line:
+            suffix = line.split(marker, 1)[1]
+            return suffix.split("/", 1)[0].strip(" }") or None
+        for token in line.replace("}", " ").split():
+            if "/" in token and "." in token:
+                return token.split("/", 1)[0]
+    return None
+
+
+def _format_device_detail(device: _AdbDevice) -> str:
+    name = device.model or device.serial
+    if device.active_app is None:
+        return f"Connected device: {name} ({device.serial})"
+    return f"Connected device: {name} ({device.serial}) · Active app: {device.active_app}"
+
+
+def _capture_file_detail(path: Path, *, label: str) -> str:
+    if not path.exists():
+        return f"{label} stream file pending: {path.name}"
+    size = path.stat().st_size
+    return f"{label} stream recording: {path.name} · {size:,} bytes"
+
+
+def _write_capture_statuses(
+    db_path: Path,
+    device: _AdbDevice | None,
+    audio_proc: _AliveProcess | None,
+    video_proc: _AliveProcess | None,
+    layout: CaptureLayout | None,
+) -> None:
+    if device is None:
+        records = [
+            CaptureStatusRecord(
+                status_key="adb",
+                state="unknown",
+                label="Android Device Bridge",
+                detail="No Android device connected",
+                operator_action_hint="Connect Android device via USB and allow debugging",
+            ),
+            CaptureStatusRecord(
+                status_key="audio_capture",
+                state="unknown",
+                label="Audio Capture",
+                detail="Audio stream is not recording because no phone is connected",
+                operator_action_hint="Connect the phone, then keep the target app producing audio",
+            ),
+            CaptureStatusRecord(
+                status_key="video_capture",
+                state="unknown",
+                label="Video Capture",
+                detail="Video stream is not recording because no phone is connected",
+                operator_action_hint=(
+                    "Connect the phone and open a stream or video with a visible face"
+                ),
+            ),
+        ]
+    else:
+        audio_alive = audio_proc is not None and audio_proc.is_alive()
+        video_alive = video_proc is not None and video_proc.is_alive()
+        records = [
+            CaptureStatusRecord(
+                status_key="adb",
+                state="ok",
+                label="Android Device Bridge",
+                detail=_format_device_detail(device),
+                operator_action_hint=None,
+            ),
+            CaptureStatusRecord(
+                status_key="audio_capture",
+                state="ok" if audio_alive else "recovering",
+                label="Audio Capture",
+                detail=(
+                    _capture_file_detail(layout.audio_path, label="Audio")
+                    if layout is not None and audio_alive
+                    else "Audio scrcpy recorder is starting or restarting"
+                ),
+                operator_action_hint=None if audio_alive else "Keep the target app producing audio",
+            ),
+            CaptureStatusRecord(
+                status_key="video_capture",
+                state="ok" if video_alive else "recovering",
+                label="Video Capture",
+                detail=(
+                    _capture_file_detail(layout.video_path, label="Video")
+                    if layout is not None and video_alive
+                    else "Video scrcpy recorder is starting or restarting"
+                ),
+                operator_action_hint=(
+                    None if video_alive else "Open a stream or video with a visible face"
+                ),
+            ),
+        ]
+    _upsert_capture_statuses(db_path, records)
+
+
+def _upsert_capture_statuses(db_path: Path, records: list[CaptureStatusRecord]) -> None:
+    from datetime import UTC, datetime
+
+    updated_at = datetime.now(UTC).strftime("%Y-%m-%d %H:%M:%S")
+    conn = sqlite3.connect(str(db_path), isolation_level=None)
+    try:
+        conn.executemany(
+            "INSERT INTO capture_status "
+            "(status_key, state, label, detail, operator_action_hint, updated_at_utc) "
+            "VALUES (?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(status_key) DO UPDATE SET "
+            "state = excluded.state, "
+            "label = excluded.label, "
+            "detail = excluded.detail, "
+            "operator_action_hint = excluded.operator_action_hint, "
+            "updated_at_utc = excluded.updated_at_utc",
+            [
+                (
+                    record.status_key,
+                    record.state,
+                    record.label,
+                    record.detail,
+                    record.operator_action_hint,
+                    updated_at,
+                )
+                for record in records
+            ],
+        )
+    finally:
+        conn.close()
+
+
 def _wait_for_device(
+    adb: str,
+    db_path: Path,
     deadline_s: float = DEVICE_POLL_TIMEOUT_S,
     shutdown_event: mpsync.Event | None = None,
-) -> bool:
-    """Block until ADB reports at least one device, or ``deadline_s`` elapses.
-
-    Returns ``True`` when a device is observed, ``False`` on timeout or
-    cooperative shutdown. Logs each missing-device tick so the operator
-    console can surface the wait state in the §12 health rollup.
-    """
-    import subprocess as _subprocess
-
-    adb = find_executable("adb", env_override="LSIE_ADB_PATH")
+) -> _AdbDevice | None:
+    """Block until ADB reports at least one device, or ``deadline_s`` elapses."""
     deadline = time.monotonic() + deadline_s
     while time.monotonic() < deadline:
         if shutdown_event is not None and shutdown_event.is_set():
-            return False
-        try:
-            result = _subprocess.run(
-                [adb, "devices"],
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
-            for line in result.stdout.splitlines():
-                line = line.strip()
-                if line and not line.startswith("List of devices") and line.endswith("device"):
-                    logger.info("adb sees device: %s", line)
-                    return True
-        except (_subprocess.TimeoutExpired, OSError) as exc:
-            logger.warning("adb devices probe failed: %s", exc)
+            return None
+        device = _read_adb_device(adb)
+        _write_capture_statuses(db_path, device, None, None, None)
+        if device is not None:
+            logger.info("adb sees device: %s", device.serial)
+            return device
         wait_s = min(DEVICE_POLL_INTERVAL_S, max(0.0, deadline - time.monotonic()))
         if wait_s <= 0:
             break
         if shutdown_event is not None:
             if shutdown_event.wait(timeout=wait_s):
-                return False
+                return None
         else:
             time.sleep(wait_s)
     logger.error("adb device wait timed out after %ds", int(deadline_s))
-    return False
+    _write_capture_statuses(db_path, None, None, None, None)
+    return None
 
 
 def _build_audio_scrcpy_args(scrcpy: str, layout: CaptureLayout) -> list[str]:
@@ -232,13 +425,23 @@ def _spawn_scrcpy_pair(
     if this supervisor exits ungracefully.
     """
     audio = SupervisedProcess(_build_audio_scrcpy_args(scrcpy_path, layout))
-    record_capture_pid(db_path, audio.pid, process_kind="scrcpy")
+    record_capture_pid(
+        db_path,
+        audio.pid,
+        process_kind="scrcpy",
+        parent_process="capture_supervisor_audio",
+    )
     logger.info("audio scrcpy launched pid=%s", audio.pid)
     if shutdown_event.wait(timeout=SCRCPY_STAGGER_S):
         _kill_pair(audio, None, db_path)
         return None
     video = SupervisedProcess(_build_video_scrcpy_args(scrcpy_path, layout))
-    record_capture_pid(db_path, video.pid, process_kind="scrcpy")
+    record_capture_pid(
+        db_path,
+        video.pid,
+        process_kind="scrcpy",
+        parent_process="capture_supervisor_video",
+    )
     logger.info("video scrcpy launched pid=%s", video.pid)
     return audio, video
 
@@ -286,6 +489,7 @@ def run(shutdown_event: mpsync.Event, channels: IpcChannels) -> None:
 
     try:
         scrcpy_path = find_executable("scrcpy", env_override="LSIE_SCRCPY_PATH")
+        adb_path = find_executable("adb", env_override="LSIE_ADB_PATH")
     except FileNotFoundError as exc:
         logger.error("capture_supervisor cannot run: %s", exc)
         # Without scrcpy the supervisor still ships drift updates so
@@ -302,7 +506,8 @@ def run(shutdown_event: mpsync.Event, channels: IpcChannels) -> None:
     video_proc: SupervisedProcess | None = None
     try:
         while not shutdown_event.is_set():
-            if not _wait_for_device(shutdown_event=shutdown_event):
+            device = _wait_for_device(adb_path, db_path, shutdown_event=shutdown_event)
+            if device is None:
                 if shutdown_event.is_set():
                     break
                 logger.warning("device wait timed out; backing off %.1fs", RESTART_BACKOFF_S)
@@ -314,22 +519,28 @@ def run(shutdown_event: mpsync.Event, channels: IpcChannels) -> None:
             if pair is None:
                 break
             audio_proc, video_proc = pair
+            _write_capture_statuses(db_path, device, audio_proc, video_proc, layout)
 
             # §12 worker-crash behavior: whichever scrcpy exits first
             # triggers a full pair teardown before the device-wait loop
             # restarts.
             while not shutdown_event.is_set():
-                if not audio_proc.is_alive() or not video_proc.is_alive():
+                device = _read_adb_device(adb_path)
+                _write_capture_statuses(db_path, device, audio_proc, video_proc, layout)
+                if device is None or not audio_proc.is_alive() or not video_proc.is_alive():
                     logger.info(
                         "pipeline break: audio_alive=%s video_alive=%s",
                         audio_proc.is_alive(),
                         video_proc.is_alive(),
                     )
+                    if device is None:
+                        logger.info("pipeline break: device disconnected")
                     break
                 if shutdown_event.wait(timeout=0.5):
                     break
 
             _kill_pair(audio_proc, video_proc, db_path)
+            _write_capture_statuses(db_path, device, None, None, None)
             audio_proc = None
             video_proc = None
 

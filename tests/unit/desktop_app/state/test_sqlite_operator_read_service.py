@@ -15,6 +15,7 @@ valid (degenerate) DTOs rather than raising.
 from __future__ import annotations
 
 import asyncio
+import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import UUID
@@ -55,9 +56,8 @@ def test_get_overview_with_no_sessions_yields_seed_experiments(tmp_path: Path) -
     assert overview.latest_encounter is None
     assert overview.experiment_summary is None
     assert overview.physiology is None
-    # The freshness rollup over an empty store classifies every
-    # subsystem as UNKNOWN, so the overall state degrades to UNKNOWN.
-    assert overview.health.overall_state is HealthState.UNKNOWN
+    assert overview.health is not None
+    assert overview.health.overall_state is HealthState.DEGRADED
 
     detail = service.get_experiment_detail("greeting_line_v1")
     assert detail is not None
@@ -78,6 +78,7 @@ def test_list_sessions_renders_seeded_rows(tmp_path: Path) -> None:
             {
                 "session_id": str(SESSION_A),
                 "stream_url": "test://1",
+                "experiment_id": "greeting_line_v1",
                 "started_at": "2026-04-01 12:00:00",
             },
         )
@@ -90,6 +91,7 @@ def test_list_sessions_renders_seeded_rows(tmp_path: Path) -> None:
     assert len(sessions) == 1
     assert sessions[0].session_id == SESSION_A
     assert sessions[0].status == "active"
+    assert sessions[0].experiment_id == "greeting_line_v1"
     assert sessions[0].started_at_utc == datetime(2026, 4, 1, 12, 0, tzinfo=UTC)
 
 
@@ -163,6 +165,7 @@ def test_get_session_physiology_renders_null_comod(tmp_path: Path) -> None:
     assert snap is not None
     assert snap.streamer is None
     assert snap.operator is None
+    assert snap.comodulation is not None
     assert snap.comodulation.co_modulation_index is None
     assert snap.comodulation.null_reason == "no co-modulation window computed yet"
 
@@ -176,8 +179,99 @@ def test_get_health_uses_no_op_probes(tmp_path: Path) -> None:
     service = _build_service(db)
     snapshot = asyncio.run(service.get_health())
     assert snapshot.subsystem_probes == {}
-    # Fresh DB → all subsystems classified UNKNOWN by §12 freshness.
-    assert all(row.state is HealthState.UNKNOWN for row in snapshot.subsystems)
+    states = {row.subsystem_key: row.state for row in snapshot.subsystems}
+    assert states["live_analytics_producer"] is HealthState.DEGRADED
+    assert all(
+        state is HealthState.UNKNOWN
+        for subsystem, state in states.items()
+        if subsystem != "live_analytics_producer"
+    )
+
+
+def test_get_health_surfaces_desktop_adb_and_ml_processes(tmp_path: Path) -> None:
+    db = tmp_path / "desktop.sqlite"
+    writer = SqliteWriter(db)
+    writer.close()
+    conn = sqlite3.connect(str(db), isolation_level=None)
+    try:
+        conn.execute(
+            "INSERT INTO process_heartbeat "
+            "(process_name, pid, started_at_utc, last_heartbeat_utc) "
+            "VALUES (?, ?, ?, ?)",
+            (
+                "gpu_ml_worker",
+                123,
+                "2026-04-01 12:00:00",
+                "2026-04-01 12:00:05",
+            ),
+        )
+        conn.executemany(
+            "INSERT INTO capture_status "
+            "(status_key, state, label, detail, operator_action_hint, updated_at_utc) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            [
+                (
+                    "adb",
+                    "ok",
+                    "Android Device Bridge",
+                    "Connected device: Pixel 8 (abc123) · Active app: com.example.app",
+                    None,
+                    "2026-04-01 12:00:10",
+                ),
+                (
+                    "audio_capture",
+                    "ok",
+                    "Audio Capture",
+                    "Audio stream recording: audio_stream.wav · 1,024 bytes",
+                    None,
+                    "2026-04-01 12:00:11",
+                ),
+                (
+                    "video_capture",
+                    "ok",
+                    "Video Capture",
+                    "Video stream recording: video_stream.mkv · 2,048 bytes",
+                    None,
+                    "2026-04-01 12:00:12",
+                ),
+            ],
+        )
+    finally:
+        conn.close()
+
+    service = _build_service(db, now=datetime(2026, 4, 1, 12, 0, 6, tzinfo=UTC))
+    snapshot = asyncio.run(service.get_health())
+    states = {row.subsystem_key: row.state for row in snapshot.subsystems}
+    assert set(states) == {
+        "ui_api_shell",
+        "capture_supervisor",
+        "module_c_orchestrator",
+        "gpu_ml_worker",
+        "analytics_state_worker",
+        "cloud_sync_worker",
+        "adb",
+        "audio_capture",
+        "video_capture",
+        "live_analytics_producer",
+    }
+    assert not {"metrics", "physiology", "comodulation", "encounters"} & set(states)
+    assert states["adb"] is HealthState.OK
+    assert states["audio_capture"] is HealthState.OK
+    assert states["video_capture"] is HealthState.OK
+    assert states["gpu_ml_worker"] is HealthState.OK
+    assert states["live_analytics_producer"] is HealthState.DEGRADED
+    rows = {row.subsystem_key: row for row in snapshot.subsystems}
+    assert rows["adb"].detail == "Connected device: Pixel 8 (abc123) · Active app: com.example.app"
+    assert rows["audio_capture"].detail == "Audio stream recording: audio_stream.wav · 1,024 bytes"
+    assert rows["video_capture"].detail == "Video stream recording: video_stream.mkv · 2,048 bytes"
+
+    live_producer = next(
+        row for row in snapshot.subsystems if row.subsystem_key == "live_analytics_producer"
+    )
+    assert live_producer.detail is not None
+    assert live_producer.operator_action_hint is not None
+    assert "release-gated" in live_producer.detail
+    assert "desktop-safe inference producer" in live_producer.operator_action_hint
 
 
 def test_get_overview_with_encounter_renders_experiment(tmp_path: Path) -> None:

@@ -101,6 +101,7 @@ _NAV_SPEC: tuple[_NavEntry, ...] = (
     _NavEntry(AppRoute.HEALTH, "Health"),
     _NavEntry(AppRoute.SESSIONS, "Sessions"),
 )
+_INITIAL_ROUTE = AppRoute.LIVE_SESSION
 
 
 class MainWindow(QMainWindow):
@@ -160,9 +161,8 @@ class MainWindow(QMainWindow):
         self._bind_navigation()
         self._bind_store()
 
-        # Align the store's initial route with the sidebar's checked button
-        # so the coordinator's first sync sees the right active route.
-        self._store.set_route(_NAV_SPEC[0].route)
+        self._store.set_route(_INITIAL_ROUTE)
+        self._on_store_route_changed(self._store.route().value)
         self._update_action_bar_context()
 
     # ------------------------------------------------------------------
@@ -267,7 +267,7 @@ class MainWindow(QMainWindow):
             btn = QPushButton(entry.label, sidebar)
             btn.setObjectName("NavButton")
             btn.setCheckable(True)
-            if index == 0:
+            if entry.route is _INITIAL_ROUTE:
                 btn.setChecked(True)
             self._nav_group.addButton(btn, index)
             self._nav_buttons[entry.route] = btn
@@ -457,12 +457,8 @@ class MainWindow(QMainWindow):
         instant: the operator sees the window disappear right away
         while the orphaned polling threads drain in the background.
         `processEvents()` forces the native hide to flush before we
-        enter the blocking drain — otherwise the window can appear
-        to freeze on screen for the full shutdown window. Anything
-        still running past `_drain_orphan_jobs`'s short wait is
-        force-terminated; the process is exiting and we'd rather
-        ship the operator a snappy close than wait out a 2-3s
-        urlopen on a refused TCP connection.
+        enter the short cooperative drain — otherwise the window can
+        appear to freeze on screen during shutdown.
         """
         self.hide()
         app = QApplication.instance()

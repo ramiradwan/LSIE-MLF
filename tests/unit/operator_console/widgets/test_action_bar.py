@@ -93,7 +93,7 @@ def test_accepted_measuring_completed_progression() -> None:
     for state, expected_label in [
         (StimulusActionState.ACCEPTED, "Accepted"),
         (StimulusActionState.MEASURING, "Measuring…"),
-        (StimulusActionState.COMPLETED, "Send stimulus"),
+        (StimulusActionState.COMPLETED, "Send Test Message"),
     ]:
         bar.set_action_state(StimulusUiContext(state=state))
         assert bar._submit_button.text() == expected_label  # type: ignore[attr-defined]

@@ -301,15 +301,15 @@ class TestCalibrationStatus:
         assert operator_ready_for_submit(summary) is True
         assert format_calibration_status(summary) == (UiStatusKind.OK, "Ready")
 
-    def test_progress_without_counts_falls_back_to_generic_label(self) -> None:
+    def test_missing_calibration_counts_render_ready(self) -> None:
         summary = SessionSummary(
             session_id=_SESSION_ID,
             status="active",
             started_at_utc=_utc(2026, 4, 17, 12, 0),
             is_calibrating=True,
         )
-        assert operator_ready_for_submit(summary) is False
-        assert format_calibration_status(summary) == (UiStatusKind.PROGRESS, "Calibrating")
+        assert operator_ready_for_submit(summary) is True
+        assert format_calibration_status(summary) == (UiStatusKind.OK, "Ready")
 
 
 # ----------------------------------------------------------------------

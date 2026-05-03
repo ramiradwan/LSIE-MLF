@@ -65,24 +65,17 @@ def run(shutdown_event: mpsync.Event, channels: IpcChannels) -> None:
 
     # Late imports preserve the ML-isolation canary contract
     # and keeps the parent process free of FastAPI/Qt state.
-    import sqlite3
-    from collections.abc import AsyncIterator
-    from contextlib import asynccontextmanager
-
     import uvicorn
-    from fastapi import FastAPI
     from PySide6.QtCore import QTimer
     from PySide6.QtWidgets import QApplication
 
     from services.api.main import app as api_app
-    from services.api.routes.operator import get_read_service
     from services.desktop_app.os_adapter import resolve_state_dir
     from services.desktop_app.state.heartbeats import HeartbeatRecorder
-    from services.desktop_app.state.sqlite_operator_read_service import (
-        SqliteOperatorReadService,
+    from services.desktop_app.state.sqlite_api_overrides import (
+        bootstrap_sqlite_api_store,
+        configure_sqlite_api_overrides,
     )
-    from services.desktop_app.state.sqlite_reader import SqliteReader
-    from services.desktop_app.state.sqlite_schema import bootstrap_schema
     from services.operator_console.app import (
         build_api_client,
         build_main_window,
@@ -102,34 +95,12 @@ def run(shutdown_event: mpsync.Event, channels: IpcChannels) -> None:
     # analytics_state_worker.
     state_dir = resolve_state_dir()
     db_path = state_dir / SQLITE_FILENAME
-    bootstrap_conn = sqlite3.connect(str(db_path), isolation_level=None)
-    try:
-        bootstrap_schema(bootstrap_conn)
-    finally:
-        bootstrap_conn.close()
+    bootstrap_sqlite_api_store(db_path)
     logger.info("desktop sqlite store bootstrapped at %s", db_path)
-
-    reader = SqliteReader(db_path)
-    read_service = SqliteOperatorReadService(reader)
+    configure_sqlite_api_overrides(api_app, db_path)
 
     heartbeat = HeartbeatRecorder(db_path, "ui_api_shell")
     heartbeat.start()
-
-    def _read_service_dependency() -> SqliteOperatorReadService:
-        return read_service
-
-    api_app.dependency_overrides[get_read_service] = _read_service_dependency
-
-    # The API app's default lifespan initializes PostgreSQL state that
-    # does not exist in the desktop runtime. The desktop graph owns its
-    # persistence layer through SqliteReader/Writer, so the FastAPI
-    # lifespan becomes a no-op.
-    @asynccontextmanager
-    async def _desktop_lifespan(_app: FastAPI) -> AsyncIterator[None]:
-        logger.info("ui_api_shell FastAPI lifespan: SQLite-backed (Postgres pool skipped)")
-        yield
-
-    api_app.router.lifespan_context = _desktop_lifespan
 
     # Resolve port: env override → preferred 8000 → ephemeral fallback.
     requested_port_raw = os.environ.get("LSIE_API_PORT", "").strip()

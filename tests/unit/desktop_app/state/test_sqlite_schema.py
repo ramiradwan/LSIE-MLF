@@ -33,12 +33,20 @@ EXPECTED_TABLES: set[str] = {
     "attribution_score",
     "pending_uploads",
     "analytics_message_ledger",
+    "capture_status",
 }
 
 # Subset of v3.4 column names per table that MUST survive the port —
 # anything code-path-load-bearing. Full per-column type assertions are
 # excessive; this catches accidental drops and renames.
 EXPECTED_COLUMNS: dict[str, set[str]] = {
+    "sessions": {
+        "session_id",
+        "stream_url",
+        "experiment_id",
+        "started_at",
+        "ended_at",
+    },
     "metrics": {
         "session_id",
         "segment_id",
@@ -99,6 +107,14 @@ EXPECTED_COLUMNS: dict[str, set[str]] = {
         "coverage_ratio",
         "streamer_rmssd_mean",
         "operator_rmssd_mean",
+    },
+    "capture_status": {
+        "status_key",
+        "state",
+        "label",
+        "detail",
+        "operator_action_hint",
+        "updated_at_utc",
     },
     "attribution_event": {
         "event_id",

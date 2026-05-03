@@ -39,6 +39,7 @@ from services.desktop_app.processes.capture_supervisor import (
     _wait_for_device,
     run,
 )
+from services.desktop_app.state.sqlite_schema import bootstrap_schema
 
 
 def _make_channels() -> IpcChannels:
@@ -50,43 +51,50 @@ def _make_channels() -> IpcChannels:
     )
 
 
-def test_wait_for_device_returns_true_on_device_line() -> None:
-    fake_result = MagicMock()
-    fake_result.stdout = "List of devices attached\n55281FDCR002LK\tdevice\n\n"
-    with (
-        patch(
-            "services.desktop_app.processes.capture_supervisor.find_executable",
-            return_value="adb",
-        ),
-        patch("subprocess.run", return_value=fake_result),
-    ):
-        assert _wait_for_device(deadline_s=2.0) is True
+def _bootstrap_db(tmp_path: Path) -> Path:
+    db_path = tmp_path / "desktop.sqlite"
+    import sqlite3
+
+    conn = sqlite3.connect(str(db_path), isolation_level=None)
+    try:
+        bootstrap_schema(conn)
+    finally:
+        conn.close()
+    return db_path
 
 
-def test_wait_for_device_times_out_when_no_device() -> None:
-    fake_result = MagicMock()
+def test_wait_for_device_returns_true_on_device_line(tmp_path: Path) -> None:
+    devices_result = MagicMock(returncode=0)
+    devices_result.stdout = "List of devices attached\n55281FDCR002LK\tdevice\n\n"
+    model_result = MagicMock(returncode=0)
+    model_result.stdout = "Pixel 8\n"
+    window_result = MagicMock(returncode=0)
+    window_result.stdout = (
+        "mCurrentFocus=Window{abc u0 com.example.app/com.example.app.MainActivity}"
+    )
+    db_path = _bootstrap_db(tmp_path)
+    with patch("subprocess.run", side_effect=[devices_result, model_result, window_result]):
+        device = _wait_for_device("adb", db_path, deadline_s=2.0)
+    assert device is not None
+    assert device.serial == "55281FDCR002LK"
+    assert device.model == "Pixel 8"
+    assert device.active_app == "com.example.app"
+
+
+def test_wait_for_device_times_out_when_no_device(tmp_path: Path) -> None:
+    fake_result = MagicMock(returncode=0)
     fake_result.stdout = "List of devices attached\n\n"
-    with (
-        patch(
-            "services.desktop_app.processes.capture_supervisor.find_executable",
-            return_value="adb",
-        ),
-        patch("subprocess.run", return_value=fake_result),
-    ):
-        assert _wait_for_device(deadline_s=0.5) is False
+    db_path = _bootstrap_db(tmp_path)
+    with patch("subprocess.run", return_value=fake_result):
+        assert _wait_for_device("adb", db_path, deadline_s=0.5) is None
 
 
-def test_wait_for_device_returns_early_when_shutdown_is_requested() -> None:
+def test_wait_for_device_returns_early_when_shutdown_is_requested(tmp_path: Path) -> None:
     shutdown = mp.get_context("spawn").Event()
     shutdown.set()
-    with (
-        patch(
-            "services.desktop_app.processes.capture_supervisor.find_executable",
-            return_value="adb",
-        ),
-        patch("subprocess.run") as run_mock,
-    ):
-        assert _wait_for_device(deadline_s=2.0, shutdown_event=shutdown) is False
+    db_path = _bootstrap_db(tmp_path)
+    with patch("subprocess.run") as run_mock:
+        assert _wait_for_device("adb", db_path, deadline_s=2.0, shutdown_event=shutdown) is None
     run_mock.assert_not_called()
 
 
