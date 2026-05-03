@@ -29,6 +29,8 @@ def test_release_workflow_runs_on_tags_and_signs_release_artifact() -> None:
     assert 'tags:\n      - "v*"' in workflow
     assert "runs-on: windows-2022" in workflow
     assert "uv sync --frozen --group dev" in workflow
+    assert "uv run --with pyinstaller==6.11.* pyinstaller" in workflow
+    assert "python -m pip install" not in workflow
     assert "--name LSIE-MLF-Launcher" in workflow
     assert "services/desktop_launcher/ui.py" in workflow
     assert "dist\\LSIE-MLF-Launcher" in workflow
