@@ -60,6 +60,13 @@ class TestCloudSchemas:
         assert lower.delta_alpha == 0.0
         assert upper.delta_beta == 1.0
 
+    def test_posterior_delta_accepts_uuid5_event_id(self) -> None:
+        posterior_delta = PosteriorDelta.model_validate(
+            _posterior_delta_data(event_id=uuid.uuid5(uuid.NAMESPACE_URL, "posterior-delta"))
+        )
+
+        assert posterior_delta.event_id.version == 5
+
     @pytest.mark.parametrize(
         ("field", "value"),
         [

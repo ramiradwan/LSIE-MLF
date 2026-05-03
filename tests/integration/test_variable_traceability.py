@@ -82,8 +82,9 @@ EXPECTED_SECTIONS = {
 }
 
 MODULE_OWNED_SURFACES: tuple[tuple[str, str, str], ...] = (
-    ("A", "services/stream_ingest/entrypoint.sh", "public_output"),
+    ("A", "services/desktop_app/processes/capture_supervisor.py", "public_output"),
     ("B", "services/worker/pipeline/ground_truth.py", "public_output"),
+    ("C", "services/desktop_app/drift.py", "public_output"),
     ("C", "services/worker/pipeline/orchestrator.py", "public_output"),
     ("C", "packages/schemas/inference_handoff.py", "schema"),
     ("C", "packages/schemas/physiology.py", "schema"),
@@ -775,6 +776,24 @@ def _discover_variable_producers() -> dict[tuple[str, str], list[VariableEvidenc
                             f"attribution_method emits {keyword.value.value!r}",
                         )
 
+        if surface.path.endswith("capture_supervisor.py"):
+            if "--video-codec=h264" in surface.source and "--record-format=mkv" in surface.source:
+                add_emission(
+                    emissions,
+                    "video_stream",
+                    surface.line_for("--video-codec=h264"),
+                    "scrcpy public stream",
+                    "capture supervisor emits H.264 MKV video stream",
+                )
+            if "--audio-codec=raw" in surface.source and "--record-format=wav" in surface.source:
+                add_emission(
+                    emissions,
+                    "audio_stream",
+                    surface.line_for("--audio-codec=raw"),
+                    "scrcpy public stream",
+                    "capture supervisor emits raw WAV audio stream",
+                )
+
         if surface.surface == "persistence":
             for table, column, line in sql_columns(surface.source, ddl=False):
                 add_emission(
@@ -936,6 +955,7 @@ def _discover_variable_producers() -> dict[tuple[str, str], list[VariableEvidenc
         "segment_window_end_utc",
         "timestamp_utc",
         "timestamp_s",
+        "ts_monotonic",
         "window_start_ts",
         "window_end_ts",
         "event_time_utc",
@@ -1142,6 +1162,8 @@ def _discover_variable_producers() -> dict[tuple[str, str], list[VariableEvidenc
         key = norm(identifier)
         table = str(emission.get("table") or "")
         keys = (key, *suffixes(key))
+        if surface.path.endswith("capture_supervisor.py") and key.endswith("drift_offset"):
+            return ()
         if emission.get("kind") in {"SQL insert column", "SQL DDL column"}:
             if table in passthrough_tables:
                 return ()
@@ -1218,6 +1240,8 @@ def _discover_variable_producers() -> dict[tuple[str, str], list[VariableEvidenc
             return True
         if key in out_of_scope or any(part in out_of_scope for part in suffixes(key)):
             return True
+        if key.endswith("drift_offset"):
+            return True
         if key.startswith(("_", "test_")):
             return True
         if (
@@ -1276,12 +1300,12 @@ def _collect_module_owned_surfaces() -> list[VariableSurface]:
     surfaces: list[VariableSurface] = []
     surface_specs = (
         *MODULE_OWNED_SURFACES,
-        ("B", "data/sql/01-schema.sql", "persistence"),
-        ("D", "data/sql/01-schema.sql", "persistence"),
-        ("E", "data/sql/01-schema.sql", "persistence"),
-        ("E", "data/sql/03-physiology.sql", "persistence"),
-        ("E", "data/sql/05-attribution.sql", "persistence"),
-        ("F", "data/sql/01-schema.sql", "persistence"),
+        ("B", "services/cloud_api/db/sql/01-schema.sql", "persistence"),
+        ("D", "services/cloud_api/db/sql/01-schema.sql", "persistence"),
+        ("E", "services/cloud_api/db/sql/01-schema.sql", "persistence"),
+        ("E", "services/cloud_api/db/sql/03-physiology.sql", "persistence"),
+        ("E", "services/cloud_api/db/sql/05-attribution.sql", "persistence"),
+        ("F", "services/cloud_api/db/sql/01-schema.sql", "persistence"),
     )
     for module, rel_path, surface_kind in surface_specs:
         source = _read_source(rel_path)

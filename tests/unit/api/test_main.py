@@ -24,7 +24,6 @@ def _reset_api_modules() -> None:
         "services.api.routes.operator",
         "services.api.routes.physiology",
         "services.api.routes.sessions",
-        "services.api.routes.stimulus",
     ]:
         sys.modules.pop(module_name, None)
 
@@ -68,6 +67,14 @@ def test_main_app_registers_experiments_after_encounters(main_module: Any) -> No
     assert "/api/v1/experiments/{experiment_id}/arms" in api_paths
     assert "/api/v1/experiments/{experiment_id}/arms/{arm_id}" in api_paths
     assert api_paths.index("/api/v1/encounters") < api_paths.index("/api/v1/experiments")
+
+
+def test_main_app_uses_operator_stimulus_route_only(main_module: Any) -> None:
+    """The main app exposes stimulus writes only through the operator route."""
+    api_paths = [route.path for route in main_module.app.routes if route.path.startswith("/api/v1")]
+
+    assert "/api/v1/stimulus" not in api_paths
+    assert "/api/v1/operator/sessions/{session_id}/stimulus" in api_paths
 
 
 def test_start_oura_hydration_worker_returns_none_when_client_id_unset(

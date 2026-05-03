@@ -1,4 +1,4 @@
-"""UI + API shell process (v4.0 §9 / WS3 P1b + WS4 P1b).
+"""UI + API shell process.
 
 Hosts the in-process FastAPI server (``services.api.main.app``) on a
 daemon thread bound to ``127.0.0.1:8000`` and the PySide6 ``MainWindow``
@@ -7,17 +7,10 @@ port via ``LSIE_API_URL`` so the existing
 ``services.operator_console.api_client`` reaches the in-process API
 without code changes.
 
-WS4 P1b wires the FastAPI route layer to the local SQLite store:
-
-* Bootstrap ``services.desktop_app.state.sqlite_schema`` under the
-  resolved app-data directory if the file is fresh.
-* Replace ``services.api.main.app``'s lifespan (which calls
-  ``init_pool()`` on the psycopg2 pool) with a no-op — the desktop
-  runtime owns its persistence layer through the SQLite store.
-* Override ``services.api.routes.operator.get_read_service`` with
-  :class:`SqliteOperatorReadService` so the operator console's
-  ``/api/v1/operator/*`` aggregate endpoints render real seed-experiment
-  rows + any analytics_state_worker writes that have landed.
+This process also bootstraps the local SQLite store, replaces the API
+lifespan with a no-op, and overrides the operator read dependency with
+:class:`SqliteOperatorReadService` so the console can read desktop-local
+state without PostgreSQL.
 
 ML import discipline: this module MUST NOT import ``torch`` /
 ``mediapipe`` / ``faster_whisper`` / ``ctranslate2`` at any scope. The
@@ -50,9 +43,9 @@ def _allocate_port(preferred: int) -> int:
     """Return ``preferred`` if free, else an OS-assigned ephemeral port.
 
     Brief TOCTOU window between our close and uvicorn's bind — acceptable
-    for a dev-mode smoke surface where the only goal is "GUI pops and
-    talks to a local FastAPI". Production packaging (WS1 P2) can pin a
-    fixed port via ``LSIE_API_PORT`` if the operator host requires it.
+    for a local desktop surface where the only goal is "GUI pops and
+    talks to a local FastAPI". Operators can pin a fixed port via
+    ``LSIE_API_PORT`` if the host requires it.
     """
     for candidate in (preferred, 0):
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -70,7 +63,7 @@ def run(shutdown_event: mpsync.Event, channels: IpcChannels) -> None:
     del channels  # ui_api_shell does not consume IPC channels directly.
     logger.info("ui_api_shell starting")
 
-    # Late imports — preserves the WS3 P1 ML-isolation canary contract
+    # Late imports preserve the ML-isolation canary contract
     # and keeps the parent process free of FastAPI/Qt state.
     import sqlite3
     from collections.abc import AsyncIterator
@@ -85,7 +78,6 @@ def run(shutdown_event: mpsync.Event, channels: IpcChannels) -> None:
     from services.api.routes.operator import get_read_service
     from services.desktop_app.os_adapter import resolve_state_dir
     from services.desktop_app.state.heartbeats import HeartbeatRecorder
-    from services.desktop_app.state.recovery import run_recovery_sweep
     from services.desktop_app.state.sqlite_operator_read_service import (
         SqliteOperatorReadService,
     )
@@ -100,9 +92,7 @@ def run(shutdown_event: mpsync.Event, channels: IpcChannels) -> None:
     from services.operator_console.config import load_config
     from services.operator_console.theme import build_stylesheet
 
-    # ------------------------------------------------------------------
-    # WS4 P1b — local SQLite bootstrap + read service wiring
-    # ------------------------------------------------------------------
+    # Bootstrap the local SQLite store and wire the operator read surface.
     # Bootstrap the schema (and the four-arm seed) under the platform's
     # standard application-data directory. Idempotent: re-running on a
     # fresh install creates the file and tables; re-running on a
@@ -119,15 +109,6 @@ def run(shutdown_event: mpsync.Event, channels: IpcChannels) -> None:
         bootstrap_conn.close()
     logger.info("desktop sqlite store bootstrapped at %s", db_path)
 
-    # ------------------------------------------------------------------
-    # WS4 P2 — dirty-state recovery sweep
-    # ------------------------------------------------------------------
-    # Must run after schema bootstrap (so capture_pid_manifest exists)
-    # and before any other process spawns (so a leftover scrcpy from
-    # a previous crash cannot fight the fresh capture_supervisor for
-    # the USB device).
-    run_recovery_sweep(db_path)
-
     reader = SqliteReader(db_path)
     read_service = SqliteOperatorReadService(reader)
 
@@ -139,9 +120,9 @@ def run(shutdown_event: mpsync.Event, channels: IpcChannels) -> None:
 
     api_app.dependency_overrides[get_read_service] = _read_service_dependency
 
-    # The v3.4 lifespan in services.api.main calls init_pool() which
-    # KeyErrors when POSTGRES_USER is unset. The desktop runtime owns
-    # its persistence layer through SqliteReader/Writer, so the FastAPI
+    # The API app's default lifespan initializes PostgreSQL state that
+    # does not exist in the desktop runtime. The desktop graph owns its
+    # persistence layer through SqliteReader/Writer, so the FastAPI
     # lifespan becomes a no-op.
     @asynccontextmanager
     async def _desktop_lifespan(_app: FastAPI) -> AsyncIterator[None]:
@@ -164,7 +145,7 @@ def run(shutdown_event: mpsync.Event, channels: IpcChannels) -> None:
     # uvicorn must run off the main thread because Qt owns the main
     # thread for the duration of the GUI session. lifespan="on" forces
     # ASGI lifespan dispatch even though our patched lifespan is a
-    # no-op — keeps behaviour explicit when WS4 P1 lands.
+    # no-op — keeps behaviour explicit.
     uv_config = uvicorn.Config(
         app=api_app,
         host=API_HOST,

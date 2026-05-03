@@ -29,8 +29,8 @@ EXPECTED_SECTIONS = {
 
 DISCOVERY_ARTIFACTS = (
     "docs/SPEC_REFERENCE.md",
-    "docker-compose.yml",
-    "services/stream_ingest/entrypoint.sh",
+    "services/desktop_app/drift.py",
+    "services/desktop_app/processes/capture_supervisor.py",
     "services/api/routes/physiology.py",
     "services/worker/pipeline/ground_truth.py",
     "services/worker/pipeline/orchestrator.py",

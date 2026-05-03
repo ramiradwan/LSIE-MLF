@@ -167,20 +167,17 @@ class TestBase64Decode:
         with (
             patch.object(mod, "persist_metrics", mock_persist),
             patch("packages.ml_core.transcription.TranscriptionEngine", return_value=mock_engine),
-            patch("subprocess.run"),
-            patch("os.remove"),
-            patch("tempfile.NamedTemporaryFile") as mock_tmpfile,
+            patch(
+                "packages.ml_core.audio_pipe.pcm_to_wav_bytes",
+                return_value=b"RIFFwav",
+            ) as mock_pcm_to_wav,
         ):
-            mock_file = MagicMock()
-            mock_file.__enter__ = MagicMock(return_value=mock_file)
-            mock_file.__exit__ = MagicMock(return_value=False)
-            mock_file.name = "/tmp/test.raw"
-            mock_tmpfile.return_value = mock_file
-
             mod.process_segment(MagicMock(), payload)
 
-            # The raw PCM bytes should have been written to the temp file
-            mock_file.write.assert_called_once_with(raw_audio)
+        mock_pcm_to_wav.assert_called_once_with(raw_audio)
+        audio_stream = mock_engine.transcribe.call_args.args[0]
+        assert hasattr(audio_stream, "read")
+        assert audio_stream.read() == b"RIFFwav"
 
     def test_none_audio_passes_through(self) -> None:
         """None _audio_data passes through decode unchanged."""
@@ -208,21 +205,17 @@ class TestBase64Decode:
         with (
             patch.object(mod, "persist_metrics", mock_persist),
             patch("packages.ml_core.transcription.TranscriptionEngine", return_value=mock_engine),
-            patch("subprocess.run"),
-            patch("os.remove"),
-            patch("tempfile.NamedTemporaryFile") as mock_tmpfile,
+            patch(
+                "packages.ml_core.audio_pipe.pcm_to_wav_bytes",
+                return_value=b"RIFFwav",
+            ) as mock_pcm_to_wav,
         ):
-            mock_file = MagicMock()
-            mock_file.__enter__ = MagicMock(return_value=mock_file)
-            mock_file.__exit__ = MagicMock(return_value=False)
-            mock_file.name = "/tmp/test.raw"
-            mock_tmpfile.return_value = mock_file
-
             mod.process_segment(MagicMock(), payload)
 
-            # Original bytes should pass through serialization.decode_bytes_fields
-            # (bytes is not str, so decode is a no-op) and be written as-is
-            mock_file.write.assert_called_once_with(raw_audio)
+        mock_pcm_to_wav.assert_called_once_with(raw_audio)
+        audio_stream = mock_engine.transcribe.call_args.args[0]
+        assert hasattr(audio_stream, "read")
+        assert audio_stream.read() == b"RIFFwav"
 
     @pytest.mark.audit_item("13.27")
     def test_semantic_payload_contains_only_live_channel(self) -> None:
@@ -258,16 +251,8 @@ class TestBase64Decode:
                 return_value=mock_preprocessor,
             ),
             patch("packages.ml_core.semantic.SemanticEvaluator", return_value=mock_semantic),
-            patch("subprocess.run"),
-            patch("os.remove"),
-            patch("tempfile.NamedTemporaryFile") as mock_tmpfile,
+            patch("packages.ml_core.audio_pipe.pcm_to_wav_bytes", return_value=b"RIFFwav"),
         ):
-            mock_file = MagicMock()
-            mock_file.__enter__ = MagicMock(return_value=mock_file)
-            mock_file.__exit__ = MagicMock(return_value=False)
-            mock_file.name = "/tmp/test.raw"
-            mock_tmpfile.return_value = mock_file
-
             result = mod.process_segment(MagicMock(), payload)
 
         assert "semantic_method" not in live_semantic
@@ -351,16 +336,8 @@ class TestBase64Decode:
                     return_value=mock_preprocessor,
                 ),
                 patch("packages.ml_core.semantic.SemanticEvaluator", side_effect=evaluator_factory),
-                patch("subprocess.run"),
-                patch("os.remove"),
-                patch("tempfile.NamedTemporaryFile") as mock_tmpfile,
+                patch("packages.ml_core.audio_pipe.pcm_to_wav_bytes", return_value=b"RIFFwav"),
             ):
-                mock_file = MagicMock()
-                mock_file.__enter__ = MagicMock(return_value=mock_file)
-                mock_file.__exit__ = MagicMock(return_value=False)
-                mock_file.name = "/tmp/test-shadow.raw" if enabled else "/tmp/test-live.raw"
-                mock_tmpfile.return_value = mock_file
-
                 result = mod.process_segment(MagicMock(), dict(payload))
 
             assert len(semantic_instances) == 1

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import shutil
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -47,6 +48,59 @@ def _timing(mapping: dict[str, str], column: str) -> float:
 def _fixture_row_count(rows: list[tuple[str, ...]]) -> int:
     cycle_index = run_fixture_benchmark.BASELINE_COLUMNS.index("Cycle / PR")
     return sum(1 for row in rows if row[cycle_index] == run_fixture_benchmark.FIXTURE_LABEL)
+
+
+def test_process_segment_payload_from_control_message_recovers_audio_bytes() -> None:
+    from services.desktop_app.ipc.control_messages import AudioBlockRef, InferenceControlMessage
+    from services.desktop_app.ipc.shared_buffers import write_pcm_block
+
+    audio = b"\x00\x01\x02\x03"
+    block = write_pcm_block(audio)
+    try:
+        message = InferenceControlMessage(
+            handoff={
+                "session_id": str(uuid.UUID("00000000-0000-4000-8000-000000000001")),
+                "segment_id": "a" * 64,
+                "segment_window_start_utc": "2026-05-02T12:00:00Z",
+                "segment_window_end_utc": "2026-05-02T12:00:01Z",
+                "timestamp_utc": "2026-05-02T12:00:01Z",
+                "media_source": {
+                    "stream_url": "https://example.test/stream",
+                    "codec": "raw",
+                    "resolution": [1, 1],
+                },
+                "segments": [],
+                "_active_arm": "simple_hello",
+                "_experiment_id": 1,
+                "_expected_greeting": "Hello! Just joined, happy to be here!",
+                "_stimulus_time": 1.5,
+                "_au12_series": [],
+                "_bandit_decision_snapshot": {
+                    "selection_method": "thompson_sampling",
+                    "selection_time_utc": "2026-05-02T12:00:00Z",
+                    "experiment_id": 1,
+                    "policy_version": "ts-v1",
+                    "selected_arm_id": "simple_hello",
+                    "candidate_arm_ids": ["simple_hello"],
+                    "posterior_by_arm": {"simple_hello": {"alpha": 1.0, "beta": 1.0}},
+                    "expected_greeting": "Hello! Just joined, happy to be here!",
+                    "decision_context_hash": "b" * 64,
+                    "random_seed": 7,
+                },
+            },
+            audio=AudioBlockRef.from_metadata(block.metadata),
+            forward_fields={"_experiment_code": "greeting_line_v1"},
+        )
+
+        payload = run_fixture_benchmark._process_segment_payload_from_control_message(
+            message.model_dump(mode="json")
+        )
+    finally:
+        block.close_and_unlink()
+
+    assert payload["_audio_data"] == audio
+    assert payload["_experiment_code"] == "greeting_line_v1"
+    assert payload["_stimulus_time"] == 1.5
 
 
 @pytest.mark.integration

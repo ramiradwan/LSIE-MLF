@@ -1,4 +1,4 @@
-"""Per-process 1 Hz heartbeats to the desktop SQLite store (WS4 P2).
+"""Per-process 1 Hz heartbeats to the desktop SQLite store.
 
 Each of the six v4.0 desktop processes instantiates a
 :class:`HeartbeatRecorder` near the top of its ``run`` callable,

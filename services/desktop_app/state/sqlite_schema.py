@@ -1,4 +1,4 @@
-"""SQLite schema port (WS4 P1).
+"""SQLite schema for the desktop process graph.
 
 Local persistence layer for the v4.0 desktop process graph. Replaces
 the v3.4 PostgreSQL DDL spread across ``data/sql/0{1,3,4,5}*.sql`` so
@@ -36,11 +36,10 @@ Divergences from PostgreSQL the writer / reader compensates for:
   ``outcome_event`` deterministic identity) are app-level enforced
   via deterministic UUIDv5 keys upstream of the write.
 
-Per the WS4 P1 plan, the ``experiments`` table is locally seeded with
-the four greeting variants from ``data/sql/02-seed-experiments.sql``
-so the operator console renders real Experiments-page data
-immediately. WS5 P2 will replace the seed with a cloud-synced
-``ExperimentBundle`` cache.
+The ``experiments`` table is locally seeded with the four greeting
+variants from ``data/sql/02-seed-experiments.sql`` so the operator
+console renders immediate read-side data. A future cloud bundle may
+replace this seed source.
 """
 
 from __future__ import annotations
@@ -53,9 +52,9 @@ from typing import Final
 logger = logging.getLogger(__name__)
 
 
-# WAL + busy-timeout configuration per WS4 P1. The writer applies the
-# full set; the reader applies only the read-side subset and adds
-# ``query_only=1`` to enforce the single-writer invariant.
+# The writer applies the full PRAGMA bundle; the reader keeps the
+# read-side subset and enables ``query_only=1`` to preserve the
+# single-writer invariant.
 PRAGMAS_WRITER: Final[tuple[str, ...]] = (
     "PRAGMA journal_mode=WAL",
     "PRAGMA synchronous=NORMAL",
@@ -144,13 +143,9 @@ SCHEMA_DDL: Final[tuple[str, ...]] = (
         created_at      TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     )
     """,
-    # WS4 P1: experiments is the local read-only cache. WS5 P2 will
-    # populate it from the cloud ExperimentBundle; until then, the
-    # bootstrap seeds the four greeting-line variants directly. The
-    # ``UNIQUE(experiment_id, arm)`` constraint is new in v4.0 — it
-    # tightens the v3.4 schema (which relied on PostgreSQL's ON
-    # CONFLICT DO NOTHING + a non-unique index) so re-bootstrapping
-    # the SQLite store is idempotent on the seed insert.
+    # experiments is a local read-only cache seeded with the current
+    # greeting variants. ``UNIQUE(experiment_id, arm)`` keeps repeated
+    # bootstrap runs idempotent.
     """
     CREATE TABLE IF NOT EXISTS experiments (
         id              INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -326,7 +321,7 @@ SCHEMA_DDL: Final[tuple[str, ...]] = (
         created_at              TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     )
     """,
-    # --- WS4 P2 — process heartbeats and capture-child manifest ------
+    # --- Process heartbeats and capture-child manifest ---------------
     # ``process_heartbeat`` carries one row per v4 desktop process,
     # keyed by canonical process name. Each child writes a 1 Hz
     # ``INSERT OR REPLACE`` from its own short-lived SQLite connection;
@@ -358,24 +353,26 @@ SCHEMA_DDL: Final[tuple[str, ...]] = (
         spawned_at_utc      TEXT NOT NULL
     )
     """,
-    # --- WS5 P2 — cloud upload outbox -------------------------------
+    # --- Cloud upload outbox ----------------------------------------
     """
     CREATE TABLE IF NOT EXISTS pending_uploads (
-        upload_id           TEXT PRIMARY KEY,
-        endpoint            TEXT NOT NULL CHECK (
+        upload_id              TEXT PRIMARY KEY,
+        endpoint               TEXT NOT NULL CHECK (
             endpoint IN ('telemetry_segments', 'telemetry_posterior_deltas')
         ),
-        payload_type        TEXT NOT NULL CHECK (
+        payload_type           TEXT NOT NULL CHECK (
             payload_type IN ('inference_handoff', 'attribution_event', 'posterior_delta')
         ),
-        dedupe_key          TEXT NOT NULL,
-        payload_json        TEXT NOT NULL,
-        created_at_utc      TEXT NOT NULL,
-        next_attempt_at_utc TEXT NOT NULL,
-        attempt_count       INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
-        locked_at_utc       TEXT,
-        last_error          TEXT,
-        status              TEXT NOT NULL DEFAULT 'pending' CHECK (
+        dedupe_key             TEXT NOT NULL,
+        payload_json           TEXT NOT NULL,
+        payload_sha256         TEXT,
+        payload_redacted_at_utc TEXT,
+        created_at_utc         TEXT NOT NULL,
+        next_attempt_at_utc    TEXT NOT NULL,
+        attempt_count          INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+        locked_at_utc          TEXT,
+        last_error             TEXT,
+        status                 TEXT NOT NULL DEFAULT 'pending' CHECK (
             status IN ('pending', 'in_flight', 'dead_letter')
         ),
         UNIQUE (payload_type, dedupe_key)
@@ -395,6 +392,8 @@ INDEX_DDL: Final[tuple[str, ...]] = (
     "CREATE INDEX IF NOT EXISTS idx_encounter_log_experiment ON encounter_log(experiment_id, arm)",
     "CREATE INDEX IF NOT EXISTS idx_encounter_log_session "
     "ON encounter_log(session_id, timestamp_utc)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_analytics_message_identity "
+    "ON analytics_message_ledger(segment_id, client_id, arm)",
     "CREATE INDEX IF NOT EXISTS idx_physiology_session "
     "ON physiology_log(session_id, subject_role, created_at)",
     "CREATE INDEX IF NOT EXISTS idx_physiology_segment ON physiology_log(session_id, segment_id)",
@@ -423,9 +422,8 @@ INDEX_DDL: Final[tuple[str, ...]] = (
 
 
 # Local seed for the four §4.E.1 greeting variants. Mirrors
-# data/sql/02-seed-experiments.sql verbatim. WS5 P2 will replace this
-# block with a cloud-synced ExperimentBundle ingest; until then the
-# operator console's Experiments page renders these rows directly.
+# ``data/sql/02-seed-experiments.sql`` so the operator console can read
+# experiment rows immediately.
 SEED_EXPERIMENTS: Final[tuple[tuple[str, str, str, str, float, float, int], ...]] = (
     (
         "greeting_line_v1",
@@ -479,25 +477,21 @@ def _apply_pragmas(conn: sqlite3.Connection, pragmas: Iterable[str]) -> None:
 
 
 def apply_writer_pragmas(conn: sqlite3.Connection) -> None:
-    """Apply the WS4 P1 writer-side PRAGMA bundle to ``conn``."""
+    """Apply the writer-side PRAGMA bundle to ``conn``."""
     _apply_pragmas(conn, PRAGMAS_WRITER)
 
 
 def apply_reader_pragmas(conn: sqlite3.Connection) -> None:
-    """Apply the WS4 P1 reader-side PRAGMA bundle (incl. ``query_only=1``)."""
+    """Apply the reader-side PRAGMA bundle, including ``query_only=1``."""
     _apply_pragmas(conn, PRAGMAS_READER)
 
 
 def bootstrap_schema(conn: sqlite3.Connection, *, seed_experiments: bool = True) -> None:
-    """Run all DDL + indexes (and optionally the experiments seed) idempotently.
-
-    Caller is responsible for opening ``conn`` in writer mode. The
-    transaction is committed on the way out so subsequent reader
-    connections observe the schema immediately.
-    """
+    """Run all DDL + indexes (and optionally the experiments seed) idempotently."""
     apply_writer_pragmas(conn)
     for stmt in SCHEMA_DDL:
         conn.execute(stmt)
+    _apply_pending_uploads_migrations(conn)
     for stmt in INDEX_DDL:
         conn.execute(stmt)
     if seed_experiments:
@@ -509,3 +503,11 @@ def bootstrap_schema(conn: sqlite3.Connection, *, seed_experiments: bool = True)
         len(INDEX_DDL),
         seed_experiments,
     )
+
+
+def _apply_pending_uploads_migrations(conn: sqlite3.Connection) -> None:
+    columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(pending_uploads)").fetchall()}
+    if "payload_sha256" not in columns:
+        conn.execute("ALTER TABLE pending_uploads ADD COLUMN payload_sha256 TEXT")
+    if "payload_redacted_at_utc" not in columns:
+        conn.execute("ALTER TABLE pending_uploads ADD COLUMN payload_redacted_at_utc TEXT")

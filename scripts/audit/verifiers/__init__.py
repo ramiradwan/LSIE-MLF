@@ -18,9 +18,6 @@ from scripts.audit.verifiers.mechanical import (
     register_mechanical_verifiers,
 )
 
-register_mechanical_verifiers()
-register_data_classification_verifiers()
-
 __all__ = [
     "BEHAVIORAL_AUDIT_ITEM_IDS",
     "BEHAVIORAL_VERIFIERS",

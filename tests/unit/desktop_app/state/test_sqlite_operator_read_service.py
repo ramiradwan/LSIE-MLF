@@ -1,4 +1,4 @@
-"""WS4 P1b — SqliteOperatorReadService end-to-end smoke tests.
+"""SqliteOperatorReadService end-to-end smoke tests.
 
 These tests exercise the full path:
 

@@ -163,6 +163,18 @@ class _RecordingCursor:
         if "INSERT INTO encounter_log" in normalized_sql:
             self._store.encounter_rows.append(dict(params))
             return
+        if "INSERT INTO attribution_event" in normalized_sql:
+            self._store.attribution_event_rows.append(dict(params))
+            return
+        if "INSERT INTO outcome_event" in normalized_sql:
+            self._store.attribution_outcome_rows.append(dict(params))
+            return
+        if "INSERT INTO event_outcome_link" in normalized_sql:
+            self._store.attribution_link_rows.append(dict(params))
+            return
+        if "INSERT INTO attribution_score" in normalized_sql:
+            self._store.attribution_score_rows.append(dict(params))
+            return
         raise AssertionError(f"Unexpected SQL in physiology integration test: {normalized_sql}")
 
     def fetchall(self) -> list[tuple[Any, ...]]:
@@ -209,6 +221,10 @@ class _RecordingMetricsStore(MetricsStore):
         self.physiology_rows: list[dict[str, Any]] = []
         self.comodulation_rows: list[dict[str, Any]] = []
         self.encounter_rows: list[dict[str, Any]] = []
+        self.attribution_event_rows: list[dict[str, Any]] = []
+        self.attribution_outcome_rows: list[dict[str, Any]] = []
+        self.attribution_link_rows: list[dict[str, Any]] = []
+        self.attribution_score_rows: list[dict[str, Any]] = []
         self.arm_updates: list[dict[str, Any]] = []
         self._connection = _RecordingConnection(self)
         self._arms: dict[str, dict[str, float]] = {"arm-a": {"alpha_param": 1.0, "beta_param": 1.0}}
@@ -374,8 +390,9 @@ def _fake_ml_modules(
     transcription: Any = ModuleType("packages.ml_core.transcription")
 
     class TranscriptionEngine:
-        def transcribe(self, wav_path: str) -> str:
-            assert wav_path.endswith(".wav")
+        def transcribe(self, audio: Any) -> str:
+            assert hasattr(audio, "read")
+            assert audio.read(4) == b"RIFF"
             return "hello welcome to the stream"
 
     transcription.TranscriptionEngine = TranscriptionEngine
@@ -449,9 +466,12 @@ def _fake_ml_modules(
 
 
 def _fake_ffmpeg_run(cmd: list[str], *args: Any, **kwargs: Any) -> SimpleNamespace:
-    del args, kwargs
+    del args
+    if cmd[-1] == "pipe:1":
+        assert kwargs.get("input") == PCM_AUDIO
+        return SimpleNamespace(returncode=0, stdout=b"RIFF")
     Path(cmd[-1]).write_bytes(b"RIFF")
-    return SimpleNamespace(returncode=0)
+    return SimpleNamespace(returncode=0, stdout=b"")
 
 
 def _load_inference_module() -> Any:

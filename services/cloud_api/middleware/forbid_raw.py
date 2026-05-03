@@ -9,6 +9,8 @@ from dataclasses import dataclass
 from fastapi import Request, Response
 from starlette.responses import JSONResponse
 
+from packages.schemas.data_tiers import DataTier, mark_data_tier
+
 logger = logging.getLogger(__name__)
 
 WRITE_METHODS = frozenset({"POST", "PUT", "PATCH"})
@@ -65,7 +67,11 @@ async def forbid_raw_payload_middleware(
     if request.method not in WRITE_METHODS or not _is_json_content(request):
         return await call_next(request)
 
-    body = await request.body()
+    body = mark_data_tier(
+        await request.body(),
+        DataTier.TRANSIENT,
+        spec_ref="§5.2.1",
+    )
     if not body:
         return await call_next(request)
 

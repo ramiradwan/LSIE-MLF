@@ -1,13 +1,14 @@
-"""Suppress crash dialogs and Windows Error Reporting LocalDumps (WS4 P3 / §5.2).
+"""Suppress crash dialogs and Windows Error Reporting LocalDumps (§5.1.7).
 
 A modal crash dialog ("application has stopped working") prevents the
 parent ProcessGraph from observing the child exit code in time, leaving
 a stale entry in ``capture_pid_manifest`` for the next recovery sweep
 to clean up. Worse, Windows Error Reporting's LocalDumps feature, when
 enabled globally, will write a ``.dmp`` of the crashing process under
-``%LOCALAPPDATA%\\CrashDumps\\``. The dump file is outside the §5.2
-Ephemeral Vault perimeter, so a crash mid-segment would freeze the raw
-PCM bytes into a file that the 24h secure-deletion regime never sees.
+``%LOCALAPPDATA%\\CrashDumps\\``. The §5.1.7 volatile-memory controls
+require child-process crash dumps to be disabled or redirected to
+scrubbed diagnostics, because a crash mid-segment would otherwise freeze
+raw PCM bytes outside the governed cleanup path.
 
 The two functions below close both windows. They MUST be called early
 in every desktop-app process (the parent + each child); calling them

@@ -148,6 +148,7 @@ def _posterior_delta(sample_timestamp: datetime) -> PosteriorDelta:
         client_id="desktop-a",
         event_id=uuid.UUID("00000000-0000-4000-8000-000000000002"),
         applied_at_utc=sample_timestamp,
+        decision_context_hash=SEGMENT_ID,
     )
 
 
@@ -392,7 +393,7 @@ async def test_permanent_4xx_marks_rows_dead_letter(
 
 
 @pytest.mark.asyncio
-async def test_event_only_segment_batch_is_dead_lettered_without_posting(
+async def test_event_only_segment_batch_posts_attribution_events(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -405,13 +406,28 @@ async def test_event_only_segment_batch_is_dead_lettered_without_posting(
         upload_id = outbox.enqueue_attribution_event(
             _attribution_event(datetime(2026, 5, 2, tzinfo=UTC))
         )
-        transport = ScriptedTransport()
+        transport = ScriptedTransport(
+            [
+                httpx.Response(200, json={"access_token": "access-a", "expires_in": 3600}),
+                httpx.Response(
+                    200,
+                    json={"status": "accepted", "accepted_count": 1, "inserted_count": 1},
+                ),
+            ]
+        )
         await _sync_once(outbox, transport)
     finally:
         outbox.close()
 
-    assert _row_statuses(tmp_path / "desktop.sqlite") == {upload_id: "dead_letter"}
-    assert transport.requests == []
+    assert upload_id not in _row_statuses(tmp_path / "desktop.sqlite")
+    assert [request.url.path for request in transport.requests] == [
+        "/v4/auth/oauth/token",
+        "/v4/telemetry/segments",
+    ]
+    body = json.loads(transport.requests[1].content)
+    assert body["segments"] == []
+    assert len(body["attribution_events"]) == 1
+    assert body["attribution_events"][0]["segment_id"] == SEGMENT_ID
 
 
 @pytest.mark.asyncio
@@ -515,15 +531,18 @@ def test_batch_builder_does_not_log_payload_json(
     assert raw not in caplog.text
 
 
-def test_event_only_batch_is_dead_lettered_by_batch_builder(tmp_path: Path) -> None:
+def test_event_only_batch_builder_includes_attribution_events(tmp_path: Path) -> None:
     outbox = _outbox(tmp_path)
     try:
+        event = _attribution_event(datetime(2026, 5, 2, tzinfo=UTC))
         upload = PendingUpload(
             upload_id="event-a",
             endpoint="telemetry_segments",
             payload_type="attribution_event",
             dedupe_key="event-a",
-            payload_json="{}",
+            payload_json=event.model_dump_json(by_alias=True),
+            payload_sha256=None,
+            payload_redacted_at_utc=None,
             created_at_utc="2026-05-02T00:00:00Z",
             next_attempt_at_utc="2026-05-02T00:00:00Z",
             attempt_count=0,
@@ -537,4 +556,9 @@ def test_event_only_batch_is_dead_lettered_by_batch_builder(tmp_path: Path) -> N
     finally:
         outbox.close()
 
-    assert batch is None
+    assert batch is not None
+    payload, upload_ids = batch
+    assert upload_ids == ["event-a"]
+    assert payload["segments"] == []
+    assert len(payload["attribution_events"]) == 1
+    assert payload["attribution_events"][0]["segment_id"] == SEGMENT_ID

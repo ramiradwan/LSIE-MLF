@@ -10,7 +10,7 @@ on:
       - "scripts/gate0_gpu_replay.py"
       - "tests/fixtures/v4_gate0/**"
       - "tests/fixtures/capture/baseline/**"
-      - "requirements/**"
+      - "pyproject.toml"
       - "uv.lock"
   push:
     branches: [main]
@@ -21,7 +21,7 @@ on:
       - "scripts/gate0_gpu_replay.py"
       - "tests/fixtures/v4_gate0/**"
       - "tests/fixtures/capture/baseline/**"
-      - "requirements/**"
+      - "pyproject.toml"
       - "uv.lock"
   workflow_dispatch:
 

@@ -7,14 +7,15 @@ description: Run scripts/check_schema_consistency.py and interpret its output wh
 
 ## Why this skill exists
 
-The codebase carries two contract-bearing schema sources that drift independently:
+The codebase carries three contract-bearing schema sources that can drift independently:
 
 1. **Pydantic models** in `packages/schemas/` — runtime payload validation (`InferenceHandoffPayload`, `PhysiologicalSnapshot`, `SemanticEvaluationResult`, etc.).
-2. **JSON Schema blocks** under `interface_contracts.schemas` in `docs/content.json` — the extracted spec contract surface that the review agent loads from the committed `docs/tech-spec-v*.pdf`.
+2. **JSON Schema blocks** under `interface_contracts` in `docs/content.json` — the extracted spec contract surface loaded from the committed `docs/tech-spec-v*.pdf`.
+3. **Cloud PostgreSQL tables** from `services.cloud_api.db.schema` — the cloud persistence surface for contract-bearing records.
 
-A field rename in one source without the other causes silent drift. The script normalizes both onto a common `{name, canonical_type, nullable}` representation and reports any divergence.
+A field rename in one source without the others causes silent drift. The script normalizes every source onto a common `{name, canonical_type, nullable}` representation and reports any divergence.
 
-The v4.0 desktop pivot retired the previous PostgreSQL DDL surface (`data/sql/` + `services.api.db.schema.SCHEMA_SQL`). Local persistence is now SQLite-backed via `services/desktop_app/state/sqlite_schema.py`, where intentional storage-class compromises (UUID and TIMESTAMPTZ both stored as `TEXT`, JSONB as `TEXT`) make a column-type cross-check meaningless. When the cloud Postgres surface lands in WS5 P1, a third source can be re-added to `DEFAULT_REGISTRY` and `compare_entity` without further refactoring — the comparison primitive is source-count-agnostic.
+Local SQLite state in `services/desktop_app/state/sqlite_schema.py` is intentionally out of scope for direct type parity checks. The desktop mirror collapses several cloud types (for example UUID, TIMESTAMPTZ, and JSONB) to SQLite `TEXT`, so a strict storage-class comparison would produce noise instead of signal.
 
 ## When to invoke
 
@@ -86,7 +87,7 @@ Both source identifiers must be non-`None` — the registry sanity test in `test
 - A schema-touching PR that fails this gate must NOT be merged. Fix the drift first.
 - Do NOT widen a Pydantic field to `Any` to make `unknown` warnings disappear — the spec forbids `Any` outside of explicitly-flexible dicts (per `CLAUDE.md` hard rules). Fix the type instead.
 - The script must remain pure-Python with no third-party dependencies beyond what `packages/schemas/` already requires (Pydantic). Adding a parser dependency would make the gate harder to run.
-- When WS5 P1 lands the cloud Postgres DDL, re-introduce a third source to the registry and revive the SQL parser helpers from git history rather than guessing — the test fixtures show what the expected shape was.
+- If another contract-bearing source is added later, extend `DEFAULT_REGISTRY` deliberately and keep the comparison scoped to surfaces where type parity is semantically meaningful.
 
 ## Cross-references
 

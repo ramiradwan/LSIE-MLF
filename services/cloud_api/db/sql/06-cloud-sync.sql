@@ -21,7 +21,7 @@ CREATE TABLE IF NOT EXISTS posterior_delta_log (
     segment_id TEXT NOT NULL CHECK (segment_id ~ '^[a-f0-9]{64}$'),
     client_id TEXT NOT NULL,
     applied_at_utc TIMESTAMPTZ NOT NULL,
-    decision_context_hash TEXT CHECK (decision_context_hash IS NULL OR decision_context_hash ~ '^[a-f0-9]{64}$'),
+    decision_context_hash TEXT NOT NULL CHECK (decision_context_hash ~ '^[a-f0-9]{64}$'),
     received_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     UNIQUE (segment_id, client_id, arm_id)
 );

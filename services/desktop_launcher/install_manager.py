@@ -18,7 +18,7 @@ import httpx
 from PySide6.QtCore import QObject, Signal
 
 from services.desktop_app import os_adapter
-from services.desktop_launcher import health_check
+from services.desktop_launcher import health_check, manifest, preflight
 
 PYTHON_STANDALONE_VERSION = "cpython-3.11.15+20260414"
 SCRCPY_VERSION = "v3.3.4"
@@ -109,8 +109,32 @@ def default_launcher_paths() -> LauncherPaths:
         downloads_dir=base_dir / "downloads",
         staging_dir=base_dir / "runtime.staging",
         active_runtime_dir=base_dir / "runtime",
-        repo_root=Path(__file__).resolve().parents[2],
+        repo_root=resolve_app_root(),
     )
+
+
+def resolve_app_root() -> Path:
+    override = os.environ.get("LSIE_APP_ROOT", "").strip()
+    candidates: list[Path] = []
+    if override:
+        candidates.append(Path(override))
+    exe_dir = Path(sys.executable).resolve().parent
+    candidates.extend(
+        [
+            Path.cwd() / "app",
+            Path.cwd(),
+            exe_dir / "app",
+            exe_dir,
+            exe_dir.parent / "app",
+            exe_dir.parent,
+            Path(__file__).resolve().parents[2],
+        ]
+    )
+    for candidate in candidates:
+        root = candidate.expanduser().resolve()
+        if (root / "services" / "desktop_app" / "__main__.py").is_file():
+            return root
+    return Path(__file__).resolve().parents[2]
 
 
 def default_assets() -> tuple[DownloadAsset, DownloadAsset]:
@@ -130,6 +154,30 @@ def default_assets() -> tuple[DownloadAsset, DownloadAsset]:
     )
 
 
+def create_app_shortcut(paths: LauncherPaths, launcher_exe: Path | None = None) -> bool:
+    target = launcher_exe or Path(sys.executable)
+    shortcut = paths.base_dir / "LSIE-MLF.lnk"
+    return os_adapter.create_shortcut(
+        target=target,
+        shortcut=shortcut,
+        working_dir=paths.repo_root,
+        description="Launch LSIE-MLF",
+    )
+
+
+def has_current_runtime(runtime_dir: Path) -> bool:
+    try:
+        installed = manifest.read_manifest(runtime_dir)
+    except (FileNotFoundError, ValueError, TypeError):
+        return False
+    return (
+        installed.python_runtime == PYTHON_STANDALONE_VERSION
+        and installed.scrcpy_version == SCRCPY_VERSION
+        and installed.uv_sync_extra == "ml_backend"
+        and health_check.runtime_python(runtime_dir).is_file()
+    )
+
+
 def install_runtime(
     *,
     paths: LauncherPaths,
@@ -138,18 +186,26 @@ def install_runtime(
     progress: ProgressCallback,
     log: LogCallback,
 ) -> Path:
+    status("Running hardware preflight")
+    preflight.ensure_preflight()
     paths.downloads_dir.mkdir(parents=True, exist_ok=True)
     _reset_staging(paths.staging_dir)
     progress(0)
 
     downloaded: list[Path] = []
     for index, asset in enumerate(assets):
-        status(f"Downloading {asset.name}")
         target = paths.downloads_dir / asset.filename
+        asset_progress = _scaled_progress(progress, index, len(assets), 40)
+        if is_valid_cached_asset(target, asset.sha256):
+            status(f"Using cached {asset.name}")
+            asset_progress(100)
+            downloaded.append(target)
+            continue
+        status(f"Downloading {asset.name}")
         download_with_resume(
             asset,
             target,
-            progress=_scaled_progress(progress, index, len(assets), 40),
+            progress=asset_progress,
         )
         verify_sha256(target, asset.sha256)
         downloaded.append(target)
@@ -186,6 +242,7 @@ def install_runtime(
         python_runtime=PYTHON_STANDALONE_VERSION,
         scrcpy_version=SCRCPY_VERSION,
     )
+    create_app_shortcut(paths)
     progress(100)
     status("Setup complete")
     return runtime_dir
@@ -223,13 +280,21 @@ def download_with_resume(
 
 
 def verify_sha256(path: Path, expected: str) -> None:
+    actual = _sha256_hexdigest(path)
+    if actual.lower() != expected.lower():
+        raise ValueError(f"{path.name} sha256 mismatch: expected {expected}, got {actual}")
+
+
+def is_valid_cached_asset(path: Path, expected_sha256: str) -> bool:
+    return path.is_file() and _sha256_hexdigest(path).lower() == expected_sha256.lower()
+
+
+def _sha256_hexdigest(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
-    actual = digest.hexdigest()
-    if actual.lower() != expected.lower():
-        raise ValueError(f"{path.name} sha256 mismatch: expected {expected}, got {actual}")
+    return digest.hexdigest()
 
 
 def extract_archive(archive: Path, destination: Path) -> None:
@@ -279,6 +344,7 @@ def run_uv_sync(
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
+        creationflags=subprocess.CREATE_NO_WINDOW,
     )
     assert process.stdout is not None
     for line in process.stdout:

@@ -1,25 +1,17 @@
-"""Persist long-lived secrets in the OS secret store (WS4 P4 / §5).
+"""Persist long-lived secrets in the OS secret store (§5.1.6).
 
-The desktop app needs to keep a small handful of long-lived credentials
-across restarts:
+The desktop app keeps a small handful of long-lived credentials across
+restarts:
 
-* The cloud OAuth refresh token issued by the WS5 PKCE flow. Without
-  it the operator must re-authenticate every cold start.
+* The cloud OAuth refresh token issued by the desktop PKCE flow.
 * The ``OURA_WEBHOOK_SECRET`` if and when the desktop ever ingests the
-  Oura webhook locally (today the v4.0 deployment routes the webhook
-  through the cloud API server, so this slot is reserved but unused).
+  Oura webhook locally.
 
-The §5 privacy clause forbids embedding any secret literal in the
-shipped binary or in the configuration file the operator can read.
-``keyring`` resolves to ``WinVaultKeyring`` on Windows — DPAPI-backed
-and TPM-backed where available — so the secret is encrypted with a key
-the user cannot extract by reading the application's install tree.
-
-All Win32 / POSIX branching lives in
-:mod:`services.desktop_app.os_adapter` per the Platform Abstraction
-Rule. This module is a thin service-bound veneer over those primitives
-so call sites read as ``set_secret(SECRET_KEY_CLOUD_REFRESH_TOKEN, t)``
-instead of repeating the ``"lsie-mlf"`` service-name literal everywhere.
+§5.1.6 requires OAuth refresh tokens and cloud credentials to live in
+Windows Credential Manager via keyring rather than in SQLite. This
+module is the thin service-bound veneer over
+:mod:`services.desktop_app.os_adapter` so call sites do not repeat the
+``"lsie-mlf"`` service namespace literal everywhere.
 """
 
 from __future__ import annotations
@@ -36,7 +28,7 @@ narrow.
 """
 
 SECRET_KEY_CLOUD_REFRESH_TOKEN: str = "cloud_oauth_refresh_token"
-"""Refresh token issued by the WS5 PKCE flow."""
+"""Refresh token issued by the desktop PKCE flow."""
 
 SECRET_KEY_OURA_WEBHOOK_SECRET: str = "oura_webhook_secret"
 """Reserved slot for an on-desktop Oura webhook ingest (deferred)."""

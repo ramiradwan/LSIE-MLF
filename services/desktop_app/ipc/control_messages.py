@@ -1,7 +1,7 @@
-"""Pydantic envelope for the cross-process inference dispatch (WS3 P2).
+"""Pydantic envelope for the cross-process inference dispatch.
 
-Replaces the v3.4 Celery task argument (a single base64-bloated dict)
-with a typed control message that travels over ``IpcChannels.ml_inbox``.
+Implements the desktop Queue control envelope described by §9.2 using a
+ typed control message that travels over ``IpcChannels.ml_inbox``.
 The 30 s PCM window does NOT travel here — its SharedMemory metadata
 does, and the consumer attaches via ``shared_buffers.read_pcm_block``.
 
@@ -21,7 +21,7 @@ Field rationale:
 in the existing schemas (e.g.
 ``packages.schemas.attribution.AttributionBaseModel``) and rejects
 unknown keys at IPC ingress, mirroring the cloud perimeter's
-``forbid_raw`` middleware (WS5 P5).
+``forbid_raw`` middleware.
 """
 
 from __future__ import annotations

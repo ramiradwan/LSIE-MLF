@@ -1,12 +1,15 @@
 from __future__ import annotations
 
-import hashlib
-import hmac
+import base64
+import binascii
 import json
 import os
 from collections import defaultdict
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
+
+from Crypto.PublicKey import ECC
+from Crypto.Signature import eddsa
 
 from packages.schemas.cloud import (
     ExperimentBundle,
@@ -17,8 +20,15 @@ from packages.schemas.cloud import (
 from services.cloud_api.repos.experiments import fetch_active_experiment_rows
 from services.cloud_api.services.transactions import run_in_transaction
 
+LSIE_CLOUD_BUNDLE_ED25519_PRIVATE_KEY = "LSIE_CLOUD_BUNDLE_ED25519_PRIVATE_KEY"
+Ed25519PrivateKey = ECC.EccKey
+
 
 class ExperimentBundleUnavailableError(RuntimeError):
+    pass
+
+
+class ExperimentBundleSigningError(RuntimeError):
     pass
 
 
@@ -79,10 +89,37 @@ def _row_to_arm(row: dict[str, object]) -> ExperimentBundleArm:
 
 
 def _sign_payload(payload: ExperimentBundlePayload) -> str:
-    secret = os.environ.get("LSIE_CLOUD_BUNDLE_SIGNING_SECRET", "dev-cloud-bundle-secret")
+    private_key = _load_private_key_from_env()
     canonical = json.dumps(
         payload.model_dump(mode="json"),
         sort_keys=True,
         separators=(",", ":"),
     ).encode("utf-8")
-    return hmac.new(secret.encode("utf-8"), canonical, hashlib.sha256).hexdigest()
+    return _urlsafe_b64encode(eddsa.new(private_key, "rfc8032").sign(canonical))
+
+
+def _load_private_key_from_env() -> Ed25519PrivateKey:
+    raw_key = os.environ.get(LSIE_CLOUD_BUNDLE_ED25519_PRIVATE_KEY, "").strip()
+    if not raw_key:
+        raise ExperimentBundleSigningError(
+            f"{LSIE_CLOUD_BUNDLE_ED25519_PRIVATE_KEY} is not configured"
+        )
+    try:
+        if raw_key.startswith("-----BEGIN"):
+            key = ECC.import_key(raw_key)
+        else:
+            key = ECC.import_key(_urlsafe_b64decode(raw_key))
+    except (binascii.Error, ValueError) as exc:
+        raise ExperimentBundleSigningError("Ed25519 bundle private key is invalid") from exc
+    if key.has_private() and "Ed25519" in str(key.curve):
+        return key
+    raise ExperimentBundleSigningError("Ed25519 bundle private key is invalid")
+
+
+def _urlsafe_b64encode(value: bytes) -> str:
+    return base64.urlsafe_b64encode(value).decode("ascii").rstrip("=")
+
+
+def _urlsafe_b64decode(value: str) -> bytes:
+    padding = "=" * (-len(value) % 4)
+    return base64.urlsafe_b64decode(f"{value}{padding}")

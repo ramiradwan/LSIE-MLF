@@ -70,8 +70,7 @@ def _run_pytest(repo_root: Path, test_path: Path) -> PytestRun:
         [sys.executable, "-m", "pytest", "-q", str(test_path)],
         cwd=repo_root,
         text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
         check=False,
     )
     return PytestRun(completed.returncode, completed.stdout, completed.stderr)
@@ -124,7 +123,9 @@ def verify_error_handling_registry(context: AuditContext, item: Section13Item) -
 
 
 @register_audit_verifier("13.13")
-def verify_variable_traceability_registry(context: AuditContext, item: Section13Item) -> AuditResult:
+def verify_variable_traceability_registry(
+    context: AuditContext, item: Section13Item
+) -> AuditResult:
     """Verify §11 registry completeness by delegating to its integration test."""
     try:
         registry = _load_registry(context.repo_root, VARIABLE_TRACEABILITY_REGISTRY_PATH)

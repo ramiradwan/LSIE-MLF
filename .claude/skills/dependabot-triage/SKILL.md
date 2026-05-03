@@ -3,7 +3,7 @@ name: dependabot-triage
 description: Process Dependabot pull requests against the LSIE-MLF dependency matrix on a weekly cadence. Apply the auto-merge eligibility rules, file the impact analysis for PRs that need human review, and keep the queue empty between cycles. Triggers include "dependabot", "dep updates", "triage dep PRs", "auto-merge eligible", or "weekly dep sweep".
 ---
 
-# Dependabot Triage (`requirements/`, §10.2)
+# Dependabot Triage (`pyproject.toml` + `uv.lock`, §10.2)
 
 ## When to invoke
 
@@ -14,7 +14,7 @@ description: Process Dependabot pull requests against the LSIE-MLF dependency ma
 ## Required inputs
 
 1. The list of open Dependabot PRs: `gh pr list --author "app/dependabot" --state open`.
-2. For each PR: title (package + version bump), changed files (`requirements/base.txt`, `requirements/api.txt`, `requirements/worker.txt`, `.github/workflows/*.yml`, etc.), and CI status (`gh pr checks <number>`).
+2. For each PR: title (package + version bump), changed files (`pyproject.toml`, `uv.lock`, `.github/workflows/*.yml`, etc.), and CI status (`gh pr checks <number>`).
 3. `docs/SPEC_REFERENCE.md` §10.2 dependency pin list — anything pinned there is spec-governed and cannot be auto-merged.
 
 ## Auto-merge eligibility rules — ALL must be true
@@ -53,7 +53,7 @@ Any PR failing one or more eligibility rules gets a comment with this template b
 
 ### Risk summary
 - **Breaking changes in upstream changelog:** <link to release notes; list any breaking entries>
-- **Transitive dependency shifts:** <output of `pip-compile --dry-run` or equivalent; list any other pinned packages whose resolved version would change>
+- **Transitive dependency shifts:** <summarize the `uv.lock` delta or equivalent; list any other pinned packages whose resolved version would change>
 - **API surface changes affecting our usage:** <grep results for the public symbols we import; list any signatures we depend on that changed>
 - **Runtime behavior changes:** <perf regressions, deprecation warnings, default config changes>
 

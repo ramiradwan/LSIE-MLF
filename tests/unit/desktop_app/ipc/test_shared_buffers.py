@@ -1,4 +1,4 @@
-"""WS3 P2 — SharedMemory PCM transport unit tests."""
+"""SharedMemory PCM transport unit tests."""
 
 from __future__ import annotations
 

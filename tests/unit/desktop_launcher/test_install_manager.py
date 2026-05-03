@@ -1,8 +1,10 @@
-"""WS1 P2 — install manager tests."""
+"""Install manager tests."""
 
 from __future__ import annotations
 
+import hashlib
 import subprocess
+import sys
 import zipfile
 from pathlib import Path
 from typing import Self
@@ -10,7 +12,8 @@ from typing import Self
 import httpx
 import pytest
 
-from services.desktop_launcher import install_manager
+from services.desktop_app import os_adapter
+from services.desktop_launcher import health_check, install_manager, manifest, preflight
 from services.desktop_launcher.install_manager import DownloadAsset, LauncherPaths
 
 
@@ -87,6 +90,22 @@ def test_verify_sha256_rejects_mismatch(tmp_path: Path) -> None:
         install_manager.verify_sha256(payload, "0" * 64)
 
 
+def test_is_valid_cached_asset_accepts_matching_digest(tmp_path: Path) -> None:
+    payload = tmp_path / "payload.bin"
+    payload.write_bytes(b"payload")
+    digest = hashlib.sha256(b"payload").hexdigest()
+
+    assert install_manager.is_valid_cached_asset(payload, digest) is True
+
+
+def test_is_valid_cached_asset_rejects_missing_or_mismatched_digest(tmp_path: Path) -> None:
+    payload = tmp_path / "payload.bin"
+    payload.write_text("payload", encoding="utf-8")
+
+    assert install_manager.is_valid_cached_asset(payload, "0" * 64) is False
+    assert install_manager.is_valid_cached_asset(tmp_path / "missing.bin", "0" * 64) is False
+
+
 def test_extract_zip_archive(tmp_path: Path) -> None:
     archive = tmp_path / "payload.zip"
     with zipfile.ZipFile(archive, "w") as zf:
@@ -110,7 +129,7 @@ def test_run_uv_sync_uses_ml_backend_extra(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    calls: list[tuple[list[str], Path, dict[str, str]]] = []
+    calls: list[tuple[list[str], Path, dict[str, str], int]] = []
 
     class FakeStdout:
         def __iter__(self) -> Self:
@@ -133,8 +152,10 @@ def test_run_uv_sync_uses_ml_backend_extra(
         stdout: int,
         stderr: int,
         text: bool,
+        creationflags: int,
     ) -> FakeProcess:
-        calls.append((cmd, cwd, env))
+        del stdout, stderr, text
+        calls.append((cmd, cwd, env, creationflags))
         return FakeProcess()
 
     monkeypatch.setattr(subprocess, "Popen", fake_popen)
@@ -146,12 +167,13 @@ def test_run_uv_sync_uses_ml_backend_extra(
         log=lambda _line: None,
     )
 
-    cmd, cwd, env = calls[0]
+    cmd, cwd, env, creationflags = calls[0]
     assert cwd == tmp_path
     assert cmd[:5] == ["uv", "sync", "--frozen", "--extra", "ml_backend"]
     assert "--reinstall" not in cmd
     assert "--python" in cmd
     assert env["UV_PROJECT_ENVIRONMENT"] == str(tmp_path / "runtime.staging" / ".venv")
+    assert creationflags == subprocess.CREATE_NO_WINDOW
 
 
 def test_run_uv_sync_can_force_reinstall(
@@ -181,8 +203,10 @@ def test_run_uv_sync_can_force_reinstall(
         stdout: int,
         stderr: int,
         text: bool,
+        creationflags: int,
     ) -> FakeProcess:
         del cwd, env, stdout, stderr, text
+        assert creationflags == subprocess.CREATE_NO_WINDOW
         calls.append(cmd)
         return FakeProcess()
 
@@ -197,6 +221,226 @@ def test_run_uv_sync_can_force_reinstall(
     )
 
     assert "--reinstall" in calls[0]
+
+
+def test_resolve_app_root_prefers_env_override(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    app_root = tmp_path / "repo"
+    (app_root / "services" / "desktop_app").mkdir(parents=True)
+    (app_root / "services" / "desktop_app" / "__main__.py").write_text("", encoding="utf-8")
+    monkeypatch.setenv("LSIE_APP_ROOT", str(app_root))
+
+    assert install_manager.resolve_app_root() == app_root
+
+
+def test_resolve_app_root_prefers_bundled_app_dir(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    app_root = tmp_path / "app"
+    (app_root / "services" / "desktop_app").mkdir(parents=True)
+    (app_root / "services" / "desktop_app" / "__main__.py").write_text("", encoding="utf-8")
+    monkeypatch.delenv("LSIE_APP_ROOT", raising=False)
+    monkeypatch.chdir(tmp_path)
+
+    assert install_manager.resolve_app_root() == app_root
+
+
+def test_resolve_app_root_finds_cwd_source_root(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "services" / "desktop_app").mkdir(parents=True)
+    (tmp_path / "services" / "desktop_app" / "__main__.py").write_text("", encoding="utf-8")
+    monkeypatch.delenv("LSIE_APP_ROOT", raising=False)
+    monkeypatch.chdir(tmp_path)
+
+    assert install_manager.resolve_app_root() == tmp_path
+
+
+def test_has_current_runtime_accepts_matching_manifest_and_python(
+    tmp_path: Path,
+) -> None:
+    python_exe = (
+        tmp_path
+        / ".venv"
+        / ("Scripts" if sys.platform == "win32" else "bin")
+        / ("python.exe" if sys.platform == "win32" else "python3")
+    )
+    python_exe.parent.mkdir(parents=True)
+    python_exe.write_text("", encoding="utf-8")
+    manifest.write_manifest(
+        tmp_path,
+        manifest.build_manifest(
+            python_runtime=install_manager.PYTHON_STANDALONE_VERSION,
+            scrcpy_version=install_manager.SCRCPY_VERSION,
+        ),
+    )
+
+    assert install_manager.has_current_runtime(tmp_path) is True
+
+
+def test_has_current_runtime_rejects_missing_runtime(tmp_path: Path) -> None:
+    assert install_manager.has_current_runtime(tmp_path) is False
+
+
+def test_create_app_shortcut_uses_launcher_path(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    paths = LauncherPaths(
+        base_dir=tmp_path,
+        downloads_dir=tmp_path / "downloads",
+        staging_dir=tmp_path / "runtime.staging",
+        active_runtime_dir=tmp_path / "runtime",
+        repo_root=tmp_path / "repo",
+    )
+    calls: list[tuple[Path, Path, Path, str]] = []
+
+    def fake_create_shortcut(
+        *,
+        target: Path,
+        shortcut: Path,
+        working_dir: Path,
+        description: str,
+    ) -> bool:
+        calls.append((target, shortcut, working_dir, description))
+        return True
+
+    monkeypatch.setattr(os_adapter, "create_shortcut", fake_create_shortcut)
+
+    assert (
+        install_manager.create_app_shortcut(paths, launcher_exe=tmp_path / "launcher.exe")
+        is True
+    )
+    assert calls == [
+        (
+            tmp_path / "launcher.exe",
+            tmp_path / "LSIE-MLF.lnk",
+            tmp_path / "repo",
+            "Launch LSIE-MLF",
+        )
+    ]
+
+
+def test_install_runtime_reuses_valid_cached_archives(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    paths = LauncherPaths(
+        base_dir=tmp_path,
+        downloads_dir=tmp_path / "downloads",
+        staging_dir=tmp_path / "runtime.staging",
+        active_runtime_dir=tmp_path / "runtime",
+        repo_root=tmp_path,
+    )
+    paths.downloads_dir.mkdir()
+    asset_payloads = (b"python", b"scrcpy")
+    assets = (
+        DownloadAsset(
+            "python-build-standalone",
+            "https://example.test/python.tar.gz",
+            "python.tar.gz",
+            hashlib.sha256(asset_payloads[0]).hexdigest(),
+        ),
+        DownloadAsset(
+            "scrcpy",
+            "https://example.test/scrcpy.zip",
+            "scrcpy.zip",
+            hashlib.sha256(asset_payloads[1]).hexdigest(),
+        ),
+    )
+    for asset, payload in zip(assets, asset_payloads, strict=True):
+        (paths.downloads_dir / asset.filename).write_bytes(payload)
+    statuses: list[str] = []
+    download_calls: list[str] = []
+
+    monkeypatch.setattr(preflight, "ensure_preflight", lambda: None)
+    monkeypatch.setattr(
+        install_manager,
+        "download_with_resume",
+        lambda asset, *_args, **_kwargs: download_calls.append(asset.name),
+    )
+    monkeypatch.setattr(install_manager, "extract_archive", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        install_manager,
+        "find_runtime_python",
+        lambda _root: tmp_path / "python.exe",
+    )
+    monkeypatch.setattr(install_manager, "run_uv_sync", lambda **_kwargs: None)
+    monkeypatch.setattr(health_check, "run_runtime_smoke_test", lambda _root: "")
+    monkeypatch.setattr(
+        health_check,
+        "finalize_install",
+        lambda **_kwargs: paths.active_runtime_dir,
+    )
+
+    install_manager.install_runtime(
+        paths=paths,
+        assets=assets,
+        status=statuses.append,
+        progress=lambda _value: None,
+        log=lambda _line: None,
+    )
+
+    assert download_calls == []
+    assert "Using cached python-build-standalone" in statuses
+    assert "Using cached scrcpy" in statuses
+
+
+def test_install_runtime_runs_preflight_before_downloads(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    paths = LauncherPaths(
+        base_dir=tmp_path,
+        downloads_dir=tmp_path / "downloads",
+        staging_dir=tmp_path / "runtime.staging",
+        active_runtime_dir=tmp_path / "runtime",
+        repo_root=tmp_path,
+    )
+    asset = DownloadAsset("payload", "https://example.test/payload", "payload.bin", "0" * 64)
+    statuses: list[str] = []
+    preflight_calls: list[str] = []
+    progress_values: list[int] = []
+
+    monkeypatch.setattr(
+        preflight,
+        "ensure_preflight",
+        lambda: preflight_calls.append("called"),
+    )
+    monkeypatch.setattr(
+        install_manager,
+        "download_with_resume",
+        lambda *_args, **_kwargs: paths.downloads_dir / asset.filename,
+    )
+    monkeypatch.setattr(install_manager, "verify_sha256", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(install_manager, "extract_archive", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        install_manager,
+        "find_runtime_python",
+        lambda _root: tmp_path / "python.exe",
+    )
+    monkeypatch.setattr(install_manager, "run_uv_sync", lambda **_kwargs: None)
+    monkeypatch.setattr(health_check, "run_runtime_smoke_test", lambda _root: "")
+    monkeypatch.setattr(
+        health_check,
+        "finalize_install",
+        lambda **_kwargs: paths.active_runtime_dir,
+    )
+
+    install_manager.install_runtime(
+        paths=paths,
+        assets=(asset, asset),
+        status=statuses.append,
+        progress=progress_values.append,
+        log=lambda _line: None,
+    )
+
+    assert preflight_calls == ["called"]
+    assert statuses[0] == "Running hardware preflight"
 
 
 def test_install_manager_starts_background_thread(

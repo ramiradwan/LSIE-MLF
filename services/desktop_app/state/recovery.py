@@ -1,7 +1,7 @@
-"""Dirty-state recovery sweep at ui_api_shell startup (WS4 P2).
+"""Dirty-state recovery sweep at desktop startup.
 
-Composes three independent recovery steps that ui_api_shell runs once,
-before the rest of the desktop graph spawns:
+Composes the §9.2 Dirty State Recovery steps once before the rest of
+the desktop graph spawns:
 
 1. **Orphan IPC blocks** — unlink leftover ``lsie_ipc_*`` SharedMemory
    entries from a previous ungraceful exit. Delegates to
@@ -31,6 +31,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from services.desktop_app.ipc.cleanup import recover_orphan_ipc_blocks
+from services.desktop_app.os_adapter import resolve_capture_dir
+from services.desktop_app.privacy.zeroize import cleanup_capture_files
 
 logger = logging.getLogger(__name__)
 
@@ -43,15 +45,18 @@ class RecoveryReport:
     wal_checkpoint_pages: int | None = None
     reaped_capture_pids: list[int] = field(default_factory=list)
     survived_capture_pids: list[int] = field(default_factory=list)
+    deleted_capture_files: list[str] = field(default_factory=list)
+    retained_capture_files: list[str] = field(default_factory=list)
 
 
 def run_recovery_sweep(db_path: Path) -> RecoveryReport:
     """Execute every recovery step in order, never raising on a single failure.
 
     ``db_path`` must point at an already-bootstrapped SQLite store;
-    ui_api_shell calls :func:`services.desktop_app.state.sqlite_schema
-    .bootstrap_schema` immediately before this function so the
-    ``capture_pid_manifest`` table is guaranteed present.
+    the parent startup sequence calls
+    :func:`services.desktop_app.state.sqlite_schema.bootstrap_schema`
+    immediately before this function so the ``capture_pid_manifest``
+    table is guaranteed present.
     """
     report = RecoveryReport()
 
@@ -72,12 +77,22 @@ def run_recovery_sweep(db_path: Path) -> RecoveryReport:
     except Exception:  # noqa: BLE001 — non-fatal during boot
         logger.warning("capture pid manifest reap failed", exc_info=True)
 
+    try:
+        deleted, retained = cleanup_capture_files(resolve_capture_dir())
+        report.deleted_capture_files = [str(path) for path in deleted]
+        report.retained_capture_files = [str(path) for path in retained]
+    except Exception:  # noqa: BLE001 — non-fatal during boot
+        logger.warning("capture file cleanup failed", exc_info=True)
+
     logger.info(
-        "recovery sweep complete: ipc=%d wal_pages=%s reaped=%s survived=%s",
+        "recovery sweep complete: ipc=%d wal_pages=%s reaped=%s survived=%s "
+        "deleted_files=%s retained_files=%s",
         report.unlinked_ipc_blocks,
         report.wal_checkpoint_pages,
         report.reaped_capture_pids,
         report.survived_capture_pids,
+        report.deleted_capture_files,
+        report.retained_capture_files,
     )
     return report
 

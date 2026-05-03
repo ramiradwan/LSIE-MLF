@@ -10,9 +10,9 @@
       "section": "§11.1.1",
       "evidence": [
         {
-          "path": "services/stream_ingest/entrypoint.sh",
+          "path": "services/desktop_app/processes/capture_supervisor.py",
           "patterns": [
-            "VIDEO_PIPE",
+            "_build_video_scrcpy_args",
             "--video-codec=h264",
             "--record-format=mkv"
           ],
@@ -26,9 +26,9 @@
       "section": "§11.1.2",
       "evidence": [
         {
-          "path": "services/stream_ingest/entrypoint.sh",
+          "path": "services/desktop_app/processes/capture_supervisor.py",
           "patterns": [
-            "AUDIO_PIPE",
+            "_build_audio_scrcpy_args",
             "--audio-codec=raw",
             "--record"
           ],
@@ -69,7 +69,7 @@
           "surface": "public_output"
         },
         {
-          "path": "data/sql/01-schema.sql",
+          "path": "services/cloud_api/db/sql/01-schema.sql",
           "patterns": [
             "CREATE TABLE IF NOT EXISTS events",
             "is_combo"
@@ -84,7 +84,7 @@
       "section": "§11.3.1",
       "evidence": [
         {
-          "path": "services/worker/pipeline/orchestrator.py",
+          "path": "services/desktop_app/drift.py",
           "patterns": [
             "self.drift_offset",
             "drift_offset = host_utc - android_epoch"
@@ -457,7 +457,7 @@
           "surface": "public_output"
         },
         {
-          "path": "data/sql/01-schema.sql",
+          "path": "services/cloud_api/db/sql/01-schema.sql",
           "patterns": [
             "CREATE TABLE IF NOT EXISTS transcripts",
             "text            TEXT NOT NULL"
@@ -938,7 +938,7 @@
           "surface": "public_output"
         },
         {
-          "path": "data/sql/01-schema.sql",
+          "path": "services/cloud_api/db/sql/01-schema.sql",
           "patterns": [
             "CREATE TABLE IF NOT EXISTS experiments",
             "alpha_param",
@@ -962,7 +962,7 @@
           "surface": "public_output"
         },
         {
-          "path": "data/sql/01-schema.sql",
+          "path": "services/cloud_api/db/sql/01-schema.sql",
           "patterns": [
             "gated_reward",
             "encounter_log"
@@ -985,7 +985,7 @@
           "surface": "public_output"
         },
         {
-          "path": "data/sql/01-schema.sql",
+          "path": "services/cloud_api/db/sql/01-schema.sql",
           "patterns": [
             "p90_intensity",
             "encounter_log"
@@ -1008,7 +1008,7 @@
           "surface": "public_output"
         },
         {
-          "path": "data/sql/01-schema.sql",
+          "path": "services/cloud_api/db/sql/01-schema.sql",
           "patterns": [
             "semantic_gate",
             "encounter_log"
@@ -1031,7 +1031,7 @@
           "surface": "public_output"
         },
         {
-          "path": "data/sql/01-schema.sql",
+          "path": "services/cloud_api/db/sql/01-schema.sql",
           "patterns": [
             "n_frames_in_window",
             "encounter_log"
@@ -1054,7 +1054,7 @@
           "surface": "public_output"
         },
         {
-          "path": "data/sql/01-schema.sql",
+          "path": "services/cloud_api/db/sql/01-schema.sql",
           "patterns": [
             "au12_baseline_pre",
             "encounter_log"
@@ -1077,7 +1077,7 @@
           "surface": "persistence"
         },
         {
-          "path": "data/sql/03-physiology.sql",
+          "path": "services/cloud_api/db/sql/03-physiology.sql",
           "patterns": [
             "co_modulation_index",
             "comodulation_log"
@@ -1100,7 +1100,7 @@
           "surface": "persistence"
         },
         {
-          "path": "data/sql/03-physiology.sql",
+          "path": "services/cloud_api/db/sql/03-physiology.sql",
           "patterns": [
             "coverage_ratio",
             "comodulation_log"
@@ -1123,7 +1123,7 @@
           "surface": "public_output"
         },
         {
-          "path": "data/sql/05-attribution.sql",
+          "path": "services/cloud_api/db/sql/05-attribution.sql",
           "patterns": [
             "attribution_score",
             "attribution_method",
@@ -1147,7 +1147,7 @@
           "surface": "public_output"
         },
         {
-          "path": "data/sql/05-attribution.sql",
+          "path": "services/cloud_api/db/sql/05-attribution.sql",
           "patterns": [
             "attribution_score",
             "score_raw"
@@ -1170,7 +1170,7 @@
           "surface": "public_output"
         },
         {
-          "path": "data/sql/05-attribution.sql",
+          "path": "services/cloud_api/db/sql/05-attribution.sql",
           "patterns": [
             "attribution_score",
             "score_raw"
@@ -1193,7 +1193,7 @@
           "surface": "public_output"
         },
         {
-          "path": "data/sql/05-attribution.sql",
+          "path": "services/cloud_api/db/sql/05-attribution.sql",
           "patterns": [
             "attribution_score",
             "score_raw"
@@ -1216,7 +1216,7 @@
           "surface": "public_output"
         },
         {
-          "path": "data/sql/05-attribution.sql",
+          "path": "services/cloud_api/db/sql/05-attribution.sql",
           "patterns": [
             "attribution_score",
             "score_raw"
@@ -1239,7 +1239,7 @@
           "surface": "public_output"
         },
         {
-          "path": "data/sql/05-attribution.sql",
+          "path": "services/cloud_api/db/sql/05-attribution.sql",
           "patterns": [
             "attribution_score",
             "score_raw"
@@ -1262,7 +1262,7 @@
           "surface": "public_output"
         },
         {
-          "path": "data/sql/05-attribution.sql",
+          "path": "services/cloud_api/db/sql/05-attribution.sql",
           "patterns": [
             "event_outcome_link",
             "lag_s"
@@ -1286,7 +1286,7 @@
           "surface": "public_output"
         },
         {
-          "path": "data/sql/05-attribution.sql",
+          "path": "services/cloud_api/db/sql/05-attribution.sql",
           "patterns": [
             "finality",
             "online_provisional",
@@ -1311,7 +1311,7 @@
           "surface": "public_output"
         },
         {
-          "path": "data/sql/01-schema.sql",
+          "path": "services/cloud_api/db/sql/01-schema.sql",
           "patterns": [
             "CREATE TABLE IF NOT EXISTS context",
             "data            JSONB NOT NULL"

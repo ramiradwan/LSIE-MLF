@@ -1,4 +1,4 @@
-"""WS4 P3 — crash-dialog suppression + WER LocalDumps exclusion."""
+"""Crash-dialog suppression and WER LocalDumps exclusion tests."""
 
 from __future__ import annotations
 

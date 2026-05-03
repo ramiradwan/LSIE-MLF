@@ -286,7 +286,7 @@ else
     detail "  - persist_metrics SKIPS Thompson Sampling update every time"
     echo ""
     hint "Option A (auto-trigger): set AUTO_STIMULUS_DELAY_S=15 in .env and restart orchestrator"
-    hint "Option B (manual): curl -X POST http://localhost:8000/api/v1/stimulus"
+    hint "Option B (manual): POST /api/v1/operator/sessions/{session_id}/stimulus"
     hint "Option C (check auto-trigger): docker compose logs orchestrator | grep 'Auto-trigger'"
 fi
 

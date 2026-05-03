@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
 
-from services.desktop_launcher import manifest
+from services.desktop_app import os_adapter
+from services.desktop_launcher import manifest, preflight
 
 _HEALTH_CHECK_SNIPPET = (
     "import torch; "
@@ -47,6 +49,7 @@ def run_runtime_smoke_test(runtime_dir: Path, timeout_s: float = 120.0) -> str:
         text=True,
         timeout=timeout_s,
         check=False,
+        creationflags=subprocess.CREATE_NO_WINDOW,
     )
     output = (result.stdout + result.stderr).strip()
     if result.returncode != 0:
@@ -67,6 +70,7 @@ def finalize_install(
             _remove_tree(backup)
         active_runtime_dir.replace(backup)
     staging_dir.replace(active_runtime_dir)
+    _repair_venv_home(active_runtime_dir)
     manifest.write_manifest(
         active_runtime_dir,
         manifest.build_manifest(
@@ -77,13 +81,61 @@ def finalize_install(
     return active_runtime_dir
 
 
-def launch_desktop_app(runtime_dir: Path) -> subprocess.Popen[str]:
+def launch_desktop_app(runtime_dir: Path, app_root: Path | None = None) -> subprocess.Popen[str]:
+    preflight.ensure_preflight()
     python_exe = runtime_python(runtime_dir)
-    return subprocess.Popen(
-        [str(python_exe), "-m", "services.desktop_app"],
-        cwd=Path.cwd(),
-        text=True,
-    )
+    root = (app_root or _default_app_root()).resolve()
+    _validate_app_root(root)
+    env = os.environ.copy()
+    pythonpath = env.get("PYTHONPATH")
+    env["PYTHONPATH"] = str(root) if not pythonpath else f"{root}{os.pathsep}{pythonpath}"
+    log_path = _launch_log_path()
+    log_handle = log_path.open("a", encoding="utf-8")
+    log_handle.write(f"\n--- launching LSIE-MLF from {root} with {python_exe} ---\n")
+    log_handle.flush()
+    try:
+        return subprocess.Popen(
+            [str(python_exe), "-m", "services.desktop_app"],
+            cwd=root,
+            env=env,
+            stdout=log_handle,
+            stderr=subprocess.STDOUT,
+            text=True,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+    except Exception:
+        log_handle.close()
+        raise
+
+
+def _default_app_root() -> Path:
+    from services.desktop_launcher.install_manager import resolve_app_root
+
+    return resolve_app_root()
+
+
+def _repair_venv_home(runtime_dir: Path) -> None:
+    pyvenv_cfg = runtime_dir / ".venv" / "pyvenv.cfg"
+    if not pyvenv_cfg.is_file():
+        return
+    python_home = runtime_dir / "python" / "python"
+    lines = pyvenv_cfg.read_text(encoding="utf-8").splitlines()
+    repaired = [f"home = {python_home}" if line.startswith("home = ") else line for line in lines]
+    pyvenv_cfg.write_text("\n".join(repaired) + "\n", encoding="utf-8")
+
+
+def _validate_app_root(root: Path) -> None:
+    if not (root / "services" / "desktop_app" / "__main__.py").is_file():
+        raise RuntimeError(
+            "LSIE-MLF app source root was not found. Set LSIE_APP_ROOT to the repository root "
+            "before launching the packaged installer."
+        )
+
+
+def _launch_log_path() -> Path:
+    log_dir = os_adapter.resolve_state_dir().parent / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    return log_dir / "desktop-launch.log"
 
 
 def _remove_tree(path: Path) -> None:

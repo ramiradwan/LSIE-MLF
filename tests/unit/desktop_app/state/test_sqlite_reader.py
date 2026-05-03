@@ -1,4 +1,4 @@
-"""WS4 P1 — SqliteReader read-only contract tests."""
+"""SqliteReader read-only contract tests."""
 
 from __future__ import annotations
 

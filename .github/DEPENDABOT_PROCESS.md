@@ -2,7 +2,9 @@
 
 Operational rules for handling Dependabot pull requests against the LSIE-MLF dependency matrix. These rules are authoritative — Claude Code, the ADO agent, and human reviewers all follow this document. The companion `.claude/skills/dependabot-triage/SKILL.md` describes how Claude Code invokes this process; this file defines the rules.
 
-The Dependabot configuration itself lives in `.github/dependabot.yml` (pip, github-actions, and three docker ecosystems on weekly or monthly cadence with `open-pull-requests-limit: 5` on pip to prevent queue overflow).
+The Dependabot configuration itself lives in `.github/dependabot.yml` (pip and github-actions, with `open-pull-requests-limit: 5` on pip to prevent queue overflow).
+
+The canonical dependency surfaces for this repository are `pyproject.toml` (declared dependencies, extras, and groups) and `uv.lock` (frozen resolution). Dependabot review and impact analysis should treat changes to those files as the authoritative dependency diff.
 
 ---
 
@@ -18,8 +20,7 @@ A Dependabot PR is auto-mergeable when **every** condition below holds:
    - `ruff check` and `ruff format --check` on `packages/`, `services/`, `tests/`
    - `mypy` on `packages/` and `services/` with `--python-version 3.11`
    - `pytest tests/ -x -q` — and explicitly the **mathematical recipe regression tests in `tests/unit/test_v3_math_recipe.py`** must be green. These guard the Thompson Sampling / reward / AU12 mathematical contract; a failure there is never a flake.
-   - `scripts/check_schema_consistency.py` (the four-source schema gate)
-   - `docker compose config --quiet`
+   - `scripts/check_schema_consistency.py` (the schema consistency gate across Pydantic, extracted JSON Schema, and cloud PostgreSQL DDL)
    - The §0.3 canonical-terminology audit
    - The dependency pin check in `scripts/check.sh`
 4. **The PR diff does NOT touch `packages/ml_core/` or `packages/schemas/`**, including via transitive type-stub regeneration. These directories define the ML inference core and the inter-module type contracts — any change there is a contract change, not a maintenance update.
@@ -106,6 +107,7 @@ Dependabot processing runs on a **fixed weekly day** (default: Monday), independ
 ## Cross-references
 
 - Dependabot config: `.github/dependabot.yml`
+- Canonical dependency surfaces: `pyproject.toml`, `uv.lock`
 - Pin list (§10.2): `docs/SPEC_REFERENCE.md`
 - Spec deviation registry: `docs/SPEC_AMENDMENTS.md`
 - CI gates: `scripts/check.sh`, `.github/workflows/ci.yml`

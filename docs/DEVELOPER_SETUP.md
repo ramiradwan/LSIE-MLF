@@ -1,10 +1,9 @@
 # LSIE-MLF v4.0 Developer Setup
 
-Setup guide for developers contributing to the v4.0 desktop pivot.
+Setup guide for developers contributing to the Windows-native desktop runtime.
 Tier 1 platform is Windows 11 x64 with NVIDIA Turing (SM 7.5+) for the
-production GPU path. Pascal (GTX 10-series) hosts are supported as
-**developer-only** machines via the `LSIE_DEV_FORCE_CPU_SPEECH` escape
-hatch documented below.
+production GPU path. Pascal (GTX 10-series) hosts are supported only in
+developer mode, where speech runs on the CPU.
 
 ## 1. Prerequisites
 
@@ -21,6 +20,12 @@ hatch documented below.
   `LSIE_SCRCPY_PATH` / `LSIE_ADB_PATH` / `LSIE_FFMPEG_PATH` env
   overrides resolved by `services.desktop_app.os_adapter`).
 
+Redis, Celery workers, Docker Compose services, and PostgreSQL are not
+prerequisites for launching the v4 desktop runtime with
+`python -m services.desktop_app`; local transport uses IPC queues/shared
+memory and local state uses SQLite WAL. The active v4 desktop tree does not
+track Docker Compose or Dockerfile manifests.
+
 ## 2. Environment hydration
 
 ```powershell
@@ -35,43 +40,41 @@ end users. Add `--group dev` for pytest, mypy, and ruff.
 
 ## 3. GPU / compute-capability matrix
 
-The v4.0 production speech path requires Turing (SM 7.5+) on
-CUDA 12.x with cuDNN 9. The exhaustive contract lives in
-`docs/V4_SPEC_DRAFTS.md` §11.x; the developer-facing rules are:
+The current contract lives in `docs/SPEC_REFERENCE.md`, which points to
+runtime topology (§9), system requirements (§10.1), pinned packages (§10.2),
+and the signed desktop pivot content extracted in `docs/content.json`.
+The developer-facing rules are:
 
-| Compute capability | Tier             | Speech device | Cross-encoder | Required env |
+| Compute capability | Tier | Speech device | Cross-encoder | Required developer declaration |
 |---|---|---|---|---|
 | 7.5+ (Turing / Ampere / Ada / Hopper) | Production | CUDA | CUDA | none |
-| 6.1 (Pascal — GTX 10-series)          | Developer  | **CPU** | CUDA | **`LSIE_DEV_FORCE_CPU_SPEECH=1`** |
-| no GPU                                | CI / VM    | CPU  | CPU  | none |
+| 6.1 (Pascal — GTX 10-series) | Developer mode only | **CPU** | CUDA | **`.dev_machine` marker or `LSIE_DEV_FORCE_CPU_SPEECH=1`** |
+| no GPU | Developer mode only | CPU | CPU | **`.dev_machine` marker or `LSIE_DEV_FORCE_CPU_SPEECH=1`** |
 
-### 3.1 Pascal developer override
+### 3.1 Developer-mode override
 
-If you are on a Pascal host (e.g. GTX 1080 Ti), set the override
-before launching the desktop app or running tests:
+If you are on a Pascal host (for example GTX 1080 Ti), you can declare the
+machine as a developer host in either of two ways before launching the desktop
+app or running tests:
 
 ```powershell
 $env:LSIE_DEV_FORCE_CPU_SPEECH = "1"
 ```
 
+or create the marker once:
+
+```powershell
+ni -ItemType File "$env:LOCALAPPDATA\LSIE-MLF\.dev_machine" -Force
+```
+
 The runtime contract:
 
-- `packages.ml_core.transcription.resolve_speech_device()` returns
-  `"cpu"` when the env is set, regardless of `nvidia-smi` output.
-- The cross-encoder semantic scorer remains on the GPU because PyTorch
-  alone — without CTranslate2 loaded in the same process — does not
-  trigger the cuDNN 8 vs cuDNN 9 collision.
-- WS2 P3 introduces a **production preflight gate** that hard-rejects
-  SM<7.5 hosts unless a `.dev_machine` marker file is present at the
-  platform-standard local-app-data path. To declare your machine a
-  developer host, create the marker once:
-
-  ```powershell
-  ni -ItemType File "$env:LOCALAPPDATA\LSIE-MLF\.dev_machine" -Force
-  ```
-
-  The marker means "I accept the documented dev-mode constraints";
-  the production launcher fails closed on Pascal without it.
+- Production uses the GPU speech path only on Turing-or-newer hardware.
+- Pascal developer mode routes speech to the CPU while preserving other GPU
+  paths such as PyTorch semantic scoring.
+- No-GPU developer mode routes every ML path to the CPU.
+- Without a developer declaration, the launcher fails closed on Pascal and
+  no-GPU hosts.
 
 ### 3.2 Expected speech-path latency
 
@@ -97,7 +100,7 @@ contract; output text equality on the Gate 0 corpus is — see
 $env:LSIE_INTEGRATION_DEVICE = "1"
 .venv\Scripts\python.exe -m pytest tests/integration/desktop_app/test_capture_supervisor_smoke.py
 
-# Real-Credential-Manager round-trip (WS4 P4 secrets):
+# Real-Credential-Manager round-trip:
 $env:LSIE_INTEGRATION_KEYRING = "1"
 .venv\Scripts\python.exe -m pytest tests/unit/desktop_app/privacy/test_secrets.py
 
@@ -106,10 +109,21 @@ $env:LSIE_INTEGRATION_KEYRING = "1"
 .venv\Scripts\python.exe -m ruff check services/ packages/ tests/
 ```
 
-## 5. References
+## 5. Local validation gates
 
-- **Pivot handoff:** `docs/artifacts/v4_pivot_handoff_2026-05-01.md`
-- **Implementation plan:** `docs/artifacts/LSIE-MLF_v4_0_Implementation_Plans.md`
-- **Spec accumulator:** `docs/V4_SPEC_DRAFTS.md`
+Standard desktop validation does not require Docker Compose, Redis, or
+PostgreSQL. For desktop-runtime changes, prefer the targeted desktop surface
+above plus ruff and mypy.
+
+There is no `docker compose config --quiet` gate for active v4 desktop
+validation because no compose/Dockerfile manifests are tracked. Historical/spec
+Docker references describe retired or external server/container context, not a
+local validation prerequisite.
+
+## 6. References
+
+- **Current spec reference:** `docs/SPEC_REFERENCE.md`
 - **Spec amendments registry:** `docs/SPEC_AMENDMENTS.md`
+- **Historical pivot handoff:** `docs/artifacts/v4_pivot_handoff_2026-05-01.md`
+- **Historical implementation plan:** `docs/artifacts/LSIE-MLF_v4_0_Implementation_Plans.md`
 - **Project rules:** `CLAUDE.md`

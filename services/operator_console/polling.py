@@ -236,7 +236,7 @@ class PollingCoordinator(QObject):
     # ------------------------------------------------------------------
 
     def submit_stimulus(self, session_id: UUID, request: StimulusRequest) -> OneShotSignals:
-        """Dispatch a `POST /stimulus` on the thread pool. §4.C.
+        """Dispatch a session-scoped stimulus POST on the thread pool. §4.C.
 
         On success, overview / live-session / alerts refresh immediately
         so the UI reflects the new lifecycle state without waiting for

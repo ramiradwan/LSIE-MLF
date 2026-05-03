@@ -1,16 +1,8 @@
-"""Module C orchestrator process (v4.0 §4.C / WS3 P1 + P3).
+"""Module C desktop shell for drift updates and orchestrator lifecycle.
 
-Wraps the existing ``services.worker.pipeline.orchestrator.Orchestrator``
-class (drift-corrected segment assembly, AU12 derivation, the
-physiological state buffer). The IPC channel from
-``module_c_orchestrator`` to ``gpu_ml_worker`` is wired by the
-orchestrator's ``_dispatch_payload`` (WS3 P2). The drift offset is
-delivered by ``capture_supervisor`` over
-``IpcChannels.drift_updates`` and applied here (WS3 P3).
-
-ML import discipline: ``Orchestrator`` itself transitively touches
-neither torch nor mediapipe nor faster_whisper nor ctranslate2 — the
-heavy ML libs live in ``processes.gpu_ml_worker`` only.
+This process owns the desktop wrapper around
+``services.worker.pipeline.orchestrator.Orchestrator`` while keeping the
+heavy ML libraries isolated to ``gpu_ml_worker``.
 """
 
 from __future__ import annotations
@@ -81,12 +73,13 @@ def run(shutdown_event: mpsync.Event, channels: IpcChannels) -> None:
     heartbeat.start()
 
     try:
-        # Phase-3 stub: the live capture-supervisor → orchestrator
-        # audio/video pipe-through is not wired yet (Orchestrator.run()
-        # still expects the v3.4 IPC pipe path under /tmp/ipc/). Until
-        # WS3 P3c lands, this process holds the orchestrator instance
-        # alive so the drift consumer can keep applying offsets and
-        # the segment-id math stays available to test fixtures.
+        # Live Module C dispatch remains release-gated on the desktop path.
+        # services.worker.pipeline.orchestrator.Orchestrator.run() would
+        # initialize the AU12/FaceMesh path in this process, which breaks
+        # the v4 desktop ML-isolation contract that reserves mediapipe for
+        # gpu_ml_worker only. Keep this process as the drift/lifecycle shell
+        # until a desktop-safe capture path moves that ML surface behind the
+        # GPU worker boundary.
         shutdown_event.wait()
     finally:
         heartbeat.stop()

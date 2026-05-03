@@ -15,7 +15,7 @@ The playbook is operator-facing: each chore should be runnable from a clean chec
 
 **Purpose.** Enforce §0.3 of the spec: only the canonical identifiers listed in `CLAUDE.md` (IPC Pipe, Ephemeral Vault, InferenceHandoffPayload, ML Worker, API Server, Message Broker, Persistent Store, Capture Container, PhysiologicalChunkEvent, Physiological Context, Physiological State Buffer, subject_role, Co-Modulation Index) may appear in code and docstrings. Retired synonyms (Celery node, GPU worker, FIFO, named pipe, 24-hour vault, handoff schema, FastAPI server, etc.) erode shared vocabulary and confuse the ADO agent's refactor planner.
 
-**Inputs.** The retired-synonym grep from `CLAUDE.md`, run against `services/`, `packages/`, and `docker-compose.yml`. The executable §13 audit harness in Chore #8 is the authoritative automated gate for canonical-name verifier results.
+**Inputs.** The retired-synonym grep from `CLAUDE.md`, run against `services/`, `packages/`, and `scripts/`. The executable §13 audit harness in Chore #8 is the authoritative automated gate for canonical-name verifier results. There is no active `docker-compose.yml` input for the v4 desktop runtime.
 
 **Outputs.** Either a clean (zero-match) report committed to the merge cycle log, or a follow-up commit that renames the offenders. README narrative prose is exempt; code, comments, and docstrings are not.
 
@@ -29,7 +29,7 @@ The playbook is operator-facing: each chore should be runnable from a clean chec
 
 **Outputs.** Updated docs in the same merge or a fast-follow doc-only PR. Any new amendment to the signed spec (`docs/tech-spec-v*.pdf`) must be registered in `docs/SPEC_AMENDMENTS.md` with ID, section, original text, new behavior, rationale, and affected files.
 
-**Success.** Every container, env var, port, schema field, and Redis key referenced in the merged code is described in at least one of the four doc surfaces. **Failure.** Any new artifact that exists in code but is invisible to the workspace-server, or any spec deviation not registered in `SPEC_AMENDMENTS.md`.
+**Success.** Every desktop process, env var, port, schema field, local SQLite table, IPC channel, and Redis key referenced in the merged code is described in at least one of the four doc surfaces. Container manifests are expected only if a future spec change reintroduces them. **Failure.** Any new artifact that exists in code but is invisible to the workspace-server, or any spec deviation not registered in `SPEC_AMENDMENTS.md`.
 
 ### 3. Schema-Code Consistency Verification
 

@@ -301,14 +301,26 @@ def register_behavioral_verifiers(
     *,
     registry: AuditRegistry | None = None,
     item_ids: Iterable[str] | None = None,
+    items: Sequence[Section13Item] | None = None,
 ) -> None:
-    """Register behavioral verifiers for in-scope §13 items.
+    """Register behavioral verifiers for in-scope legacy §13 items.
 
     ``item_ids`` lets the audit harness avoid adding registry entries for items
     not present in a synthetic or older checklist while still using the shared
     ``register_audit_verifier`` declaration surface for the default registry.
     """
     requested_item_ids = tuple(item_ids) if item_ids is not None else BEHAVIORAL_AUDIT_ITEM_IDS
+    if items is not None:
+        current_v4_titles = {
+            "Posterior delta exactly-once",
+            "Production hardware floor",
+            "Pascal developer override",
+            "macOS Tier 2 deferral",
+        }
+        current_v4_ids = {item.item_id for item in items if item.title in current_v4_titles}
+        requested_item_ids = tuple(
+            item_id for item_id in requested_item_ids if item_id not in current_v4_ids
+        )
     target_registry = registry if registry is not None else get_default_registry()
 
     for item_id in requested_item_ids:

@@ -1,4 +1,4 @@
-"""Privacy / data-governance helpers for the v4.0 desktop graph (WS4 P3+P4).
+"""Privacy and data-governance helpers for the desktop graph.
 
 The surfaces that live here:
 

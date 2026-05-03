@@ -1,4 +1,4 @@
-"""WS4 P2 — recovery sweep unit tests.
+"""Recovery sweep unit tests.
 
 Cover the three sub-steps independently plus the composed
 ``run_recovery_sweep`` entry point. Process-reaping is verified by
@@ -176,8 +176,10 @@ def test_reap_terminates_live_orphan_child(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_run_recovery_sweep_returns_report(tmp_path: Path) -> None:
+def test_run_recovery_sweep_returns_report(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     db = _bootstrap(tmp_path)
+    capture_dir = tmp_path / "capture"
+    monkeypatch.setenv("LSIE_CAPTURE_DIR", str(capture_dir))
     report = run_recovery_sweep(db)
 
     assert isinstance(report, RecoveryReport)
@@ -185,10 +187,16 @@ def test_run_recovery_sweep_returns_report(tmp_path: Path) -> None:
     assert report.wal_checkpoint_pages is not None
     assert report.reaped_capture_pids == []
     assert report.survived_capture_pids == []
+    assert report.deleted_capture_files == []
+    assert report.retained_capture_files == []
 
 
-def test_run_recovery_sweep_reaps_dead_manifest_entry(tmp_path: Path) -> None:
+def test_run_recovery_sweep_reaps_dead_manifest_entry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     db = _bootstrap(tmp_path)
+    capture_dir = tmp_path / "capture"
+    monkeypatch.setenv("LSIE_CAPTURE_DIR", str(capture_dir))
     fake_pid = 2_147_483_641
     if psutil.pid_exists(fake_pid):
         pytest.skip(f"chosen sentinel pid {fake_pid} happens to exist")
@@ -204,6 +212,8 @@ def test_run_recovery_sweep_continues_on_step_failure(
 ) -> None:
     """A failure in one step must not abort the others."""
     db = _bootstrap(tmp_path)
+    capture_dir = tmp_path / "capture"
+    monkeypatch.setenv("LSIE_CAPTURE_DIR", str(capture_dir))
 
     from services.desktop_app.state import recovery as recovery_mod
 
@@ -212,9 +222,26 @@ def test_run_recovery_sweep_continues_on_step_failure(
 
     monkeypatch.setattr(recovery_mod, "wal_checkpoint", boom)
     report = run_recovery_sweep(db)
-    # IPC step still ran and reaping step still ran even though the
-    # WAL step blew up — the report just leaves wal_checkpoint_pages
-    # at its default ``None``.
     assert report.wal_checkpoint_pages is None
     assert report.reaped_capture_pids == []
     assert report.survived_capture_pids == []
+
+
+def test_run_recovery_sweep_deletes_stale_capture_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    db = _bootstrap(tmp_path)
+    capture_dir = tmp_path / "capture"
+    capture_dir.mkdir()
+    audio = capture_dir / "audio_stream.wav"
+    video = capture_dir / "video_stream.mkv"
+    audio.write_bytes(b"audio")
+    video.write_bytes(b"video")
+    monkeypatch.setenv("LSIE_CAPTURE_DIR", str(capture_dir))
+
+    report = run_recovery_sweep(db)
+
+    assert report.deleted_capture_files == [str(audio), str(video)]
+    assert report.retained_capture_files == []
+    assert not audio.exists()
+    assert not video.exists()

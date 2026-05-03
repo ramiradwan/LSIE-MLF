@@ -26,24 +26,16 @@
         {
           "category": "Hardware Device Loss",
           "section": "§12.1.2",
-          "behavior": "USB reconnection polling every 2s for 60s then container restart",
+          "behavior": "USB reconnection polling every 2s for 60s then capture graph restart",
           "evidence": [
             {
-              "path": "services/stream_ingest/entrypoint.sh",
+              "path": "services/desktop_app/processes/capture_supervisor.py",
               "mode": "section_comment",
               "patterns": [
-                "§12.1.2",
-                "while ! adb devices",
-                "timeout=60",
-                "sleep 2"
-              ]
-            },
-            {
-              "path": "docker-compose.yml",
-              "mode": "documented_degradation",
-              "patterns": [
-                "stream_scrcpy:",
-                "restart: \"on-failure:3\""
+                "§12 hardware-device-loss cadence",
+                "DEVICE_POLL_INTERVAL_S: float = 2.0",
+                "DEVICE_POLL_TIMEOUT_S: float = 60.0",
+                "device wait timed out; backing off"
               ]
             }
           ]
@@ -51,15 +43,16 @@
         {
           "category": "Worker Process Crash",
           "section": "§12.1.3",
-          "behavior": "Pipe overflow handled via EAGAIN non-blocking writes",
+          "behavior": "scrcpy pipeline break tears down both capture children before restart",
           "evidence": [
             {
-              "path": "services/stream_ingest/entrypoint.sh",
+              "path": "services/desktop_app/processes/capture_supervisor.py",
               "mode": "section_comment",
               "patterns": [
-                "§12.1.3",
-                "wait -n",
-                "Pipeline break detected"
+                "§12 worker-crash behavior",
+                "pipeline break: audio_alive=%s video_alive=%s",
+                "_kill_pair(audio_proc, video_proc, db_path)",
+                "shutdown_event.wait(timeout=RESTART_BACKOFF_S)"
               ]
             }
           ]
@@ -67,15 +60,16 @@
         {
           "category": "Queue Overload",
           "section": "§12.1.4",
-          "behavior": "Kernel pipe overflow discards data silently",
+          "behavior": "Capture output is bounded to governed transient files and cleaned on startup/shutdown",
           "evidence": [
             {
-              "path": "services/stream_ingest/entrypoint.sh",
+              "path": "services/desktop_app/processes/capture_supervisor.py",
               "mode": "section_comment",
               "patterns": [
-                "§12.1.4",
-                "AUDIO_PIPE",
-                "VIDEO_PIPE"
+                "§9.1, §9.3, and §12",
+                "regular files under",
+                "cleanup_capture_files(layout.capture_dir)",
+                "capture shutdown cleanup"
               ]
             }
           ]
@@ -205,13 +199,13 @@
           "behavior": "Freeze drift offset after 3 ADB poll failures; reset after 300 seconds",
           "evidence": [
             {
-              "path": "services/worker/pipeline/orchestrator.py",
+              "path": "services/desktop_app/drift.py",
               "mode": "ast_try_except",
               "exceptions": [
                 "Exception"
               ],
               "patterns": [
-                "§12 Hardware loss C",
+                "§12 / §13.5",
                 "DRIFT_FREEZE_AFTER_FAILURES",
                 "DRIFT_RESET_TIMEOUT"
               ],
@@ -308,20 +302,21 @@
           "behavior": "Terminate worker container if GPU unavailable",
           "evidence": [
             {
-              "path": "docker-compose.yml",
+              "path": "services/desktop_launcher/preflight.py",
               "mode": "documented_degradation",
               "patterns": [
-                "worker:",
-                "capabilities: [gpu]",
-                "restart: \"on-failure:5\""
+                "_TURING_COMPUTE_CAP: Final[float] = 7.5",
+                "HardwareUnsupportedError",
+                "speech_device=\"cuda\""
               ]
             },
             {
               "path": "packages/ml_core/transcription.py",
               "mode": "section_comment",
               "patterns": [
-                "CUDA",
-                "device: str = \"cuda\""
+                "CUDA 12.x with cuDNN 9",
+                "LSIE_DEV_FORCE_CPU_SPEECH",
+                "return \"cuda\""
               ]
             }
           ]
@@ -329,14 +324,16 @@
         {
           "category": "Worker Process Crash",
           "section": "§12.4.3",
-          "behavior": "Docker restart policy on-failure:5",
+          "behavior": "Worker task retries up to five times on task-level failures",
           "evidence": [
             {
-              "path": "docker-compose.yml",
-              "mode": "documented_degradation",
+              "path": "services/worker/tasks/inference.py",
+              "mode": "section_comment",
               "patterns": [
-                "worker:",
-                "restart: \"on-failure:5\""
+                "@celery_app.task",
+                "max_retries=5",
+                "default_retry_delay=2",
+                "acks_late=True"
               ]
             }
           ]
@@ -347,13 +344,13 @@
           "behavior": "Celery queue buffers tasks in Redis",
           "evidence": [
             {
-              "path": "docker-compose.yml",
+              "path": "services/worker/celery_app.py",
               "mode": "documented_degradation",
               "patterns": [
-                "redis-server",
-                "--appendonly",
-                "yes",
-                "celery -A services.worker.celery_app worker"
+                "Message Broker (Redis)",
+                "broker=REDIS_URL",
+                "backend=REDIS_URL",
+                "broker_transport_options={\"visibility_timeout\": 3600}"
               ]
             },
             {
@@ -521,11 +518,12 @@
           "behavior": "Limit concurrent scraping tasks",
           "evidence": [
             {
-              "path": "docker-compose.yml",
-              "mode": "documented_degradation",
+              "path": "services/worker/tasks/enrichment.py",
+              "mode": "section_comment",
               "patterns": [
-                "CELERYD_CONCURRENCY=1",
-                "--concurrency=1"
+                "@celery_app.task",
+                "max_retries=2",
+                "default_retry_delay=5"
               ]
             },
             {

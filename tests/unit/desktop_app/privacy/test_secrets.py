@@ -1,4 +1,4 @@
-"""WS4 P4 — secret-store wrapper around keyring.
+"""Secret-store wrapper around keyring.
 
 Three surfaces are exercised:
 
@@ -183,17 +183,18 @@ def _scan_dirs() -> list[Path]:
 
 
 def test_no_hardcoded_secret_literals_in_runtime_tree() -> None:
-    """Source-tree analogue of the §5.2 strings audit.
+    """Source-tree analogue of the §5.1.6 secret-storage rule.
 
     Asserts that the runtime tree (``services/`` and ``packages/``)
     never assigns a literal string longer than four characters to any
     of the canonical secret-key identifiers. The full ``strings`` grep
-    over the signed binary lands with WS1 P3 once the signing pipeline
+    over the signed binary lands once the signing pipeline
     produces an artefact to scan.
 
-    Rationale: the secret values must arrive at the keyring via OAuth
-    flow / operator action / env var, never as a baked-in literal. A
-    review-time grep is the cheapest way to keep that contract honest.
+    Rationale: secret values must arrive at the keyring via OAuth flow,
+    operator action, or environment injection rather than as baked-in
+    literals. A review-time grep is the cheapest way to keep that
+    contract honest.
     """
     # Match assignments like:  cloud_oauth_refresh_token = "real-token-value"
     # but not bare references:  return SECRET_KEY_CLOUD_REFRESH_TOKEN.

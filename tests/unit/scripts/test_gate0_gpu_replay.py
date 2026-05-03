@@ -124,6 +124,7 @@ def test_run_gate0_replay_validates_fixture_and_transcribes_cuda(
     tmp_path: Path,
 ) -> None:
     fixture_dir, stimulus_script, capture_audio, expected_segment_id = _write_gate0_inputs(tmp_path)
+    monkeypatch.delenv("LSIE_DEV_FORCE_CPU_SPEECH", raising=False)
     monkeypatch.setattr(replay, "query_gpu_inventory", lambda: [GpuInfo("NVIDIA T4", 7.5)])
     monkeypatch.setattr(replay, "resolve_speech_device", lambda: "cuda")
     engine_factory = _EngineFactory("Hi, the best advice today is to keep shipping carefully.")
@@ -153,6 +154,7 @@ def test_run_gate0_replay_raises_on_fixture_segment_id_mismatch(
     tmp_path: Path,
 ) -> None:
     fixture_dir, stimulus_script, capture_audio, _ = _write_gate0_inputs(tmp_path)
+    monkeypatch.delenv("LSIE_DEV_FORCE_CPU_SPEECH", raising=False)
     path = fixture_dir / "segment_000.json"
     fixture: dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
     fixture["segment_id"] = "0" * 64
@@ -177,6 +179,7 @@ def test_run_gate0_replay_raises_on_low_token_recall(
     tmp_path: Path,
 ) -> None:
     fixture_dir, stimulus_script, capture_audio, _ = _write_gate0_inputs(tmp_path)
+    monkeypatch.delenv("LSIE_DEV_FORCE_CPU_SPEECH", raising=False)
     monkeypatch.setattr(replay, "query_gpu_inventory", lambda: [GpuInfo("NVIDIA T4", 7.5)])
     monkeypatch.setattr(replay, "resolve_speech_device", lambda: "cuda")
 

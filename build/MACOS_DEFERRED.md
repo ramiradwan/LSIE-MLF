@@ -1,5 +1,5 @@
 # macOS signing deferred to v4.1
 
-WS1 P3 intentionally ships only the Windows signing path. macOS notarization, hardened runtime, entitlements, and Developer ID certificate handling are deferred to v4.1 so the v4.0 sprint can finish the Windows-native desktop runtime without adding a second platform-signing surface.
+v4.0 ships only the Windows signing path. macOS notarization, hardened runtime, entitlements, and Developer ID certificate handling remain Tier 2 design intent for v4.1 and are not part of the signed v4.0 release lane.
 
-The deferred macOS work should resume from `docs/artifacts/LSIE-MLF_v4_0_Implementation_Plans.md` and produce a separate packaging/signing path rather than sharing the Windows Azure Artifact Signing workflow.
+When macOS packaging resumes, use `docs/SPEC_REFERENCE.md` as the current contract and treat `docs/artifacts/LSIE-MLF_v4_0_Implementation_Plans.md` as historical context. Build a separate macOS packaging and signing path rather than reusing the Windows Azure Artifact Signing workflow.

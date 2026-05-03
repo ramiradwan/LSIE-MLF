@@ -1,4 +1,4 @@
-"""WS4 P1b — SQLite-flavored operator query layer tests.
+"""SQLite-flavored operator query layer tests.
 
 Each test bootstraps a fresh SQLite store via :class:`SqliteWriter`,
 optionally seeds rows through the writer's enqueue/flush path, then

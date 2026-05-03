@@ -1,20 +1,19 @@
-"""Read-only SQLite adapter (WS4 P1).
+"""Read-only SQLite adapter.
 
 Mirrors the API surface that ``services/api/repos/operator_queries.py``
 exposes today, so the existing Qt viewmodels in
 ``services/operator_console/viewmodels/`` continue to work unchanged
-when WS4 P1b swaps the FastAPI dependency from the Postgres-shaped
-empty-pool stub (``ui_api_shell._EmptyPool``) to a SqliteReader-backed
-adapter.
+when the FastAPI dependency swaps from the Postgres-shaped empty-pool
+stub to a ``SqliteReader``-backed adapter.
 
-Phase 1 minimum: connection-vending helpers + a small set of read
-functions covering the seed-experiments path so the Experiments page
-of the operator console can render real data immediately. The full
-17-function operator_queries.py port lands in P1b.
+This module provides connection-vending helpers plus the read functions
+needed for the seed-experiments path so the Experiments page of the
+operator console can render real data immediately. Additional operator
+queries can be added here without changing callers.
 
 Each connection is opened with ``PRAGMA query_only=1`` to enforce the
-WS4 P1 single-writer invariant; an accidental ``INSERT`` from a route
-handler raises ``OperationalError: attempt to write a readonly database``.
+single-writer invariant; an accidental ``INSERT`` from a route handler
+raises ``OperationalError: attempt to write a readonly database``.
 """
 
 from __future__ import annotations

@@ -1,4 +1,4 @@
-"""IPC primitives for the v4.0 desktop process graph (WS3 P2).
+"""IPC primitives for the desktop process graph.
 
 The Celery + Redis dispatch path is replaced by ``multiprocessing.Queue``
 for control messages and ``multiprocessing.shared_memory.SharedMemory``

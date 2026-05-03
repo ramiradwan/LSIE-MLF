@@ -1,4 +1,4 @@
-"""WS4 P1 — SqliteWriter batch flush tests."""
+"""SqliteWriter batch flush tests."""
 
 from __future__ import annotations
 

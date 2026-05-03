@@ -792,6 +792,8 @@ class TestMetricsStore:
                 "posterior_by_arm": {"arm-b": {"alpha": 1.0, "beta": 1.0}},
                 "sampled_theta_by_arm": {"arm-b": 0.5},
                 "expected_greeting": "hello welcome",
+                "decision_context_hash": "b" * 64,
+                "random_seed": 123,
             },
         }
         reward_result = RewardResult(

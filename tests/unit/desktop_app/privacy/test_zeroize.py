@@ -1,14 +1,15 @@
-"""WS4 P3 — zeroize SharedMemory PCM blocks before unlink."""
+"""Zeroize SharedMemory PCM blocks before unlink."""
 
 from __future__ import annotations
 
 from multiprocessing import shared_memory
+from pathlib import Path
 
 import pytest
 
 from services.desktop_app.ipc.shared_buffers import write_pcm_block
 from services.desktop_app.os_adapter import zeroize_shared_memory
-from services.desktop_app.privacy.zeroize import zeroize_pcm_block
+from services.desktop_app.privacy.zeroize import cleanup_capture_files, zeroize_pcm_block
 
 
 def test_zeroize_shared_memory_overwrites_buffer() -> None:
@@ -69,5 +70,18 @@ def test_close_and_unlink_remains_idempotent() -> None:
     audio = b"\x55" * 32
     block = write_pcm_block(audio)
     block.close_and_unlink()
-    # Second call must not raise.
     block.close_and_unlink()
+
+
+def test_cleanup_capture_files_deletes_known_artifacts(tmp_path: Path) -> None:
+    audio = tmp_path / "audio_stream.wav"
+    video = tmp_path / "video_stream.mkv"
+    audio.write_bytes(b"audio")
+    video.write_bytes(b"video")
+
+    deleted, retained = cleanup_capture_files(tmp_path)
+
+    assert deleted == [audio, video]
+    assert retained == []
+    assert not audio.exists()
+    assert not video.exists()

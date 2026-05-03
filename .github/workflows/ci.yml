@@ -26,6 +26,14 @@ jobs:
         run: uv run ruff format --check packages/ services/ tests/
       - name: Mypy type check
         run: uv run mypy packages/ services/ tests/ --python-version 3.11 --ignore-missing-imports --explicit-package-bases
+      - name: Schema consistency check
+        run: uv run python scripts/check_schema_consistency.py
+      - name: Canonical terminology audit
+        shell: bash
+        run: |
+          if grep -rnE 'GPU worker|video pipe|free-form rationale|free-form rationales|free-form semantic rationale|free-form semantic rationales|x[_-]?max[- ]normalized reward|x[_-]?max as reward input|x[_-]?max reward input|\bpitch_f0\b|legacy acoustic scalar|scalar-only acoustic|\[0\.0, 5\.0\].*AU12|AU12.*\[0\.0, 5\.0\]|AU12 clamp.*5\.0|clamp.*AU12.*5\.0' services/ packages/ scripts/; then
+            exit 1
+          fi
 
   test:
     runs-on: ubuntu-latest

@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 
 from packages.schemas.cloud import OAuthTokenRequest, OAuthTokenResponse
-from services.cloud_api.services.auth_service import OAuthTokenService
+from services.cloud_api.services.auth_service import (
+    AuthConfigurationError,
+    InvalidClientError,
+    InvalidTokenError,
+    OAuthTokenService,
+)
 
 router = APIRouter()
 
@@ -22,4 +27,9 @@ async def exchange_oauth_token(
     request: OAuthTokenRequest,
     service: OAuthTokenService = _OAuthTokenServiceDep,
 ) -> OAuthTokenResponse:
-    return service.exchange_token(request)
+    try:
+        return service.exchange_token(request)
+    except (InvalidClientError, InvalidTokenError) as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+    except AuthConfigurationError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc

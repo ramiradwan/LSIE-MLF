@@ -1,4 +1,4 @@
-"""Preflight warning codes and operator-readable messages (v4.0 §11.x.3).
+"""Preflight warning codes and operator-readable messages for the desktop runtime.
 
 The preflight gate uses a small, deterministic enumeration of warning
 codes so the operator-console health page (services/operator_console/

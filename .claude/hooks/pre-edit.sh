@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Pre-edit hook: enforce trust gate and warn on schema/requirements changes
+# Pre-edit hook: enforce trust gate and warn on schema/dependency changes
 # This hook fires before any Write/Edit/MultiEdit tool call.
 
 FILE="$CLAUDE_FILE_PATH"
@@ -24,9 +24,9 @@ if [[ ! -f "$TRUST_LOCK" ]]; then
     touch "$TRUST_LOCK"
 fi
 
-# Block edits to requirements/ that don't match §10.2 pinning
-if [[ "$FILE" == *"requirements/"* ]]; then
-    echo "⚠️  Editing pinned dependencies. Versions MUST match §10.2 dependency matrix." >&2
+# Warn on edits to canonical dependency surfaces
+if [[ "$FILE" == *"pyproject.toml" || "$FILE" == *"uv.lock" ]]; then
+    echo "⚠️  Editing canonical dependency surfaces. Versions MUST match §10.2 dependency matrix." >&2
 fi
 
 # Warn on schema edits — contracts affect multiple modules

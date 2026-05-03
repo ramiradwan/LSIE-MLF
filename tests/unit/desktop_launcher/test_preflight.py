@@ -1,4 +1,4 @@
-"""WS2 P3 — launcher preflight hardware gate tests."""
+"""Launcher preflight hardware gate tests."""
 
 from __future__ import annotations
 
@@ -14,8 +14,9 @@ from services.desktop_launcher import preflight, preflight_codes
 
 
 @pytest.fixture(autouse=True)
-def clear_cpu_override(monkeypatch: pytest.MonkeyPatch) -> None:
+def clear_preflight_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("LSIE_DEV_FORCE_CPU_SPEECH", raising=False)
+    monkeypatch.delenv("LSIE_DESKTOP_PREFLIGHT_COMPLETE", raising=False)
 
 
 def _gpu(name: str, cap: float) -> GpuInfo:

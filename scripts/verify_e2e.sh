@@ -199,7 +199,7 @@ if log_contains orchestrator "Stimulus injected at"; then
 else
     warn "Stimulus not yet injected (auto-trigger may still be waiting)"
     info "Auto-trigger delay: \${AUTO_STIMULUS_DELAY_S:-15}s"
-    info "Manual trigger: curl -X POST http://localhost:8000/api/v1/stimulus"
+    info "Manual trigger: POST /api/v1/operator/sessions/{session_id}/stimulus"
 fi
 
 # =============================================================================

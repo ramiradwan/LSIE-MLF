@@ -1,3 +1,3 @@
-"""Cloud control-plane API for WS5 P1."""
+"""Cloud control-plane API."""
 
 from __future__ import annotations

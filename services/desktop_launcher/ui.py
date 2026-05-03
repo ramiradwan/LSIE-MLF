@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import sys
+import time
+from argparse import ArgumentParser
+from collections.abc import Sequence
 from pathlib import Path
 
 from PySide6.QtCore import Qt
@@ -18,7 +21,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from services.desktop_launcher import health_check
+from services.desktop_launcher import health_check, install_manager
 from services.desktop_launcher.install_manager import InstallManager
 
 
@@ -26,6 +29,8 @@ class SetupWindow(QMainWindow):
     def __init__(self, manager: InstallManager | None = None) -> None:
         super().__init__()
         self.manager = manager or InstallManager()
+        self._final_runtime_dir: Path | None = None
+        self._final_app_root: Path | None = None
         self.setWindowTitle("LSIE-MLF Setup")
         self.setMinimumSize(680, 460)
 
@@ -52,6 +57,16 @@ class SetupWindow(QMainWindow):
         self.retry_button.setVisible(False)
         self.retry_button.clicked.connect(self.start_install)
 
+        self.launch_button = QPushButton("Launch LSIE-MLF")
+        self.launch_button.setObjectName("SetupLaunch")
+        self.launch_button.setVisible(False)
+        self.launch_button.clicked.connect(self.execute_handoff)
+
+        self.reinstall_button = QPushButton("Reinstall runtime")
+        self.reinstall_button.setObjectName("SetupReinstall")
+        self.reinstall_button.setVisible(False)
+        self.reinstall_button.clicked.connect(self.start_install)
+
         panel = QFrame()
         panel.setObjectName("SetupPanel")
         panel_layout = QVBoxLayout(panel)
@@ -62,6 +77,8 @@ class SetupWindow(QMainWindow):
         panel_layout.addWidget(self.progress_bar)
         panel_layout.addWidget(self.log_view)
         panel_layout.addWidget(self.retry_button, alignment=Qt.AlignmentFlag.AlignCenter)
+        panel_layout.addWidget(self.launch_button, alignment=Qt.AlignmentFlag.AlignCenter)
+        panel_layout.addWidget(self.reinstall_button, alignment=Qt.AlignmentFlag.AlignCenter)
 
         root = QWidget()
         root.setObjectName("SetupRoot")
@@ -79,11 +96,29 @@ class SetupWindow(QMainWindow):
         signals.finished.connect(self.install_finished)
 
     def start_install(self) -> None:
+        self._final_runtime_dir = None
+        self._final_app_root = None
         self.retry_button.setVisible(False)
+        self.launch_button.setVisible(False)
+        self.launch_button.setEnabled(True)
+        self.reinstall_button.setVisible(False)
         self.progress_bar.setValue(0)
         self.log_view.clear()
         self.set_status("Starting setup…")
         self.manager.start()
+
+    def launch_existing_install(self) -> bool:
+        runtime_dir = self.manager.paths.active_runtime_dir
+        if not install_manager.has_current_runtime(runtime_dir):
+            return False
+        self._final_runtime_dir = runtime_dir
+        self._final_app_root = self.manager.paths.repo_root
+        self.progress_bar.setValue(100)
+        self.set_status("LSIE-MLF is installed and ready to launch.")
+        self.launch_button.setVisible(True)
+        self.launch_button.setEnabled(True)
+        self.reinstall_button.setVisible(True)
+        return True
 
     def set_status(self, message: str) -> None:
         self.status_label.setText(message)
@@ -101,9 +136,35 @@ class SetupWindow(QMainWindow):
         self.retry_button.setVisible(True)
 
     def install_finished(self, runtime_dir: Path) -> None:
-        self.set_status("Setup complete — launching LSIE-MLF")
+        self._final_runtime_dir = runtime_dir
+        self._final_app_root = self.manager.paths.repo_root
+        self.set_status("Setup complete! Ready to launch.")
         self.progress_bar.setValue(100)
-        health_check.launch_desktop_app(runtime_dir)
+        self.launch_button.setVisible(True)
+
+    def execute_handoff(self) -> None:
+        if self._final_runtime_dir is None:
+            return
+        self.launch_button.setEnabled(False)
+        self.set_status("Launching LSIE-MLF…")
+        try:
+            process = health_check.launch_desktop_app(
+                self._final_runtime_dir,
+                app_root=self._final_app_root,
+            )
+        except Exception as exc:
+            self.launch_button.setEnabled(True)
+            self.set_status("Launch failed")
+            self.append_log(str(exc))
+            return
+        time.sleep(0.25)
+        returncode = process.poll()
+        if returncode is not None:
+            self.launch_button.setEnabled(True)
+            self.set_status("Launch failed")
+            self.append_log(f"Desktop app exited during startup with code {returncode}")
+            self.append_log("See desktop-launch.log in the LSIE-MLF app-data logs folder.")
+            return
         self.close()
 
 
@@ -155,10 +216,48 @@ QPushButton#SetupRetry {
     font-weight: 600;
     padding: 8px 18px;
 }
+QPushButton#SetupLaunch {
+    background: #2ea043;
+    border: none;
+    border-radius: 6px;
+    color: white;
+    font-weight: 600;
+    padding: 8px 18px;
+}
+QPushButton#SetupLaunch:hover {
+    background: #3fb950;
+}
+QPushButton#SetupReinstall {
+    background: transparent;
+    border: 1px solid #303542;
+    border-radius: 6px;
+    color: #a6adba;
+    font-weight: 600;
+    padding: 8px 18px;
+}
+QPushButton#SetupReinstall:hover {
+    border-color: #5b8def;
+    color: #e6e8ed;
+}
 """
 
 
-def main() -> int:
+def _build_parser() -> ArgumentParser:
+    parser = ArgumentParser(prog="python -m services.desktop_launcher.ui")
+    parser.add_argument(
+        "--smoke",
+        action="store_true",
+        help="Validate launcher preflight and desktop-app handoff without opening the setup UI.",
+    )
+    return parser
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = _build_parser().parse_args(argv)
+    if args.smoke:
+        from services.desktop_app.__main__ import main as desktop_app_main
+
+        return desktop_app_main(["--smoke"])
     app = QApplication.instance()
     created_app = False
     if app is None:
@@ -166,11 +265,12 @@ def main() -> int:
         created_app = True
     window = SetupWindow()
     window.show()
-    window.start_install()
+    if not window.launch_existing_install():
+        window.start_install()
     if created_app:
         return app.exec()
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main(sys.argv[1:]))

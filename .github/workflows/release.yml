@@ -40,6 +40,24 @@ jobs:
           -p ${{ github.workspace }}
           services/desktop_launcher/ui.py
 
+      - name: Bundle desktop app source for hydrated runtime
+        shell: pwsh
+        run: |
+          $appRoot = "${{ github.workspace }}\dist\LSIE-MLF-Launcher\app"
+          New-Item -ItemType Directory -Force $appRoot | Out-Null
+          Copy-Item -Recurse -Force "${{ github.workspace }}\packages" $appRoot
+          Copy-Item -Recurse -Force "${{ github.workspace }}\services" $appRoot
+          Copy-Item -Force "${{ github.workspace }}\pyproject.toml" $appRoot
+          Copy-Item -Force "${{ github.workspace }}\uv.lock" $appRoot
+
+      - name: Smoke packaged launcher runtime handoff
+        shell: pwsh
+        env:
+          LSIE_DEV_FORCE_CPU_SPEECH: "1"
+        run: >-
+          & "${{ github.workspace }}\dist\LSIE-MLF-Launcher\LSIE-MLF-Launcher.exe"
+          --smoke
+
       - name: Sign Windows binaries
         uses: azure/artifact-signing-action@v1
         with:

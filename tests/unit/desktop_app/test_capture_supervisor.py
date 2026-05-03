@@ -1,4 +1,4 @@
-"""WS3 P3 — capture_supervisor unit tests.
+"""capture_supervisor unit tests.
 
 Validates the supervision contract without requiring a real Android
 device or a real ``scrcpy`` install:
@@ -6,7 +6,7 @@ device or a real ``scrcpy`` install:
   - ``_wait_for_device`` returns True when ADB reports a device line.
   - ``_DriftPollThread`` ships ``drift_offset`` payloads onto
     ``IpcChannels.drift_updates`` and stops cleanly on shutdown.
-  - The scrcpy command builders emit the SPEC-AMEND-004 args
+  - The scrcpy command builders emit the expected dual-instance args
     (port ranges 27100:27199 / 27200:27299, audio raw + WAV record,
     video H.264 30 fps + MKV record).
   - ``_resolve_capture_layout`` honours ``LSIE_CAPTURE_DIR`` and falls
@@ -23,7 +23,7 @@ import multiprocessing as mp
 import time
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 from services.desktop_app.drift import DriftCorrector
 from services.desktop_app.ipc import IpcChannels
@@ -35,7 +35,9 @@ from services.desktop_app.processes.capture_supervisor import (
     _build_video_scrcpy_args,
     _DriftPollThread,
     _resolve_capture_layout,
+    _spawn_scrcpy_pair,
     _wait_for_device,
+    run,
 )
 
 
@@ -74,6 +76,20 @@ def test_wait_for_device_times_out_when_no_device() -> None:
         assert _wait_for_device(deadline_s=0.5) is False
 
 
+def test_wait_for_device_returns_early_when_shutdown_is_requested() -> None:
+    shutdown = mp.get_context("spawn").Event()
+    shutdown.set()
+    with (
+        patch(
+            "services.desktop_app.processes.capture_supervisor.find_executable",
+            return_value="adb",
+        ),
+        patch("subprocess.run") as run_mock,
+    ):
+        assert _wait_for_device(deadline_s=2.0, shutdown_event=shutdown) is False
+    run_mock.assert_not_called()
+
+
 def test_audio_scrcpy_args_match_spec() -> None:
     layout = CaptureLayout(
         capture_dir=Path("/tmp/lsie-mlf/capture"),
@@ -84,6 +100,7 @@ def test_audio_scrcpy_args_match_spec() -> None:
 
     assert args[0] == "scrcpy.exe"
     assert "--no-video" in args
+    assert "--no-window" in args
     assert "--audio-codec=raw" in args
     assert "--audio-buffer=30" in args
     assert "--audio-dup" in args
@@ -102,6 +119,7 @@ def test_video_scrcpy_args_match_spec() -> None:
 
     assert args[0] == "scrcpy.exe"
     assert "--no-audio" in args
+    assert "--no-window" in args
     assert "--video-codec=h264" in args
     assert "--max-fps=30" in args
     assert f"--port={VIDEO_SCRCPY_PORT_RANGE}" in args
@@ -115,16 +133,29 @@ def test_resolve_capture_layout_honours_env_override(tmp_path: Path, monkeypatch
 
     layout = _resolve_capture_layout()
 
-    assert layout.capture_dir == target
+    assert layout.capture_dir == target.resolve()
     assert target.is_dir()
-    assert layout.audio_path == target / "audio_stream.wav"
-    assert layout.video_path == target / "video_stream.mkv"
+    assert layout.audio_path == target.resolve() / "audio_stream.wav"
+    assert layout.video_path == target.resolve() / "video_stream.mkv"
+
+
+def test_resolve_capture_layout_falls_back_when_override_is_blank(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    monkeypatch.setenv("LSIE_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("LSIE_CAPTURE_DIR", "   ")
+
+    layout = _resolve_capture_layout()
+
+    assert layout.capture_dir == (tmp_path / "capture").resolve()
+    assert layout.audio_path == (tmp_path / "capture" / "audio_stream.wav").resolve()
+    assert layout.video_path == (tmp_path / "capture" / "video_stream.mkv").resolve()
 
 
 def test_drift_poll_thread_publishes_offsets() -> None:
     channels = _make_channels()
     corrector = DriftCorrector()
-    corrector.drift_offset = 0.123  # simulate a previous successful poll
+    corrector.drift_offset = 0.123
 
     shutdown = mp.get_context("spawn").Event()
 
@@ -139,7 +170,6 @@ def test_drift_poll_thread_publishes_offsets() -> None:
     )
     thread.start()
 
-    # Give the thread a tick to push at least one update.
     time.sleep(0.25)
 
     shutdown.set()
@@ -157,3 +187,77 @@ def test_drift_poll_thread_publishes_offsets() -> None:
     assert len(payloads) >= 1
     assert payloads[0]["drift_offset"] == 0.123
     assert "ts_monotonic" in payloads[0]
+
+
+def test_spawn_scrcpy_pair_aborts_during_stagger(tmp_path: Path) -> None:
+    shutdown = mp.get_context("spawn").Event()
+    layout = CaptureLayout(
+        capture_dir=tmp_path,
+        audio_path=tmp_path / "audio_stream.wav",
+        video_path=tmp_path / "video_stream.mkv",
+    )
+    audio_proc = MagicMock()
+    audio_proc.pid = 101
+
+    def trigger_shutdown(timeout: float) -> bool:
+        shutdown.set()
+        return True
+
+    with (
+        patch(
+            "services.desktop_app.processes.capture_supervisor.SupervisedProcess",
+            side_effect=[audio_proc],
+        ),
+        patch("services.desktop_app.processes.capture_supervisor.record_capture_pid") as record_pid,
+        patch("services.desktop_app.processes.capture_supervisor._kill_pair") as kill_pair,
+        patch.object(shutdown, "wait", side_effect=trigger_shutdown),
+    ):
+        pair = _spawn_scrcpy_pair("scrcpy", layout, tmp_path / "desktop.sqlite", shutdown)
+
+    assert pair is None
+    record_pid.assert_called_once()
+    kill_pair.assert_called_once_with(audio_proc, None, tmp_path / "desktop.sqlite")
+
+
+def test_run_cleans_capture_files_on_startup_and_shutdown(tmp_path: Path) -> None:
+    shutdown = mp.get_context("spawn").Event()
+    shutdown.set()
+    channels = _make_channels()
+    layout = CaptureLayout(
+        capture_dir=tmp_path,
+        audio_path=tmp_path / "audio_stream.wav",
+        video_path=tmp_path / "video_stream.mkv",
+    )
+
+    with (
+        patch(
+            "services.desktop_app.processes.capture_supervisor._resolve_capture_layout",
+            return_value=layout,
+        ),
+        patch(
+            "services.desktop_app.processes.capture_supervisor.cleanup_capture_files",
+            side_effect=[([layout.audio_path], []), ([layout.video_path], [])],
+        ) as cleanup,
+        patch(
+            "services.desktop_app.processes.capture_supervisor.HeartbeatRecorder",
+        ) as heartbeat_cls,
+        patch(
+            "services.desktop_app.processes.capture_supervisor._DriftPollThread",
+        ) as drift_cls,
+        patch(
+            "services.desktop_app.processes.capture_supervisor.find_executable",
+            return_value="scrcpy",
+        ),
+    ):
+        heartbeat = MagicMock()
+        heartbeat_cls.return_value = heartbeat
+        drift_thread = MagicMock()
+        drift_cls.return_value = drift_thread
+
+        run(shutdown_event=shutdown, channels=channels)
+
+    assert cleanup.call_args_list == [call(layout.capture_dir), call(layout.capture_dir)]
+    heartbeat.start.assert_called_once()
+    heartbeat.stop.assert_called_once()
+    drift_thread.start.assert_called_once()
+    drift_thread.join.assert_called_once_with(timeout=5.0)

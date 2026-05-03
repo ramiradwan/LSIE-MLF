@@ -11,12 +11,12 @@ dependencies = [
     "spacy==3.7.*",
     "openai>=1.0.0",
 
-    # Math & Data (from worker.txt & base.txt)
+    # Math and data runtime
     "numpy==1.26.*",
     "scipy==1.13.*",
     "pandas==2.2.*",
 
-    # API & State (from api.txt & base.txt)
+    # API and state runtime
     "fastapi==0.110.*",
     "uvicorn==0.29.*",
     "pydantic>=2.0",
@@ -25,17 +25,17 @@ dependencies = [
     "async-timeout==4.0.3",
     "pycryptodome>=3.20.0",
 
-    # Desktop UI & CLI (from cli.txt)
+    # Desktop UI and CLI runtime
     "PySide6>=6.11,<7.0",
     "typer>=0.12,<1.0",
     "rich>=13,<15",
     "psutil>=5.9",
 
-    # External APIs (from worker.txt)
+    # External integrations
     "patchright==1.58.2",
     "TikTokLive==5.0.*",
 
-    # Desktop Hardening & Cloud Sync (v4.0 Additions)
+    # Desktop runtime and cloud sync
     "httpx>=0.27.0",
     "keyring>=25.0.0",
     "pywin32; sys_platform == 'win32'",

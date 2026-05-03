@@ -1,4 +1,4 @@
-"""Dirty State Recovery sweep for orphan IPC blocks (WS3 P2 / WS4 P2).
+"""Dirty State Recovery sweep for orphan IPC blocks.
 
 Run at ``ui_api_shell`` startup, before any process is spawned. Walks
 the platform's shared-memory namespace looking for blocks named
@@ -8,7 +8,7 @@ mechanics live behind ``services.desktop_app.os_adapter`` per the
 project's Platform Abstraction Rule.
 
 This is the IPC half of the broader Dirty State Recovery sweep; the
-SQLite half lives in ``services.desktop_app.state.recovery`` (WS4 P2).
+SQLite half lives in ``services.desktop_app.state.recovery``.
 """
 
 from __future__ import annotations

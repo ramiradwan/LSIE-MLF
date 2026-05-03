@@ -28,12 +28,11 @@ from scripts.audit import (  # noqa: E402
     register_placeholder_verifiers,
     render_table,
 )
-from scripts.audit.verifiers import (  # noqa: E402
+from scripts.audit.verifiers.data_classification import (  # noqa: E402
     register_data_classification_verifiers,
-    register_mechanical_verifiers,
 )
+from scripts.audit.verifiers.mechanical import register_mechanical_verifiers  # noqa: E402
 from scripts.spec_ref_check import extract_content_from_pdf  # noqa: E402
-import scripts.audit.verifiers.structural  # noqa: E402,F401  # registers production verifiers
 
 
 def discover_spec_pdf(repo_root: Path) -> Path:
@@ -60,15 +59,19 @@ def _register_concrete_verifiers(
     """Register every known concrete verifier for the requested §13 items."""
     from scripts.audit.verifiers.behavioral import register_behavioral_verifiers
 
-    item_ids = tuple(item.item_id for item in items)
-    register_mechanical_verifiers(item_ids)
+    legacy_item_ids = tuple(item.item_id for item in items)
+    register_mechanical_verifiers(
+        legacy_item_ids,
+        registry=registry,
+        items=items,
+    )
     register_data_classification_verifiers(
         registry=registry,
-        item_ids=item_ids,
+        items=items,
     )
     register_behavioral_verifiers(
         registry=registry,
-        item_ids=item_ids,
+        items=items,
     )
 
 

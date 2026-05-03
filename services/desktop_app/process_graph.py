@@ -1,18 +1,13 @@
-"""Six-process desktop graph bootstrap (v4.0 §9 / WS3 P1 + P2).
+"""Six-process desktop graph bootstrap.
 
-Replaces the v3.4 docker-compose container topology with six named
-``multiprocessing.Process`` children spawned via the ``spawn`` start
-method. The parent process never imports a process module directly —
-children are launched by *string* through :func:`_launch`, so the ML
-import discipline holds: ``torch`` / ``mediapipe`` / ``faster_whisper``
-/ ``ctranslate2`` are imported only inside
-``services.desktop_app.processes.gpu_ml_worker`` and only after the
-spawned child re-imports it.
+The desktop runtime runs as six named ``multiprocessing.Process``
+children spawned via the ``spawn`` start method, matching §9.1. The
+parent never imports a process module directly, so the ML libraries
+remain isolated to ``gpu_ml_worker``.
 
 Each process module exposes a ``run(shutdown_event, channels)``
 callable. ``channels`` is the :class:`IpcChannels` bundle carrying the
-multiprocessing queues that knit the graph together (Phase 2 wires
-``ml_inbox`` between ``module_c_orchestrator`` and ``gpu_ml_worker``).
+queues that connect the graph.
 """
 
 from __future__ import annotations
@@ -22,6 +17,7 @@ import logging
 import multiprocessing as mp
 import multiprocessing.context as mpcontext
 import multiprocessing.synchronize as mpsync
+import time
 from dataclasses import dataclass, field
 
 from services.desktop_app.ipc import IpcChannels
@@ -45,6 +41,24 @@ PROCESS_MODULES: dict[str, str] = {
 # subprocess on every CI run.
 ML_LIB_ROOTS: frozenset[str] = frozenset({"torch", "mediapipe", "faster_whisper", "ctranslate2"})
 
+SQLITE_FILENAME = "desktop.sqlite"
+
+
+def _prepare_runtime_state() -> None:
+    import sqlite3
+
+    from services.desktop_app.os_adapter import resolve_state_dir
+    from services.desktop_app.state.recovery import run_recovery_sweep
+    from services.desktop_app.state.sqlite_schema import bootstrap_schema
+
+    db_path = resolve_state_dir() / SQLITE_FILENAME
+    bootstrap_conn = sqlite3.connect(str(db_path), isolation_level=None)
+    try:
+        bootstrap_schema(bootstrap_conn)
+    finally:
+        bootstrap_conn.close()
+    run_recovery_sweep(db_path)
+
 
 def _launch(
     module_name: str,
@@ -54,11 +68,9 @@ def _launch(
     """Pickleable child entrypoint — runs only inside the spawned child.
 
     Spawn-mode children re-import this module to find ``_launch``, then
-    invoke it. The first thing the child does is install the WS4 P3
-    crash-privacy guards (crash-dialog state is per-process on Windows
-    so the parent's install does not propagate to spawn-mode children),
-    then ``importlib.import_module`` on its target — that brings in
-    ``torch`` etc. only for ``gpu_ml_worker``.
+    invoke it. The child installs the crash-privacy guards first,
+    because crash-dialog state is per-process on Windows and does not
+    propagate from the parent, then imports its target module.
     """
     from services.desktop_app.privacy.crash_dumps import install_crash_privacy_guards
 
@@ -81,8 +93,11 @@ class ProcessGraph:
     children: dict[str, mpcontext.SpawnProcess] = field(default_factory=dict)
     shutdown_events: dict[str, mpsync.Event] = field(default_factory=dict)
     channels: IpcChannels | None = field(default=None)
+    _shutdown_requested: bool = field(default=False, init=False)
 
     def start_all(self) -> None:
+        self._shutdown_requested = False
+        _prepare_runtime_state()
         ctx = mp.get_context("spawn")
         if self.channels is None:
             self.channels = IpcChannels(
@@ -103,9 +118,13 @@ class ProcessGraph:
             self.shutdown_events[name] = evt
             logger.info("spawned %s pid=%s", name, proc.pid)
 
-    def stop_all(self, timeout: float = 5.0) -> None:
+    def request_shutdown(self) -> None:
+        self._shutdown_requested = True
         for evt in self.shutdown_events.values():
             evt.set()
+
+    def stop_all(self, timeout: float = 5.0) -> None:
+        self.request_shutdown()
         for name, proc in self.children.items():
             proc.join(timeout=timeout)
             if proc.is_alive():
@@ -115,6 +134,33 @@ class ProcessGraph:
         self.children.clear()
         self.shutdown_events.clear()
 
-    def wait(self) -> None:
-        for proc in self.children.values():
-            proc.join()
+    def wait(self, poll_interval: float = 0.25, shutdown_timeout: float = 5.0) -> None:
+        shutdown_started_at: float | None = None
+        while self.children:
+            exited: list[tuple[str, int | None]] = []
+            alive = False
+            for name, proc in self.children.items():
+                if proc.is_alive():
+                    alive = True
+                    continue
+                exited.append((name, proc.exitcode))
+
+            if exited and not self._shutdown_requested:
+                name, exitcode = exited[0]
+                logger.info("%s exited with code %s; requesting graph shutdown", name, exitcode)
+                self.request_shutdown()
+
+            if self._shutdown_requested and shutdown_started_at is None:
+                shutdown_started_at = time.monotonic()
+
+            if not alive:
+                return
+
+            if (
+                shutdown_started_at is not None
+                and (time.monotonic() - shutdown_started_at) >= shutdown_timeout
+            ):
+                self.stop_all(timeout=max(1.0, shutdown_timeout))
+                return
+
+            time.sleep(poll_interval)

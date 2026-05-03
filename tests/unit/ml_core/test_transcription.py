@@ -169,7 +169,9 @@ class TestResolveSpeechDevice:
         for sneaky in ("0", "true", "True", "yes", "  1  ", ""):
             monkeypatch.setenv("LSIE_DEV_FORCE_CPU_SPEECH", sneaky)
             monkeypatch.setattr(
-                transcription, "query_max_compute_capability", lambda: 7.5,
+                transcription,
+                "query_max_compute_capability",
+                lambda: 7.5,
             )
             assert resolve_speech_device() == "cuda", (
                 f"value {sneaky!r} unexpectedly triggered CPU override"

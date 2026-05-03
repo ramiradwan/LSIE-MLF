@@ -1,4 +1,4 @@
-"""Single-writer SQLite batch flush (WS4 P1).
+"""Single-writer SQLite batch flush.
 
 Local analogue of the v3.4 ``services.worker.pipeline.analytics
 .MetricsStore``. Only one instance lives per desktop graph (the
@@ -6,7 +6,7 @@ Local analogue of the v3.4 ``services.worker.pipeline.analytics
 every other reader uses :class:`SqliteReader` with
 ``PRAGMA query_only=1`` to enforce the single-writer invariant.
 
-API surface (Phase 1 minimum):
+API surface:
 
   - ``enqueue(table, payload)`` queues a row for batched insertion.
   - A 250 ms flush thread drains the queue and wraps every batch in

@@ -13,6 +13,7 @@ from packages.schemas.cloud import CloudIngestResponse
 from services.cloud_api.middleware.forbid_raw import forbid_raw_payload_middleware
 from services.cloud_api.routes import telemetry
 from services.cloud_api.routes.telemetry import get_telemetry_service
+from services.cloud_api.services.auth_service import CloudTokenCodec, get_token_codec
 
 SEGMENT_ID = "a" * 64
 DECISION_CONTEXT_HASH = "b" * 64
@@ -25,14 +26,16 @@ class RecordingTelemetryService:
         self.segment_calls = 0
         self.posterior_calls = 0
 
-    def ingest_segments(self, batch: Any) -> CloudIngestResponse:
+    def ingest_segments(self, batch: Any, *, client_id: str) -> CloudIngestResponse:
+        del client_id
         self.segment_calls += 1
         return CloudIngestResponse(
             accepted_count=len(batch.segments),
             inserted_count=len(batch.segments),
         )
 
-    def ingest_posterior_deltas(self, batch: Any) -> CloudIngestResponse:
+    def ingest_posterior_deltas(self, batch: Any, *, client_id: str) -> CloudIngestResponse:
+        del client_id
         self.posterior_calls += 1
         return CloudIngestResponse(
             accepted_count=len(batch.deltas),
@@ -51,8 +54,21 @@ def client(service: RecordingTelemetryService) -> TestClient:
     test_app.middleware("http")(forbid_raw_payload_middleware)
     test_app.include_router(telemetry.router, prefix="/v4")
     test_app.dependency_overrides[get_telemetry_service] = lambda: service
+    test_app.dependency_overrides[get_token_codec] = lambda: CloudTokenCodec(
+        secret="integration-test-secret",
+        allowed_client_ids=frozenset({"desktop-a"}),
+    )
     with TestClient(test_app) as test_client:
         yield test_client
+
+
+def _auth_headers() -> dict[str, str]:
+    codec = CloudTokenCodec(
+        secret="integration-test-secret",
+        allowed_client_ids=frozenset({"desktop-a"}),
+    )
+    token = codec.issue_token_response("desktop-a").access_token
+    return {"Authorization": f"Bearer {token}"}
 
 
 def _segment_batch(*, codec: str = "h264") -> dict[str, Any]:
@@ -162,7 +178,11 @@ def test_privacy_perimeter_rejects_raw_media_before_validation(
 ) -> None:
     caplog.set_level(logging.WARNING, logger="services.cloud_api.middleware.forbid_raw")
 
-    response = client.post("/v4/telemetry/segments", json=payload)
+    response = client.post(
+        "/v4/telemetry/segments",
+        json=payload,
+        headers=_auth_headers(),
+    )
 
     assert response.status_code == 422
     assert response.json() == {"detail": "raw media payloads are not accepted by cloud API"}
@@ -175,7 +195,11 @@ def test_privacy_perimeter_allows_raw_codec_metadata(
     client: TestClient,
     service: RecordingTelemetryService,
 ) -> None:
-    response = client.post("/v4/telemetry/segments", json=_segment_batch(codec="raw"))
+    response = client.post(
+        "/v4/telemetry/segments",
+        json=_segment_batch(codec="raw"),
+        headers=_auth_headers(),
+    )
 
     assert response.status_code == 200
     assert response.json() == {"status": "accepted", "accepted_count": 1, "inserted_count": 1}
@@ -186,7 +210,11 @@ def test_privacy_perimeter_allows_posterior_deltas(
     client: TestClient,
     service: RecordingTelemetryService,
 ) -> None:
-    response = client.post("/v4/telemetry/posterior_deltas", json=_posterior_delta_batch())
+    response = client.post(
+        "/v4/telemetry/posterior_deltas",
+        json=_posterior_delta_batch(),
+        headers=_auth_headers(),
+    )
 
     assert response.status_code == 200
     assert response.json() == {"status": "accepted", "accepted_count": 1, "inserted_count": 1}
@@ -200,7 +228,11 @@ def test_malformed_schema_still_reaches_pydantic_validation(
     payload = copy.deepcopy(_segment_batch())
     del payload["segments"][0]["segment_id"]
 
-    response = client.post("/v4/telemetry/segments", json=payload)
+    response = client.post(
+        "/v4/telemetry/segments",
+        json=payload,
+        headers=_auth_headers(),
+    )
 
     assert response.status_code == 422
     assert "segment_id" in response.text
@@ -214,8 +246,36 @@ def test_malformed_json_still_uses_fastapi_validation(
     response = client.post(
         "/v4/telemetry/segments",
         content="{not json",
-        headers={"content-type": "application/json"},
+        headers={"content-type": "application/json", **_auth_headers()},
     )
 
     assert response.status_code == 422
     assert service.segment_calls == 0
+
+
+def test_privacy_perimeter_preserves_auth_barrier_when_bearer_missing(
+    client: TestClient,
+    service: RecordingTelemetryService,
+) -> None:
+    response = client.post("/v4/telemetry/segments", json=_segment_batch())
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": "missing bearer token"}
+    assert response.headers["www-authenticate"] == "Bearer"
+    assert service.segment_calls == 0
+
+
+def test_privacy_perimeter_preserves_auth_barrier_when_bearer_invalid(
+    client: TestClient,
+    service: RecordingTelemetryService,
+) -> None:
+    response = client.post(
+        "/v4/telemetry/posterior_deltas",
+        json=_posterior_delta_batch(),
+        headers={"Authorization": "Bearer invalid-token"},
+    )
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": "invalid bearer token"}
+    assert response.headers["www-authenticate"] == "Bearer"
+    assert service.posterior_calls == 0

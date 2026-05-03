@@ -1,4 +1,4 @@
-"""WS3 P3 — DriftCorrector unit tests.
+"""DriftCorrector unit tests.
 
 Moved from ``tests/unit/worker/pipeline/test_orchestrator.py`` when the
 class itself moved from ``services.worker.pipeline.orchestrator`` to

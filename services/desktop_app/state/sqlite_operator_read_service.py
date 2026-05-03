@@ -1,4 +1,4 @@
-"""SQLite-backed OperatorReadService (WS4 P1b).
+"""SQLite-backed OperatorReadService.
 
 Specializes :class:`services.api.services.operator_read_service
 .OperatorReadService` for the v4.0 desktop graph: query backend points
@@ -36,7 +36,7 @@ async def _no_subsystem_probes(**_: Any) -> list[ProbeResult]:
     """No-op probe runner for the desktop graph.
 
     The probes in :mod:`services.api.services.subsystem_probes` target
-    Postgres, Redis, Azure OpenAI, and a Docker-network worker health
+    Postgres, Redis, Azure OpenAI, and a server-side worker health
     endpoint — none of which exist in the v4.0 desktop process graph.
     The ``HealthSnapshot.subsystems`` rollup remains driven by the §12
     freshness heuristics over the SQLite write timestamps.

@@ -28,6 +28,7 @@ import sys
 from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
+from uuid import uuid4
 
 import typer
 from rich.console import Console
@@ -86,14 +87,15 @@ def _api_get(path: str) -> Any:
         raise SystemExit(1) from exc
     except URLError as exc:
         print(f"Cannot reach API at {API_BASE}: {exc.reason}", file=sys.stderr)
-        print("Is the API container running?", file=sys.stderr)
+        print("Is the API Server running?", file=sys.stderr)
         raise SystemExit(1) from exc
 
 
-def _api_post(path: str) -> Any:
+def _api_post(path: str, payload: dict[str, Any] | None = None) -> Any:
     """Perform a POST request against the API server and return parsed JSON."""
     url = f"{API_BASE}{path}"
-    request = Request(url, method="POST", data=b"")
+    body = b"" if payload is None else json.dumps(payload).encode("utf-8")
+    request = Request(url, method="POST", data=body)
     request.add_header("Content-Type", "application/json")
     request.add_header("Accept", "application/json")
     try:
@@ -407,18 +409,20 @@ def comodulation_show(
 
 
 @stimulus_app.command("inject")
-def stimulus_inject() -> None:
-    """POST /api/v1/stimulus — publish a stimulus trigger to the orchestrator."""
-    result = _api_post("/api/v1/stimulus")
-    status = result.get("status", "unknown")
-    if status == "triggered":
-        console.print("Stimulus injected. Calibration phase ended.")
+def stimulus_inject(
+    session_id: str = typer.Argument(..., help="Session identifier"),
+) -> None:
+    """POST /api/v1/operator/sessions/{session_id}/stimulus — submit stimulus intent."""
+    result = _api_post(
+        f"/api/v1/operator/sessions/{session_id}/stimulus",
+        {"client_action_id": str(uuid4())},
+    )
+    accepted = result.get("accepted", False)
+    if accepted:
+        console.print("Stimulus accepted. Calibration phase ended.")
         return
 
-    console.print(f"Stimulus response: {status}")
-    warning = result.get("warning")
-    if warning:
-        console.print(f"Warning: {warning}")
+    console.print(f"Stimulus response: {result.get('message', 'not accepted')}")
 
 
 def main() -> None:

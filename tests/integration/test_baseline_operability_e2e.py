@@ -13,7 +13,9 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
+from types import ModuleType
 from typing import Any, cast
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
@@ -24,7 +26,11 @@ from packages.schemas.operator_console import SessionLifecycleAccepted
 from services.api.routes import experiments as experiments_route
 from services.api.routes import sessions as sessions_route
 from services.api.services.session_lifecycle_service import _stable_session_id_for_action
-from services.worker.pipeline.orchestrator import SEGMENT_WINDOW_SECONDS, Orchestrator
+from services.worker.pipeline.orchestrator import (
+    GREETING_LINES,
+    SEGMENT_WINDOW_SECONDS,
+    Orchestrator,
+)
 from services.worker.pipeline.replay_capture import (
     ORCHESTRATOR_AUDIO_SAMPLE_RATE_HZ,
     SAMPLE_WIDTH_BYTES,
@@ -354,7 +360,62 @@ def _normalize_text(value: str) -> str:
 
 
 def _load_baseline_script() -> dict[str, Any]:
-    return cast(dict[str, Any], json.loads(BASELINE_SCRIPT_PATH.read_text(encoding="utf-8")))
+    script = cast(dict[str, Any], json.loads(BASELINE_SCRIPT_PATH.read_text(encoding="utf-8")))
+    return _baseline_posterior_proof_script(script)
+
+
+def _baseline_posterior_proof_script(script: dict[str, Any]) -> dict[str, Any]:
+    proof = {
+        "strong_arm_id": "warm_welcome",
+        "weak_arm_id": "direct_question",
+        "minimum_encounters": 3,
+        "stimulus_window_start_offset_s": 0.5,
+        "stimulus_window_end_offset_s": 5.0,
+        "reward_input_tolerance": 1e-6,
+        "posterior_mean_margin_min": 0.05,
+        "selection_random_seeds": [1, 1, 2],
+    }
+    peak_au12 = round(float(script["stimuli"][0]["expected_peak_au12"]), 6)
+    stimuli = [
+        {
+            "segment_index": 0,
+            "stimulus_offset_s": 2.0,
+            "expected_arm_id": "warm_welcome",
+            "expected_greeting_text": GREETING_LINES["warm_welcome"],
+            "expected_peak_au12": peak_au12,
+            "expected_p90_intensity": peak_au12,
+            "expected_reward": peak_au12,
+            "expected_semantic_match": True,
+            "expected_confidence_score": 1.0,
+        },
+        {
+            "segment_index": 1,
+            "stimulus_offset_s": 2.0,
+            "expected_arm_id": "direct_question",
+            "expected_greeting_text": GREETING_LINES["direct_question"],
+            "expected_peak_au12": peak_au12,
+            "expected_p90_intensity": peak_au12,
+            "expected_reward": 0.0,
+            "expected_semantic_match": False,
+            "expected_confidence_score": 0.0,
+        },
+        {
+            "segment_index": 2,
+            "stimulus_offset_s": 2.0,
+            "expected_arm_id": "warm_welcome",
+            "expected_greeting_text": GREETING_LINES["warm_welcome"],
+            "expected_peak_au12": peak_au12,
+            "expected_p90_intensity": peak_au12,
+            "expected_reward": peak_au12,
+            "expected_semantic_match": True,
+            "expected_confidence_score": 1.0,
+        },
+    ]
+    result = dict(script)
+    result["duration_s"] = len(stimuli) * float(result["segment_duration_s"])
+    result["posterior_proof"] = proof
+    result["stimuli"] = stimuli
+    return result
 
 
 def _materialize_baseline_replay_fixture(tmp_path: Path, script: dict[str, Any]) -> Path:
@@ -485,11 +546,40 @@ def _install_worker_seams(
     from services.worker.pipeline import analytics as analytics_mod
     from services.worker.pipeline import reward as reward_mod
 
-    # Unit tests import the inference module with an unwrapped Celery decorator
-    # and leave it cached in sys.modules. This E2E needs the production Task
-    # object so process_segment.run/persist_metrics.delay are available.
-    sys.modules.pop("services.worker.tasks.inference", None)
-    inference_mod = importlib.import_module("services.worker.tasks.inference")
+    class FixtureTask:
+        def __init__(self, func: Callable[..., Any]) -> None:
+            self._func = func
+
+        def run(self, *args: Any, **kwargs: Any) -> Any:
+            return self._func(MagicMock(), *args, **kwargs)
+
+        def delay(self, *args: Any, **kwargs: Any) -> Any:
+            return self.run(*args, **kwargs)
+
+    mock_app = MagicMock()
+
+    def task_decorator(**_kwargs: Any) -> Callable[[Callable[..., Any]], FixtureTask]:
+        return lambda func: FixtureTask(func)
+
+    mock_app.task.side_effect = task_decorator
+    celery_dependency = cast(Any, ModuleType("celery"))
+    celery_dependency.Task = type("Task", (), {})
+    celery_app_module = cast(Any, ModuleType("services.worker.celery_app"))
+    celery_app_module.celery_app = mock_app
+    worker_pkg = importlib.import_module("services.worker")
+
+    with (
+        patch.dict(
+            sys.modules,
+            {
+                "celery": celery_dependency,
+                "services.worker.celery_app": celery_app_module,
+            },
+        ),
+        patch.object(worker_pkg, "celery_app", celery_app_module, create=True),
+    ):
+        sys.modules.pop("services.worker.tasks.inference", None)
+        inference_mod = importlib.import_module("services.worker.tasks.inference")
 
     proof = script["posterior_proof"]
     stimuli = list(script["stimuli"])
@@ -592,18 +682,26 @@ def _install_worker_seams(
     monkeypatch.setattr(inference_mod.persist_metrics, "delay", sync_persist_metrics)
     monkeypatch.setattr(Orchestrator, "_dispatch_payload", sync_dispatch)
 
-    rng = np.random.default_rng(int(script["seed"]))
+    selection_random_seeds = list(proof["selection_random_seeds"])
     ts_draw_inputs: list[tuple[float, float]] = []
+    real_generator = np.random.Generator
+    selection_index = {"value": 0}
 
-    def seeded_beta_rvs(alpha: Any, beta: Any, *args: Any, **kwargs: Any) -> float:
-        assert args == ()
-        assert not kwargs
-        alpha_f = float(alpha)
-        beta_f = float(beta)
-        ts_draw_inputs.append((alpha_f, beta_f))
-        return float(rng.beta(alpha_f, beta_f))
+    class FixtureGenerator:
+        def __init__(self, bit_generator: Any) -> None:
+            del bit_generator
+            index = selection_index["value"]
+            seed = int(selection_random_seeds[min(index, len(selection_random_seeds) - 1)])
+            selection_index["value"] = index + 1
+            self._rng = real_generator(np.random.PCG64(seed))
 
-    monkeypatch.setattr("scipy.stats.beta.rvs", seeded_beta_rvs)
+        def beta(self, alpha: Any, beta: Any) -> float:
+            alpha_f = float(alpha)
+            beta_f = float(beta)
+            ts_draw_inputs.append((alpha_f, beta_f))
+            return float(self._rng.beta(alpha_f, beta_f))
+
+    monkeypatch.setattr(np.random, "Generator", FixtureGenerator)
     cast(Any, _install_worker_seams).ts_draw_inputs = ts_draw_inputs
 
 

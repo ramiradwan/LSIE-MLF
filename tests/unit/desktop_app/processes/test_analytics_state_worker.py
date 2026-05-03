@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -10,12 +11,16 @@ import pytest
 
 from services.desktop_app.cloud.outbox import CloudOutbox
 from services.desktop_app.ipc.control_messages import AnalyticsResultMessage
-from services.desktop_app.processes.analytics_state_worker import LocalAnalyticsProcessor
+from services.desktop_app.processes.analytics_state_worker import (
+    POSTERIOR_EVENT_NAMESPACE,
+    LocalAnalyticsProcessor,
+)
 from services.desktop_app.state.sqlite_schema import bootstrap_schema
 
 SEGMENT_ID = "a" * 64
 DECISION_CONTEXT_HASH = "b" * 64
 SESSION_ID = "00000000-0000-4000-8000-000000000001"
+TRANSCRIPTION = "hello creator"
 
 
 def _handoff_payload(*, stimulus_time: float | None = 100.0) -> dict[str, Any]:
@@ -64,15 +69,37 @@ def _handoff_payload(*, stimulus_time: float | None = 100.0) -> dict[str, Any]:
     }
 
 
+def _acoustic_payload() -> dict[str, Any]:
+    return {
+        "f0_valid_measure": True,
+        "f0_valid_baseline": False,
+        "perturbation_valid_measure": True,
+        "perturbation_valid_baseline": False,
+        "voiced_coverage_measure_s": 1.25,
+        "voiced_coverage_baseline_s": 0.0,
+        "f0_mean_measure_hz": 215.5,
+        "f0_mean_baseline_hz": None,
+        "f0_delta_semitones": None,
+        "jitter_mean_measure": 0.031,
+        "jitter_mean_baseline": None,
+        "jitter_delta": None,
+        "shimmer_mean_measure": 0.044,
+        "shimmer_mean_baseline": None,
+        "shimmer_delta": None,
+    }
+
+
 def _analytics_message(
     *,
     handoff: dict[str, Any] | None = None,
+    message_id: str = "00000000-0000-4000-8000-000000000010",
     is_match: bool = True,
     confidence_score: float = 0.5,
+    transcription: str = TRANSCRIPTION,
 ) -> AnalyticsResultMessage:
     return AnalyticsResultMessage.model_validate(
         {
-            "message_id": "00000000-0000-4000-8000-000000000010",
+            "message_id": message_id,
             "handoff": handoff or _handoff_payload(),
             "semantic": {
                 "reasoning": "cross_encoder_high_match",
@@ -81,6 +108,8 @@ def _analytics_message(
                 "semantic_method": "cross_encoder",
                 "semantic_method_version": "test-v1",
             },
+            "transcription": transcription,
+            "acoustic": _acoustic_payload(),
         }
     )
 
@@ -95,7 +124,7 @@ def _prepare_db(db: Path) -> None:
     conn.close()
 
 
-def test_processor_updates_local_posterior_and_returns_delta(tmp_path: Path) -> None:
+def test_processor_updates_local_posterior_and_persists_analytics_rows(tmp_path: Path) -> None:
     db = tmp_path / "desktop.sqlite"
     _prepare_db(db)
     processor = LocalAnalyticsProcessor(db, client_id="desktop-a")
@@ -108,6 +137,11 @@ def test_processor_updates_local_posterior_and_returns_delta(tmp_path: Path) -> 
     assert delta.delta_alpha == pytest.approx(0.82, abs=1e-12)
     assert delta.delta_beta == pytest.approx(0.18, abs=1e-12)
     assert delta.decision_context_hash == DECISION_CONTEXT_HASH
+    assert delta.event_id.version == 5
+    assert delta.event_id == uuid.uuid5(
+        POSTERIOR_EVENT_NAMESPACE,
+        f"desktop-a:{SEGMENT_ID}:1:warm_welcome",
+    )
 
     conn = sqlite3.connect(str(db), isolation_level=None)
     conn.row_factory = sqlite3.Row
@@ -118,6 +152,25 @@ def test_processor_updates_local_posterior_and_returns_delta(tmp_path: Path) -> 
     encounter = conn.execute(
         "SELECT gated_reward, p90_intensity, semantic_gate, n_frames_in_window, au12_baseline_pre "
         "FROM encounter_log WHERE segment_id = ?",
+        (SEGMENT_ID,),
+    ).fetchone()
+    transcript = conn.execute(
+        "SELECT text FROM transcripts WHERE segment_id = ?",
+        (SEGMENT_ID,),
+    ).fetchone()
+    evaluation = conn.execute(
+        "SELECT reasoning, is_match, confidence FROM evaluations WHERE segment_id = ?",
+        (SEGMENT_ID,),
+    ).fetchone()
+    metrics = conn.execute(
+        "SELECT f0_valid_measure, perturbation_valid_measure, voiced_coverage_measure_s, "
+        "f0_mean_measure_hz, jitter_mean_measure, shimmer_mean_measure "
+        "FROM metrics WHERE segment_id = ?",
+        (SEGMENT_ID,),
+    ).fetchone()
+    ledger = conn.execute(
+        "SELECT message_id, segment_id, client_id, arm "
+        "FROM analytics_message_ledger WHERE segment_id = ?",
         (SEGMENT_ID,),
     ).fetchone()
     conn.close()
@@ -131,16 +184,34 @@ def test_processor_updates_local_posterior_and_returns_delta(tmp_path: Path) -> 
     assert encounter["semantic_gate"] == 1
     assert encounter["n_frames_in_window"] == 3
     assert encounter["au12_baseline_pre"] == pytest.approx(0.3, abs=1e-12)
+    assert transcript is not None
+    assert transcript["text"] == TRANSCRIPTION
+    assert evaluation is not None
+    assert evaluation["reasoning"] == "cross_encoder_high_match"
+    assert evaluation["is_match"] == 1
+    assert evaluation["confidence"] == pytest.approx(0.5, abs=1e-12)
+    assert metrics is not None
+    assert metrics["f0_valid_measure"] == 1
+    assert metrics["perturbation_valid_measure"] == 1
+    assert metrics["voiced_coverage_measure_s"] == pytest.approx(1.25, abs=1e-12)
+    assert metrics["f0_mean_measure_hz"] == pytest.approx(215.5, abs=1e-12)
+    assert metrics["jitter_mean_measure"] == pytest.approx(0.031, abs=1e-12)
+    assert metrics["shimmer_mean_measure"] == pytest.approx(0.044, abs=1e-12)
+    assert ledger is not None
+    assert ledger["segment_id"] == SEGMENT_ID
+    assert ledger["client_id"] == "desktop-a"
+    assert ledger["arm"] == "warm_welcome"
 
 
-def test_processor_duplicate_message_does_not_reapply_posterior(tmp_path: Path) -> None:
+def test_processor_duplicate_identity_does_not_reapply_or_duplicate_rows(tmp_path: Path) -> None:
     db = tmp_path / "desktop.sqlite"
     _prepare_db(db)
     processor = LocalAnalyticsProcessor(db, client_id="desktop-a")
-    message = _analytics_message()
+    first_message = _analytics_message(message_id="00000000-0000-4000-8000-000000000010")
+    second_message = _analytics_message(message_id="00000000-0000-4000-8000-000000000011")
 
-    first = processor.process(message)
-    second = processor.process(message)
+    first = processor.process(first_message)
+    second = processor.process(second_message)
 
     assert first is not None
     assert second is None
@@ -153,15 +224,30 @@ def test_processor_duplicate_message_does_not_reapply_posterior(tmp_path: Path) 
         "SELECT COUNT(*) FROM encounter_log WHERE segment_id = ?",
         (SEGMENT_ID,),
     ).fetchone()[0]
+    transcript_count = conn.execute(
+        "SELECT COUNT(*) FROM transcripts WHERE segment_id = ?",
+        (SEGMENT_ID,),
+    ).fetchone()[0]
+    evaluation_count = conn.execute(
+        "SELECT COUNT(*) FROM evaluations WHERE segment_id = ?",
+        (SEGMENT_ID,),
+    ).fetchone()[0]
+    metrics_count = conn.execute(
+        "SELECT COUNT(*) FROM metrics WHERE segment_id = ?",
+        (SEGMENT_ID,),
+    ).fetchone()[0]
     ledger_count = conn.execute("SELECT COUNT(*) FROM analytics_message_ledger").fetchone()[0]
     conn.close()
 
     assert experiment == pytest.approx((1.82, 1.18), abs=1e-12)
     assert encounter_count == 1
+    assert transcript_count == 1
+    assert evaluation_count == 1
+    assert metrics_count == 1
     assert ledger_count == 1
 
 
-def test_processor_rolls_back_ledger_when_local_update_fails(tmp_path: Path) -> None:
+def test_processor_rolls_back_all_rows_when_local_update_fails(tmp_path: Path) -> None:
     db = tmp_path / "desktop.sqlite"
     _prepare_db(db)
     processor = LocalAnalyticsProcessor(db, client_id="desktop-a")
@@ -174,9 +260,15 @@ def test_processor_rolls_back_ledger_when_local_update_fails(tmp_path: Path) -> 
     conn = sqlite3.connect(str(db), isolation_level=None)
     ledger_count = conn.execute("SELECT COUNT(*) FROM analytics_message_ledger").fetchone()[0]
     encounter_count = conn.execute("SELECT COUNT(*) FROM encounter_log").fetchone()[0]
+    transcript_count = conn.execute("SELECT COUNT(*) FROM transcripts").fetchone()[0]
+    evaluation_count = conn.execute("SELECT COUNT(*) FROM evaluations").fetchone()[0]
+    metrics_count = conn.execute("SELECT COUNT(*) FROM metrics").fetchone()[0]
     conn.close()
     assert ledger_count == 0
     assert encounter_count == 0
+    assert transcript_count == 0
+    assert evaluation_count == 0
+    assert metrics_count == 0
 
 
 def test_processor_uses_semantic_gate_without_confidence_or_physiology(tmp_path: Path) -> None:
@@ -217,7 +309,7 @@ def test_processor_uses_semantic_gate_without_confidence_or_physiology(tmp_path:
     assert row == pytest.approx((1.0, 2.0), abs=1e-12)
 
 
-def test_processor_skips_segments_without_stimulus(tmp_path: Path) -> None:
+def test_processor_persists_non_reward_rows_without_stimulus(tmp_path: Path) -> None:
     db = tmp_path / "desktop.sqlite"
     _prepare_db(db)
     processor = LocalAnalyticsProcessor(db, client_id="desktop-a")
@@ -226,9 +318,22 @@ def test_processor_skips_segments_without_stimulus(tmp_path: Path) -> None:
 
     assert delta is None
     conn = sqlite3.connect(str(db), isolation_level=None)
-    count = conn.execute("SELECT COUNT(*) FROM encounter_log").fetchone()[0]
+    encounter_count = conn.execute("SELECT COUNT(*) FROM encounter_log").fetchone()[0]
+    transcript_count = conn.execute("SELECT COUNT(*) FROM transcripts").fetchone()[0]
+    evaluation_count = conn.execute("SELECT COUNT(*) FROM evaluations").fetchone()[0]
+    metrics_count = conn.execute("SELECT COUNT(*) FROM metrics").fetchone()[0]
+    ledger_count = conn.execute("SELECT COUNT(*) FROM analytics_message_ledger").fetchone()[0]
+    experiment = conn.execute(
+        "SELECT alpha_param, beta_param FROM experiments WHERE id = ? AND arm = ?",
+        (1, "warm_welcome"),
+    ).fetchone()
     conn.close()
-    assert count == 0
+    assert encounter_count == 0
+    assert transcript_count == 1
+    assert evaluation_count == 1
+    assert metrics_count == 1
+    assert ledger_count == 1
+    assert experiment == pytest.approx((1.0, 1.0), abs=1e-12)
 
 
 def test_delta_enqueues_after_local_update(tmp_path: Path) -> None:

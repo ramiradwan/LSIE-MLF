@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
 import hmac
 import json
+import os
 import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -10,18 +13,26 @@ from pathlib import Path
 from typing import Literal
 
 import httpx
+from Crypto.PublicKey import ECC
+from Crypto.Signature import eddsa
 
 from packages.schemas.cloud import ExperimentBundle, ExperimentBundlePayload
 from services.desktop_app.state.sqlite_schema import bootstrap_schema
 
 BundleSignatureMode = Literal["hmac-sha256", "ed25519"]
+_PUBLIC_KEY_ENV = "LSIE_CLOUD_BUNDLE_ED25519_PUBLIC_KEY"
 
 
 @dataclass(frozen=True)
 class BundleVerificationConfig:
-    signature_mode: BundleSignatureMode = "hmac-sha256"
+    signature_mode: BundleSignatureMode = "ed25519"
     hmac_secret: str | None = None
     ed25519_public_key: bytes | None = None
+
+    @classmethod
+    def from_env(cls) -> BundleVerificationConfig:
+        public_key = os.environ.get(_PUBLIC_KEY_ENV, "").strip()
+        return cls(ed25519_public_key=public_key.encode("utf-8") if public_key else None)
 
 
 class ExperimentBundleVerificationError(RuntimeError):
@@ -140,7 +151,7 @@ def verify_bundle(
     config: BundleVerificationConfig | None = None,
     now_utc: datetime | None = None,
 ) -> None:
-    effective_config = config or BundleVerificationConfig()
+    effective_config = config or BundleVerificationConfig.from_env()
     now = now_utc or datetime.now(UTC)
     if bundle.issued_at_utc > now or bundle.expires_at_utc <= now:
         raise ExperimentBundleVerificationError("experiment bundle is outside its validity window")
@@ -149,9 +160,7 @@ def verify_bundle(
     if effective_config.signature_mode == "hmac-sha256":
         _verify_hmac_signature(bundle, effective_config)
         return
-    if effective_config.ed25519_public_key is None:
-        raise ExperimentBundleVerificationError("Ed25519 bundle verification is not configured")
-    raise ExperimentBundleVerificationError("Ed25519 bundle verification is not available")
+    _verify_ed25519_signature(bundle, effective_config)
 
 
 def canonical_bundle_payload(bundle: ExperimentBundle) -> str:
@@ -185,6 +194,48 @@ def _verify_hmac_signature(
         raise ExperimentBundleVerificationError("experiment bundle signature verification failed")
 
 
+def _verify_ed25519_signature(
+    bundle: ExperimentBundle,
+    config: BundleVerificationConfig,
+) -> None:
+    if config.ed25519_public_key is None:
+        raise ExperimentBundleVerificationError("Ed25519 bundle verification is not configured")
+    public_key = _load_ed25519_public_key(config.ed25519_public_key)
+    try:
+        eddsa.new(public_key, "rfc8032").verify(
+            canonical_bundle_payload(bundle).encode("utf-8"),
+            _urlsafe_b64decode(bundle.signature),
+        )
+    except (binascii.Error, ValueError) as exc:
+        raise ExperimentBundleVerificationError(
+            "experiment bundle signature verification failed"
+        ) from exc
+
+
+def _load_ed25519_public_key(value: bytes) -> ECC.EccKey:
+    raw = value.decode("utf-8").strip()
+    if raw.startswith("-----BEGIN"):
+        key = ECC.import_key(raw)
+    else:
+        key = ECC.import_key(_urlsafe_b64decode(raw))
+    if not key.has_private() and "Ed25519" in str(key.curve):
+        return key
+    raise ExperimentBundleVerificationError("Ed25519 public key is invalid")
+
+
+def encode_ed25519_public_key(public_key: ECC.EccKey) -> str:
+    return _urlsafe_b64encode(public_key.export_key(format="DER"))
+
+
+def _urlsafe_b64encode(value: bytes) -> str:
+    return base64.urlsafe_b64encode(value).decode("ascii").rstrip("=")
+
+
+def _urlsafe_b64decode(value: str) -> bytes:
+    padding = "=" * (-len(value) % 4)
+    return base64.urlsafe_b64decode(f"{value}{padding}")
+
+
 def _format_timestamp(value: datetime) -> str:
     return value.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
@@ -198,6 +249,7 @@ __all__ = [
     "ExperimentBundleVerificationError",
     "canonical_bundle_payload",
     "canonical_payload",
+    "encode_ed25519_public_key",
     "sign_bundle_payload",
     "verify_bundle",
 ]

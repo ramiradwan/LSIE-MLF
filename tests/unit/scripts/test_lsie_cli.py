@@ -62,7 +62,7 @@ class TestApiHelpers:
         captured = capsys.readouterr()
         assert captured.err.splitlines() == [
             "Cannot reach API at http://api.test: connection refused",
-            "Is the API container running?",
+            "Is the API Server running?",
         ]
 
     @patch("scripts.lsie_cli.urlopen")
@@ -70,7 +70,7 @@ class TestApiHelpers:
         mock_urlopen.side_effect = _make_http_error(500, "stimulus failed")
 
         with pytest.raises(SystemExit):
-            _api_post("/api/v1/stimulus")
+            _api_post("/api/v1/operator/sessions/session-1/stimulus")
 
         captured = capsys.readouterr()
         assert captured.err.strip() == "API error (500): stimulus failed"
@@ -325,22 +325,28 @@ class TestComodulationCommands:
 
 
 class TestStimulusCommands:
+    @patch("scripts.lsie_cli.uuid4")
     @patch("scripts.lsie_cli._api_post")
-    def test_stimulus_inject_triggered(self, mock_post: MagicMock) -> None:
-        mock_post.return_value = {"status": "triggered"}
-        result = runner.invoke(app, ["stimulus", "inject"])
+    def test_stimulus_inject_accepted(self, mock_post: MagicMock, mock_uuid4: MagicMock) -> None:
+        mock_uuid4.return_value = "client-action-id"
+        mock_post.return_value = {"accepted": True}
+        result = runner.invoke(app, ["stimulus", "inject", "session-1"])
         assert result.exit_code == 0
-        assert "Stimulus injected" in result.output
-        mock_post.assert_called_once_with("/api/v1/stimulus")
+        assert "Stimulus accepted" in result.output
+        mock_post.assert_called_once_with(
+            "/api/v1/operator/sessions/session-1/stimulus",
+            {"client_action_id": "client-action-id"},
+        )
 
+    @patch("scripts.lsie_cli.uuid4")
     @patch("scripts.lsie_cli._api_post")
-    def test_stimulus_inject_with_warning(self, mock_post: MagicMock) -> None:
-        mock_post.return_value = {
-            "status": "published",
-            "receivers": 0,
-            "warning": "No orchestrator instance is currently listening.",
-        }
-        result = runner.invoke(app, ["stimulus", "inject"])
+    def test_stimulus_inject_not_accepted(
+        self,
+        mock_post: MagicMock,
+        mock_uuid4: MagicMock,
+    ) -> None:
+        mock_uuid4.return_value = "client-action-id"
+        mock_post.return_value = {"accepted": False, "message": "duplicate"}
+        result = runner.invoke(app, ["stimulus", "inject", "session-1"])
         assert result.exit_code == 0
-        assert "published" in result.output
-        assert "Warning:" in result.output
+        assert "duplicate" in result.output

@@ -1,4 +1,4 @@
-"""Cloud control-plane FastAPI application for WS5 P1."""
+"""Cloud control-plane FastAPI application."""
 
 from __future__ import annotations
 

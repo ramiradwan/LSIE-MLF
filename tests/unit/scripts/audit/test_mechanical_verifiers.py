@@ -12,12 +12,12 @@ from scripts.audit.results import AuditResult
 from scripts.audit.spec_items import Section13Item
 from scripts.audit.verifiers.mechanical import (
     MECHANICAL_VERIFIERS,
+    V4_MECHANICAL_VERIFIERS_BY_TITLE,
     verify_au12_geometry,
     verify_canonical_terminology,
     verify_dependency_pins,
     verify_derived_only_attribution_persistence,
     verify_directory_structure,
-    verify_docker_topology,
     verify_drift_correction,
     verify_ephemeral_vault,
     verify_ffmpeg_resample,
@@ -77,7 +77,6 @@ _SEMANTIC_METHODS = (
 
 _EXPECTED_MECHANICAL_ITEMS = {
     "13.1",
-    "13.2",
     "13.3",
     "13.4",
     "13.5",
@@ -89,6 +88,28 @@ _EXPECTED_MECHANICAL_ITEMS = {
     "13.12",
     "13.15",
     "13.30",
+}
+
+_EXPECTED_V4_MECHANICAL_TITLES = {
+    "Runtime topology",
+    "Import discipline",
+    "Embedded runtime",
+    "Windows subprocess supervision",
+    "SharedMemory IPC",
+    "SharedMemory cleanup",
+    "Gate 0 corpus",
+    "Deterministic segment identity",
+    "ADB drift contract",
+    "Reward pipeline",
+    "Bandit snapshot determinism",
+    "SQLite local state",
+    "Privacy perimeter",
+    "Cloud OAuth",
+    "Signed ExperimentBundle",
+    "Posterior delta exactly-once",
+    "Production hardware floor",
+    "Pascal developer override",
+    "macOS Tier 2 deferral",
 }
 
 
@@ -323,10 +344,49 @@ def _write_vault_fixture(repo_root: Path, nonce_length: int = 12) -> None:
 
 
 def _write_dependency_fixture(repo_root: Path, numpy_line: str = "numpy==1.26.4") -> None:
-    _write(repo_root, "requirements/base.txt", f"{numpy_line}\n")
-    _write(repo_root, "requirements/worker.txt", "-r base.txt\n")
-    _write(repo_root, "requirements/api.txt", "fastapi==0.110.2\n")
-    _write(repo_root, "requirements/cli.txt", "PySide6>=6.11\n")
+    _write(
+        repo_root,
+        "pyproject.toml",
+        f"""
+[project]
+dependencies = [
+    \"{numpy_line}\",
+    \"fastapi==0.110.2\",
+    \"uvicorn==0.29.0\",
+    \"pydantic>=2.0\",
+    \"PySide6>=6.11\",
+]
+
+[project.optional-dependencies]
+ml_backend = [
+    \"praat-parselmouth==0.4.4\",
+]
+""".lstrip(),
+    )
+    _write(
+        repo_root,
+        "uv.lock",
+        f"""
+version = 1
+revision = 3
+requires-python = \"==3.11.*\"
+
+[[package]]
+name = \"lsie-mlf-desktop\"
+version = \"4.0.0\"
+source = {{ virtual = \".\" }}
+
+[package.metadata]
+requires-dist = [
+    {{ name = \"numpy\", specifier = \"=={numpy_line.split("==", 1)[1]}\" }},
+    {{ name = \"fastapi\", specifier = \"==0.110.2\" }},
+    {{ name = \"uvicorn\", specifier = \"==0.29.0\" }},
+    {{ name = \"pydantic\", specifier = \">=2.0\" }},
+    {{ name = \"pyside6\", specifier = \">=6.11\" }},
+    {{ name = \"praat-parselmouth\", specifier = \"==0.4.4\" }},
+]
+""".lstrip(),
+    )
 
 
 def _write_canonical_scan_fixture(repo_root: Path, retired_line: str | None = None) -> None:
@@ -404,6 +464,7 @@ def _write_reason_fixture(
 class TestMechanicalVerifiers:
     def test_mechanical_registry_keys_are_unit_covered(self) -> None:
         assert set(MECHANICAL_VERIFIERS) == _EXPECTED_MECHANICAL_ITEMS
+        assert set(V4_MECHANICAL_VERIFIERS_BY_TITLE) == _EXPECTED_V4_MECHANICAL_TITLES
 
     def test_spec_extraction_missing_fails_closed(self, tmp_path: Path) -> None:
         cases = []
@@ -578,11 +639,10 @@ class TestMechanicalVerifiers:
         _assert_pass_evidence(
             pass_result,
             "§10.2/§13.12",
-            "requirements/base.txt:1",
+            "pyproject.toml",
+            "uv.lock",
             "numpy==1.26.4",
-            "requirements/api.txt:1",
             "fastapi==0.110.2",
-            "requirements/cli.txt:1",
             "PySide6>=6.11",
         )
 
@@ -600,10 +660,73 @@ class TestMechanicalVerifiers:
             "expected numpy 1.26.x",
         )
 
+    def test_verify_dependency_pins_supports_base_target_rows(self, tmp_path: Path) -> None:
+        spec = {
+            "dependency_matrix": {
+                "pinned_packages": [
+                    {
+                        "package": "numpy",
+                        "version": "1.26.x",
+                        "container_targets": ["all_processes"],
+                    }
+                ]
+            }
+        }
+        _write_dependency_fixture(tmp_path)
+
+        result = verify_dependency_pins(_context(tmp_path, spec), _item("13.12"))
+
+        _assert_pass_evidence(
+            result,
+            "§10.2/§13.12",
+            "pyproject.toml",
+            "uv.lock",
+            "numpy==1.26.4",
+        )
+
+    def test_verify_dependency_pins_reads_pyproject_and_uv_lock_for_desktop_targets(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        spec = {
+            "dependency_matrix": {
+                "pinned_packages": [
+                    {
+                        "package": "fastapi",
+                        "version": "0.110.x",
+                        "container_targets": ["ui_api_shell"],
+                    },
+                    {
+                        "package": "uvicorn",
+                        "version": "0.29.x",
+                        "container_targets": ["ui_api_shell"],
+                    },
+                    {
+                        "package": "pydantic",
+                        "version": "2.x",
+                        "container_targets": ["all_processes"],
+                    },
+                ]
+            }
+        }
+        _write_dependency_fixture(tmp_path)
+
+        result = verify_dependency_pins(_context(tmp_path, spec), _item("13.12"))
+
+        _assert_pass_evidence(
+            result,
+            "§10.2/§13.12",
+            "pyproject.toml",
+            "uv.lock",
+            "fastapi==0.110.2",
+            "uvicorn==0.29.0",
+            "pydantic>=2.0",
+        )
+
     def test_verify_canonical_terminology_pass_and_retired_term_match(self, tmp_path: Path) -> None:
         pass_root = tmp_path / "pass"
         _write_canonical_scan_fixture(pass_root)
-        _write(pass_root, "docker-compose.yml", "services:\n  api:\n    image: example\n")
+        _write(pass_root, ".env.example", "LSIE_SAMPLE=1\n")
 
         pass_result = verify_canonical_terminology(
             _context(pass_root, _canonical_spec()), _item("13.15")
@@ -720,11 +843,33 @@ class TestMechanicalVerifiers:
     def test_check_sh_delegates_audit_gate_to_strict_harness(self) -> None:
         check_script = Path("scripts/check.sh").read_text(encoding="utf-8")
         audit_section = check_script.split("── §13 audit harness ──", maxsplit=1)[1]
-        audit_section = audit_section.split("── Docker compose config ──", maxsplit=1)[0]
+        audit_section = audit_section.split("── Schema consistency check ──", maxsplit=1)[0]
 
         assert "python scripts/run_audit.py --strict" in audit_section
         assert "--item" not in audit_section
         assert "grep -R" not in audit_section
+
+    def test_local_check_scripts_drop_stale_docker_gate(self) -> None:
+        check_sh = Path("scripts/check.sh").read_text(encoding="utf-8")
+        check_ps1 = Path("scripts/check.ps1").read_text(encoding="utf-8")
+
+        for script in (check_sh, check_ps1):
+            assert "Canonical terminology audit" in script
+            assert "docker compose config --quiet" not in script
+            assert "LSIE_CHECK_RETAINED_SERVER" not in script
+            assert "retained server/container topology" not in script
+            assert "python scripts/check_schema_consistency.py" in script
+
+    def test_ci_workflow_includes_local_gate_parity_checks(self) -> None:
+        workflow = Path(".github/workflows/ci.yml").read_text(encoding="utf-8")
+
+        assert "name: Schema consistency check" in workflow
+        assert "uv run python scripts/check_schema_consistency.py" in workflow
+        assert "name: Canonical terminology audit" in workflow
+        assert "grep -rnE 'GPU worker|video pipe" in workflow
+        assert "name: Docker compose config" not in workflow
+        assert "docker compose config --quiet" not in workflow
+        assert "Run strict §13 audit harness" in workflow
 
     def test_verify_semantic_reason_codes_fails_mixed_bounded_and_unbounded_fallback_paths(
         self, tmp_path: Path
@@ -772,27 +917,27 @@ class TestMechanicalVerifiers:
                 "directory_hierarchy": [
                     {"path": "/services/api/", "purpose": "API"},
                     {"path": "/packages/schemas/", "purpose": "Schemas"},
-                    {"path": "/docker-compose.yml", "purpose": "Topology"},
+                    {"path": "/scripts/run_audit.py", "purpose": "Audit entrypoint"},
                 ]
             }
         }
         good = tmp_path / "good"
         (good / "services" / "api").mkdir(parents=True)
         (good / "packages" / "schemas").mkdir(parents=True)
-        (good / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
+        _write(good, "scripts/run_audit.py", "print('ok')\n")
 
         result = verify_directory_structure(_context(good, spec), _item("13.1"))
         _assert_pass_evidence(
             result,
             "§3/§13.1: extracted 3 directory_hierarchy entries",
             "services/api directory present",
-            "docker-compose.yml file present",
+            "scripts/run_audit.py file present",
         )
 
         bad = tmp_path / "bad"
         (bad / "services" / "api").mkdir(parents=True)
+        _write(bad, "scripts/run_audit.py", "print('ok')\n")
         # packages/schemas is missing on purpose.
-        (bad / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
 
         result_fail = verify_directory_structure(_context(bad, spec), _item("13.1"))
         _assert_fail_evidence(
@@ -804,110 +949,6 @@ class TestMechanicalVerifiers:
         result = verify_directory_structure(_context(tmp_path, {}), _item("13.1"))
         assert result.passed is False
         assert "missing codebase_architecture object" in result.evidence
-
-    # ---- §13.2 — Docker topology --------------------------------------------
-
-    def test_verify_docker_topology_pass_and_missing_service(self, tmp_path: Path) -> None:
-        spec = {
-            "docker_topology": {
-                "containers": [
-                    {
-                        "container_name": "api",
-                        "image_base": "python:3.11-slim",
-                        "network": "appnetwork",
-                        "restart_policy": "unless-stopped",
-                        "depends_on": ["postgres"],
-                        "gpu_required": False,
-                    },
-                    {
-                        "container_name": "worker",
-                        "image_base": "nvidia/cuda:12.2.2-cudnn8-runtime-ubuntu22.04",
-                        "network": "appnetwork",
-                        "restart_policy": "on-failure:5",
-                        "depends_on": ["postgres"],
-                        "gpu_required": True,
-                    },
-                ],
-                "volumes": [
-                    {
-                        "volume_name": "ipc-share",
-                        "mount_path": "/tmp/ipc/",
-                        "container_targets": ["worker"],
-                    }
-                ],
-            }
-        }
-        good_compose = """\
-services:
-  api:
-    image: python:3.11-slim
-    networks:
-      - appnetwork
-    restart: unless-stopped
-    depends_on:
-      - postgres
-  worker:
-    build:
-      context: .
-    networks:
-      - appnetwork
-    restart: on-failure
-    deploy:
-      restart_policy:
-        condition: on-failure
-        max_attempts: 5
-    depends_on:
-      - postgres
-    volumes:
-      - ipc-share:/tmp/ipc/
-volumes:
-  ipc-share: {}
-networks:
-  appnetwork:
-    driver: bridge
-"""
-        good = tmp_path / "good"
-        good.mkdir()
-        (good / "docker-compose.yml").write_text(good_compose, encoding="utf-8")
-
-        result = verify_docker_topology(_context(good, spec), _item("13.2"))
-        _assert_pass_evidence(
-            result,
-            "§9/§13.2: extracted 2 containers and 1 volumes",
-            "service api image='python:3.11-slim' matches spec",
-            "service worker mounts volume 'ipc-share' at '/tmp/ipc/'",
-        )
-
-        bad_compose = good_compose.replace("worker:", "worker_misnamed:")
-        bad = tmp_path / "bad"
-        bad.mkdir()
-        (bad / "docker-compose.yml").write_text(bad_compose, encoding="utf-8")
-
-        result_fail = verify_docker_topology(_context(bad, spec), _item("13.2"))
-        _assert_fail_evidence(
-            result_fail,
-            "service 'worker' is missing from docker-compose.yml",
-        )
-
-    def test_verify_docker_topology_missing_compose_fails_closed(self, tmp_path: Path) -> None:
-        spec = {
-            "docker_topology": {
-                "containers": [
-                    {
-                        "container_name": "api",
-                        "image_base": "python:3.11-slim",
-                        "network": "appnetwork",
-                        "restart_policy": "unless-stopped",
-                        "depends_on": [],
-                    }
-                ],
-                "volumes": [],
-            }
-        }
-        empty = tmp_path / "no_compose"
-        empty.mkdir()
-        result = verify_docker_topology(_context(empty, spec), _item("13.2"))
-        _assert_fail_evidence(result, "docker-compose.yml is missing")
 
     # ---- §13.3 — IPC lifecycle ----------------------------------------------
 

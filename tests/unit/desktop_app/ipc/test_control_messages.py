@@ -1,4 +1,4 @@
-"""WS3 P2 — InferenceControlMessage Pydantic validation tests."""
+"""InferenceControlMessage Pydantic validation tests."""
 
 from __future__ import annotations
 

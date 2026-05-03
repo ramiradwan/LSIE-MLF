@@ -1,4 +1,4 @@
-"""WS2 P3 preflight hardware gate (v4.0 §11.x.3)."""
+"""Preflight gate for the Windows desktop runtime (§9, §10.1, §10.2)."""
 
 from __future__ import annotations
 
@@ -14,10 +14,11 @@ from services.desktop_launcher import preflight_codes
 
 _TURING_COMPUTE_CAP: Final[float] = 7.5
 _DEV_FORCE_CPU_ENV: Final[str] = "LSIE_DEV_FORCE_CPU_SPEECH"
+_PREFLIGHT_COMPLETE_ENV: Final[str] = "LSIE_DESKTOP_PREFLIGHT_COMPLETE"
 
 
 class HardwareUnsupportedError(RuntimeError):
-    """Raised when production-mode hardware cannot satisfy v4.0 §11.x."""
+    """Raised when production-mode hardware cannot satisfy the desktop runtime floor."""
 
 
 class PythonVersionUnsupportedError(RuntimeError):
@@ -55,16 +56,19 @@ def run_preflight(
     developer_mode = _developer_mode_enabled()
 
     if selected_gpu is None:
-        return _handle_no_gpu(detected_version, developer_mode)
-    if selected_gpu.compute_cap >= _TURING_COMPUTE_CAP:
-        return PreflightResult(
+        result = _handle_no_gpu(detected_version, developer_mode)
+    elif selected_gpu.compute_cap >= _TURING_COMPUTE_CAP:
+        result = PreflightResult(
             python_version=detected_version,
             developer_mode=developer_mode,
             speech_device="cuda",
             selected_gpu=selected_gpu,
             warnings=(),
         )
-    return _handle_sub_turing_gpu(detected_version, selected_gpu, developer_mode)
+    else:
+        result = _handle_sub_turing_gpu(detected_version, selected_gpu, developer_mode)
+    _mark_preflight_complete()
+    return result
 
 
 def _validate_python_version(version: tuple[int, int, int]) -> None:
@@ -140,6 +144,22 @@ def _handle_sub_turing_gpu(
             ),
         ),
     )
+
+
+def ensure_preflight() -> PreflightResult:
+    if os.environ.get(_PREFLIGHT_COMPLETE_ENV) == "1":
+        return PreflightResult(
+            python_version=sys.version_info[:3],
+            developer_mode=_developer_mode_enabled(),
+            speech_device="cpu" if os.environ.get(_DEV_FORCE_CPU_ENV) == "1" else "cuda",
+            selected_gpu=None,
+            warnings=(),
+        )
+    return run_preflight()
+
+
+def _mark_preflight_complete() -> None:
+    os.environ[_PREFLIGHT_COMPLETE_ENV] = "1"
 
 
 def _force_cpu_speech() -> None:

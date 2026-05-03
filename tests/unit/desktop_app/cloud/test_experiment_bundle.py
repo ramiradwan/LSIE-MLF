@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import base64
 import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import httpx
 import pytest
+from Crypto.PublicKey import ECC
+from Crypto.Signature import eddsa
 
 from packages.schemas.cloud import (
     ExperimentBundle,
@@ -18,6 +21,8 @@ from services.desktop_app.cloud.experiment_bundle import (
     ExperimentBundleClient,
     ExperimentBundleStore,
     ExperimentBundleVerificationError,
+    canonical_payload,
+    encode_ed25519_public_key,
     sign_bundle_payload,
     verify_bundle,
 )
@@ -61,13 +66,51 @@ def _signed_bundle(payload: ExperimentBundlePayload | None = None) -> Experiment
     )
 
 
+def _ed25519_signed_bundle(
+    payload: ExperimentBundlePayload | None = None,
+    private_key: ECC.EccKey | None = None,
+) -> tuple[ExperimentBundle, ECC.EccKey]:
+    effective_payload = payload or _payload()
+    effective_private_key = private_key or ECC.generate(curve="Ed25519")
+    signature = eddsa.new(effective_private_key, "rfc8032").sign(
+        canonical_payload(effective_payload).encode("utf-8")
+    )
+    return (
+        ExperimentBundle(
+            **effective_payload.model_dump(),
+            signature=_urlsafe_b64encode(signature),
+        ),
+        effective_private_key,
+    )
+
+
+def _urlsafe_b64encode(value: bytes) -> str:
+    return base64.urlsafe_b64encode(value).decode("ascii").rstrip("=")
+
+
 def test_verify_bundle_accepts_hmac_signed_canonical_json() -> None:
-    verify_bundle(_signed_bundle(), config=BundleVerificationConfig(hmac_secret=SECRET))
+    verify_bundle(
+        _signed_bundle(),
+        config=BundleVerificationConfig(signature_mode="hmac-sha256", hmac_secret=SECRET),
+    )
 
 
-def test_verify_bundle_requires_explicit_hmac_secret() -> None:
-    with pytest.raises(ExperimentBundleVerificationError, match="secret"):
-        verify_bundle(_signed_bundle(), config=BundleVerificationConfig())
+def test_verify_bundle_accepts_ed25519_signed_canonical_json() -> None:
+    bundle, private_key = _ed25519_signed_bundle()
+
+    verify_bundle(
+        bundle,
+        config=BundleVerificationConfig(
+            ed25519_public_key=encode_ed25519_public_key(private_key.public_key()).encode("utf-8")
+        ),
+    )
+
+
+def test_verify_bundle_requires_explicit_ed25519_public_key() -> None:
+    bundle, _private_key = _ed25519_signed_bundle()
+
+    with pytest.raises(ExperimentBundleVerificationError, match="Ed25519"):
+        verify_bundle(bundle, config=BundleVerificationConfig())
 
 
 def test_verify_bundle_rejects_expired_bundle() -> None:
@@ -78,7 +121,7 @@ def test_verify_bundle_rejects_expired_bundle() -> None:
     with pytest.raises(ExperimentBundleVerificationError, match="validity"):
         verify_bundle(
             expired,
-            config=BundleVerificationConfig(hmac_secret=SECRET),
+            config=BundleVerificationConfig(signature_mode="hmac-sha256", hmac_secret=SECRET),
             now_utc=ISSUED_AT + timedelta(minutes=10),
         )
 
@@ -89,16 +132,28 @@ def test_verify_bundle_rejects_bad_or_missing_signatures() -> None:
     unsigned = bundle.model_copy(update={"signature": " "})
 
     with pytest.raises(ExperimentBundleVerificationError):
-        verify_bundle(tampered, config=BundleVerificationConfig(hmac_secret=SECRET))
-    with pytest.raises(ExperimentBundleVerificationError):
-        verify_bundle(unsigned, config=BundleVerificationConfig(hmac_secret=SECRET))
-
-
-def test_verify_bundle_fails_closed_for_ed25519_mode() -> None:
-    with pytest.raises(ExperimentBundleVerificationError, match="Ed25519"):
         verify_bundle(
-            _signed_bundle(),
-            config=BundleVerificationConfig(signature_mode="ed25519"),
+            tampered,
+            config=BundleVerificationConfig(signature_mode="hmac-sha256", hmac_secret=SECRET),
+        )
+    with pytest.raises(ExperimentBundleVerificationError):
+        verify_bundle(
+            unsigned,
+            config=BundleVerificationConfig(signature_mode="hmac-sha256", hmac_secret=SECRET),
+        )
+
+
+def test_verify_bundle_rejects_bad_ed25519_signature() -> None:
+    bundle, private_key = _ed25519_signed_bundle()
+
+    with pytest.raises(ExperimentBundleVerificationError, match="signature"):
+        verify_bundle(
+            bundle.model_copy(update={"signature": "0" * 64}),
+            config=BundleVerificationConfig(
+                ed25519_public_key=encode_ed25519_public_key(private_key.public_key()).encode(
+                    "utf-8"
+                )
+            ),
         )
 
 
@@ -159,7 +214,7 @@ def test_cache_verified_bundle_upserts_arms_and_disables_missing_arms(tmp_path: 
     try:
         store.cache_verified_bundle(
             bundle,
-            config=BundleVerificationConfig(hmac_secret=SECRET),
+            config=BundleVerificationConfig(signature_mode="hmac-sha256", hmac_secret=SECRET),
             applied_at_utc=APPLIED_AT,
         )
     finally:
@@ -196,7 +251,10 @@ def test_cache_verified_bundle_rejects_unsigned_bundle_without_writing(tmp_path:
     store = ExperimentBundleStore(tmp_path / "desktop.sqlite")
     try:
         with pytest.raises(ExperimentBundleVerificationError):
-            store.cache_verified_bundle(bundle, config=BundleVerificationConfig(hmac_secret=SECRET))
+            store.cache_verified_bundle(
+                bundle,
+                config=BundleVerificationConfig(signature_mode="hmac-sha256", hmac_secret=SECRET),
+            )
         row = store._conn.execute(
             "SELECT COUNT(*) FROM experiments WHERE experiment_id = ?",
             ("experiment-a",),

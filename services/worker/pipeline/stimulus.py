@@ -86,7 +86,7 @@ def start_redis_listener(orchestrator: Any) -> threading.Thread | None:
         try:
             import redis
 
-            client = redis.from_url(redis_url)  # type: ignore[no-untyped-call]
+            client = redis.from_url(redis_url)
             pubsub = client.pubsub()
             pubsub.subscribe(STIMULUS_CHANNEL)
             logger.info("Redis stimulus listener subscribed to '%s'", STIMULUS_CHANNEL)
@@ -129,7 +129,7 @@ def publish_stimulus_trigger(redis_url: str | None = None) -> bool:
     try:
         import redis
 
-        client = redis.from_url(url)  # type: ignore[no-untyped-call]
+        client = redis.from_url(url)
         receivers = client.publish(STIMULUS_CHANNEL, "inject")
         client.close()
         logger.info("Stimulus trigger published (%d receivers)", receivers)

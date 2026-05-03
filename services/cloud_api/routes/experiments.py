@@ -7,6 +7,10 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException
 
 from packages.schemas.cloud import ExperimentBundle
+from services.cloud_api.services.auth_service import (
+    AuthenticatedClient,
+    require_authenticated_client,
+)
 from services.cloud_api.services.bundle_service import ExperimentBundleService
 
 router = APIRouter()
@@ -18,12 +22,15 @@ def get_bundle_service() -> ExperimentBundleService:
 
 
 _BundleServiceDep = Depends(get_bundle_service)
+_AuthenticatedClientDep = Depends(require_authenticated_client)
 
 
 @router.get("/experiments/bundle", response_model=ExperimentBundle)
 async def get_experiment_bundle(
+    authenticated_client: AuthenticatedClient = _AuthenticatedClientDep,
     service: ExperimentBundleService = _BundleServiceDep,
 ) -> ExperimentBundle:
+    del authenticated_client
     try:
         return service.build_bundle()
     except RuntimeError as exc:

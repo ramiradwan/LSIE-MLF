@@ -1,4 +1,4 @@
-"""WS4 P1 — SQLite schema bootstrap + parity tests."""
+"""SQLite schema bootstrap and parity tests."""
 
 from __future__ import annotations
 
@@ -161,6 +161,8 @@ EXPECTED_COLUMNS: dict[str, set[str]] = {
         "payload_type",
         "dedupe_key",
         "payload_json",
+        "payload_sha256",
+        "payload_redacted_at_utc",
         "created_at_utc",
         "next_attempt_at_utc",
         "attempt_count",
@@ -215,6 +217,44 @@ def test_bootstrap_is_idempotent(tmp_path: Path) -> None:
 
     rows = conn.execute("SELECT COUNT(*) FROM experiments").fetchone()
     assert rows[0] == len(SEED_EXPERIMENTS)
+    conn.close()
+
+
+def test_bootstrap_migrates_existing_pending_uploads_table(tmp_path: Path) -> None:
+    conn = sqlite3.connect(str(tmp_path / "desktop.sqlite"), isolation_level=None)
+    conn.execute(
+        """
+        CREATE TABLE pending_uploads (
+            upload_id TEXT PRIMARY KEY,
+            endpoint TEXT NOT NULL,
+            payload_type TEXT NOT NULL,
+            dedupe_key TEXT NOT NULL,
+            payload_json TEXT NOT NULL,
+            created_at_utc TEXT NOT NULL,
+            next_attempt_at_utc TEXT NOT NULL,
+            attempt_count INTEGER NOT NULL DEFAULT 0,
+            locked_at_utc TEXT,
+            last_error TEXT,
+            status TEXT NOT NULL DEFAULT 'pending',
+            UNIQUE (payload_type, dedupe_key)
+        )
+        """
+    )
+
+    bootstrap_schema(conn)
+
+    columns = _table_columns(conn, "pending_uploads")
+    assert {"payload_sha256", "payload_redacted_at_utc"}.issubset(columns)
+    conn.close()
+
+
+def test_analytics_message_identity_index_is_unique(tmp_path: Path) -> None:
+    conn = _bootstrap(tmp_path)
+    indexes = conn.execute("PRAGMA index_list(analytics_message_ledger)").fetchall()
+    unique_indexes = {row[1] for row in indexes if row[2] == 1}
+    assert "idx_analytics_message_identity" in unique_indexes
+    columns = conn.execute("PRAGMA index_info(idx_analytics_message_identity)").fetchall()
+    assert [row[2] for row in columns] == ["segment_id", "client_id", "arm"]
     conn.close()
 
 

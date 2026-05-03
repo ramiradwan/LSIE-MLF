@@ -20,8 +20,19 @@ class SessionNotFoundError(RuntimeError):
     pass
 
 
+class SessionOwnershipError(RuntimeError):
+    pass
+
+
 class CloudSessionService:
-    def create_session(self, request: CloudSessionCreateRequest) -> CloudSessionCreateResponse:
+    def create_session(
+        self,
+        request: CloudSessionCreateRequest,
+        *,
+        client_id: str,
+    ) -> CloudSessionCreateResponse:
+        if request.client_id != client_id:
+            raise SessionOwnershipError("session client_id does not match authenticated client")
         session_id = uuid4()
 
         def _write(conn: Any) -> None:
@@ -39,10 +50,12 @@ class CloudSessionService:
         self,
         session_id: UUID,
         request: CloudSessionEndRequest,
+        *,
+        client_id: str,
     ) -> CloudSessionEndResponse:
         def _write(conn: Any) -> int:
             with conn.cursor() as cur:
-                return end_session(cur, session_id, request)
+                return end_session(cur, session_id, request, client_id=client_id)
 
         updated = run_in_transaction(_write)
         if updated == 0:

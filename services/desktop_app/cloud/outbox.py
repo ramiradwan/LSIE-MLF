@@ -20,6 +20,10 @@ UploadEndpoint = Literal["telemetry_segments", "telemetry_posterior_deltas"]
 PayloadType = Literal["inference_handoff", "attribution_event", "posterior_delta"]
 UploadStatus = Literal["pending", "in_flight", "dead_letter"]
 
+REDACT_AFTER_ATTEMPTS = 5
+REDACT_AFTER_AGE = timedelta(days=1)
+REDACTED_ENVELOPE_VERSION = 1
+
 
 class OutboxDedupeConflictError(RuntimeError):
     pass
@@ -27,6 +31,7 @@ class OutboxDedupeConflictError(RuntimeError):
 
 _READY_BATCH_SQL = """
     SELECT upload_id, endpoint, payload_type, dedupe_key, payload_json,
+           payload_sha256, payload_redacted_at_utc,
            created_at_utc, next_attempt_at_utc, attempt_count, locked_at_utc,
            last_error, status
     FROM pending_uploads
@@ -45,6 +50,8 @@ class PendingUpload:
     payload_type: PayloadType
     dedupe_key: str
     payload_json: str
+    payload_sha256: str | None
+    payload_redacted_at_utc: str | None
     created_at_utc: str
     next_attempt_at_utc: str
     attempt_count: int
@@ -55,6 +62,10 @@ class PendingUpload:
 
 def utc_now_iso() -> str:
     return datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def payload_sha256(payload_json: str) -> str:
+    return hashlib.sha256(payload_json.encode("utf-8")).hexdigest()
 
 
 def canonical_payload_json(payload: object) -> str:
@@ -133,27 +144,40 @@ class CloudOutbox:
     ) -> str:
         upload_id = deterministic_upload_id(endpoint, payload_type, dedupe_key, payload_json)
         created = created_at_utc or utc_now_iso()
+        digest = payload_sha256(payload_json)
         try:
             self._conn.execute(
                 """
                 INSERT INTO pending_uploads (
                     upload_id, endpoint, payload_type, dedupe_key, payload_json,
-                    created_at_utc, next_attempt_at_utc
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    payload_sha256, created_at_utc, next_attempt_at_utc
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (upload_id, endpoint, payload_type, dedupe_key, payload_json, created, created),
+                (
+                    upload_id,
+                    endpoint,
+                    payload_type,
+                    dedupe_key,
+                    payload_json,
+                    digest,
+                    created,
+                    created,
+                ),
             )
         except sqlite3.IntegrityError as exc:
             row = self._conn.execute(
                 """
-                SELECT upload_id, payload_json
+                SELECT upload_id, payload_json, payload_sha256
                 FROM pending_uploads
                 WHERE payload_type = ? AND dedupe_key = ?
                 """,
                 (payload_type, dedupe_key),
             ).fetchone()
-            if row is not None and str(row["payload_json"]) == payload_json:
-                return str(row["upload_id"])
+            if row is not None:
+                stored_payload_json = str(row["payload_json"])
+                stored_digest = row["payload_sha256"] or payload_sha256(stored_payload_json)
+                if stored_payload_json == payload_json or str(stored_digest) == digest:
+                    return str(row["upload_id"])
             raise OutboxDedupeConflictError(
                 f"payload changed for {payload_type} dedupe key {dedupe_key!r}"
             ) from exc
@@ -243,6 +267,7 @@ class CloudOutbox:
             """,
             [_sanitize_error(error), *upload_ids],
         )
+        self._redact_uploads(upload_ids, redacted_at_utc=utc_now_iso())
 
     def reset_stale_locks(self, *, before_utc: str | None = None) -> int:
         before = before_utc or utc_now_iso()
@@ -257,7 +282,32 @@ class CloudOutbox:
         )
         return int(cursor.rowcount)
 
+    def apply_retention_policy(self, *, now: datetime | None = None) -> int:
+        current = now or datetime.now(UTC)
+        redacted_ids: list[str] = []
+        rows = self._conn.execute(
+            """
+            SELECT upload_id, created_at_utc, attempt_count
+            FROM pending_uploads
+            WHERE payload_redacted_at_utc IS NULL
+            """
+        ).fetchall()
+        for row in rows:
+            upload_id = str(row["upload_id"])
+            created_at = _parse_dt(str(row["created_at_utc"]))
+            attempt_count = int(row["attempt_count"])
+            if attempt_count >= REDACT_AFTER_ATTEMPTS or current - created_at >= REDACT_AFTER_AGE:
+                redacted_ids.append(upload_id)
+        if not redacted_ids:
+            return 0
+        self._redact_uploads(redacted_ids, redacted_at_utc=_format_dt(current))
+        return len(redacted_ids)
+
     def validate_upload(self, upload: PendingUpload) -> object:
+        if _is_redacted_payload(upload.payload_json):
+            raise RedactedPayloadError(
+                f"upload {upload.upload_id} payload has been redacted and cannot be replayed"
+            )
         try:
             if upload.payload_type == "inference_handoff":
                 return InferenceHandoffPayload.model_validate_json(upload.payload_json)
@@ -285,6 +335,57 @@ class CloudOutbox:
             payload_json=canonical_payload_json(payload),
         )
 
+    def _redact_uploads(self, upload_ids: list[str], *, redacted_at_utc: str) -> None:
+        if not upload_ids:
+            return
+        placeholders = ",".join("?" for _ in upload_ids)
+        rows = self._conn.execute(
+            f"""
+            SELECT upload_id, endpoint, payload_type, dedupe_key, payload_json,
+                   payload_sha256, created_at_utc, next_attempt_at_utc,
+                   attempt_count, locked_at_utc, last_error, status
+            FROM pending_uploads
+            WHERE upload_id IN ({placeholders})
+            """,
+            upload_ids,
+        ).fetchall()
+        for row in rows:
+            original_payload_json = str(row["payload_json"])
+            if _is_redacted_payload(original_payload_json):
+                continue
+            digest = row["payload_sha256"] or payload_sha256(original_payload_json)
+            summary = json.dumps(
+                _redacted_payload_summary(
+                    upload_id=str(row["upload_id"]),
+                    endpoint=str(row["endpoint"]),
+                    payload_type=str(row["payload_type"]),
+                    dedupe_key=str(row["dedupe_key"]),
+                    payload_sha256=str(digest),
+                    created_at_utc=str(row["created_at_utc"]),
+                    next_attempt_at_utc=str(row["next_attempt_at_utc"]),
+                    attempt_count=int(row["attempt_count"]),
+                    locked_at_utc=row["locked_at_utc"],
+                    last_error=row["last_error"],
+                    status=str(row["status"]),
+                    payload_json=original_payload_json,
+                    redacted_at_utc=redacted_at_utc,
+                ),
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            self._conn.execute(
+                """
+                UPDATE pending_uploads
+                SET payload_json = ?, payload_sha256 = ?, payload_redacted_at_utc = ?
+                WHERE upload_id = ?
+                """,
+                (summary, digest, redacted_at_utc, str(row["upload_id"])),
+            )
+
+
+class RedactedPayloadError(RuntimeError):
+    pass
+
 
 def _row_to_pending_upload(row: sqlite3.Row) -> PendingUpload:
     return PendingUpload(
@@ -293,6 +394,8 @@ def _row_to_pending_upload(row: sqlite3.Row) -> PendingUpload:
         payload_type=row["payload_type"],
         dedupe_key=str(row["dedupe_key"]),
         payload_json=str(row["payload_json"]),
+        payload_sha256=row["payload_sha256"],
+        payload_redacted_at_utc=row["payload_redacted_at_utc"],
         created_at_utc=str(row["created_at_utc"]),
         next_attempt_at_utc=str(row["next_attempt_at_utc"]),
         attempt_count=int(row["attempt_count"]),
@@ -306,5 +409,85 @@ def _format_dt(value: datetime) -> str:
     return value.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _parse_dt(value: str) -> datetime:
+    return datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
+
+
 def _sanitize_error(error: str) -> str:
     return error[:500]
+
+
+def _is_redacted_payload(payload_json: str) -> bool:
+    try:
+        data = json.loads(payload_json)
+    except json.JSONDecodeError:
+        return False
+    return bool(data.get("_redacted")) if isinstance(data, dict) else False
+
+
+def _redacted_payload_summary(
+    *,
+    upload_id: str,
+    endpoint: str,
+    payload_type: str,
+    dedupe_key: str,
+    payload_sha256: str,
+    created_at_utc: str,
+    next_attempt_at_utc: str,
+    attempt_count: int,
+    locked_at_utc: str | None,
+    last_error: str | None,
+    status: str,
+    payload_json: str,
+    redacted_at_utc: str,
+) -> dict[str, object]:
+    return {
+        "_redacted": True,
+        "schema_version": REDACTED_ENVELOPE_VERSION,
+        "upload_id": upload_id,
+        "endpoint": endpoint,
+        "payload_type": payload_type,
+        "dedupe_key": dedupe_key,
+        "payload_sha256": payload_sha256,
+        "payload_redacted_at_utc": redacted_at_utc,
+        "created_at_utc": created_at_utc,
+        "next_attempt_at_utc": next_attempt_at_utc,
+        "attempt_count": attempt_count,
+        "locked_at_utc": locked_at_utc,
+        "last_error": last_error,
+        "status": status,
+        "replay_metadata": _replay_metadata(payload_type, payload_json),
+    }
+
+
+def _replay_metadata(payload_type: str, payload_json: str) -> dict[str, object]:
+    try:
+        data = json.loads(payload_json)
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    if payload_type == "inference_handoff":
+        return {
+            "segment_id": data.get("segment_id"),
+            "session_id": data.get("session_id"),
+            "event_ids": [],
+            "requires_segment_replay": True,
+        }
+    if payload_type == "attribution_event":
+        event_id = data.get("event_id")
+        return {
+            "segment_id": data.get("segment_id"),
+            "session_id": data.get("session_id"),
+            "event_ids": [event_id] if event_id is not None else [],
+            "requires_segment_replay": False,
+        }
+    if payload_type == "posterior_delta":
+        event_id = data.get("event_id")
+        return {
+            "segment_id": data.get("segment_id"),
+            "client_id": data.get("client_id"),
+            "event_ids": [event_id] if event_id is not None else [],
+            "requires_segment_replay": True,
+        }
+    return {}

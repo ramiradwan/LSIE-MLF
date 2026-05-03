@@ -9,8 +9,8 @@ FaceMesh dependencies are unavailable in the local test environment.
 
 from __future__ import annotations
 
-import base64
 import importlib.util
+import io
 import json
 import re
 import uuid
@@ -200,12 +200,24 @@ def _assert_downstream_semantic_grounded(
     payload_for_inference["_frame_data"] = None
     payload_for_inference["_stimulus_time"] = None
 
+    def pcm_to_wav_bytes(pcm: bytes) -> bytes:
+        wav_buffer = io.BytesIO()
+        with wave.open(wav_buffer, "wb") as wav_file:
+            wav_file.setnchannels(1)
+            wav_file.setsampwidth(SAMPLE_WIDTH_BYTES)
+            wav_file.setframerate(ORCHESTRATOR_AUDIO_SAMPLE_RATE_HZ)
+            wav_file.writeframes(pcm)
+        return wav_buffer.getvalue()
+
     mock_persist = MagicMock()
     with (
         patch.object(inference_mod, "persist_metrics", mock_persist),
+        patch("packages.ml_core.audio_pipe.pcm_to_wav_bytes", side_effect=pcm_to_wav_bytes),
         patch("packages.ml_core.transcription.TranscriptionEngine", LiteralTranscriptionEngine),
         patch("packages.ml_core.semantic.SemanticEvaluator", LiteralSemanticEvaluator),
     ):
+        inference_mod._TRANSCRIPTION_ENGINE = None
+        inference_mod._TRANSCRIPTION_ENGINE_FACTORY = None
         task = inference_mod.process_segment
         if hasattr(task, "run"):
             result = task.run(payload_for_inference)
@@ -278,7 +290,9 @@ def test_replay_fixture_drives_orchestrator_segments(
     assert orchestrator.audio_resampler is orchestrator.video_capture
     assert orchestrator._using_replay_capture is True
 
-    # Disable Redis to prevent synchronous DNS hangs on Windows
+    # Disable the retained broker-backed physiology/stimulus client to prevent
+    # synchronous DNS hangs on Windows while this replay test exercises the
+    # local segment-assembly path only.
     orchestrator._redis = None
 
     replay = orchestrator.video_capture
@@ -324,8 +338,9 @@ def test_replay_fixture_drives_orchestrator_segments(
                 epoch_s + segment_start_s + segment_duration_s,
             )
 
-            decoded_audio = base64.b64decode(payload["_audio_data"])
-            audio_duration_s = decoded_audio and len(decoded_audio) / (
+            payload_audio = payload["_audio_data"]
+            assert payload_audio == audio_data
+            audio_duration_s = len(payload_audio) / (
                 ORCHESTRATOR_AUDIO_SAMPLE_RATE_HZ * SAMPLE_WIDTH_BYTES
             )
             assert audio_duration_s == pytest.approx(segment_duration_s, abs=1 / fps)

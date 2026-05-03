@@ -1,17 +1,16 @@
-"""Capture supervisor process (v4.0 §4.A + §4.C.1 / WS3 P3 + WS4 P2).
+"""Capture supervisor process.
 
-Replaces the v3.4 ``services/stream_ingest/entrypoint.sh`` shell loop.
-Owns:
+Owns the desktop capture lifecycle described by §9.1, §9.3, and §12:
 
-  - ADB device-presence wait (§12.1.2 — poll every 2 s for 60 s, then
-    surface a hardware-loss).
+  - ADB device-presence wait (USB loss polls every 2 s for 60 s before
+    the capture graph gives up on revival).
   - :class:`services.desktop_app.drift.DriftCorrector` poll loop
     running every ``DRIFT_POLL_INTERVAL`` seconds. Updated offsets are
     pushed onto :attr:`IpcChannels.drift_updates` for
     ``module_c_orchestrator`` to apply via ``correct_timestamp``.
-  - Dual-instance scrcpy supervision (SPEC-AMEND-004): audio on port
-    range 27100:27199, video on 27200:27299, four-second staggered
-    startup. Each scrcpy is launched under
+  - Dual-instance scrcpy supervision: audio on port range 27100:27199,
+    video on 27200:27299, four-second staggered startup. Each scrcpy is
+    launched under
     :class:`services.desktop_app.os_adapter.SupervisedProcess` so a
     crash of this process leaves zero zombies holding the USB device
     open. The audio recording is shielded across scrcpy restarts; the
@@ -20,7 +19,7 @@ Owns:
   - Restart loop: when either scrcpy exits, both are torn down and the
     device-wait + spawn cycle restarts after a short backoff.
 
-WS4 P2 adds two persistence touches:
+It also persists two pieces of recovery state:
 
   - ``capture_pid_manifest`` — every spawned scrcpy PID is recorded
     against the SQLite store via
@@ -48,8 +47,10 @@ from services.desktop_app.ipc import IpcChannels
 from services.desktop_app.os_adapter import (
     SupervisedProcess,
     find_executable,
+    resolve_capture_dir,
     resolve_state_dir,
 )
+from services.desktop_app.privacy.zeroize import cleanup_capture_files
 from services.desktop_app.state.heartbeats import HeartbeatRecorder
 from services.desktop_app.state.recovery import (
     forget_capture_pid,
@@ -58,11 +59,11 @@ from services.desktop_app.state.recovery import (
 
 logger = logging.getLogger(__name__)
 
-# §12.1.2 device-wait cadence
+# §12 hardware-device-loss cadence
 DEVICE_POLL_INTERVAL_S: float = 2.0
 DEVICE_POLL_TIMEOUT_S: float = 60.0
 
-# SPEC-AMEND-004 dual-instance scrcpy port ranges + stagger
+# Dual-instance scrcpy port ranges + stagger
 AUDIO_SCRCPY_PORT_RANGE: str = "27100:27199"
 VIDEO_SCRCPY_PORT_RANGE: str = "27200:27299"
 SCRCPY_STAGGER_S: float = 4.0
@@ -77,10 +78,9 @@ SQLITE_FILENAME = "desktop.sqlite"
 class CaptureLayout:
     """File-system locations the supervisor writes to.
 
-    Replaces the v3.4 ``/tmp/ipc/{audio_stream.raw, video_stream.mkv}``
-    POSIX-FIFO layout. On Windows, scrcpy 3.x records into a regular
-    file in ``%LOCALAPPDATA%\\LSIE-MLF\\capture\\``. The
-    ``module_c_orchestrator`` consumes both files via
+    The desktop runtime records capture output into regular files under
+    the governed capture directory rather than through the legacy IPC
+    capture path. ``module_c_orchestrator`` consumes both files via
     ``services.worker.pipeline.orchestrator.AudioResampler`` and
     ``VideoCapture``, both of which already tolerate file-style reads
     via the existing ``services.worker.pipeline.replay_capture`` shim.
@@ -92,16 +92,7 @@ class CaptureLayout:
 
 
 def _resolve_capture_layout() -> CaptureLayout:
-    import os
-
-    base = Path(os.environ.get("LSIE_CAPTURE_DIR", "")).expanduser()
-    if not str(base):
-        local_appdata = os.environ.get("LOCALAPPDATA")
-        if local_appdata:
-            base = Path(local_appdata) / "LSIE-MLF" / "capture"
-        else:
-            base = Path.home() / ".lsie-mlf" / "capture"
-    base.mkdir(parents=True, exist_ok=True)
+    base = resolve_capture_dir()
     return CaptureLayout(
         capture_dir=base,
         audio_path=base / "audio_stream.wav",
@@ -109,18 +100,23 @@ def _resolve_capture_layout() -> CaptureLayout:
     )
 
 
-def _wait_for_device(deadline_s: float = DEVICE_POLL_TIMEOUT_S) -> bool:
+def _wait_for_device(
+    deadline_s: float = DEVICE_POLL_TIMEOUT_S,
+    shutdown_event: mpsync.Event | None = None,
+) -> bool:
     """Block until ADB reports at least one device, or ``deadline_s`` elapses.
 
-    Returns ``True`` when a device is observed, ``False`` on timeout.
-    Logs each missing-device tick so the operator console can surface
-    the wait state in the §12 health rollup.
+    Returns ``True`` when a device is observed, ``False`` on timeout or
+    cooperative shutdown. Logs each missing-device tick so the operator
+    console can surface the wait state in the §12 health rollup.
     """
     import subprocess as _subprocess
 
     adb = find_executable("adb", env_override="LSIE_ADB_PATH")
     deadline = time.monotonic() + deadline_s
     while time.monotonic() < deadline:
+        if shutdown_event is not None and shutdown_event.is_set():
+            return False
         try:
             result = _subprocess.run(
                 [adb, "devices"],
@@ -135,17 +131,25 @@ def _wait_for_device(deadline_s: float = DEVICE_POLL_TIMEOUT_S) -> bool:
                     return True
         except (_subprocess.TimeoutExpired, OSError) as exc:
             logger.warning("adb devices probe failed: %s", exc)
-        time.sleep(DEVICE_POLL_INTERVAL_S)
+        wait_s = min(DEVICE_POLL_INTERVAL_S, max(0.0, deadline - time.monotonic()))
+        if wait_s <= 0:
+            break
+        if shutdown_event is not None:
+            if shutdown_event.wait(timeout=wait_s):
+                return False
+        else:
+            time.sleep(wait_s)
     logger.error("adb device wait timed out after %ds", int(deadline_s))
     return False
 
 
 def _build_audio_scrcpy_args(scrcpy: str, layout: CaptureLayout) -> list[str]:
-    """SPEC-AMEND-004 audio scrcpy: raw 48 kHz WAV record, no video."""
+    """Audio scrcpy: raw 48 kHz WAV record, no video."""
     return [
         scrcpy,
         "--no-video",
         "--no-playback",
+        "--no-window",
         "--audio-codec=raw",
         "--audio-buffer=30",
         "--audio-dup",
@@ -156,11 +160,12 @@ def _build_audio_scrcpy_args(scrcpy: str, layout: CaptureLayout) -> list[str]:
 
 
 def _build_video_scrcpy_args(scrcpy: str, layout: CaptureLayout) -> list[str]:
-    """SPEC-AMEND-004 video scrcpy: H.264 30 fps MKV record, no audio."""
+    """Video scrcpy: H.264 30 fps MKV record, no audio."""
     return [
         scrcpy,
         "--no-audio",
         "--no-playback",
+        "--no-window",
         "--video-codec=h264",
         "--max-fps=30",
         f"--record={layout.video_path}",
@@ -218,8 +223,9 @@ def _spawn_scrcpy_pair(
     scrcpy_path: str,
     layout: CaptureLayout,
     db_path: Path,
-) -> tuple[SupervisedProcess, SupervisedProcess]:
-    """Spawn audio scrcpy first, wait the SPEC-AMEND-004 stagger, spawn video.
+    shutdown_event: mpsync.Event,
+) -> tuple[SupervisedProcess, SupervisedProcess] | None:
+    """Spawn audio scrcpy first, wait the stagger, then spawn video.
 
     Each PID is registered in ``capture_pid_manifest`` immediately
     after spawn so the next boot's recovery sweep can reap the child
@@ -228,7 +234,9 @@ def _spawn_scrcpy_pair(
     audio = SupervisedProcess(_build_audio_scrcpy_args(scrcpy_path, layout))
     record_capture_pid(db_path, audio.pid, process_kind="scrcpy")
     logger.info("audio scrcpy launched pid=%s", audio.pid)
-    time.sleep(SCRCPY_STAGGER_S)
+    if shutdown_event.wait(timeout=SCRCPY_STAGGER_S):
+        _kill_pair(audio, None, db_path)
+        return None
     video = SupervisedProcess(_build_video_scrcpy_args(scrcpy_path, layout))
     record_capture_pid(db_path, video.pid, process_kind="scrcpy")
     logger.info("video scrcpy launched pid=%s", video.pid)
@@ -259,6 +267,13 @@ def run(shutdown_event: mpsync.Event, channels: IpcChannels) -> None:
     logger.info("capture_supervisor started")
 
     layout = _resolve_capture_layout()
+    deleted, retained = cleanup_capture_files(layout.capture_dir)
+    if deleted or retained:
+        logger.info(
+            "capture startup cleanup: deleted=%s retained=%s",
+            [str(path) for path in deleted],
+            [str(path) for path in retained],
+        )
     logger.info("capture layout: %s", layout.capture_dir)
 
     db_path = resolve_state_dir() / SQLITE_FILENAME
@@ -287,16 +302,22 @@ def run(shutdown_event: mpsync.Event, channels: IpcChannels) -> None:
     video_proc: SupervisedProcess | None = None
     try:
         while not shutdown_event.is_set():
-            if not _wait_for_device():
+            if not _wait_for_device(shutdown_event=shutdown_event):
+                if shutdown_event.is_set():
+                    break
                 logger.warning("device wait timed out; backing off %.1fs", RESTART_BACKOFF_S)
                 if shutdown_event.wait(timeout=RESTART_BACKOFF_S):
                     break
                 continue
 
-            audio_proc, video_proc = _spawn_scrcpy_pair(scrcpy_path, layout, db_path)
+            pair = _spawn_scrcpy_pair(scrcpy_path, layout, db_path, shutdown_event)
+            if pair is None:
+                break
+            audio_proc, video_proc = pair
 
-            # §12.1.3 — block on whichever scrcpy exits first, then
-            # tear both down and re-enter the device-wait loop.
+            # §12 worker-crash behavior: whichever scrcpy exits first
+            # triggers a full pair teardown before the device-wait loop
+            # restarts.
             while not shutdown_event.is_set():
                 if not audio_proc.is_alive() or not video_proc.is_alive():
                     logger.info(
@@ -317,6 +338,13 @@ def run(shutdown_event: mpsync.Event, channels: IpcChannels) -> None:
             shutdown_event.wait(timeout=RESTART_BACKOFF_S)
     finally:
         _kill_pair(audio_proc, video_proc, db_path)
+        deleted, retained = cleanup_capture_files(layout.capture_dir)
+        if deleted or retained:
+            logger.info(
+                "capture shutdown cleanup: deleted=%s retained=%s",
+                [str(path) for path in deleted],
+                [str(path) for path in retained],
+            )
         drift_thread.join(timeout=5.0)
         heartbeat.stop()
         logger.info("capture_supervisor stopped")

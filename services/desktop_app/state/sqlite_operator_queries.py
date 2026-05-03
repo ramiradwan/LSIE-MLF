@@ -1,4 +1,4 @@
-"""SQLite-flavored operator query layer (WS4 P1b).
+"""SQLite-flavored operator query layer.
 
 Mirrors :mod:`services.api.repos.operator_queries` but produces SQLite
 SQL and accepts a :class:`sqlite3.Cursor`. Function names, parameter

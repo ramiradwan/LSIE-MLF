@@ -1,11 +1,10 @@
-"""WS3 P3a — SupervisedProcess descendant-tree cleanup tests.
+"""SupervisedProcess descendant-tree cleanup tests.
 
 Spawns synthetic Python subprocesses to validate that
 ``SupervisedProcess.terminate`` reliably kills the child and any
-grandchildren on both Windows (Win32 Job Object) and POSIX (process
-group). The cleanup contract is the load-bearing guarantee that lets
-``capture_supervisor`` (WS3 P3b) launch scrcpy / ADB / FFmpeg without
-leaking USB-holding zombies on a crash.
+grandchildren on both Windows and POSIX. That cleanup contract lets
+``capture_supervisor`` launch scrcpy, ADB, and FFmpeg without leaking
+USB-holding zombies on a crash.
 """
 
 from __future__ import annotations
@@ -16,12 +15,17 @@ import sys
 import textwrap
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import psutil
 import pytest
 
 from services.desktop_app import os_adapter
-from services.desktop_app.os_adapter import SupervisedProcess
+from services.desktop_app.os_adapter import (
+    SupervisedProcess,
+    _apply_windows_child_process_policy,
+    resolve_capture_dir,
+)
 
 
 def _grandchild_spawning_script(pid_file: Path) -> str:
@@ -93,6 +97,75 @@ def test_is_dev_machine_checks_marker_parent(
     assert os_adapter.is_dev_machine() is False
     (tmp_path / ".dev_machine").write_text("", encoding="utf-8")
     assert os_adapter.is_dev_machine() is True
+
+
+def test_resolve_capture_dir_defaults_beside_state_dir(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    state_dir = tmp_path / "state"
+    monkeypatch.setenv("LSIE_STATE_DIR", str(state_dir))
+    monkeypatch.delenv("LSIE_CAPTURE_DIR", raising=False)
+
+    capture_dir = resolve_capture_dir()
+
+    assert capture_dir == tmp_path / "capture"
+    assert capture_dir.is_dir()
+
+
+def test_resolve_capture_dir_rejects_repo_root(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".git").mkdir()
+    monkeypatch.setenv("LSIE_CAPTURE_DIR", str(tmp_path))
+
+    with pytest.raises(ValueError, match="current working directory or repository root"):
+        resolve_capture_dir()
+
+
+def test_create_shortcut_is_noop_on_posix(tmp_path: Path) -> None:
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(sys, "platform", "linux")
+        created = os_adapter.create_shortcut(
+            target=tmp_path / "launcher",
+            shortcut=tmp_path / "LSIE-MLF.lnk",
+            working_dir=tmp_path,
+            description="Launch LSIE-MLF",
+        )
+
+    assert created is False
+    assert not (tmp_path / "LSIE-MLF.lnk").exists()
+
+
+def test_apply_windows_child_process_policy_is_noop_on_posix() -> None:
+    original = {"creationflags": 123}
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(sys, "platform", "linux")
+        result = _apply_windows_child_process_policy(original)
+
+    assert result == original
+    assert result is not original
+
+
+def test_apply_windows_child_process_policy_hides_windows_children() -> None:
+    startupinfo = SimpleNamespace(dwFlags=0, wShowWindow=99)
+    fake_subprocess = SimpleNamespace(
+        CREATE_NEW_PROCESS_GROUP=0x200,
+        CREATE_NO_WINDOW=0x08000000,
+        STARTF_USESHOWWINDOW=0x1,
+        SW_HIDE=0,
+        STARTUPINFO=lambda: startupinfo,
+    )
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(sys, "platform", "win32")
+        monkeypatch.setattr(os_adapter, "subprocess", fake_subprocess)
+        result = _apply_windows_child_process_policy({})
+
+    assert result["creationflags"] & fake_subprocess.CREATE_NEW_PROCESS_GROUP
+    assert result["creationflags"] & fake_subprocess.CREATE_NO_WINDOW
+    assert result["startupinfo"] is startupinfo
+    assert startupinfo.dwFlags & fake_subprocess.STARTF_USESHOWWINDOW
+    assert startupinfo.wShowWindow == fake_subprocess.SW_HIDE
 
 
 def test_terminate_kills_child(tmp_path: Path) -> None:

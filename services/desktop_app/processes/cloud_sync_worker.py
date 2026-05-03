@@ -1,12 +1,12 @@
-"""Cloud sync worker process (v4.0 §4.E.* / WS5 P2).
+"""Cloud sync worker process.
 
 Drains the desktop cloud outbox into the cloud API without importing ML
 runtime libraries. The process heartbeat starts before network work and
 stops during cooperative shutdown so operator health freshness remains
 visible even when the cloud path is unavailable.
 
-ML import discipline: this module MUST NOT import torch / mediapipe /
-faster_whisper / ctranslate2.
+ML import discipline: this module must not import torch, mediapipe,
+faster_whisper, or ctranslate2.
 """
 
 from __future__ import annotations
@@ -30,7 +30,12 @@ from packages.schemas.cloud import (
     TelemetrySegmentBatch,
 )
 from packages.schemas.inference_handoff import InferenceHandoffPayload
-from services.desktop_app.cloud.outbox import CloudOutbox, PendingUpload, UploadEndpoint
+from services.desktop_app.cloud.outbox import (
+    CloudOutbox,
+    PendingUpload,
+    RedactedPayloadError,
+    UploadEndpoint,
+)
 from services.desktop_app.ipc import IpcChannels
 from services.desktop_app.privacy.secrets import (
     SECRET_KEY_CLOUD_REFRESH_TOKEN,
@@ -96,6 +101,7 @@ class CloudSyncWorker:
 
     async def sync_once(self, client: httpx.AsyncClient) -> None:
         self._outbox.reset_stale_locks()
+        self._outbox.apply_retention_policy()
         for endpoint in _ENDPOINT_PATHS:
             while True:
                 uploads = self._outbox.fetch_ready_batch(endpoint, limit=self._config.batch_size)
@@ -158,7 +164,7 @@ class CloudSyncWorker:
             for upload in uploads:
                 try:
                     model = self._outbox.validate_upload(upload)
-                except ValidationError:
+                except (RedactedPayloadError, ValidationError):
                     continue
                 if isinstance(model, InferenceHandoffPayload):
                     segments.append(model)
@@ -167,11 +173,7 @@ class CloudSyncWorker:
                 else:
                     raise ValueError(f"unsupported payload_type {upload.payload_type!r}")
                 valid_upload_ids.append(upload.upload_id)
-            if not segments:
-                self._outbox.mark_dead_letter(
-                    valid_upload_ids,
-                    error="attribution_event uploads require a telemetry segment",
-                )
+            if not valid_upload_ids:
                 return None
             segment_batch = TelemetrySegmentBatch(
                 segments=segments,
@@ -184,7 +186,7 @@ class CloudSyncWorker:
         for upload in uploads:
             try:
                 model = self._outbox.validate_upload(upload)
-            except ValidationError:
+            except (RedactedPayloadError, ValidationError):
                 continue
             if not isinstance(model, PosteriorDelta):
                 raise ValueError(f"unsupported payload_type {upload.payload_type!r}")

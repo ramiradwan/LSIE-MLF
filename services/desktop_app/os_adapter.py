@@ -1,17 +1,8 @@
-"""Cross-platform OS adapter (Platform Abstraction Rule).
+"""Cross-platform OS adapter.
 
-This is the **only** module in the desktop app that branches on
-``sys.platform``. Every Win32 integration (Job Objects, Credential
-Manager, ``SetErrorMode``, Windows-specific path resolution) and every
-POSIX fallback (``os.killpg``, ``setrlimit``, ``/dev/shm`` enumeration,
-XDG paths) lives behind this interface. Consumer modules
-(``capture_supervisor``, ``ui_api_shell``, ``secrets``, ``cleanup``,
-etc.) MUST call the public symbols below and stay OS-agnostic.
-
-Phase boundaries: WS3 P2 introduces the IPC-block recovery sweep here.
-WS3 P3a (this module) adds :class:`SupervisedProcess`. WS4 P3 adds
-crash-dump suppression and memory zeroisation. WS4 P4 adds the
-secret-store wrapper. WS1 P2/P4 add path resolution.
+This is the only desktop-app module that branches on ``sys.platform``.
+Win32 integrations and POSIX fallbacks live behind this interface so
+consumer modules stay OS-agnostic.
 """
 
 from __future__ import annotations
@@ -30,20 +21,7 @@ logger = logging.getLogger(__name__)
 
 
 def resolve_state_dir() -> Path:
-    """Return the directory the desktop app uses for its local state.
-
-    Resolution order:
-
-      1. ``LSIE_STATE_DIR`` env override (operator-set, e.g. for tests).
-      2. Windows: ``%LOCALAPPDATA%\\LSIE-MLF\\state`` (the standard
-         per-user roaming-free path on Windows 10+).
-      3. POSIX: ``$XDG_DATA_HOME/lsie-mlf/state`` if the XDG variable
-         is set, else ``~/.local/share/lsie-mlf/state``.
-
-    The directory is created (with parents) before return so callers
-    can immediately ``open(path / 'foo.sqlite', 'a')`` without an
-    ``os.makedirs`` of their own.
-    """
+    """Return the directory the desktop app uses for its local state."""
     override = os.environ.get("LSIE_STATE_DIR", "").strip()
     if override:
         target = Path(override).expanduser()
@@ -64,6 +42,35 @@ def resolve_state_dir() -> Path:
     return target
 
 
+def _discover_git_root(start: Path) -> Path | None:
+    current = start.resolve()
+    for candidate in (current, *current.parents):
+        if (candidate / ".git").exists():
+            return candidate
+    return None
+
+
+def resolve_capture_dir() -> Path:
+    """Return the governed transient capture directory for raw media files."""
+    override = os.environ.get("LSIE_CAPTURE_DIR", "").strip()
+    if override:
+        target = Path(override).expanduser().resolve()
+        forbidden = {Path.cwd().resolve()}
+        git_root = _discover_git_root(Path.cwd())
+        if git_root is not None:
+            forbidden.add(git_root)
+        if target in forbidden:
+            raise ValueError(
+                "LSIE_CAPTURE_DIR must not point to the current working directory "
+                "or repository root"
+            )
+    else:
+        target = (resolve_state_dir().parent / "capture").resolve()
+
+    target.mkdir(parents=True, exist_ok=True)
+    return target
+
+
 def is_dev_machine() -> bool:
     """Return ``True`` if the operator has declared this host a developer machine.
 
@@ -74,8 +81,8 @@ def is_dev_machine() -> bool:
     ``ni -ItemType File`` on PowerShell) to declare "I accept the
     documented dev-mode constraints" — most notably the
     ``LSIE_DEV_FORCE_CPU_SPEECH=1`` override needed on Pascal hosts.
-    The WS2 P3 preflight gate fails closed on sub-Turing hardware
-    unless the marker is present.
+    The preflight gate fails closed on sub-Turing hardware unless the
+    marker is present.
 
     The marker is per-machine, never per-user-session — it is
     deliberately a filesystem artefact rather than an env variable so
@@ -88,7 +95,7 @@ def is_dev_machine() -> bool:
 def find_executable(name: str, env_override: str | None = None) -> str:
     """Resolve a system tool's full path. ``PATH`` first, then known fallbacks.
 
-    Designed for ``capture_supervisor`` (WS3 P3) to locate ``scrcpy`` /
+    Designed for ``capture_supervisor`` to locate ``scrcpy`` /
     ``adb`` / ``ffmpeg`` reliably even when the shell PATH was not
     refreshed after a winget install. Resolution order:
 
@@ -206,14 +213,14 @@ def suppress_crash_dialogs() -> None:
 def register_localdumps_exclusion(app_name: str = "lsie-mlf-desktop.exe") -> bool:
     """Suppress Windows Error Reporting LocalDumps for our app binary.
 
-    Per §5.2 the Ephemeral Vault contract is that no biometric media
-    survives the 24h secure-deletion window. WER's LocalDumps feature,
-    when configured globally, will write a ``.dmp`` of any crashing
-    process under ``%LOCALAPPDATA%\\CrashDumps\\``. A crash mid-segment
-    would therefore freeze raw PCM into a dump file outside the vault
-    perimeter. Adding our own ``...\\LocalDumps\\<app_name>`` subkey
-    with ``DumpType=0`` overrides any global config and keeps WER from
-    writing the dump.
+    Per §5.1.7 the volatile-memory controls require child-process crash
+    dumps to be disabled or redirected to scrubbed diagnostics. WER's
+    LocalDumps feature, when configured globally, will write a ``.dmp``
+    of any crashing process under ``%LOCALAPPDATA%\\CrashDumps\\``. A
+    crash mid-segment would therefore freeze raw PCM into a dump file
+    outside the governed cleanup path. Adding our own
+    ``...\\LocalDumps\\<app_name>`` subkey with ``DumpType=0`` overrides
+    any global config and keeps WER from writing the dump.
 
     Returns ``True`` if the key was successfully written, ``False`` on
     POSIX or any registry failure. Non-fatal: a failure to write the
@@ -318,22 +325,25 @@ def delete_secret(service: str, key: str) -> bool:
     return True
 
 
+def create_shortcut(*, target: Path, shortcut: Path, working_dir: Path, description: str) -> bool:
+    if sys.platform != "win32":
+        return False
+    shortcut.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        import win32com.client
+    except ImportError:
+        return False
+    shell = win32com.client.Dispatch("WScript.Shell")
+    link = shell.CreateShortcut(str(shortcut))
+    link.TargetPath = str(target)
+    link.WorkingDirectory = str(working_dir)
+    link.Description = description
+    link.Save()
+    return True
+
+
 def cleanup_orphan_ipc_blocks(prefix: str) -> int:
-    """Unlink leftover SharedMemory blocks whose name starts with ``prefix``.
-
-    POSIX: enumerate ``/dev/shm/`` and ``shm_unlink`` each matching name
-    so a crashed parent does not leak rebooted-tmpfs entries.
-
-    Windows: no-op. Anonymous-named ``CreateFileMapping`` mappings are
-    reference-counted by the kernel and reclaimed on last-handle close;
-    a crashed process leaves no orphaned shared region. Tracking-file
-    schemes (writing block names to disk) are deferred until WS4 P1's
-    SQLite manifest gives us a durable place to record them.
-
-    Returns the number of blocks unlinked. A failure to remove an
-    individual block is logged and skipped — the caller's start path
-    must remain non-fatal.
-    """
+    """Unlink leftover SharedMemory blocks whose name starts with ``prefix``."""
     if sys.platform == "win32":
         return 0
 
@@ -354,12 +364,67 @@ def cleanup_orphan_ipc_blocks(prefix: str) -> int:
     return unlinked
 
 
+def _apply_windows_child_process_policy(popen_kwargs: dict[str, Any]) -> dict[str, Any]:
+    if sys.platform != "win32":
+        return dict(popen_kwargs)
+
+    kwargs = dict(popen_kwargs)
+    kwargs["creationflags"] = (
+        int(kwargs.get("creationflags", 0))
+        | int(getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
+        | int(getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    )
+
+    startupinfo = kwargs.get("startupinfo")
+    startupinfo_factory = getattr(subprocess, "STARTUPINFO", None)
+    if startupinfo is None and startupinfo_factory is not None:
+        startupinfo = startupinfo_factory()
+
+    show_flag = int(getattr(subprocess, "STARTF_USESHOWWINDOW", 0))
+    if startupinfo is not None and show_flag:
+        startupinfo.dwFlags = int(getattr(startupinfo, "dwFlags", 0)) | show_flag
+        startupinfo.wShowWindow = int(getattr(subprocess, "SW_HIDE", 0))
+        kwargs["startupinfo"] = startupinfo
+
+    return kwargs
+
+
+def secure_delete_file(path: Path) -> bool:
+    """Best-effort secure delete for a raw-media file; returns ``True`` if removed."""
+    if not path.exists():
+        return False
+    if not path.is_file():
+        return False
+
+    if sys.platform != "win32":
+        shred = shutil.which("shred")
+        if shred is not None:
+            result = subprocess.run(
+                [shred, "-u", "-z", "-n", "3", str(path)],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+            if result.returncode == 0:
+                return True
+            logger.warning("secure delete via shred failed for %s", path)
+
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        return False
+    except OSError as exc:
+        logger.warning("capture file delete failed: %s (%s)", path, exc)
+        return False
+    return True
+
+
 class SupervisedProcess:
     """A subprocess whose entire descendant tree is force-killed on close.
 
-    Cross-platform replacement for the v3.4 ``services/stream_ingest/
-    entrypoint.sh`` cleanup contract. ``capture_supervisor`` (WS3 P3b)
-    will spawn scrcpy / ADB / FFmpeg through this primitive so a crash
+    Cross-platform native-subprocess supervision for the desktop capture
+    lane. ``capture_supervisor`` spawns
+    scrcpy / ADB / FFmpeg through this primitive so a crash
     of the supervisor leaves zero zombies holding the USB device open.
 
     Windows: a per-instance Job Object with
@@ -416,7 +481,8 @@ class SupervisedProcess:
         import win32con
         import win32job
 
-        proc = subprocess.Popen(args, **popen_kwargs)
+        kwargs = _apply_windows_child_process_policy(popen_kwargs)
+        proc = subprocess.Popen(args, **kwargs)
 
         job = win32job.CreateJobObject(None, "")
         info = win32job.QueryInformationJobObject(

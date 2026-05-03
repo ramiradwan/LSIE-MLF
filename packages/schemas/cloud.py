@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Literal
+from uuid import UUID
 
 from pydantic import UUID4, BaseModel, ConfigDict, Field, model_validator
 
@@ -22,14 +23,22 @@ class PosteriorDelta(CloudSchemaModel):
     delta_beta: float = Field(..., ge=0.0, le=1.0)
     segment_id: str = Field(..., pattern=SHA256_HEX_PATTERN)
     client_id: str = Field(..., min_length=1)
-    event_id: UUID4
+    event_id: UUID
     applied_at_utc: datetime
-    decision_context_hash: str | None = Field(default=None, pattern=SHA256_HEX_PATTERN)
+    decision_context_hash: str = Field(..., pattern=SHA256_HEX_PATTERN)
 
 
 class TelemetrySegmentBatch(CloudSchemaModel):
-    segments: list[InferenceHandoffPayload] = Field(..., min_length=1)
+    segments: list[InferenceHandoffPayload] = Field(default_factory=list)
     attribution_events: list[AttributionEvent] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _requires_segment_or_event(self) -> TelemetrySegmentBatch:
+        if not self.segments and not self.attribution_events:
+            raise ValueError(
+                "telemetry segment batch must include at least one segment or attribution event"
+            )
+        return self
 
 
 class TelemetryPosteriorDeltaBatch(CloudSchemaModel):

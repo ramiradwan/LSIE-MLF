@@ -651,7 +651,7 @@ class SessionCreateRequest(OperatorConsoleModel):
 
     The API Server generates/publishes the session identifier and the
     orchestrator remains the sole owner of authoritative `started_at`.
-    `client_action_id` is the Redis SETNX idempotency key.
+    `client_action_id` is the API idempotency key for duplicate submits.
     """
 
     stream_url: str = Field(..., min_length=1)

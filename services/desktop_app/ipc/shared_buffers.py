@@ -1,4 +1,4 @@
-"""SharedMemory transport for 30 s PCM windows (WS3 P2).
+"""SharedMemory transport for 30 s PCM windows.
 
 Producer side (``module_c_orchestrator``): :func:`write_pcm_block`
 allocates a SharedMemory block named ``lsie_ipc_pcm_{uuid4}``, writes
@@ -19,8 +19,9 @@ then detaches. The consumer never unlinks — that is the producer's
 lifecycle. Python 3.11's ``shared_memory`` module does not register
 attach-only ``SharedMemory`` instances with the parent's
 ``resource_tracker`` (``register`` is called only when ``create=True``),
-so the consumer naturally has the ``track=False`` semantics that the
-v4.0 implementation plan calls out for Python 3.13+.
+so the consumer naturally has attach-only tracking semantics. Python
+3.13+'s explicit ``track=False`` flag would express the same intent
+directly.
 
 Crash safety: a producer that crashes mid-flow leaves the block
 allocated. On POSIX the ``ipc.cleanup`` Dirty State Recovery sweep

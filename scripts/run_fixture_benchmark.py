@@ -2,11 +2,11 @@
 """Run the offline replay-fixture benchmark and append a baseline row.
 
 The harness exercises the production replay capture source, the normal
-Orchestrator.run() → process_segment.delay() async boundary, and the replay
-fixture stimulus schedule while replacing live-only ML/network dependencies with
-small deterministic in-process shims. Benchmark metrics are sourced from the
-structured production log lines emitted by ``orchestrator.py``,
-``inference.py``, and ``au12.py`` rather than from harness-local timers.
+Orchestrator.run() → desktop IPC dispatch boundary, and the replay fixture
+stimulus schedule while replacing live-only ML/network dependencies with small
+in-process shims. Benchmark metrics are sourced from the structured production
+log lines emitted by ``orchestrator.py``, ``inference.py``, and ``au12.py``
+rather than from harness-local timers.
 
 By default a row is appended to ``docs/artifacts/performance_baseline.md`` and
 also emitted to stdout. Tests and ad-hoc dry runs can point ``--baseline-path``
@@ -23,6 +23,7 @@ import json
 import logging
 import math
 import os
+import queue
 import re
 import subprocess
 import sys
@@ -242,43 +243,75 @@ class _BenchmarkLogCapture(logging.Handler):
             return
 
 
+def _process_segment_payload_from_control_message(message: Any) -> dict[str, Any]:
+    from services.desktop_app.ipc.control_messages import InferenceControlMessage
+    from services.desktop_app.ipc.shared_buffers import read_pcm_block
+
+    control_message = InferenceControlMessage.model_validate(message)
+    payload = copy.deepcopy(control_message.handoff)
+    payload.update(copy.deepcopy(control_message.forward_fields))
+    payload["_audio_data"] = read_pcm_block(control_message.audio.to_metadata())
+    return payload
+
+
 class _InProcessDispatchBridge:
-    """Local worker bridge that preserves the orchestrator's ``delay`` boundary."""
+    """Local worker bridge that consumes desktop IPC dispatches in-process."""
 
     def __init__(
         self,
         *,
         orchestrator: Any,
         inference_module: Any,
+        ipc_queue: Any,
         expected_segments: int,
     ) -> None:
         self._orchestrator = orchestrator
         self._inference_module = inference_module
+        self._ipc_queue = ipc_queue
         self._expected_segments = expected_segments
         self._lock = threading.Lock()
+        self._stop_event = threading.Event()
+        self._worker_thread = threading.Thread(
+            target=self._consume_ipc_queue,
+            name="fixture-benchmark-worker",
+            daemon=True,
+        )
         self.done = threading.Event()
         self.payloads: list[dict[str, Any]] = []
         self.results: list[dict[str, Any]] = []
         self.error: Exception | None = None
 
-    def delay(self, payload: dict[str, Any]) -> dict[str, Any] | None:
-        payload_copy = copy.deepcopy(payload)
-        try:
-            result = _execute_process_segment(self._inference_module, payload)
-        except Exception as exc:
-            with self._lock:
-                self.error = exc
-            self._orchestrator.stop()
-            self.done.set()
-            raise
+    def start(self) -> None:
+        self._worker_thread.start()
 
-        with self._lock:
-            self.payloads.append(payload_copy)
-            self.results.append(result)
-            if len(self.results) >= self._expected_segments:
+    def stop(self) -> None:
+        self._stop_event.set()
+        self._worker_thread.join(timeout=2.0)
+
+    def _consume_ipc_queue(self) -> None:
+        while not self._stop_event.is_set():
+            try:
+                raw = self._ipc_queue.get(timeout=0.05)
+            except queue.Empty:
+                continue
+            try:
+                payload = _process_segment_payload_from_control_message(raw)
+                payload_copy = copy.deepcopy(payload)
+                result = _execute_process_segment(self._inference_module, payload)
+            except Exception as exc:
+                with self._lock:
+                    self.error = exc
                 self._orchestrator.stop()
                 self.done.set()
-        return result
+                return
+
+            with self._lock:
+                self.payloads.append(payload_copy)
+                self.results.append(result)
+                if len(self.results) >= self._expected_segments:
+                    self._orchestrator.stop()
+                    self.done.set()
+                    return
 
     def raise_if_failed(self) -> None:
         if self.error is not None:
@@ -627,9 +660,11 @@ async def _run_fixture_pipeline(
 
     del fixture_path, script
 
+    ipc_queue: queue.Queue[object] = queue.Queue()
     orchestrator = Orchestrator(
         stream_url="replay://fixture-benchmark",
         session_id=str(uuid.uuid4()),
+        ipc_queue=ipc_queue,
     )
     orchestrator._redis = None
     replay = orchestrator.audio_resampler
@@ -639,6 +674,7 @@ async def _run_fixture_pipeline(
     bridge = _InProcessDispatchBridge(
         orchestrator=orchestrator,
         inference_module=inference_mod,
+        ipc_queue=ipc_queue,
         expected_segments=len(stimuli),
     )
     stimulus_stop_event = threading.Event()
@@ -654,11 +690,9 @@ async def _run_fixture_pipeline(
         daemon=True,
     )
 
-    with (
-        patch.object(orchestrator_mod, "SEGMENT_WINDOW_SECONDS", segment_window_seconds),
-        patch.object(inference_mod.process_segment, "delay", new=bridge.delay, create=True),
-    ):
+    with patch.object(orchestrator_mod, "SEGMENT_WINDOW_SECONDS", segment_window_seconds):
         run_task = asyncio.create_task(orchestrator.run())
+        bridge.start()
         stimulus_thread.start()
         try:
             timeout_s = _benchmark_timeout_s(segment_window_seconds, len(stimuli))
@@ -668,7 +702,9 @@ async def _run_fixture_pipeline(
         finally:
             stimulus_stop_event.set()
             orchestrator.stop()
+            bridge.stop()
             stimulus_thread.join(timeout=2.0)
+            orchestrator.close_inflight_blocks()
             try:
                 await asyncio.wait_for(run_task, timeout=5.0)
             except asyncio.TimeoutError:

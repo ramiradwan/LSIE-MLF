@@ -1,6 +1,9 @@
 #!/usr/bin/env python3  
 """LSIE-MLF Debug Studio (§4.E.1 operator tooling).
 
+This tool targets the retained server/API deployment surfaces, not the default
+v4 desktop ProcessGraph.
+
 Data consumption contract — three disjoint read paths, one write path.
 Each thread below owns exactly one path; no thread mixes sources.
 
@@ -13,14 +16,15 @@ Each thread below owns exactly one path; no thread mixes sources.
    Consumers: VideoPane, AU12Tile, TrackingPointsTile, Face/FPS tiles.
 
 2. ANALYTICS PATH (AnalyticsThread, polls OPERATOR_SNAPSHOT_SQL)
-   Source: Persistent Store via `docker compose exec postgres psql`
+   Source: retained Persistent Store via `docker compose exec postgres psql`
    Cadence: ANALYTICS_POLL_SECONDS (default 1 s), fingerprint-deduped
-   Why direct: operator readback is a high-frequency multi-table JOIN over
-   session history. Going through the API Server per tick would cost an HTTP
-   round-trip for every poll and force the API Server to grow a read endpoint
-   for every table we surface. Direct `psql` keeps the GUI decoupled from API
-   Server uptime and consistent across tabs. The CLI (scripts/lsie_cli.py) has
-   the opposite tradeoff — one-shot queries, so it uses API Server REST endpoints.
+   Why direct: this tool reads the retained server-side multi-table analytics
+   surface rather than the desktop-local SQLite graph. Going through the API
+   Server per tick would cost an HTTP round-trip for every poll and force the
+   API Server to grow a read endpoint for every table we surface. Direct `psql`
+   keeps the GUI decoupled from API Server uptime and consistent across tabs.
+   The CLI (scripts/lsie_cli.py) has the opposite tradeoff — one-shot queries,
+   so it uses API Server REST endpoints.
    Consumers: all "Analytics" tab panels and the right-hand side panels on the
    "Live" tab (transcript, semantic eval, reward, acoustic metrics, physiology,
    Co-Modulation Index, per-arm).
@@ -33,10 +37,9 @@ Each thread below owns exactly one path; no thread mixes sources.
    Consumers: Host System tile, Device CPU tile, Foreground App tile.
 
 WRITE PATH (stimulus inject)
-   Target: API Server `POST /api/v1/stimulus`
-   Why API Server: the API Server owns the Message Broker pub/sub publish.
-   Write authority stays with a single service — the GUI does not talk to the
-   Message Broker directly.
+   Target: API Server `POST /api/v1/operator/sessions/{id}/stimulus`
+   Why API Server: this retained server/API workflow keeps publish authority
+   behind the API surface rather than talking to the transport directly.
 """
 from __future__ import annotations  
   
@@ -53,6 +56,7 @@ import urllib.error
 import urllib.request
 from collections import deque
 from typing import Any
+from uuid import uuid4
   
 import cv2  
 import mediapipe as mp  
@@ -2468,11 +2472,12 @@ class MainWindow(QMainWindow):
         self.setWindowFlag(Qt.WindowType.FramelessWindowHint)  
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)  
   
-        self.thread = StreamThread()  
-        self.analytics_thread = AnalyticsThread()  
-        self.hw_thread = HardwareTelemetryThread()  
-  
-        self._build_ui()  
+        self.thread = StreamThread()
+        self.analytics_thread = AnalyticsThread()
+        self.hw_thread = HardwareTelemetryThread()
+        self._active_session_id: str | None = None
+
+        self._build_ui()
         self._connect_signals()  
         self._set_overlay_mode(OVERLAY_FULL, log_message=False)  
   
@@ -3105,8 +3110,10 @@ class MainWindow(QMainWindow):
         semantic_attribution = snapshot.get("semantic_attribution") or {}
         if not isinstance(semantic_attribution, dict):
             semantic_attribution = {}
-  
-        transcript_text = str(  
+        session_id = snapshot.get("session_id")
+        self._active_session_id = str(session_id) if session_id else None
+
+        transcript_text = str(
             pick(transcript, "transcription", "transcript", "text", default=EM_DASH)
         )  
         transcript_segment = pick(transcript, "segment_id", default=EM_DASH)
@@ -3400,10 +3407,17 @@ class MainWindow(QMainWindow):
         self._post_stimulus(trimmed)
 
     def _post_stimulus(self, line_text: str | None) -> None:
-        # WRITE PATH — the only place this module talks to the API Server.
-        # The API Server owns the Message Broker pub/sub publish.
-        url = f"{API_BASE}/api/v1/stimulus"
-        payload = json.dumps({"line_text": line_text} if line_text else {}).encode("utf-8")
+        if self._active_session_id is None:
+            msg = "Stimulus inject unavailable: no active session id in analytics snapshot"
+            set_text_if_changed(self.stimulus_status_label, msg)
+            self._append_log(msg)
+            return
+
+        url = f"{API_BASE}/api/v1/operator/sessions/{self._active_session_id}/stimulus"
+        payload_data = {"client_action_id": str(uuid4())}
+        if line_text:
+            payload_data["operator_note"] = line_text
+        payload = json.dumps(payload_data).encode("utf-8")
         req = urllib.request.Request(
             url,
             data=payload,

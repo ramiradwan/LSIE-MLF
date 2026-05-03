@@ -46,7 +46,7 @@ The current content.json uses these ref patterns:
 - `§7A.1`, `§7B.4` — Math topic subsections (variable dict, derivation steps, ref impl).
 - `§4.A.1`, `§4.C.3` — Core module subsections (dot-separated).
 - `§9.1`, `§10.2.14` — Conventional subsections and their children.
-- `§12.1`, `§12.3.2` — Error handling by module (12.1=Module A, 12.2=Module B, ...).
+- `§12.1`, `§12.3.2` — Legacy error-handling aliases retained for historical module-era references.
 - `§9`, `§12` — Bare section numbers.
 
 ## Content Source Priority
@@ -55,7 +55,7 @@ The script loads content.json from the first available source: `--from-pdf` (exp
 
 ## How the Index Works
 
-Layer 1 (structural) auto-generates refs from content.json structure: section numbers, module IDs (§4.A–§4.F), subsection numbers, math topic letters (§7A, §7B), data flow stages (§2.1–§2.N), error matrix by module (§12.1–§12.6), and conventional field mappings. Layer 2 (explicit) overlays any `spec_refs` arrays in the content.json. Explicit entries take precedence and are marked with `*` in the index output.
+Layer 1 (structural) auto-generates refs from content.json structure: section numbers, module IDs (§4.A–§4.F), subsection numbers, math topic letters (§7A, §7B), data flow stages (§2.1–§2.N), runtime-topology subsections, and conventional field mappings. Layer 2 (explicit) overlays any `spec_refs` arrays in the content.json. The checker also adds a small legacy-alias layer for historical refs that still appear in active docs and tests. Explicit entries take precedence and are marked with `*` in the index output.
 
 ## Maintenance
 

@@ -1,4 +1,4 @@
-"""WS4 P2 — HeartbeatRecorder unit tests."""
+"""HeartbeatRecorder unit tests."""
 
 from __future__ import annotations
 

@@ -32,6 +32,16 @@ def test_release_workflow_runs_on_tags_and_signs_release_artifact() -> None:
     assert "--name LSIE-MLF-Launcher" in workflow
     assert "services/desktop_launcher/ui.py" in workflow
     assert "dist\\LSIE-MLF-Launcher" in workflow
+    assert "Bundle desktop app source for hydrated runtime" in workflow
+    assert "dist\\LSIE-MLF-Launcher\\app" in workflow
+    assert "Copy-Item -Recurse -Force \"${{ github.workspace }}\\packages\"" in workflow
+    assert "Copy-Item -Recurse -Force \"${{ github.workspace }}\\services\"" in workflow
+    assert "Copy-Item -Force \"${{ github.workspace }}\\pyproject.toml\"" in workflow
+    assert "Copy-Item -Force \"${{ github.workspace }}\\uv.lock\"" in workflow
+    assert "Smoke packaged launcher runtime handoff" in workflow
+    assert 'LSIE_DEV_FORCE_CPU_SPEECH: "1"' in workflow
+    assert 'LSIE-MLF-Launcher.exe"' in workflow
+    assert "--smoke" in workflow
     assert "uses: azure/artifact-signing-action@v1" in workflow
     assert "azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}" in workflow
     assert "azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}" in workflow

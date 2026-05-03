@@ -67,6 +67,8 @@ def test_current_repo_data_classification_verifier_passes_with_file_line_evidenc
     assert result.follow_up is None
     assert "services/worker/pipeline/analytics.py:" in result.evidence
     assert "services/api/routes/physiology.py:" in result.evidence
+    assert "services/cloud_api/middleware/forbid_raw.py:" in result.evidence
+    assert "services/cloud_api/repos/telemetry.py:" in result.evidence
     assert "INSERT tier=PERMANENT §5.2.3" in result.evidence
     assert "params tier=PERMANENT §5.2.3" in result.evidence
     assert "inbound tier=TRANSIENT §5.2.1" in result.evidence
@@ -159,6 +161,62 @@ async def inbound(request):
     assert scan.passed is False
     assert "services/api/routes/example.py:5" in rendered
     assert "missing/invalid DataTier.TRANSIENT annotation" in rendered
+
+
+def test_scan_accepts_derived_json_parse_from_marked_inbound_body(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "services/api/routes/example.py",
+        """
+from __future__ import annotations
+
+import json
+
+from packages.schemas.data_tiers import DataTier, mark_data_tier
+
+
+async def inbound(request):
+    body = mark_data_tier(
+        await request.body(),
+        DataTier.TRANSIENT,
+        spec_ref="§5.2.1",
+    )
+    payload = json.loads(body)
+    return payload
+""".lstrip(),
+    )
+    _write(
+        tmp_path,
+        "services/worker/pipeline/example.py",
+        '''
+from __future__ import annotations
+
+from packages.schemas.data_tiers import DataTier, mark_data_tier
+
+INSERT_SQL = mark_data_tier(
+    """
+INSERT INTO metrics (session_id) VALUES (%(session_id)s)
+""",
+    DataTier.PERMANENT,
+    spec_ref="§5.2.3",
+)
+
+
+def persist(cur):
+    cur.execute(
+        INSERT_SQL,
+        mark_data_tier({"session_id": "s"}, DataTier.PERMANENT, spec_ref="§5.2.3"),
+    )
+'''.lstrip(),
+    )
+
+    scan = scan_data_classification(tmp_path)
+
+    assert scan.passed is True
+    assert scan.findings == ()
+    assert (
+        "services/api/routes/example.py:9 inbound tier=TRANSIENT §5.2.1" in scan.inbound_annotations
+    )
 
 
 def test_permanent_insert_params_without_normalization_evidence_fail(

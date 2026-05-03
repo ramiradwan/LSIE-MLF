@@ -1,4 +1,4 @@
-"""WS3 P2 — Dirty State Recovery sweep tests."""
+"""Dirty State Recovery sweep tests."""
 
 from __future__ import annotations
 

@@ -53,7 +53,14 @@ uv run python scripts/run_audit.py --strict
 if ($LASTEXITCODE -eq 0) { Pass "§13 audit harness" } else { Fail "§13 audit harness" }
 Write-Host ""
 
-# 6. Schema consistency check (Pydantic vs SQL files vs Python DDL string vs content.json)
+# 6. Canonical terminology audit
+Write-Host "-- Canonical terminology audit --"
+$canonicalPattern = 'GPU worker|video pipe|free-form rationale|free-form rationales|free-form semantic rationale|free-form semantic rationales|x[_-]?max[- ]normalized reward|x[_-]?max as reward input|x[_-]?max reward input|\bpitch_f0\b|legacy acoustic scalar|scalar-only acoustic|\[0\.0, 5\.0\].*AU12|AU12.*\[0\.0, 5\.0\]|AU12 clamp.*5\.0|clamp.*AU12.*5\.0'
+$canonicalHits = Select-String -Path services\**\*,packages\**\*,scripts\**\* -Pattern $canonicalPattern -AllMatches -ErrorAction SilentlyContinue
+if ($canonicalHits) { Fail "Canonical terminology audit" } else { Pass "Canonical terminology audit" }
+Write-Host ""
+
+# 7. Schema consistency check (Pydantic vs SQL files vs Python DDL string vs content.json)
 Write-Host "-- Schema consistency check --"
 uv run python scripts/check_schema_consistency.py
 if ($LASTEXITCODE -eq 0) { Pass "Schema consistency check" } else { Fail "Schema consistency check" }
