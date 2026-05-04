@@ -901,6 +901,7 @@ class TestSessionLifecycleOneShot:
         assert JOB_SESSIONS in harness.refresh_calls
         assert JOB_LIVE_SESSION in harness.refresh_calls
         assert JOB_ENCOUNTERS in harness.refresh_calls
+        assert JOB_HEALTH in harness.refresh_calls
         assert JOB_ALERTS in harness.refresh_calls
         assert coord._store.error(JOB_SESSION_END) is None
 
@@ -1055,6 +1056,20 @@ class TestPollingWorkerShutdown:
 
         assert fetch_count == 0
 
+    def test_overlapping_fetch_tick_is_skipped(self) -> None:
+        fetch_count = 0
+
+        def fetch() -> object:
+            nonlocal fetch_count
+            fetch_count += 1
+            worker._run_once()
+            return object()
+
+        worker = PollingWorker(JOB_HEALTH, 1000, fetch)
+        worker._run_once()
+
+        assert fetch_count == 1
+
 
 # ----------------------------------------------------------------------
 # SessionSummary round-trip through live_session job
@@ -1202,6 +1217,21 @@ class TestNonBlockingTeardown:
         coord._prune_orphan(worker)  # type: ignore[arg-type]
 
         assert coord._orphan_jobs == []
+
+    def test_route_sync_prunes_completed_orphan_handles(
+        self, cfg: OperatorConsoleConfig, client: ApiClient
+    ) -> None:
+        coord = PollingCoordinator(cfg, client, OperatorStore())
+        completed = _JobHandle(coord._specs[JOB_HEALTH], _StubWorker(), _StubThread(False))  # type: ignore[arg-type]
+        running = _JobHandle(coord._specs[JOB_ALERTS], _StubWorker(), _StubThread(True))  # type: ignore[arg-type]
+        coord._orphan_jobs.extend([completed, running])
+        coord._start_job = lambda _spec: None  # type: ignore[assignment,method-assign]
+        coord._stop_job = lambda _job_name: None  # type: ignore[assignment,method-assign]
+
+        coord._sync_jobs_for_current_state()
+
+        assert completed not in coord._orphan_jobs
+        assert running in coord._orphan_jobs
 
     def test_live_session_to_overview_parks_stopped_jobs_as_orphans(
         self, cfg: OperatorConsoleConfig, client: ApiClient

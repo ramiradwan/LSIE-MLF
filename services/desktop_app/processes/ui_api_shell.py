@@ -29,6 +29,7 @@ import threading
 import time
 
 from services.desktop_app.ipc import IpcChannels
+from services.desktop_app.ipc.control_messages import LiveSessionControlMessage
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +38,20 @@ API_PORT_PREFERRED = 8000
 SHUTDOWN_POLL_INTERVAL_MS = 250
 UVICORN_READY_TIMEOUT_S = 5.0
 SQLITE_FILENAME = "desktop.sqlite"
+
+
+class _QueueLiveSessionControlPublisher:
+    def __init__(self, channels: IpcChannels) -> None:
+        self._queues = tuple(
+            queue
+            for queue in (channels.live_control, channels.segment_control)
+            if queue is not None
+        )
+
+    def publish(self, message: LiveSessionControlMessage) -> None:
+        payload = message.model_dump(mode="json")
+        for queue in self._queues:
+            queue.put(payload)
 
 
 def _allocate_port(preferred: int) -> int:
@@ -60,7 +75,6 @@ def _allocate_port(preferred: int) -> int:
 
 
 def run(shutdown_event: mpsync.Event, channels: IpcChannels) -> None:
-    del channels  # ui_api_shell does not consume IPC channels directly.
     logger.info("ui_api_shell starting")
 
     # Late imports preserve the ML-isolation canary contract
@@ -97,7 +111,11 @@ def run(shutdown_event: mpsync.Event, channels: IpcChannels) -> None:
     db_path = state_dir / SQLITE_FILENAME
     bootstrap_sqlite_api_store(db_path)
     logger.info("desktop sqlite store bootstrapped at %s", db_path)
-    configure_sqlite_api_overrides(api_app, db_path)
+    configure_sqlite_api_overrides(
+        api_app,
+        db_path,
+        control_publisher=_QueueLiveSessionControlPublisher(channels),
+    )
 
     heartbeat = HeartbeatRecorder(db_path, "ui_api_shell")
     heartbeat.start()

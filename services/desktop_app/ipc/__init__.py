@@ -28,11 +28,16 @@ class IpcChannels:
 
     Constructed by the parent before spawn and pickled into each child
     via the launcher. ``ml_inbox`` carries orchestrator → gpu_ml_worker
-    inference dispatches, ``drift_updates`` carries capture_supervisor
-    → module_c_orchestrator timing corrections, and ``analytics_inbox``
-    carries gpu_ml_worker → analytics_state_worker derived analytics.
+    inference dispatches, ``pcm_acks`` carries gpu_ml_worker →
+    module_c_orchestrator PCM release acknowledgements,
+    ``drift_updates`` carries capture_supervisor → module_c_orchestrator
+    timing corrections, and ``analytics_inbox`` carries gpu_ml_worker →
+    analytics_state_worker derived analytics.
     """
 
     ml_inbox: Queue[object] = field(repr=False)
     drift_updates: Queue[object] = field(repr=False)
     analytics_inbox: Queue[object] = field(repr=False)
+    pcm_acks: Queue[object] | None = field(default=None, repr=False)
+    live_control: Queue[object] | None = field(default=None, repr=False)
+    segment_control: Queue[object] | None = field(default=None, repr=False)

@@ -58,13 +58,13 @@ class OfflineReplaySink(httpx.AsyncBaseTransport):
             accepted = len(body["deltas"])
             inserted = 0
             for delta in body["deltas"]:
-                key = (
+                delta_key = (
                     str(delta["segment_id"]),
                     str(delta["client_id"]),
                     str(delta["arm_id"]),
                 )
-                if key not in self.delta_keys:
-                    self.delta_keys.add(key)
+                if delta_key not in self.delta_keys:
+                    self.delta_keys.add(delta_key)
                     inserted += 1
             return httpx.Response(
                 200,

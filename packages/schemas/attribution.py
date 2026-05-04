@@ -73,10 +73,9 @@ class BanditDecisionSnapshot(AttributionBaseModel):
     Validate the pre-update Thompson Sampling BanditDecisionSnapshot (§6.4 / §6.1).
 
     Accepts selection metadata, selected/candidate arm IDs, posterior parameters,
-    optional sampled theta values, and the expected greeting captured at arm
-    selection time. Produces a replayable decision record for handoff and
-    attribution; it does not perform selection, update posteriors, or compute
-    rewards.
+    sampled theta values, and the expected greeting captured at arm selection
+    time. Produces a replayable decision record for handoff and attribution; it
+    does not perform selection, update posteriors, or compute rewards.
     """
 
     selection_method: BanditSelectionMethod
@@ -86,7 +85,7 @@ class BanditDecisionSnapshot(AttributionBaseModel):
     selected_arm_id: str
     candidate_arm_ids: list[str] = Field(..., min_length=1)
     posterior_by_arm: dict[str, ArmPosterior] = Field(..., min_length=1)
-    sampled_theta_by_arm: dict[str, float] | None = None
+    sampled_theta_by_arm: dict[str, float]
     expected_greeting: str
     decision_context_hash: str = Field(..., pattern="^[0-9a-f]{64}$")
     random_seed: int = Field(..., ge=0, le=18446744073709551615)
@@ -98,11 +97,7 @@ class BanditDecisionSnapshot(AttributionBaseModel):
 
     @field_validator("sampled_theta_by_arm")
     @classmethod
-    def _theta_values_are_probabilities(
-        cls, values: dict[str, float] | None
-    ) -> dict[str, float] | None:
-        if values is None:
-            return values
+    def _theta_values_are_probabilities(cls, values: dict[str, float]) -> dict[str, float]:
         if any(theta < 0.0 or theta > 1.0 for theta in values.values()):
             raise ValueError("sampled theta values must be between 0.0 and 1.0")
         return values

@@ -8,7 +8,7 @@ Each amendment was made for a documented technical reason. The review agent shou
 
 ## SPEC-AMEND-001: Worker GPU Architecture Downgrade
 
-**Status:** Historical for v3.4 — folded into the v3.4 PDF base text. **Superseded for v4.0** by the §11.x hardware matrix drafted at `docs/V4_SPEC_DRAFTS.md`: the v4.0 production GPU floor is NVIDIA Turing (SM 7.5+) on CUDA 12.x with cuDNN 9, `ctranslate2 >= 4.5.0`, and `torch == 2.4.x`; Pascal developer hosts route through the `LSIE_DEV_FORCE_CPU_SPEECH=1` escape hatch (WS2 P2). `faster-whisper.compute_type = "int8"` is retained but is now justified by DP4A + INT8 Tensor Cores on Turing+ rather than Pascal dp4a. Retained below for v3.4 traceability.
+**Status:** Historical for v3.4 — folded into the v3.4 PDF base text. The current v4.0 signed spec is governed by the system runtime requirements and pinned dependency matrix (§10.1–§10.2), the desktop runtime topology and startup sequence (§9.4–§9.5), and the `gpu_ml_worker` failure-handling requirements (§12.4): production requires NVIDIA Turing (SM 7.5+) on CUDA 12.x with cuDNN 9, `ctranslate2 >= 4.5.0`, and `torch == 2.4.x`, while Pascal developer hosts route through `LSIE_DEV_FORCE_CPU_SPEECH=1`. `faster-whisper.compute_type = "int8"` remains fixed for the supported runtime. Retained below for v3.4 traceability.
 
 | Field | Value |
 |---|---|

@@ -1115,7 +1115,7 @@ class TestOrchestrator:
         assert first_payload["timestamp_utc"] != second_payload["timestamp_utc"]
 
     @pytest.mark.audit_item("13.26")
-    def test_bandit_snapshot_copies_pre_update_state_and_omits_absent_optionals(self) -> None:
+    def test_bandit_snapshot_copies_pre_update_state_and_keeps_empty_sample_map(self) -> None:
         orch = Orchestrator(session_id="77777777-7777-4777-8777-777777777777")
         orch._active_arm = "arm_a"
         orch._expected_greeting = "hello before update"
@@ -1150,12 +1150,12 @@ class TestOrchestrator:
         assert snapshot["expected_greeting"] == "hello before update"
         assert len(snapshot["decision_context_hash"]) == 64
         assert isinstance(snapshot["random_seed"], int)
-        assert "sampled_theta_by_arm" not in snapshot
+        assert snapshot["sampled_theta_by_arm"] == {}
 
         payload = orch.assemble_segment(b"\x00", [])
         payload_snapshot = payload["_bandit_decision_snapshot"]
         assert payload_snapshot["posterior_by_arm"]["arm_a"] == {"alpha": 2.0, "beta": 3.0}
-        assert "sampled_theta_by_arm" not in payload_snapshot
+        assert payload_snapshot["sampled_theta_by_arm"] == {}
         assert isinstance(payload_snapshot["random_seed"], int)
 
     def test_dispatch_payload_validates_model_and_omits_ineligible_physio(self) -> None:
@@ -1191,7 +1191,7 @@ class TestOrchestrator:
 
             InferenceHandoffPayload.model_validate(msg.handoff)
             assert "_physiological_context" not in msg.handoff
-            assert "sampled_theta_by_arm" not in msg.handoff["_bandit_decision_snapshot"]
+            assert msg.handoff["_bandit_decision_snapshot"]["sampled_theta_by_arm"] == {}
             assert isinstance(msg.handoff["_bandit_decision_snapshot"]["random_seed"], int)
 
             recovered = read_pcm_block(

@@ -48,6 +48,7 @@ def _make_channels() -> IpcChannels:
         ml_inbox=ctx.Queue(),
         drift_updates=ctx.Queue(),
         analytics_inbox=ctx.Queue(),
+        pcm_acks=ctx.Queue(),
     )
 
 

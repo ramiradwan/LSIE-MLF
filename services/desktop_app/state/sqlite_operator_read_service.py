@@ -26,7 +26,11 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any
 
-from packages.schemas.operator_console import HealthState, HealthSubsystemStatus
+from packages.schemas.operator_console import (
+    HealthState,
+    HealthSubsystemStatus,
+    SessionSummary,
+)
 from services.api.services.operator_read_service import OperatorReadService
 from services.api.services.subsystem_probes import ProbeResult
 from services.desktop_app.state import sqlite_operator_queries
@@ -48,6 +52,8 @@ async def _no_subsystem_probes(**_: Any) -> list[ProbeResult]:
 class SqliteOperatorReadService(OperatorReadService):
     """OperatorReadService backed by the desktop SQLite store."""
 
+    _MULTI_ACTIVE_STATUS = "active conflict"
+
     def __init__(self, reader: SqliteReader) -> None:
         super().__init__(
             get_conn=self._unused_get_conn,
@@ -57,6 +63,17 @@ class SqliteOperatorReadService(OperatorReadService):
             queries=sqlite_operator_queries,
         )
         self._reader = reader
+
+    def _build_session_summary(
+        self,
+        row: dict[str, Any],
+        live_state_client: Any = None,
+    ) -> SessionSummary:
+        session = super()._build_session_summary(row, live_state_client)
+        active_session_count = int(row.get("active_session_count") or 0)
+        if session.ended_at_utc is None and active_session_count > 1:
+            return session.model_copy(update={"status": self._MULTI_ACTIVE_STATUS})
+        return session
 
     def _build_health_rows(
         self,
@@ -103,13 +120,13 @@ class SqliteOperatorReadService(OperatorReadService):
             ),
             (
                 "gpu_ml_worker",
-                "GPU ML Worker",
+                "gpu_ml_worker",
                 "last_gpu_ml_worker_at",
-                "process_restart",
-                "verify gpu_ml_worker process is running",
-                None,
-                None,
-                None,
+                "model_loading",
+                "wait for model download/load to complete or check gpu_ml_worker logs",
+                "gpu_ml_worker_state",
+                "gpu_ml_worker_detail",
+                "gpu_ml_worker_hint",
             ),
             (
                 "analytics_state_worker",
@@ -193,24 +210,73 @@ class SqliteOperatorReadService(OperatorReadService):
                     operator_action_hint=row_hint if needs_action else None,
                 )
             )
-        rows.append(
-            HealthSubsystemStatus(
-                subsystem_key="live_analytics_producer",
-                label="Live Analytics Producer",
-                state=HealthState.DEGRADED,
-                last_success_utc=None,
-                detail=(
-                    "Desktop Module C live dispatch is release-gated; connected capture "
-                    "and ML worker health do not create encounter analytics."
-                ),
-                recovery_mode="deferred_activation",
-                operator_action_hint=(
-                    "Smile, semantic, reward, and transcription rows require a future "
-                    "desktop-safe inference producer with authoritative stimulus timing."
-                ),
-            )
-        )
+        rows.append(self._build_live_analytics_health_row(pulse, now))
         return rows
+
+    def _build_live_analytics_health_row(
+        self,
+        pulse: dict[str, Any],
+        now: Any,
+    ) -> HealthSubsystemStatus:
+        active_session_count = int(pulse.get("active_session_count") or 0)
+        last_success = self._latest_live_analytics_timestamp(pulse)
+        state, detail = self._classify_subsystem_for_desktop(last_success, now)
+        if active_session_count > 1:
+            state = HealthState.ERROR
+            detail = f"{active_session_count} active desktop sessions found; end stale sessions."
+        elif pulse.get("gpu_ml_worker_state") == HealthState.RECOVERING.value:
+            state = HealthState.RECOVERING
+            detail = str(
+                pulse.get("gpu_ml_worker_detail")
+                or "gpu_ml_worker is loading models for live analytics."
+            )
+        elif active_session_count == 0:
+            state = HealthState.UNKNOWN
+            detail = "No active desktop session is currently producing live analytics."
+        elif last_success is None:
+            capture_ok = all(
+                pulse.get(field) == HealthState.OK.value
+                for field in ("adb_state", "audio_capture_state", "video_capture_state")
+            )
+            state = HealthState.RECOVERING if capture_ok else HealthState.UNKNOWN
+            detail = (
+                "Capture is healthy; waiting for first live visual state "
+                "or completed analytics row."
+                if capture_ok
+                else "Waiting for live visual state or completed analytics row."
+            )
+        elif state is HealthState.OK:
+            visual_status = pulse.get("live_visual_state_status")
+            detail = (
+                f"Live analytics fresh from visual state {visual_status!r}."
+                if visual_status is not None
+                else "Live analytics fresh from completed encounter rows."
+            )
+        else:
+            state = HealthState.DEGRADED
+            detail = "Live analytics state is stale for the active desktop session."
+        needs_action = state.value in {"degraded", "recovering", "unknown"}
+        return HealthSubsystemStatus(
+            subsystem_key="live_analytics_producer",
+            label="Live Analytics Producer",
+            state=state,
+            last_success_utc=last_success,
+            detail=detail,
+            recovery_mode="analytics_freshness" if needs_action else None,
+            operator_action_hint=(
+                "Verify face tracking is visible and submit a test message after calibration."
+                if needs_action
+                else None
+            ),
+        )
+
+    def _latest_live_analytics_timestamp(self, pulse: dict[str, Any]) -> Any:
+        values = [
+            self._ensure_utc_for_desktop(pulse.get("last_live_visual_state_at")),
+            self._ensure_utc_for_desktop(pulse.get("last_live_encounter_at")),
+        ]
+        timestamps = [value for value in values if value is not None]
+        return max(timestamps) if timestamps else None
 
     def _classify_subsystem_for_desktop(self, value: Any, now: Any) -> Any:
         from services.api.services.operator_read_service import _classify_subsystem

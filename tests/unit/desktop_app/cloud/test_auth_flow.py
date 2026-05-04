@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+from typing import cast
 
 import httpx
 import pytest
@@ -31,7 +32,12 @@ def test_pkce_challenge_matches_s256_reference_vector() -> None:
 
 def test_open_authorization_uses_injected_browser_opener() -> None:
     opened_urls: list[str] = []
-    flow = DesktopAuthFlow(_config(), browser_opener=lambda url: not opened_urls.append(url))
+
+    def open_url(url: str) -> bool:
+        opened_urls.append(url)
+        return True
+
+    flow = DesktopAuthFlow(_config(), browser_opener=open_url)
 
     request = flow.open_authorization(state="state-a")
 
@@ -93,7 +99,8 @@ def test_loopback_authorization_validates_state_and_exchanges_code(
         )
     ]
     assert seen_requests[0].code_verifier
-    assert seen_requests[0].redirect_uri.startswith("http://127.0.0.1:")
+    redirect_uri = cast(str, seen_requests[0].redirect_uri)
+    assert redirect_uri.startswith("http://127.0.0.1:")
     assert stored == {SECRET_KEY_CLOUD_REFRESH_TOKEN: "refresh-a"}
 
 

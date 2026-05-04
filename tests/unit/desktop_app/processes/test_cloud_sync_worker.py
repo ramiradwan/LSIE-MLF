@@ -5,12 +5,12 @@ import sqlite3
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import httpx
 import pytest
 
-from packages.schemas.attribution import AttributionEvent
+from packages.schemas.attribution import AttributionEvent, BanditDecisionSnapshot
 from packages.schemas.cloud import PosteriorDelta
 from packages.schemas.inference_handoff import InferenceHandoffPayload
 from services.desktop_app.cloud.outbox import CloudOutbox, PendingUpload, canonical_payload_json
@@ -130,7 +130,9 @@ def _attribution_event(sample_timestamp: datetime) -> AttributionEvent:
         semantic_p_match=0.91,
         semantic_reason_code=None,
         reward_path_version="reward-v1",
-        bandit_decision_snapshot=_bandit_snapshot_data(sample_timestamp),
+        bandit_decision_snapshot=BanditDecisionSnapshot.model_validate(
+            _bandit_snapshot_data(sample_timestamp)
+        ),
         evidence_flags=[],
         finality="online_provisional",
         schema_version="v1",
@@ -558,7 +560,8 @@ def test_event_only_batch_builder_includes_attribution_events(tmp_path: Path) ->
 
     assert batch is not None
     payload, upload_ids = batch
+    attribution_events = cast(list[dict[str, object]], payload["attribution_events"])
     assert upload_ids == ["event-a"]
     assert payload["segments"] == []
-    assert len(payload["attribution_events"]) == 1
-    assert payload["attribution_events"][0]["segment_id"] == SEGMENT_ID
+    assert len(attribution_events) == 1
+    assert attribution_events[0]["segment_id"] == SEGMENT_ID

@@ -28,6 +28,7 @@ from packages.schemas.operator_console import (
     SemanticEvaluationSummary,
     SessionPhysiologySnapshot,
     SessionSummary,
+    UiStatusKind,
 )
 from services.operator_console.state import OperatorStore
 from services.operator_console.viewmodels.overview_vm import OverviewViewModel
@@ -132,6 +133,17 @@ def test_overview_view_populates_all_cards_from_snapshot() -> None:
     assert "semantic match" in latest_secondary
     assert "p_match 91%" in latest_secondary
     assert "attribution online provisional" in latest_secondary
+
+
+def test_overview_view_marks_active_conflict_as_error() -> None:
+    store = OperatorStore()
+    vm = OverviewViewModel(store)
+    view = OverviewView(vm)
+    session = _session().model_copy(update={"status": "active conflict"})
+    store.set_overview(_snap_with_session(session))
+
+    assert view._active_session_card._status._kind is UiStatusKind.ERROR  # type: ignore[attr-defined]
+    assert view._active_session_card._status._label.text() == "active conflict"  # type: ignore[attr-defined]
 
 
 def test_overview_view_attention_card_counts_alerts() -> None:

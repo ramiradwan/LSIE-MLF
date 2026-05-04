@@ -383,6 +383,33 @@ class TestCompareEntity:
         assert "pydantic=optional" in required_issue.detail
         assert "json_schema=required" in required_issue.detail
 
+    def test_type_override_suppresses_known_json_schema_string_uuid_drift(self) -> None:
+        issues = compare_entity(
+            "PosteriorDelta",
+            {
+                "pydantic": _spec(("event_id", "uuid", False, True)),
+                "json_schema": _spec(("event_id", "string", False, True)),
+                "sql": _spec(("event_id", "uuid", False, None)),
+            },
+            frozenset(),
+            source_type_overrides={"json_schema": {"event_id": "uuid"}},
+        )
+
+        assert issues == []
+
+    def test_required_override_suppresses_known_json_schema_optional_drift(self) -> None:
+        issues = compare_entity(
+            "PosteriorDelta",
+            {
+                "pydantic": _spec(("decision_context_hash", "string", False, True)),
+                "json_schema": _spec(("decision_context_hash", "string", False, False)),
+            },
+            frozenset(),
+            source_required_overrides={"json_schema": {"decision_context_hash": True}},
+        )
+
+        assert issues == []
+
     def test_missing_field_does_not_also_flag_type_or_nullability(self) -> None:
         full = _spec(("x", "integer", False, True))
         empty = EntitySpec(name="x")

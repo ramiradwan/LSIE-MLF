@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -87,7 +88,7 @@ def _posterior_delta() -> PosteriorDelta:
         delta_beta=0.0,
         segment_id=SEGMENT_ID,
         client_id="desktop-a",
-        event_id="00000000-0000-4000-8000-000000000001",
+        event_id=uuid.UUID("00000000-0000-4000-8000-000000000001"),
         applied_at_utc=datetime(2026, 5, 2, 12, 0, tzinfo=UTC),
         decision_context_hash=SEGMENT_ID,
     )
@@ -109,6 +110,22 @@ def test_outbox_preserves_real_physiological_context(tmp_path: Path) -> None:
     assert model.physiological_context is not None
     assert model.physiological_context.streamer is not None
     assert model.physiological_context.streamer.rmssd_ms == 42.0
+
+
+def test_outbox_inference_handoff_payload_excludes_raw_media_fields(tmp_path: Path) -> None:
+    outbox = CloudOutbox(tmp_path / "desktop.sqlite")
+    try:
+        outbox.enqueue_inference_handoff(_handoff_payload(with_physiology=False))
+        upload = outbox.fetch_ready_batch("telemetry_segments", limit=10)[0]
+    finally:
+        outbox.close()
+
+    stored = json.loads(upload.payload_json)
+    encoded = json.dumps(stored).lower()
+    assert "_audio_data" not in stored
+    assert "_frame_data" not in stored
+    assert "voiceprint" not in encoded
+    assert "image_bytes" not in encoded
 
 
 def test_outbox_omits_absent_physiological_context_marker(tmp_path: Path) -> None:

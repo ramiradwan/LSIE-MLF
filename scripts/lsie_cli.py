@@ -102,11 +102,11 @@ def _api_post(path: str, payload: dict[str, Any] | None = None) -> Any:
         with urlopen(request, timeout=10) as response:
             return json.loads(response.read().decode("utf-8"))
     except HTTPError as exc:
-        body = exc.read().decode("utf-8")
+        error_body = exc.read().decode("utf-8")
         try:
-            detail = json.loads(body).get("detail", body)
+            detail = json.loads(error_body).get("detail", error_body)
         except (json.JSONDecodeError, AttributeError):
-            detail = body
+            detail = error_body
         print(f"API error ({exc.code}): {detail}", file=sys.stderr)
         raise SystemExit(1) from exc
     except URLError as exc:

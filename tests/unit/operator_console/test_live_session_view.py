@@ -192,6 +192,9 @@ def test_live_session_view_ttv_waiting_for_face_shows_muted_dashboard_overlay() 
     assert view._phone_preview.isEnabled() is False  # type: ignore[attr-defined]
     assert "visible face" in view._setup_overlay._message.text()  # type: ignore[attr-defined]
     assert "12/45 frames" in view._setup_overlay._detail.text()  # type: ignore[attr-defined]
+    preview_status = view._phone_preview._status.text()  # type: ignore[attr-defined]
+    assert "Raw phone frames are not shown" in preview_status
+    assert "12/45 frames" in preview_status
 
 
 def test_live_session_view_ttv_ready_shows_dashboard_and_smile_timeline() -> None:
@@ -209,6 +212,8 @@ def test_live_session_view_ttv_ready_shows_dashboard_and_smile_timeline() -> Non
     assert view._body_container.isHidden() is False  # type: ignore[attr-defined]
     assert view._setup_overlay.isHidden() is True  # type: ignore[attr-defined]
     assert view._phone_preview.isEnabled() is True  # type: ignore[attr-defined]
+    assert "Face locked" in view._phone_preview._status.text()  # type: ignore[attr-defined]
+    assert "Preview placeholder" not in view._phone_preview._placeholder.text()  # type: ignore[attr-defined]
     assert view._live_analytics_notice.isHidden() is True  # type: ignore[attr-defined]
     assert view._smile_card._primary.text() == "64%"  # type: ignore[attr-defined]
     assert view._timeline_model.rowCount() == 1  # type: ignore[attr-defined]
@@ -249,9 +254,10 @@ def test_live_session_view_ready_shows_no_producer_notice_without_error_banner()
     assert view._setup_overlay.isHidden() is True  # type: ignore[attr-defined]
     assert view._error_banner.isHidden() is True  # type: ignore[attr-defined]
     assert view._live_analytics_notice.isHidden() is False  # type: ignore[attr-defined]
-    assert "No live reward analytics" in view._live_analytics_notice._message.text()  # type: ignore[attr-defined]
+    notice_text = view._live_analytics_notice._message.text()  # type: ignore[attr-defined]
+    assert "waiting for a completed post-stimulus inference window" in notice_text
     assert view._smile_card._primary.text() == "—"  # type: ignore[attr-defined]
-    assert view._smile_card._secondary.text() == "Live analytics producer unavailable"  # type: ignore[attr-defined]
+    assert view._smile_card._secondary.text() == "Waiting for completed analytics window"  # type: ignore[attr-defined]
 
 
 def test_live_session_view_header_reads_from_live_session_dto() -> None:
@@ -299,6 +305,10 @@ def test_start_session_dialog_validates_and_trims_fields() -> None:
 
     assert dialog._start_button.isEnabled() is False  # type: ignore[attr-defined]
     assert "stream url" in dialog._validation_label.text().lower()  # type: ignore[attr-defined]
+
+    dialog._stream_url_input.setText("123")  # type: ignore[attr-defined]
+    assert dialog._start_button.isEnabled() is False  # type: ignore[attr-defined]
+    assert "valid url" in dialog._validation_label.text().lower()  # type: ignore[attr-defined]
 
     dialog._stream_url_input.setText("  rtmp://example/live  ")  # type: ignore[attr-defined]
     assert dialog._start_button.isEnabled() is False  # type: ignore[attr-defined]

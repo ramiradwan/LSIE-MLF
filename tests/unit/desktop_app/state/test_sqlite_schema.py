@@ -34,11 +34,29 @@ EXPECTED_TABLES: set[str] = {
     "pending_uploads",
     "analytics_message_ledger",
     "capture_status",
+    "live_session_state",
 }
 
 # Subset of v3.4 column names per table that MUST survive the port —
 # anything code-path-load-bearing. Full per-column type assertions are
 # excessive; this catches accidental drops and renames.
+RAW_MEDIA_COLUMN_TOKENS = ("audio", "frame", "image", "video", "voiceprint", "biometric")
+RAW_MEDIA_ALLOWED_COLUMNS = {
+    ("sessions", "stream_url"),
+    ("metrics", "au12_intensity"),
+    ("encounter_log", "n_frames_in_window"),
+    ("live_session_state", "calibration_frames_accumulated"),
+    ("live_session_state", "calibration_frames_required"),
+    ("live_session_state", "latest_au12_intensity"),
+    ("live_session_state", "latest_au12_timestamp_s"),
+    ("pending_uploads", "payload_json"),
+    ("pending_uploads", "payload_sha256"),
+    ("pending_uploads", "payload_redacted_at_utc"),
+    ("outcome_event", "confidence"),
+    ("attribution_score", "confidence"),
+    ("attribution_score", "attribution_method"),
+}
+
 EXPECTED_COLUMNS: dict[str, set[str]] = {
     "sessions": {
         "session_id",
@@ -114,6 +132,19 @@ EXPECTED_COLUMNS: dict[str, set[str]] = {
         "label",
         "detail",
         "operator_action_hint",
+        "updated_at_utc",
+    },
+    "live_session_state": {
+        "session_id",
+        "active_arm",
+        "expected_greeting",
+        "is_calibrating",
+        "calibration_frames_accumulated",
+        "calibration_frames_required",
+        "face_present",
+        "latest_au12_intensity",
+        "latest_au12_timestamp_s",
+        "status",
         "updated_at_utc",
     },
     "attribution_event": {
@@ -223,6 +254,27 @@ def test_table_has_expected_columns(tmp_path: Path, table: str, expected_cols: s
     missing = expected_cols.difference(actual)
     assert not missing, f"{table}: missing columns {sorted(missing)}"
     conn.close()
+
+
+def test_desktop_schema_has_no_raw_media_persistence_columns(tmp_path: Path) -> None:
+    conn = _bootstrap(tmp_path)
+    rows = conn.execute(
+        """
+        SELECT m.name AS table_name, p.name AS column_name
+        FROM sqlite_master m
+        JOIN pragma_table_info(m.name) p
+        WHERE m.type = 'table' AND m.name NOT LIKE 'sqlite_%'
+        """
+    ).fetchall()
+    conn.close()
+
+    forbidden = [
+        (table_name, column_name)
+        for table_name, column_name in rows
+        if (table_name, column_name) not in RAW_MEDIA_ALLOWED_COLUMNS
+        and any(token in column_name.lower() for token in RAW_MEDIA_COLUMN_TOKENS)
+    ]
+    assert forbidden == []
 
 
 def test_bootstrap_is_idempotent(tmp_path: Path) -> None:

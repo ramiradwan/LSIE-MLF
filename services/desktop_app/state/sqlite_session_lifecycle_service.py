@@ -7,6 +7,7 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Protocol, cast
 from uuid import UUID
 
 from packages.schemas.operator_console import (
@@ -19,7 +20,12 @@ from services.api.services.session_lifecycle_service import (
     SessionLifecycleService,
     _stable_session_id_for_action,
 )
+from services.desktop_app.ipc.control_messages import LiveSessionControlMessage
 from services.desktop_app.state.sqlite_schema import apply_writer_pragmas, bootstrap_schema
+
+
+class LiveSessionControlPublisher(Protocol):
+    def publish(self, message: LiveSessionControlMessage) -> None: ...
 
 
 class SqliteSessionLifecycleService(SessionLifecycleService):
@@ -30,15 +36,31 @@ class SqliteSessionLifecycleService(SessionLifecycleService):
         db_path: Path,
         *,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+        control_publisher: LiveSessionControlPublisher | None = None,
     ) -> None:
         self._db_path = db_path
         self._clock = clock
+        self._control_publisher = control_publisher
 
     def request_session_start(self, request: SessionCreateRequest) -> SessionLifecycleAccepted:
         session_id = _stable_session_id_for_action(request.client_action_id)
         now = self._clock()
         with self._connection() as conn:
-            conn.execute(
+            existing = conn.execute(
+                """
+                SELECT session_id
+                FROM sessions
+                WHERE ended_at IS NULL AND session_id != ?
+                ORDER BY started_at DESC
+                LIMIT 1
+                """,
+                (str(session_id),),
+            ).fetchone()
+            if existing is not None:
+                raise SessionLifecycleConflictError(
+                    f"session {existing['session_id']} is already active; start not accepted"
+                )
+            cursor = conn.execute(
                 """
                 INSERT OR IGNORE INTO sessions (
                     session_id, stream_url, experiment_id, started_at, ended_at
@@ -46,6 +68,23 @@ class SqliteSessionLifecycleService(SessionLifecycleService):
                 VALUES (?, ?, ?, ?, NULL)
                 """,
                 (str(session_id), request.stream_url, request.experiment_id, _iso_utc(now)),
+            )
+            active_arm = _fetch_active_arm(conn, request.experiment_id)
+        if cursor.rowcount > 0:
+            self._publish_control(
+                LiveSessionControlMessage(
+                    action="start",
+                    session_id=session_id,
+                    stream_url=request.stream_url,
+                    experiment_id=request.experiment_id,
+                    active_arm=str(active_arm["arm"]) if active_arm is not None else None,
+                    expected_greeting=(
+                        str(active_arm["greeting_text"])
+                        if active_arm is not None and active_arm["greeting_text"] is not None
+                        else None
+                    ),
+                    timestamp_utc=now,
+                )
             )
         return SessionLifecycleAccepted(
             action="start",
@@ -62,7 +101,7 @@ class SqliteSessionLifecycleService(SessionLifecycleService):
     ) -> SessionLifecycleAccepted:
         now = self._clock()
         with self._connection() as conn:
-            row = conn.execute(
+            target_row = conn.execute(
                 """
                 SELECT session_id, ended_at
                 FROM sessions
@@ -70,11 +109,7 @@ class SqliteSessionLifecycleService(SessionLifecycleService):
                 """,
                 (str(session_id),),
             ).fetchone()
-            if row is None or row["ended_at"] is not None:
-                raise SessionLifecycleConflictError(
-                    f"session {session_id} is not active; end not accepted"
-                )
-            active = conn.execute(
+            active_row = conn.execute(
                 """
                 SELECT session_id
                 FROM sessions
@@ -83,7 +118,20 @@ class SqliteSessionLifecycleService(SessionLifecycleService):
                 LIMIT 1
                 """
             ).fetchone()
-            if active is None or str(active["session_id"]) != str(session_id):
+            active_session_id = str(active_row["session_id"]) if active_row is not None else None
+            if target_row is None:
+                raise SessionLifecycleConflictError(
+                    f"session {session_id} is not active; end not accepted"
+                )
+            if target_row["ended_at"] is not None:
+                raise SessionLifecycleConflictError(
+                    f"session {session_id} has already ended; end not accepted"
+                )
+            if active_row is None:
+                raise SessionLifecycleConflictError(
+                    f"session {session_id} is not active; end not accepted"
+                )
+            if active_session_id != str(session_id):
                 raise SessionLifecycleConflictError(
                     f"session {session_id} is not the active session; end not accepted"
                 )
@@ -95,6 +143,13 @@ class SqliteSessionLifecycleService(SessionLifecycleService):
                 """,
                 (_iso_utc(now), str(session_id)),
             )
+        self._publish_control(
+            LiveSessionControlMessage(
+                action="end",
+                session_id=session_id,
+                timestamp_utc=now,
+            )
+        )
         return SessionLifecycleAccepted(
             action="end",
             session_id=session_id,
@@ -113,6 +168,26 @@ class SqliteSessionLifecycleService(SessionLifecycleService):
             yield conn
         finally:
             conn.close()
+
+    def _publish_control(self, message: LiveSessionControlMessage) -> None:
+        if self._control_publisher is not None:
+            self._control_publisher.publish(message)
+
+
+def _fetch_active_arm(conn: sqlite3.Connection, experiment_id: str | None) -> sqlite3.Row | None:
+    if experiment_id is None:
+        return None
+    row = conn.execute(
+        """
+        SELECT arm, greeting_text
+        FROM experiments
+        WHERE experiment_id = ? AND enabled = 1
+        ORDER BY alpha_param DESC, arm ASC
+        LIMIT 1
+        """,
+        (experiment_id,),
+    ).fetchone()
+    return cast("sqlite3.Row | None", row)
 
 
 def _iso_utc(value: datetime) -> str:

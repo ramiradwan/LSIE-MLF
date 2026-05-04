@@ -26,6 +26,7 @@ unknown keys at IPC ingress, mirroring the cloud perimeter's
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any, Literal, cast
 from uuid import UUID
 
@@ -69,6 +70,83 @@ class InferenceControlMessage(BaseModel):
     forward_fields: dict[str, Any] = Field(default_factory=dict)
 
     model_config = ConfigDict(extra="forbid")
+
+
+class PcmBlockAckMessage(BaseModel):
+    """Consumer→producer ack that a PCM SharedMemory block can be released."""
+
+    schema_version: Literal["ws5.p4.pcm_block_ack.v1"] = "ws5.p4.pcm_block_ack.v1"
+    name: str = Field(..., min_length=1, max_length=200)
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class LiveSessionControlMessage(BaseModel):
+    """Session/stimulus control envelope consumed by ``gpu_ml_worker``."""
+
+    schema_version: Literal["ws5.p4.live_session_control.v1"] = "ws5.p4.live_session_control.v1"
+    action: Literal["start", "stimulus", "end"]
+    session_id: UUID
+    stream_url: str | None = Field(default=None, min_length=1)
+    experiment_id: str | None = Field(default=None, min_length=1)
+    active_arm: str | None = Field(default=None, min_length=1)
+    expected_greeting: str | None = Field(default=None, min_length=1)
+    stimulus_time_s: float | None = Field(default=None, ge=0.0)
+    timestamp_utc: datetime
+
+    model_config = ConfigDict(extra="forbid")
+
+    @model_validator(mode="after")
+    def _action_fields_are_consistent(self) -> LiveSessionControlMessage:
+        if self.action == "start" and self.stream_url is None:
+            raise ValueError("start control messages require stream_url")
+        if self.action == "stimulus" and self.stimulus_time_s is None:
+            raise ValueError("stimulus control messages require stimulus_time_s")
+        if self.action != "stimulus" and self.stimulus_time_s is not None:
+            raise ValueError("stimulus_time_s is only valid for stimulus control messages")
+        return self
+
+
+class VisualAnalyticsStateMessage(BaseModel):
+    """Derived face/calibration telemetry published by ``gpu_ml_worker``."""
+
+    message_id: UUID
+    schema_version: Literal["ws5.p4.visual_analytics_state.v1"] = "ws5.p4.visual_analytics_state.v1"
+    session_id: UUID
+    timestamp_utc: datetime
+    face_present: bool
+    is_calibrating: bool
+    calibration_frames_accumulated: int = Field(..., ge=0)
+    calibration_frames_required: int = Field(..., gt=0)
+    active_arm: str | None = Field(default=None, min_length=1)
+    expected_greeting: str | None = Field(default=None, min_length=1)
+    latest_au12_intensity: float | None = Field(default=None, ge=0.0, le=1.0)
+    latest_au12_timestamp_s: float | None = Field(default=None, ge=0.0)
+    status: Literal[
+        "waiting_for_face",
+        "calibrating",
+        "ready",
+        "post_stimulus",
+        "no_session",
+    ]
+
+    model_config = ConfigDict(extra="forbid")
+
+    @model_validator(mode="after")
+    def _calibration_progress_is_bounded(self) -> VisualAnalyticsStateMessage:
+        if self.calibration_frames_accumulated > self.calibration_frames_required:
+            raise ValueError("calibration_frames_accumulated cannot exceed required frames")
+        if self.status == "ready" and (
+            self.calibration_frames_accumulated < self.calibration_frames_required
+        ):
+            raise ValueError("ready visual state requires completed calibration")
+        if self.status == "ready" and not self.face_present:
+            raise ValueError("ready visual state requires face_present")
+        if self.status == "ready" and self.is_calibrating:
+            raise ValueError("ready visual state cannot still be calibrating")
+        if self.latest_au12_timestamp_s is not None and self.latest_au12_intensity is None:
+            raise ValueError("latest_au12_timestamp_s requires latest_au12_intensity")
+        return self
 
 
 class AnalyticsRewardInputs(BaseModel):

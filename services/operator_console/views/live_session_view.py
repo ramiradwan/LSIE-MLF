@@ -263,7 +263,7 @@ class LiveSessionView(QWidget):
         self._body_container.setVisible(True)
         self._set_setup_overlay(setup_display)
         self._set_dashboard_muted(setup_display.dashboard_mode == "calibrating")
-        self._set_phone_preview_status(setup_display.dashboard_mode)
+        self._set_phone_preview_status(setup_display)
         live_analytics_notice = self._vm.live_analytics_notice()
         self._set_live_analytics_notice(live_analytics_notice)
         self._set_smile_card(self._vm.current_smile_intensity_percent(), live_analytics_notice)
@@ -296,7 +296,7 @@ class LiveSessionView(QWidget):
         self._empty_state.setVisible(True)
         self._setup_overlay.setVisible(False)
         self._set_dashboard_muted(False)
-        self._set_phone_preview_status(display.dashboard_mode)
+        self._set_phone_preview_status(display)
 
     def _set_setup_overlay(self, display: TtvSetupDisplay) -> None:
         if display.dashboard_mode == "ready":
@@ -318,16 +318,22 @@ class LiveSessionView(QWidget):
             widget.setEnabled(not enabled)
         self._body_container.setObjectName("ContentSurfaceMuted" if enabled else "")
 
-    def _set_phone_preview_status(self, mode: str) -> None:
-        if mode == "calibrating":
+    def _set_phone_preview_status(self, display: TtvSetupDisplay) -> None:
+        if display.dashboard_mode == "calibrating":
+            detail = f" {display.detail}." if display.detail is not None else ""
             self._phone_preview.set_status(
-                "Keep the phone stream visible while Face Tracking calibrates."
+                "Raw phone frames are not shown. Face Tracking is calibrating from "
+                f"the local capture stream.{detail}"
             )
             return
-        if mode == "ready":
-            self._phone_preview.set_status("Watch Smile Intensity after each test message.")
+        if display.dashboard_mode == "ready":
+            self._phone_preview.set_status(
+                "Face locked. Smile Intensity updates after completed post-stimulus analytics."
+            )
             return
-        self._phone_preview.set_status("Phone preview pending")
+        self._phone_preview.set_status(
+            "Raw phone frames are not shown. Waiting for capture and face tracking."
+        )
 
     def _set_status_pill(self, pill: StatusPill, value: object) -> None:
         if isinstance(value, tuple) and len(value) == 2 and isinstance(value[0], UiStatusKind):
@@ -349,7 +355,7 @@ class LiveSessionView(QWidget):
             if live_analytics_notice is None:
                 self._smile_card.set_secondary_text("Waiting for first valid smile window")
             else:
-                self._smile_card.set_secondary_text("Live analytics producer unavailable")
+                self._smile_card.set_secondary_text("Waiting for completed analytics window")
             self._smile_card.set_status(UiStatusKind.NEUTRAL, None)
             return
         self._smile_card.set_primary_text(f"{value}%")
@@ -560,13 +566,16 @@ class _PhonePreviewPanel(QFrame):
         super().__init__(parent)
         self.setObjectName("Panel")
         self.setFrameShape(QFrame.Shape.NoFrame)
-        self._title = QLabel("Phone preview", self)
+        self._title = QLabel("Live visual status", self)
         self._title.setObjectName("PanelTitle")
-        self._placeholder = QLabel("Preview placeholder", self)
+        self._placeholder = QLabel("Derived visual telemetry", self)
         self._placeholder.setObjectName("MetricCardPrimary")
         self._placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._placeholder.setMinimumHeight(220)
-        self._status = QLabel("Phone preview pending", self)
+        self._status = QLabel(
+            "Raw phone frames are not shown. Waiting for capture and face tracking.",
+            self,
+        )
         self._status.setObjectName("MetricCardSecondary")
         self._status.setWordWrap(True)
 

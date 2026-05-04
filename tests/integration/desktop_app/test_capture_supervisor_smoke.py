@@ -116,6 +116,7 @@ def test_capture_supervisor_full_lifecycle_leaves_no_orphans(
         ml_inbox=ctx.Queue(),
         drift_updates=ctx.Queue(),
         analytics_inbox=ctx.Queue(),
+        pcm_acks=ctx.Queue(),
     )
     shutdown = ctx.Event()
 

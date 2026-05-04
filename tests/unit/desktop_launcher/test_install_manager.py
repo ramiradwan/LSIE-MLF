@@ -312,8 +312,7 @@ def test_create_app_shortcut_uses_launcher_path(
     monkeypatch.setattr(os_adapter, "create_shortcut", fake_create_shortcut)
 
     assert (
-        install_manager.create_app_shortcut(paths, launcher_exe=tmp_path / "launcher.exe")
-        is True
+        install_manager.create_app_shortcut(paths, launcher_exe=tmp_path / "launcher.exe") is True
     )
     assert calls == [
         (

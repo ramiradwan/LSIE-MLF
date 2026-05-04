@@ -834,6 +834,10 @@ class Orchestrator:
                 stimulus_time=self._stimulus_time,
             )
 
+        normalized_sampled_theta_by_arm = {
+            str(arm_id): float(theta) for arm_id, theta in (sampled_theta_by_arm or {}).items()
+        }
+
         snapshot: dict[str, Any] = {
             "selection_method": "thompson_sampling",
             "selection_time_utc": selection_time_utc,
@@ -842,6 +846,7 @@ class Orchestrator:
             "selected_arm_id": self._active_arm,
             "candidate_arm_ids": normalized_candidates,
             "posterior_by_arm": posterior_copy,
+            "sampled_theta_by_arm": normalized_sampled_theta_by_arm,
             "expected_greeting": self._expected_greeting,
             "decision_context_hash": self._decision_context_hash(
                 candidate_arm_ids=normalized_candidates,
@@ -850,10 +855,6 @@ class Orchestrator:
             ),
             "random_seed": int(resolved_random_seed),
         }
-        if sampled_theta_by_arm is not None:
-            snapshot["sampled_theta_by_arm"] = {
-                str(arm_id): float(theta) for arm_id, theta in sampled_theta_by_arm.items()
-            }
 
         self._bandit_decision_snapshot = snapshot
 
@@ -865,6 +866,15 @@ class Orchestrator:
     ) -> None:
         """Populate a fallback snapshot when tests assemble without live arm selection."""
         if self._bandit_decision_snapshot is not None:
+            self._bandit_decision_snapshot = {
+                **self._bandit_decision_snapshot,
+                "sampled_theta_by_arm": {
+                    str(arm_id): float(theta)
+                    for arm_id, theta in (
+                        self._bandit_decision_snapshot.get("sampled_theta_by_arm") or {}
+                    ).items()
+                },
+            }
             return
         fallback_arm = self._active_arm or "simple_hello"
         self._active_arm = fallback_arm

@@ -114,9 +114,9 @@ _AUDIO_CAPTURE_HEALTH_KEYS = frozenset({"audio_capture", "scrcpy_audio"})
 _VIDEO_CAPTURE_HEALTH_KEYS = frozenset({"video_capture", "scrcpy_video"})
 _LIVE_ANALYTICS_HEALTH_KEYS = frozenset({"live_analytics_producer"})
 _LIVE_ANALYTICS_NOTICE = (
-    "No live reward analytics are being produced in this desktop build. ADB/ML health "
-    "and a visible face confirm setup, but smile, semantic, reward, and transcription "
-    "rows require an active desktop-safe inference producer with authoritative stimulus_time."
+    "Live reward analytics are waiting for a completed post-stimulus inference window. "
+    "Visual readiness can update before smile, semantic, reward, and transcription rows "
+    "arrive from a valid encounter."
 )
 
 SessionStartSubmitter = Callable[[SessionCreateRequest], OneShotSignals]
@@ -274,7 +274,7 @@ class LiveSessionViewModel(ViewModelBase):
         if self._ttv_state == WAITING_FOR_FACE:
             return "Open a stream or video with a visible face on your phone."
         if self._ttv_state == READY:
-            return "Face locked. Ready to measure!"
+            return "Face locked. Ready for a test message."
         return "Waiting for phone... Please connect your Android device via USB."
 
     def ttv_setup_display(self) -> TtvSetupDisplay:
@@ -291,8 +291,8 @@ class LiveSessionViewModel(ViewModelBase):
             return TtvSetupDisplay(
                 state=self._ttv_state,
                 step_label="Step 3 of 3",
-                title="Face locked. Ready to measure!",
-                message="Watch Smile Intensity, then send a test message.",
+                title="Face locked. Ready for a test message.",
+                message="Send a test message to start the post-stimulus analytics window.",
                 dashboard_mode="ready",
                 detail=self._face_tracking_detail(),
             )
@@ -407,9 +407,21 @@ class LiveSessionViewModel(ViewModelBase):
         if not normalized_stream_url:
             raise ValueError("Stream URL is required.")
         normalized_experiment_id = experiment_id.strip()
-        if not normalized_experiment_id:
-            raise ValueError("Experiment ID is required.")
-        return normalized_stream_url, normalized_experiment_id
+        try:
+            request = SessionCreateRequest(
+                stream_url=normalized_stream_url,
+                experiment_id=normalized_experiment_id,
+                client_action_id=uuid4(),
+            )
+        except ValidationError as exc:
+            for error in exc.errors():
+                location = error.get("loc", ())
+                if location == ("stream_url",):
+                    raise ValueError("Stream URL must be a valid URL.") from exc
+                if location == ("experiment_id",):
+                    raise ValueError("Experiment ID is required.") from exc
+            raise ValueError("Session start input is invalid.") from exc
+        return request.stream_url, request.experiment_id
 
     def session_start_in_progress(self) -> bool:
         return self._start_request_inflight or self._pending_start_session_id is not None

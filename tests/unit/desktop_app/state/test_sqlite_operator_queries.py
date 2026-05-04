@@ -104,6 +104,20 @@ def test_fetch_session_by_id_returns_row(tmp_path: Path) -> None:
             started_at="2026-04-01 12:00:00",
             experiment_id="greeting_line_v1",
         )
+        writer.enqueue(
+            "live_session_state",
+            {
+                "session_id": str(SESSION_A),
+                "active_arm": "warm_welcome",
+                "expected_greeting": "Say hello to the creator",
+                "is_calibrating": 1,
+                "calibration_frames_accumulated": 8,
+                "calibration_frames_required": 10,
+                "face_present": 1,
+                "status": "calibrating",
+                "updated_at_utc": "2026-04-01 12:00:05",
+            },
+        )
         writer.flush()
     finally:
         writer.close()
@@ -114,6 +128,11 @@ def test_fetch_session_by_id_returns_row(tmp_path: Path) -> None:
     assert row is not None
     assert row["session_id"] == str(SESSION_A)
     assert row["experiment_id"] == "greeting_line_v1"
+    assert row["active_arm"] == "warm_welcome"
+    assert row["expected_greeting"] == "Say hello to the creator"
+    assert row["is_calibrating"] == 1
+    assert row["calibration_frames_accumulated"] == 8
+    assert row["calibration_frames_required"] == 10
     assert row["ended_at"] is None
     # duration_s computed from started_at to NOW()
     assert isinstance(row["duration_s"], float)
@@ -455,6 +474,9 @@ def test_fetch_subsystem_pulse_empty_returns_nulls(tmp_path: Path) -> None:
         "last_capture_supervisor_at": None,
         "last_module_c_orchestrator_at": None,
         "last_gpu_ml_worker_at": None,
+        "gpu_ml_worker_state": None,
+        "gpu_ml_worker_detail": None,
+        "gpu_ml_worker_hint": None,
         "last_analytics_state_worker_at": None,
         "last_cloud_sync_worker_at": None,
         "adb_state": None,
@@ -470,6 +492,10 @@ def test_fetch_subsystem_pulse_empty_returns_nulls(tmp_path: Path) -> None:
         "video_capture_detail": None,
         "video_capture_hint": None,
         "last_video_capture_at": None,
+        "last_live_visual_state_at": None,
+        "live_visual_state_status": None,
+        "last_live_encounter_at": None,
+        "active_session_count": 0,
     }
 
 
@@ -535,6 +561,58 @@ def test_fetch_subsystem_pulse_includes_desktop_process_signals(tmp_path: Path) 
     assert pulse["video_capture_state"] == "ok"
     assert pulse["video_capture_detail"] == "Video stream recording: video_stream.mkv · 2,048 bytes"
     assert pulse["last_video_capture_at"] == "2026-04-01 12:00:12"
+
+
+def test_fetch_subsystem_pulse_includes_live_analytics_freshness(tmp_path: Path) -> None:
+    db = tmp_path / "desktop.sqlite"
+    writer = SqliteWriter(db)
+    try:
+        _seed_session(
+            writer,
+            SESSION_A,
+            stream_url="x",
+            started_at="2026-04-01 12:00:00",
+        )
+        writer.enqueue(
+            "live_session_state",
+            {
+                "session_id": str(SESSION_A),
+                "is_calibrating": 0,
+                "calibration_frames_accumulated": 10,
+                "calibration_frames_required": 10,
+                "face_present": 1,
+                "latest_au12_intensity": 0.7,
+                "latest_au12_timestamp_s": 60.0,
+                "status": "ready",
+                "updated_at_utc": "2026-04-01 12:00:10",
+            },
+        )
+        writer.enqueue(
+            "encounter_log",
+            {
+                "session_id": str(SESSION_A),
+                "segment_id": "c" * 64,
+                "experiment_id": "greeting_line_v1",
+                "arm": "warm_welcome",
+                "timestamp_utc": "2026-04-01 12:00:20",
+                "gated_reward": 0.7,
+                "p90_intensity": 0.7,
+                "semantic_gate": 1,
+                "n_frames_in_window": 30,
+            },
+        )
+        writer.flush()
+    finally:
+        writer.close()
+
+    reader = SqliteReader(db)
+    with _cursor(reader) as cur:
+        pulse = q.fetch_subsystem_pulse(cur)
+
+    assert pulse["last_live_visual_state_at"] == "2026-04-01 12:00:10"
+    assert pulse["live_visual_state_status"] == "ready"
+    assert pulse["last_live_encounter_at"] == "2026-04-01 12:00:20"
+    assert pulse["active_session_count"] == 1
 
 
 def test_fetch_recent_stale_physiology_filters_is_stale(tmp_path: Path) -> None:

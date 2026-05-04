@@ -73,8 +73,7 @@ def test_main_smoke_runs_preflight_and_skips_process_graph(monkeypatch: pytest.M
     guard_calls: list[str] = []
 
     monkeypatch.setattr(
-        desktop_main.preflight,
-        "ensure_preflight",
+        "services.desktop_app.__main__.preflight.ensure_preflight",
         lambda: preflight_calls.append("called"),
     )
     monkeypatch.setattr(
@@ -127,6 +126,7 @@ def test_process_graph_starts_and_stops_cleanly() -> None:
             assert proc.pid is not None
         assert graph.channels is not None
         assert graph.channels.analytics_inbox is not None
+        assert graph.channels.pcm_acks is not None
     finally:
         graph.stop_all(timeout=15.0)
 

@@ -65,6 +65,8 @@ from services.operator_console.widgets.empty_state import EmptyStateWidget
 from services.operator_console.widgets.metric_card import MetricCard
 from services.operator_console.widgets.section_header import SectionHeader
 
+_ACTIVE_CONFLICT_STATUS = "active conflict"
+
 # Cap on the attention queue length on the Overview — the full alert
 # timeline lives on the Health page. Keeping the overview
 # tight means the operator sees the top items and clicks through when
@@ -228,7 +230,10 @@ class OverviewView(QWidget):
         self._active_session_card.set_secondary_text(
             f"arm {arm_part} · greeting “{greeting_part}” · {duration_part}"
         )
-        self._active_session_card.set_status(UiStatusKind.OK, session.status)
+        status_kind = (
+            UiStatusKind.ERROR if session.status == _ACTIVE_CONFLICT_STATUS else UiStatusKind.OK
+        )
+        self._active_session_card.set_status(status_kind, session.status)
 
     def _render_experiment(self, summary: ExperimentSummary | None) -> None:
         if summary is None:

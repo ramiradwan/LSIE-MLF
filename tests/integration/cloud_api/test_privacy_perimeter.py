@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import logging
+from collections.abc import Generator
 from datetime import UTC, datetime
 from typing import Any
 
@@ -49,7 +50,7 @@ def service() -> RecordingTelemetryService:
 
 
 @pytest.fixture
-def client(service: RecordingTelemetryService) -> TestClient:
+def client(service: RecordingTelemetryService) -> Generator[TestClient]:
     test_app = FastAPI()
     test_app.middleware("http")(forbid_raw_payload_middleware)
     test_app.include_router(telemetry.router, prefix="/v4")

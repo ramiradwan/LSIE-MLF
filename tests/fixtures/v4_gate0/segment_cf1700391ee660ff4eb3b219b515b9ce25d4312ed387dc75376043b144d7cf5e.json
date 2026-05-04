@@ -400,6 +400,7 @@
         "beta": 1.0
       }
     },
+    "sampled_theta_by_arm": {},
     "expected_greeting": "Hi! What's the best advice you've gotten today?",
     "decision_context_hash": "19334dbd3f6e22b741622d2b714884fc401a7ae5209a662129739e93e3fbf74f",
     "random_seed": 2006959779045298458

@@ -18,8 +18,10 @@ from enum import StrEnum
 from typing import Literal
 from uuid import UUID
 
+from pydantic import AnyUrl, ConfigDict, Field, TypeAdapter, field_validator
 from pydantic import BaseModel as PydanticBaseModel
-from pydantic import ConfigDict, Field, field_validator
+
+_STREAM_URL_ADAPTER = TypeAdapter(AnyUrl)
 
 # ----------------------------------------------------------------------
 # Enums
@@ -658,7 +660,16 @@ class SessionCreateRequest(OperatorConsoleModel):
     experiment_id: str = Field(..., min_length=1)
     client_action_id: UUID
 
-    @field_validator("stream_url", "experiment_id")
+    @field_validator("stream_url")
+    @classmethod
+    def _valid_stream_url(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("value must not be blank")
+        _STREAM_URL_ADAPTER.validate_python(stripped)
+        return stripped
+
+    @field_validator("experiment_id")
     @classmethod
     def _non_blank(cls, value: str) -> str:
         stripped = value.strip()

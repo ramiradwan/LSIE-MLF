@@ -121,8 +121,14 @@ class TestBanditDecisionSnapshot:
         schema = BanditDecisionSnapshot.model_json_schema()
         required = set(schema["required"])
 
+        assert "sampled_theta_by_arm" in required
         assert "decision_context_hash" in required
         assert "random_seed" in required
+
+        missing_theta = _bandit_snapshot_data(sample_timestamp)
+        missing_theta.pop("sampled_theta_by_arm")
+        with pytest.raises(ValidationError):
+            BanditDecisionSnapshot.model_validate(missing_theta)
 
         missing_hash = _bandit_snapshot_data(sample_timestamp)
         missing_hash.pop("decision_context_hash")

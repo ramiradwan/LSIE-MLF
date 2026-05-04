@@ -76,7 +76,14 @@ echo ""
 
 # 6. Canonical terminology audit
 echo "── Canonical terminology audit ──"
-if grep -rnE 'GPU worker|video pipe|free-form rationale|free-form rationales|free-form semantic rationale|free-form semantic rationales|x[_-]?max[- ]normalized reward|x[_-]?max as reward input|x[_-]?max reward input|\bpitch_f0\b|legacy acoustic scalar|scalar-only acoustic|\[0\.0, 5\.0\].*AU12|AU12.*\[0\.0, 5\.0\]|AU12 clamp.*5\.0|clamp.*AU12.*5\.0' services/ packages/ scripts/; then
+if grep -rnE \
+    --exclude='check.sh' \
+    --exclude='check.ps1' \
+    --exclude='mechanical.py' \
+    --exclude='*.pyc' \
+    --exclude-dir='__pycache__' \
+    'GPU worker|video pipe|free-form rationale|free-form rationales|free-form semantic rationale|free-form semantic rationales|x[_-]?max[- ]normalized reward|x[_-]?max as reward input|x[_-]?max reward input|\bpitch_f0\b|legacy acoustic scalar|scalar-only acoustic|\[0\.0, 5\.0\].*AU12|AU12.*\[0\.0, 5\.0\]|AU12 clamp.*5\.0|clamp.*AU12.*5\.0' \
+    services/ packages/ scripts/; then
     fail "Canonical terminology audit"
 else
     pass "Canonical terminology audit"

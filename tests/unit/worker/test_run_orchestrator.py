@@ -11,7 +11,7 @@ from __future__ import annotations
 import importlib
 import sys
 from types import ModuleType
-from typing import Any
+from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
 
@@ -173,7 +173,7 @@ class TestMain:
 
     def test_entrypoint_leaves_handoff_enqueue_to_orchestrator(self) -> None:
         mock_task = MagicMock()
-        inference_module = ModuleType("services.worker.tasks.inference")
+        inference_module = cast(Any, ModuleType("services.worker.tasks.inference"))
         inference_module.process_segment = mock_task
         sys.modules.pop("services.worker.tasks.inference", None)
 

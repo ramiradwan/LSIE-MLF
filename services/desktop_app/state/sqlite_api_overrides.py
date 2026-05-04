@@ -5,12 +5,14 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Protocol
 
 from fastapi import FastAPI
 
 from services.api.routes.experiments import get_admin_service
 from services.api.routes.operator import get_action_service, get_read_service
 from services.api.routes.sessions import get_session_lifecycle_service
+from services.desktop_app.ipc.control_messages import LiveSessionControlMessage
 from services.desktop_app.state.sqlite_experiment_admin_service import (
     SqliteExperimentAdminService,
 )
@@ -25,20 +27,40 @@ from services.desktop_app.state.sqlite_session_lifecycle_service import (
 )
 
 
+class LiveSessionControlPublisher(Protocol):
+    def publish(self, message: LiveSessionControlMessage) -> None: ...
+
+
 class DesktopApiServices:
     """Holds desktop API service singletons for dependency override tests."""
 
-    def __init__(self, db_path: Path) -> None:
+    def __init__(
+        self,
+        db_path: Path,
+        *,
+        control_publisher: LiveSessionControlPublisher | None = None,
+    ) -> None:
         self.reader = SqliteReader(db_path)
         self.read_service = SqliteOperatorReadService(self.reader)
-        self.action_service = SqliteOperatorActionService(db_path)
-        self.session_lifecycle_service = SqliteSessionLifecycleService(db_path)
+        self.action_service = SqliteOperatorActionService(
+            db_path,
+            control_publisher=control_publisher,
+        )
+        self.session_lifecycle_service = SqliteSessionLifecycleService(
+            db_path,
+            control_publisher=control_publisher,
+        )
         self.experiment_admin_service = SqliteExperimentAdminService(db_path)
 
 
-def configure_sqlite_api_overrides(api_app: FastAPI, db_path: Path) -> DesktopApiServices:
+def configure_sqlite_api_overrides(
+    api_app: FastAPI,
+    db_path: Path,
+    *,
+    control_publisher: LiveSessionControlPublisher | None = None,
+) -> DesktopApiServices:
     """Install desktop SQLite services and skip the server Postgres lifespan."""
-    services = DesktopApiServices(db_path)
+    services = DesktopApiServices(db_path, control_publisher=control_publisher)
 
     def _read_service_dependency() -> SqliteOperatorReadService:
         return services.read_service

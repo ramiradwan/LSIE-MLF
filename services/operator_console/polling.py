@@ -338,6 +338,7 @@ class PollingCoordinator(QObject):
                 JOB_SESSIONS,
                 JOB_LIVE_SESSION,
                 JOB_ENCOUNTERS,
+                JOB_HEALTH,
                 JOB_ALERTS,
             ):
                 self.refresh_now(target)
@@ -531,6 +532,7 @@ class PollingCoordinator(QObject):
     # ------------------------------------------------------------------
 
     def _sync_jobs_for_current_state(self) -> None:
+        self._prune_completed_orphans()
         current_route = self._store.route()
         selected = self._store.selected_session_id()
         want: set[str] = set()
@@ -617,6 +619,9 @@ class PollingCoordinator(QObject):
 
     def _prune_orphan(self, worker: PollingWorker) -> None:
         self._orphan_jobs = [h for h in self._orphan_jobs if h.worker is not worker]
+
+    def _prune_completed_orphans(self) -> None:
+        self._orphan_jobs = [h for h in self._orphan_jobs if h.thread.isRunning()]
 
     def _drain_orphan_jobs(self) -> None:
         """Give orphaned worker threads a short cooperative shutdown window."""

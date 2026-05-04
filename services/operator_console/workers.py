@@ -73,6 +73,7 @@ class PollingWorker(QObject):
         self._fetch = fetch
         self._timer: QTimer | None = None
         self._stopped = False
+        self._fetch_in_progress = False
 
     @property
     def job_name(self) -> str:
@@ -118,28 +119,32 @@ class PollingWorker(QObject):
         self._run_once()
 
     def _run_once(self) -> None:
-        if self._stopped:
+        if self._stopped or self._fetch_in_progress:
             return
+        self._fetch_in_progress = True
         try:
-            payload = self._fetch()
-        except ApiError as exc:
+            try:
+                payload = self._fetch()
+            except ApiError as exc:
+                if not self._stopped:
+                    self.error.emit(self._job_name, exc)
+                return
+            except Exception as exc:  # defensive — don't let the worker die
+                # §12: a non-ApiError in a worker is a bug on our side;
+                # surface it as a non-retryable ApiError so the UI treats
+                # it like any other permanent failure.
+                wrapped = ApiError(
+                    message=f"unexpected error: {exc}",
+                    endpoint=None,
+                    retryable=False,
+                )
+                if not self._stopped:
+                    self.error.emit(self._job_name, wrapped)
+                return
             if not self._stopped:
-                self.error.emit(self._job_name, exc)
-            return
-        except Exception as exc:  # defensive — don't let the worker die
-            # §12: a non-ApiError in a worker is a bug on our side;
-            # surface it as a non-retryable ApiError so the UI treats
-            # it like any other permanent failure.
-            wrapped = ApiError(
-                message=f"unexpected error: {exc}",
-                endpoint=None,
-                retryable=False,
-            )
-            if not self._stopped:
-                self.error.emit(self._job_name, wrapped)
-            return
-        if not self._stopped:
-            self.data_ready.emit(self._job_name, payload)
+                self.data_ready.emit(self._job_name, payload)
+        finally:
+            self._fetch_in_progress = False
 
 
 class OneShotSignals(QObject):

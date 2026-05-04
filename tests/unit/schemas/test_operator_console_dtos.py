@@ -451,6 +451,14 @@ class TestSessionLifecycleDtos:
                 client_action_id=uuid.uuid4(),
             )
 
+    def test_session_create_request_rejects_invalid_stream_url(self) -> None:
+        with pytest.raises(ValidationError):
+            SessionCreateRequest(
+                stream_url="123",
+                experiment_id="exp-1",
+                client_action_id=uuid.uuid4(),
+            )
+
     def test_session_end_request_requires_client_action_id(self) -> None:
         with pytest.raises(ValidationError):
             SessionEndRequest()  # type: ignore[call-arg]

@@ -5,15 +5,20 @@ import sqlite3
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
 from services.desktop_app.cloud.outbox import CloudOutbox
-from services.desktop_app.ipc.control_messages import AnalyticsResultMessage
+from services.desktop_app.ipc.control_messages import (
+    AnalyticsResultMessage,
+    VisualAnalyticsStateMessage,
+)
 from services.desktop_app.processes.analytics_state_worker import (
     POSTERIOR_EVENT_NAMESPACE,
     LocalAnalyticsProcessor,
+    QueueLike,
+    _run_loop,
 )
 from services.desktop_app.state.sqlite_schema import bootstrap_schema
 
@@ -96,22 +101,24 @@ def _analytics_message(
     is_match: bool = True,
     confidence_score: float = 0.5,
     transcription: str = TRANSCRIPTION,
+    reward: dict[str, Any] | None = None,
 ) -> AnalyticsResultMessage:
-    return AnalyticsResultMessage.model_validate(
-        {
-            "message_id": message_id,
-            "handoff": handoff or _handoff_payload(),
-            "semantic": {
-                "reasoning": "cross_encoder_high_match",
-                "is_match": is_match,
-                "confidence_score": confidence_score,
-                "semantic_method": "cross_encoder",
-                "semantic_method_version": "test-v1",
-            },
-            "transcription": transcription,
-            "acoustic": _acoustic_payload(),
-        }
-    )
+    payload: dict[str, Any] = {
+        "message_id": message_id,
+        "handoff": handoff or _handoff_payload(),
+        "semantic": {
+            "reasoning": "cross_encoder_high_match",
+            "is_match": is_match,
+            "confidence_score": confidence_score,
+            "semantic_method": "cross_encoder",
+            "semantic_method_version": "test-v1",
+        },
+        "transcription": transcription,
+        "acoustic": _acoustic_payload(),
+    }
+    if reward is not None:
+        payload["reward"] = reward
+    return AnalyticsResultMessage.model_validate(payload)
 
 
 def _prepare_db(db: Path) -> None:
@@ -122,6 +129,206 @@ def _prepare_db(db: Path) -> None:
         (SESSION_ID, "https://example.com/stream"),
     )
     conn.close()
+
+
+def _visual_state(
+    *,
+    message_id: str = "00000000-0000-4000-8000-000000000020",
+    timestamp_utc: datetime = datetime(2026, 5, 2, 12, 0, tzinfo=UTC),
+    status: str = "calibrating",
+    face_present: bool = True,
+    is_calibrating: bool = True,
+    calibration_frames_accumulated: int = 5,
+    calibration_frames_required: int = 10,
+    latest_au12_intensity: float | None = 0.42,
+    latest_au12_timestamp_s: float | None = 12.25,
+) -> VisualAnalyticsStateMessage:
+    return VisualAnalyticsStateMessage.model_validate(
+        {
+            "message_id": message_id,
+            "session_id": SESSION_ID,
+            "timestamp_utc": timestamp_utc,
+            "face_present": face_present,
+            "is_calibrating": is_calibrating,
+            "calibration_frames_accumulated": calibration_frames_accumulated,
+            "calibration_frames_required": calibration_frames_required,
+            "active_arm": "warm_welcome",
+            "expected_greeting": "Say hello to the creator",
+            "latest_au12_intensity": latest_au12_intensity,
+            "latest_au12_timestamp_s": latest_au12_timestamp_s,
+            "status": status,
+        }
+    )
+
+
+class _OneMessageInbox:
+    def __init__(self, raw: object, shutdown_event: _ShutdownEvent) -> None:
+        self._raw = raw
+        self._shutdown_event = shutdown_event
+
+    def get(self, block: bool = True, timeout: float | None = None) -> object:
+        self._shutdown_event.set()
+        return self._raw
+
+
+class _ShutdownEvent:
+    def __init__(self) -> None:
+        self._is_set = False
+
+    def is_set(self) -> bool:
+        return self._is_set
+
+    def set(self) -> None:
+        self._is_set = True
+
+
+class _Outbox:
+    def __init__(self) -> None:
+        self.enqueued: list[object] = []
+
+    def enqueue_posterior_delta(self, delta: object) -> None:
+        self.enqueued.append(delta)
+
+
+def test_processor_upserts_visual_state(tmp_path: Path) -> None:
+    db = tmp_path / "desktop.sqlite"
+    _prepare_db(db)
+    processor = LocalAnalyticsProcessor(db, client_id="desktop-a")
+
+    processor.process_visual_state(_visual_state())
+
+    conn = sqlite3.connect(str(db), isolation_level=None)
+    conn.row_factory = sqlite3.Row
+    row = conn.execute(
+        """
+        SELECT session_id, active_arm, expected_greeting, is_calibrating,
+               calibration_frames_accumulated, calibration_frames_required,
+               face_present, latest_au12_intensity, latest_au12_timestamp_s,
+               status, updated_at_utc
+        FROM live_session_state
+        WHERE session_id = ?
+        """,
+        (SESSION_ID,),
+    ).fetchone()
+    conn.close()
+
+    assert row is not None
+    assert row["session_id"] == SESSION_ID
+    assert row["active_arm"] == "warm_welcome"
+    assert row["expected_greeting"] == "Say hello to the creator"
+    assert row["is_calibrating"] == 1
+    assert row["calibration_frames_accumulated"] == 5
+    assert row["calibration_frames_required"] == 10
+    assert row["face_present"] == 1
+    assert row["latest_au12_intensity"] == pytest.approx(0.42, abs=1e-12)
+    assert row["latest_au12_timestamp_s"] == pytest.approx(12.25, abs=1e-12)
+    assert row["status"] == "calibrating"
+    assert row["updated_at_utc"] == "2026-05-02T12:00:00Z"
+
+
+def test_processor_visual_state_replaces_previous_state(tmp_path: Path) -> None:
+    db = tmp_path / "desktop.sqlite"
+    _prepare_db(db)
+    processor = LocalAnalyticsProcessor(db, client_id="desktop-a")
+
+    processor.process_visual_state(_visual_state())
+    processor.process_visual_state(
+        _visual_state(
+            message_id="00000000-0000-4000-8000-000000000021",
+            timestamp_utc=datetime(2026, 5, 2, 12, 1, tzinfo=UTC),
+            status="ready",
+            face_present=True,
+            is_calibrating=False,
+            calibration_frames_accumulated=10,
+            calibration_frames_required=10,
+            latest_au12_intensity=0.88,
+            latest_au12_timestamp_s=60.5,
+        )
+    )
+
+    conn = sqlite3.connect(str(db), isolation_level=None)
+    conn.row_factory = sqlite3.Row
+    rows = conn.execute(
+        """
+        SELECT is_calibrating, calibration_frames_accumulated, face_present,
+               latest_au12_intensity, latest_au12_timestamp_s, status, updated_at_utc
+        FROM live_session_state
+        WHERE session_id = ?
+        """,
+        (SESSION_ID,),
+    ).fetchall()
+    conn.close()
+
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["is_calibrating"] == 0
+    assert row["calibration_frames_accumulated"] == 10
+    assert row["face_present"] == 1
+    assert row["latest_au12_intensity"] == pytest.approx(0.88, abs=1e-12)
+    assert row["latest_au12_timestamp_s"] == pytest.approx(60.5, abs=1e-12)
+    assert row["status"] == "ready"
+    assert row["updated_at_utc"] == "2026-05-02T12:01:00Z"
+
+
+def test_processor_visual_state_does_not_write_analytics_or_reward_rows(tmp_path: Path) -> None:
+    db = tmp_path / "desktop.sqlite"
+    _prepare_db(db)
+    processor = LocalAnalyticsProcessor(db, client_id="desktop-a")
+
+    processor.process_visual_state(_visual_state())
+
+    conn = sqlite3.connect(str(db), isolation_level=None)
+    counts = {
+        table: conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+        for table in (
+            "analytics_message_ledger",
+            "encounter_log",
+            "metrics",
+            "transcripts",
+            "evaluations",
+            "pending_uploads",
+        )
+    }
+    experiment = conn.execute(
+        "SELECT alpha_param, beta_param FROM experiments WHERE id = ? AND arm = ?",
+        (1, "warm_welcome"),
+    ).fetchone()
+    conn.close()
+
+    assert counts == {
+        "analytics_message_ledger": 0,
+        "encounter_log": 0,
+        "metrics": 0,
+        "transcripts": 0,
+        "evaluations": 0,
+        "pending_uploads": 0,
+    }
+    assert experiment == pytest.approx((1.0, 1.0), abs=1e-12)
+
+
+def test_run_loop_dispatches_visual_state_without_outbox_enqueue(tmp_path: Path) -> None:
+    db = tmp_path / "desktop.sqlite"
+    _prepare_db(db)
+    shutdown = _ShutdownEvent()
+    inbox = _OneMessageInbox(_visual_state().model_dump(mode="json"), shutdown)
+    processor = LocalAnalyticsProcessor(db, client_id="desktop-a")
+    outbox = _Outbox()
+
+    _run_loop(
+        cast("Any", shutdown),
+        cast("QueueLike", inbox),
+        processor,
+        cast("CloudOutbox", outbox),
+    )
+
+    conn = sqlite3.connect(str(db), isolation_level=None)
+    live_count = conn.execute("SELECT COUNT(*) FROM live_session_state").fetchone()[0]
+    ledger_count = conn.execute("SELECT COUNT(*) FROM analytics_message_ledger").fetchone()[0]
+    conn.close()
+
+    assert live_count == 1
+    assert ledger_count == 0
+    assert outbox.enqueued == []
 
 
 def test_processor_updates_local_posterior_and_persists_analytics_rows(tmp_path: Path) -> None:
@@ -163,9 +370,9 @@ def test_processor_updates_local_posterior_and_persists_analytics_rows(tmp_path:
         (SEGMENT_ID,),
     ).fetchone()
     metrics = conn.execute(
-        "SELECT f0_valid_measure, perturbation_valid_measure, voiced_coverage_measure_s, "
-        "f0_mean_measure_hz, jitter_mean_measure, shimmer_mean_measure "
-        "FROM metrics WHERE segment_id = ?",
+        "SELECT au12_intensity, f0_valid_measure, perturbation_valid_measure, "
+        "voiced_coverage_measure_s, f0_mean_measure_hz, jitter_mean_measure, "
+        "shimmer_mean_measure FROM metrics WHERE segment_id = ?",
         (SEGMENT_ID,),
     ).fetchone()
     ledger = conn.execute(
@@ -191,6 +398,7 @@ def test_processor_updates_local_posterior_and_persists_analytics_rows(tmp_path:
     assert evaluation["is_match"] == 1
     assert evaluation["confidence"] == pytest.approx(0.5, abs=1e-12)
     assert metrics is not None
+    assert metrics["au12_intensity"] is None
     assert metrics["f0_valid_measure"] == 1
     assert metrics["perturbation_valid_measure"] == 1
     assert metrics["voiced_coverage_measure_s"] == pytest.approx(1.25, abs=1e-12)
@@ -201,6 +409,50 @@ def test_processor_updates_local_posterior_and_persists_analytics_rows(tmp_path:
     assert ledger["segment_id"] == SEGMENT_ID
     assert ledger["client_id"] == "desktop-a"
     assert ledger["arm"] == "warm_welcome"
+
+
+def test_processor_ignores_inbound_reward_and_recomputes_from_handoff(tmp_path: Path) -> None:
+    db = tmp_path / "desktop.sqlite"
+    _prepare_db(db)
+    processor = LocalAnalyticsProcessor(db, client_id="desktop-a")
+
+    delta = processor.process(
+        _analytics_message(
+            reward={
+                "gated_reward": 0.0,
+                "p90_intensity": 0.0,
+                "semantic_gate": 0,
+                "n_frames_in_window": 0,
+                "au12_baseline_pre": None,
+                "stimulus_time": 999.0,
+            }
+        )
+    )
+
+    assert delta is not None
+    assert delta.delta_alpha == pytest.approx(0.82, abs=1e-12)
+    assert delta.delta_beta == pytest.approx(0.18, abs=1e-12)
+    conn = sqlite3.connect(str(db), isolation_level=None)
+    conn.row_factory = sqlite3.Row
+    encounter = conn.execute(
+        "SELECT gated_reward, p90_intensity, semantic_gate, n_frames_in_window, "
+        "au12_baseline_pre, stimulus_time FROM encounter_log WHERE segment_id = ?",
+        (SEGMENT_ID,),
+    ).fetchone()
+    experiment = conn.execute(
+        "SELECT alpha_param, beta_param FROM experiments WHERE id = ? AND arm = ?",
+        (1, "warm_welcome"),
+    ).fetchone()
+    conn.close()
+
+    assert encounter is not None
+    assert encounter["gated_reward"] == pytest.approx(0.82, abs=1e-12)
+    assert encounter["p90_intensity"] == pytest.approx(0.82, abs=1e-12)
+    assert encounter["semantic_gate"] == 1
+    assert encounter["n_frames_in_window"] == 3
+    assert encounter["au12_baseline_pre"] == pytest.approx(0.3, abs=1e-12)
+    assert encounter["stimulus_time"] == pytest.approx(100.0, abs=1e-12)
+    assert experiment == pytest.approx((1.82, 1.18), abs=1e-12)
 
 
 def test_processor_duplicate_identity_does_not_reapply_or_duplicate_rows(tmp_path: Path) -> None:

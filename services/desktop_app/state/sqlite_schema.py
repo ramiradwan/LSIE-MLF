@@ -366,6 +366,32 @@ SCHEMA_DDL: Final[tuple[str, ...]] = (
         updated_at_utc      TEXT NOT NULL
     )
     """,
+    """
+    CREATE TABLE IF NOT EXISTS live_session_state (
+        session_id                      TEXT PRIMARY KEY REFERENCES sessions(session_id),
+        active_arm                      TEXT,
+        expected_greeting               TEXT,
+        is_calibrating                  INTEGER NOT NULL,
+        calibration_frames_accumulated  INTEGER NOT NULL CHECK (
+            calibration_frames_accumulated >= 0
+        ),
+        calibration_frames_required     INTEGER NOT NULL CHECK (
+            calibration_frames_required > 0
+        ),
+        face_present                    INTEGER NOT NULL,
+        latest_au12_intensity           REAL CHECK (
+            latest_au12_intensity IS NULL
+            OR (latest_au12_intensity BETWEEN 0.0 AND 1.0)
+        ),
+        latest_au12_timestamp_s         REAL CHECK (
+            latest_au12_timestamp_s IS NULL OR latest_au12_timestamp_s >= 0.0
+        ),
+        status                          TEXT NOT NULL CHECK (
+            status IN ('waiting_for_face', 'calibrating', 'ready', 'post_stimulus', 'no_session')
+        ),
+        updated_at_utc                  TEXT NOT NULL
+    )
+    """,
     # --- Cloud upload outbox ----------------------------------------
     """
     CREATE TABLE IF NOT EXISTS pending_uploads (
@@ -429,6 +455,8 @@ INDEX_DDL: Final[tuple[str, ...]] = (
     "CREATE INDEX IF NOT EXISTS idx_capture_pid_manifest_parent "
     "ON capture_pid_manifest(parent_process)",
     "CREATE INDEX IF NOT EXISTS idx_capture_status_updated ON capture_status(updated_at_utc)",
+    "CREATE INDEX IF NOT EXISTS idx_live_session_state_updated "
+    "ON live_session_state(updated_at_utc)",
     "CREATE INDEX IF NOT EXISTS idx_pending_uploads_ready "
     "ON pending_uploads(endpoint, status, next_attempt_at_utc, created_at_utc)",
     "CREATE INDEX IF NOT EXISTS idx_pending_uploads_lock ON pending_uploads(status, locked_at_utc)",

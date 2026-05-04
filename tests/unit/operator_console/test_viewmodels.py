@@ -352,8 +352,8 @@ def test_live_session_vm_ttv_state_waits_for_face_until_calibration_ready() -> N
     display = vm.ttv_setup_display()
     assert display.step_label == "Step 3 of 3"
     assert display.dashboard_mode == "ready"
-    assert display.title == "Face locked. Ready to measure!"
-    assert display.message == "Watch Smile Intensity, then send a test message."
+    assert display.title == "Face locked. Ready for a test message."
+    assert display.message == "Send a test message to start the post-stimulus analytics window."
     assert emissions == ["WAITING_FOR_FACE", "READY"]
 
 
@@ -568,8 +568,8 @@ def test_live_session_vm_exposes_no_producer_notice_without_blocking_ready() -> 
     assert vm.has_live_encounter_analytics() is False
     notice = vm.live_analytics_notice()
     assert notice is not None
-    assert "No live reward analytics" in notice
-    assert "authoritative stimulus_time" in notice
+    assert "waiting for a completed post-stimulus inference window" in notice
+    assert "Visual readiness can update before smile" in notice
 
     store.set_encounters([_encounter("e1", session_id=session_id)])
     assert vm.has_live_encounter_analytics() is True
@@ -794,6 +794,9 @@ def test_live_session_vm_start_new_session_validates_modal_fields() -> None:
 
     assert vm.start_new_session("rtmp://example/live", "   ") is None
     assert vm.error() == "Experiment ID is required."
+
+    assert vm.start_new_session("123", "exp-a") is None
+    assert vm.error() == "Stream URL must be a valid URL."
 
 
 def test_live_session_vm_start_new_session_dispatches_and_switches_selection() -> None:

@@ -107,7 +107,7 @@ class HealthView(QWidget):
         self._empty_state = EmptyStateWidget(self)
         self._empty_state.set_title("No health snapshot")
         self._empty_state.set_message(
-            "Health data will appear once the API Server reports its first rollup."
+            "Health data will appear once the desktop process graph reports its first rollup."
         )
 
         self._overall_card = MetricCard("Overall", self)

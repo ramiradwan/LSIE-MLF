@@ -100,6 +100,8 @@ class EntityMapping:
     json_schema_key: str | None
     sql_table: str | None = None
     ignore_fields: frozenset[str] = field(default_factory=frozenset)
+    source_type_overrides: dict[str, dict[str, str]] = field(default_factory=dict)
+    source_required_overrides: dict[str, dict[str, bool]] = field(default_factory=dict)
 
 
 @dataclass
@@ -169,6 +171,8 @@ DEFAULT_REGISTRY: tuple[EntityMapping, ...] = (
         json_schema_key="PosteriorDelta",
         sql_table="posterior_delta_log",
         ignore_fields=frozenset({"received_at"}),
+        source_type_overrides={"json_schema": {"event_id": "uuid"}},
+        source_required_overrides={"json_schema": {"decision_context_hash": True}},
     ),
     EntityMapping(
         name="ExperimentBundle",
@@ -221,7 +225,9 @@ def parse_json_schema(
     return entity
 
 
-def _normalize_json_property(schema: dict[str, Any], root_schema: dict[str, Any]) -> tuple[str, bool]:
+def _normalize_json_property(
+    schema: dict[str, Any], root_schema: dict[str, Any]
+) -> tuple[str, bool]:
     if ref := schema.get("$ref"):
         resolved = _resolve_json_ref(root_schema, ref)
         if isinstance(resolved, dict):
@@ -313,7 +319,8 @@ def extract_json_schemas(content: dict[str, Any]) -> dict[str, dict[str, Any]]:
     schemas: dict[str, dict[str, Any]] = {}
 
     def register_schema(key: str, schema: dict[str, Any], root_schema: dict[str, Any]) -> None:
-        schema_key = schema.get("title") if isinstance(schema.get("title"), str) else key
+        title = schema.get("title")
+        schema_key = title if isinstance(title, str) else key
         schema_payload = schema
         shared_defs = root_schema.get("$defs")
         schema_defs = schema_payload.get("$defs")
@@ -367,7 +374,8 @@ def extract_json_schemas(content: dict[str, Any]) -> dict[str, dict[str, Any]]:
         except json.JSONDecodeError:
             continue
         if isinstance(schema, dict):
-            title = schema.get("title") if isinstance(schema.get("title"), str) else "schema"
+            title_value = schema.get("title")
+            title = title_value if isinstance(title_value, str) else "schema"
             register_schema(title, schema, schema)
 
     return schemas
@@ -484,12 +492,17 @@ def compare_entity(
     entity_name: str,
     sources: Mapping[str, EntitySpec | None],
     ignore_fields: frozenset[str],
+    source_type_overrides: Mapping[str, Mapping[str, str]] | None = None,
+    source_required_overrides: Mapping[str, Mapping[str, bool]] | None = None,
 ) -> list[Inconsistency]:
     """Compare one entity across all sources where it is defined."""
     issues: list[Inconsistency] = []
     available = {key: value for key, value in sources.items() if value is not None}
     if len(available) < 2:
         return issues
+
+    source_type_overrides = source_type_overrides or {}
+    source_required_overrides = source_required_overrides or {}
 
     all_fields: set[str] = set()
     for spec in available.values():
@@ -516,7 +529,10 @@ def compare_entity(
             )
             continue
 
-        types = {source_name: spec.type for source_name, spec in present_in.items()}
+        types = {
+            source_name: source_type_overrides.get(source_name, {}).get(field_name, spec.type)
+            for source_name, spec in present_in.items()
+        }
         if len(set(types.values())) > 1:
             issues.append(
                 Inconsistency(
@@ -545,9 +561,10 @@ def compare_entity(
             )
 
         requiredness = {
-            source_name: spec.required
+            source_name: source_required_overrides.get(source_name, {}).get(field_name, spec.required)
             for source_name, spec in present_in.items()
-            if spec.required is not None
+            if source_required_overrides.get(source_name, {}).get(field_name, spec.required)
+            is not None
         }
         if len(requiredness) >= 2 and len(set(requiredness.values())) > 1:
             issues.append(
@@ -600,7 +617,15 @@ def check_consistency(
                 )
             )
 
-        all_issues.extend(compare_entity(mapping.name, sources, mapping.ignore_fields))
+        all_issues.extend(
+            compare_entity(
+                mapping.name,
+                sources,
+                mapping.ignore_fields,
+                mapping.source_type_overrides,
+                mapping.source_required_overrides,
+            )
+        )
 
     return all_issues
 

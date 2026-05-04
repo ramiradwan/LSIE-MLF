@@ -97,15 +97,22 @@ SELECT
     (julianday(COALESCE(s.ended_at, datetime('now'))) - julianday(s.started_at)) * 86400.0
                                                        AS duration_s,
     COALESCE(le.experiment_id, s.experiment_id)       AS experiment_id,
-    le.arm                                             AS active_arm,
+    COALESCE(live.active_arm, le.arm)                  AS active_arm,
+    live.expected_greeting                             AS expected_greeting,
     le.timestamp_utc                                   AS last_segment_completed_at_utc,
     le.gated_reward                                    AS latest_reward,
     le.semantic_gate                                   AS latest_semantic_gate,
-    NULL                                               AS is_calibrating,
-    NULL                                               AS calibration_frames_accumulated,
-    NULL                                               AS calibration_frames_required
+    live.is_calibrating                                AS is_calibrating,
+    live.calibration_frames_accumulated                AS calibration_frames_accumulated,
+    live.calibration_frames_required                   AS calibration_frames_required,
+    (
+        SELECT COUNT(*)
+        FROM sessions active
+        WHERE active.ended_at IS NULL
+    )                                                  AS active_session_count
 FROM sessions s
 LEFT JOIN latest_enc le ON le.session_id = s.session_id AND le.rn = 1
+LEFT JOIN live_session_state live ON live.session_id = s.session_id
 ORDER BY s.started_at DESC
 LIMIT :limit
 """
@@ -122,15 +129,22 @@ SELECT
     (julianday(COALESCE(s.ended_at, datetime('now'))) - julianday(s.started_at)) * 86400.0
                                                        AS duration_s,
     COALESCE(le.experiment_id, s.experiment_id)       AS experiment_id,
-    le.arm                                             AS active_arm,
+    COALESCE(live.active_arm, le.arm)                  AS active_arm,
+    live.expected_greeting                             AS expected_greeting,
     le.timestamp_utc                                   AS last_segment_completed_at_utc,
     le.gated_reward                                    AS latest_reward,
     le.semantic_gate                                   AS latest_semantic_gate,
-    NULL                                               AS is_calibrating,
-    NULL                                               AS calibration_frames_accumulated,
-    NULL                                               AS calibration_frames_required
+    live.is_calibrating                                AS is_calibrating,
+    live.calibration_frames_accumulated                AS calibration_frames_accumulated,
+    live.calibration_frames_required                   AS calibration_frames_required,
+    (
+        SELECT COUNT(*)
+        FROM sessions active
+        WHERE active.ended_at IS NULL
+    )                                                  AS active_session_count
 FROM sessions s
 LEFT JOIN latest_enc le ON le.session_id = s.session_id AND le.rn = 1
+LEFT JOIN live_session_state live ON live.session_id = s.session_id
 WHERE s.session_id = :session_id
 """
 )
@@ -146,15 +160,22 @@ SELECT
     (julianday(datetime('now')) - julianday(s.started_at)) * 86400.0
                                                        AS duration_s,
     COALESCE(le.experiment_id, s.experiment_id)       AS experiment_id,
-    le.arm                                             AS active_arm,
+    COALESCE(live.active_arm, le.arm)                  AS active_arm,
+    live.expected_greeting                             AS expected_greeting,
     le.timestamp_utc                                   AS last_segment_completed_at_utc,
     le.gated_reward                                    AS latest_reward,
     le.semantic_gate                                   AS latest_semantic_gate,
-    NULL                                               AS is_calibrating,
-    NULL                                               AS calibration_frames_accumulated,
-    NULL                                               AS calibration_frames_required
+    live.is_calibrating                                AS is_calibrating,
+    live.calibration_frames_accumulated                AS calibration_frames_accumulated,
+    live.calibration_frames_required                   AS calibration_frames_required,
+    (
+        SELECT COUNT(*)
+        FROM sessions active
+        WHERE active.ended_at IS NULL
+    )                                                  AS active_session_count
 FROM sessions s
 LEFT JOIN latest_enc le ON le.session_id = s.session_id AND le.rn = 1
+LEFT JOIN live_session_state live ON live.session_id = s.session_id
 WHERE s.ended_at IS NULL
 ORDER BY s.started_at DESC
 LIMIT 1
@@ -465,6 +486,21 @@ SELECT
         WHERE h.process_name = 'gpu_ml_worker'
     )                                                  AS last_gpu_ml_worker_at,
     (
+        SELECT c.state
+        FROM capture_status c
+        WHERE c.status_key = 'gpu_ml_worker'
+    )                                                  AS gpu_ml_worker_state,
+    (
+        SELECT c.detail
+        FROM capture_status c
+        WHERE c.status_key = 'gpu_ml_worker'
+    )                                                  AS gpu_ml_worker_detail,
+    (
+        SELECT c.operator_action_hint
+        FROM capture_status c
+        WHERE c.status_key = 'gpu_ml_worker'
+    )                                                  AS gpu_ml_worker_hint,
+    (
         SELECT MAX(h.last_heartbeat_utc)
         FROM process_heartbeat h
         WHERE h.process_name = 'analytics_state_worker'
@@ -538,7 +574,32 @@ SELECT
         SELECT c.updated_at_utc
         FROM capture_status c
         WHERE c.status_key = 'video_capture'
-    )                                                  AS last_video_capture_at
+    )                                                  AS last_video_capture_at,
+    (
+        SELECT MAX(live.updated_at_utc)
+        FROM live_session_state live
+        JOIN sessions s ON s.session_id = live.session_id
+        WHERE s.ended_at IS NULL
+    )                                                  AS last_live_visual_state_at,
+    (
+        SELECT live.status
+        FROM live_session_state live
+        JOIN sessions s ON s.session_id = live.session_id
+        WHERE s.ended_at IS NULL
+        ORDER BY live.updated_at_utc DESC
+        LIMIT 1
+    )                                                  AS live_visual_state_status,
+    (
+        SELECT MAX(e.timestamp_utc)
+        FROM encounter_log e
+        JOIN sessions s ON s.session_id = e.session_id
+        WHERE s.ended_at IS NULL
+    )                                                  AS last_live_encounter_at,
+    (
+        SELECT COUNT(*)
+        FROM sessions s
+        WHERE s.ended_at IS NULL
+    )                                                  AS active_session_count
 """
 
 

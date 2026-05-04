@@ -4,14 +4,14 @@ faster-whisper transcription wrapper for Module D audio input (§4.D.1).
 The module lazy-loads the CTranslate2-backed Whisper model and transcribes
 16 kHz audio to UTF-8 text. The :meth:`TranscriptionEngine.transcribe`
 method accepts either a filesystem path (legacy v3.4 callers) or a
-binary file-like object such as :class:`io.BytesIO` — WS4 P3 wires the
-desktop runtime's pipe:0/pipe:1 FFmpeg path to feed the bytes in
-memory so transient PCM never lands on disk. The production runtime
-floor is CUDA 12.x with cuDNN 9 and ``ctranslate2 >= 4.5.0`` on
-NVIDIA Turing (SM 7.5+) hardware (v4.0 §10.2 / §11.x); compute type is
-fixed to INT8 and is not operator-configurable. WS2 P2 introduces an
-``LSIE_DEV_FORCE_CPU_SPEECH`` escape hatch for Pascal developer hosts
-that cannot host the production GPU speech path.
+binary file-like object such as :class:`io.BytesIO` so the desktop
+runtime can feed bytes in memory and keep transient PCM off disk. The
+production runtime floor is CUDA 12.x with cuDNN 9 and
+``ctranslate2 >= 4.5.0`` on NVIDIA Turing (SM 7.5+) hardware (§10.1,
+§10.2, §12.4); compute type is fixed to INT8 and is not
+operator-configurable. ``LSIE_DEV_FORCE_CPU_SPEECH`` provides the Pascal
+developer override for hosts that cannot run the production GPU speech
+path.
 """
 
 from __future__ import annotations
@@ -29,7 +29,7 @@ _TURING_COMPUTE_CAP: float = 7.5
 
 
 def resolve_speech_device() -> str:
-    """Pick the faster-whisper device per v4.0 §11.x.
+    """Pick the faster-whisper device per §10.1, §10.2, and §12.4.
 
     Resolution order:
 
@@ -74,7 +74,7 @@ class TranscriptionEngine:
     supported runtime.
     """
 
-    # v4.0 §11.x — compute_type is locked to "int8". On the production
+    # §10.1 / §10.2 / §12.4 — compute_type is locked to "int8". On the production
     # Turing (SM 7.5+) floor the INT8 path benefits from DP4A and the
     # Turing/Ampere INT8 Tensor Cores. On the Pascal developer host
     # exposed via LSIE_DEV_FORCE_CPU_SPEECH, INT8 is the right CPU
@@ -90,7 +90,7 @@ class TranscriptionEngine:
         device: str | None = None,
     ) -> None:
         self.model_size = model_size
-        # device=None defers to the v4.0 §11.x resolver so a Pascal
+        # device=None defers to the signed-spec resolver so a Pascal
         # developer host with LSIE_DEV_FORCE_CPU_SPEECH=1 routes to CPU
         # automatically without the caller plumbing the env check.
         # Explicit overrides ("cuda" / "cpu") still take precedence —
@@ -105,7 +105,7 @@ class TranscriptionEngine:
 
         # §4.D.1 — INT8 quantization. CUDA path is cuDNN 9 / CT2 4.5+ on
         # the Turing+ production floor; CPU path is the Pascal developer
-        # escape hatch routed by LSIE_DEV_FORCE_CPU_SPEECH (v4.0 §11.x).
+        # override routed by LSIE_DEV_FORCE_CPU_SPEECH under §10.1 / §12.4.
         self._model = WhisperModel(
             self.model_size,
             device=self.device,

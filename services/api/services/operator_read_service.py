@@ -307,7 +307,9 @@ class OperatorReadService:
         experiment_id = row.get("experiment_id")
         live_state = self._fetch_live_session_state(live_state_client, session_id)
         active_arm = _as_str((live_state or {}).get("active_arm")) or _as_str(row.get("active_arm"))
-        expected_greeting = _as_str((live_state or {}).get("expected_greeting"))
+        expected_greeting = _as_str((live_state or {}).get("expected_greeting")) or _as_str(
+            row.get("expected_greeting")
+        )
         return SessionSummary(
             session_id=session_id,
             status=status,

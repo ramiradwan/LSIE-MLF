@@ -21,7 +21,10 @@ from typing import Any, Protocol
 from packages.schemas.cloud import PosteriorDelta
 from services.desktop_app.cloud.outbox import CloudOutbox
 from services.desktop_app.ipc import IpcChannels
-from services.desktop_app.ipc.control_messages import AnalyticsResultMessage
+from services.desktop_app.ipc.control_messages import (
+    AnalyticsResultMessage,
+    VisualAnalyticsStateMessage,
+)
 from services.desktop_app.processes.cloud_sync_worker import DEFAULT_CLIENT_ID
 from services.worker.pipeline.reward import RewardResult, TimestampedAU12, compute_reward
 
@@ -108,6 +111,12 @@ class LocalAnalyticsProcessor:
             )
         return delta if applied and delta is not None else None
 
+    def process_visual_state(self, raw: object) -> None:
+        message = VisualAnalyticsStateMessage.model_validate(raw)
+        with sqlite3.connect(str(self._db_path), isolation_level=None) as conn:
+            conn.row_factory = sqlite3.Row
+            _upsert_live_session_state(conn, message)
+
 
 def run(shutdown_event: mpsync.Event, channels: IpcChannels) -> None:
     logger.info("analytics_state_worker started")
@@ -158,6 +167,14 @@ def _run_loop(
         except queue.Empty:
             continue
         try:
+            schema_version = _schema_version(raw)
+            if schema_version == "ws5.p4.visual_analytics_state.v1":
+                processor.process_visual_state(raw)
+                continue
+            if schema_version != "ws5.p4.analytics_result.v1":
+                raise ValueError(
+                    f"Unsupported analytics message schema_version: {schema_version!r}"
+                )
             delta = processor.process(raw)
             if delta is not None:
                 outbox.enqueue_posterior_delta(delta)
@@ -230,6 +247,55 @@ def _analytics_identity_exists(
         (segment_id, client_id, arm),
     ).fetchone()
     return row is not None
+
+
+def _upsert_live_session_state(
+    conn: sqlite3.Connection,
+    message: VisualAnalyticsStateMessage,
+) -> None:
+    conn.execute("PRAGMA foreign_keys=ON")
+    conn.execute(
+        """
+        INSERT INTO live_session_state (
+            session_id, active_arm, expected_greeting, is_calibrating,
+            calibration_frames_accumulated, calibration_frames_required,
+            face_present, latest_au12_intensity, latest_au12_timestamp_s,
+            status, updated_at_utc
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(session_id) DO UPDATE SET
+            active_arm = excluded.active_arm,
+            expected_greeting = excluded.expected_greeting,
+            is_calibrating = excluded.is_calibrating,
+            calibration_frames_accumulated = excluded.calibration_frames_accumulated,
+            calibration_frames_required = excluded.calibration_frames_required,
+            face_present = excluded.face_present,
+            latest_au12_intensity = excluded.latest_au12_intensity,
+            latest_au12_timestamp_s = excluded.latest_au12_timestamp_s,
+            status = excluded.status,
+            updated_at_utc = excluded.updated_at_utc
+        """,
+        (
+            str(message.session_id),
+            message.active_arm,
+            message.expected_greeting,
+            int(message.is_calibrating),
+            message.calibration_frames_accumulated,
+            message.calibration_frames_required,
+            int(message.face_present),
+            message.latest_au12_intensity,
+            message.latest_au12_timestamp_s,
+            message.status,
+            _iso_utc(message.timestamp_utc),
+        ),
+    )
+
+
+def _schema_version(raw: object) -> str | None:
+    if isinstance(raw, dict):
+        value = raw.get("schema_version")
+    else:
+        value = getattr(raw, "schema_version", None)
+    return value if isinstance(value, str) else None
 
 
 def _metrics_record(message: AnalyticsResultMessage) -> dict[str, Any]:

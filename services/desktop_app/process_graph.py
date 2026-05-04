@@ -42,6 +42,8 @@ PROCESS_MODULES: dict[str, str] = {
 ML_LIB_ROOTS: frozenset[str] = frozenset({"torch", "mediapipe", "faster_whisper", "ctranslate2"})
 
 SQLITE_FILENAME = "desktop.sqlite"
+ML_INBOX_MAXSIZE = 8
+PCM_ACKS_MAXSIZE = 32
 
 
 def _prepare_runtime_state() -> None:
@@ -101,9 +103,12 @@ class ProcessGraph:
         ctx = mp.get_context("spawn")
         if self.channels is None:
             self.channels = IpcChannels(
-                ml_inbox=ctx.Queue(),
+                ml_inbox=ctx.Queue(maxsize=ML_INBOX_MAXSIZE),
                 drift_updates=ctx.Queue(),
                 analytics_inbox=ctx.Queue(),
+                pcm_acks=ctx.Queue(maxsize=PCM_ACKS_MAXSIZE),
+                live_control=ctx.Queue(),
+                segment_control=ctx.Queue(),
             )
         for name, module in PROCESS_MODULES.items():
             evt = ctx.Event()

@@ -1,4 +1,4 @@
-"""NVIDIA GPU compute-capability probe via ``nvidia-smi`` (v4.0 §11.x).
+"""NVIDIA GPU compute-capability probe via ``nvidia-smi`` (§10.1, §12.4).
 
 Two consumers share this helper:
 

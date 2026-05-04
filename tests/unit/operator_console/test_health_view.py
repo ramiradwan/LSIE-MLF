@@ -77,6 +77,7 @@ def test_health_view_empty_until_snapshot_set() -> None:
     view, _store = _view()
     assert view._empty_state.isHidden() is False
     assert view._body_container.isHidden() is True
+    assert "desktop process graph" in view._empty_state._message.text().lower()
 
 
 def test_health_view_repair_button_tracks_action_binding() -> None:
