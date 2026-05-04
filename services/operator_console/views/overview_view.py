@@ -25,13 +25,11 @@ Spec references:
 
 from __future__ import annotations
 
-from typing import ClassVar
 from uuid import UUID
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QFrame,
-    QGridLayout,
     QHBoxLayout,
     QLabel,
     QScrollArea,
@@ -63,6 +61,7 @@ from services.operator_console.viewmodels.overview_vm import OverviewViewModel
 from services.operator_console.widgets.alert_banner import AlertBanner
 from services.operator_console.widgets.empty_state import EmptyStateWidget
 from services.operator_console.widgets.metric_card import MetricCard
+from services.operator_console.widgets.responsive_layout import ResponsiveMetricGrid
 from services.operator_console.widgets.section_header import SectionHeader
 
 _ACTIVE_CONFLICT_STATUS = "active conflict"
@@ -102,8 +101,6 @@ class OverviewView(QWidget):
     # uses this to push the session id into the store and switch route.
     session_activated = Signal(object)  # UUID
 
-    _CARD_COLUMNS: ClassVar[int] = 3
-
     def __init__(
         self,
         vm: OverviewViewModel,
@@ -133,30 +130,24 @@ class OverviewView(QWidget):
         self._latest_encounter_card = MetricCard("Latest Encounter", self)
         self._attention_card = MetricCard("Attention", self)
 
-        cards_grid = QGridLayout()
-        cards_grid.setContentsMargins(0, 0, 0, 0)
-        cards_grid.setHorizontalSpacing(14)
-        cards_grid.setVerticalSpacing(14)
-        order: list[MetricCard] = [
-            self._active_session_card,
-            self._experiment_card,
-            self._physiology_card,
-            self._health_card,
-            self._latest_encounter_card,
-            self._attention_card,
-        ]
-        for idx, card in enumerate(order):
-            row, col = divmod(idx, self._CARD_COLUMNS)
-            cards_grid.addWidget(card, row, col)
-        for col in range(self._CARD_COLUMNS):
-            cards_grid.setColumnStretch(col, 1)
+        self._cards_grid = ResponsiveMetricGrid(parent=self)
+        self._cards_grid.set_widgets(
+            [
+                self._active_session_card,
+                self._experiment_card,
+                self._physiology_card,
+                self._health_card,
+                self._latest_encounter_card,
+                self._attention_card,
+            ]
+        )
 
         self._attention_list = _AttentionList(self)
 
         body = QVBoxLayout()
         body.setContentsMargins(0, 0, 0, 0)
         body.setSpacing(14)
-        body.addLayout(cards_grid)
+        body.addWidget(self._cards_grid)
         body.addWidget(self._attention_list, 1)
 
         layout = QVBoxLayout(self)

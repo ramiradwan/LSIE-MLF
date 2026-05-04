@@ -38,17 +38,18 @@ from PySide6.QtCore import (
     Signal,
     Slot,
 )
+from PySide6.QtGui import QResizeEvent
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QDialog,
     QDialogButtonBox,
     QFrame,
-    QGridLayout,
     QHBoxLayout,
     QHeaderView,
     QLabel,
     QLineEdit,
     QPushButton,
+    QScrollArea,
     QTableView,
     QVBoxLayout,
     QWidget,
@@ -81,6 +82,14 @@ from services.operator_console.widgets.alert_banner import AlertBanner
 from services.operator_console.widgets.empty_state import EmptyStateWidget
 from services.operator_console.widgets.event_timeline import EventTimelineWidget
 from services.operator_console.widgets.metric_card import MetricCard
+from services.operator_console.widgets.responsive_layout import (
+    MetricGridColumns,
+    ResponsiveBreakpoints,
+    ResponsiveMetricGrid,
+    ResponsiveWidthBand,
+    TableColumnPolicy,
+    apply_table_column_policies,
+)
 from services.operator_console.widgets.section_header import SectionHeader
 from services.operator_console.widgets.status_pill import StatusPill
 
@@ -88,6 +97,68 @@ from services.operator_console.widgets.status_pill import StatusPill
 # measurement-window length. 1-second tick is the rightful cadence for
 # a human-facing countdown — any faster flickers, any slower reads slow.
 _COUNTDOWN_TICK_MS: int = 1000
+_LIVE_SESSION_BREAKPOINTS = ResponsiveBreakpoints(medium_min_width=720, wide_min_width=1040)
+_NARROW_PHONE_PREVIEW_HEIGHT = 120
+_WIDE_PHONE_PREVIEW_HEIGHT = 220
+
+_ENCOUNTER_TABLE_POLICIES: tuple[TableColumnPolicy, ...] = (
+    TableColumnPolicy(
+        column=0,
+        resize_mode=QHeaderView.ResizeMode.ResizeToContents,
+        widths={ResponsiveWidthBand.WIDE: 150},
+    ),
+    TableColumnPolicy(
+        column=1,
+        resize_mode=QHeaderView.ResizeMode.ResizeToContents,
+        widths={ResponsiveWidthBand.WIDE: 150},
+    ),
+    TableColumnPolicy(
+        column=2,
+        visible_in=frozenset({ResponsiveWidthBand.WIDE}),
+        resize_mode=QHeaderView.ResizeMode.Stretch,
+    ),
+    TableColumnPolicy(
+        column=3,
+        resize_mode=QHeaderView.ResizeMode.ResizeToContents,
+        widths={ResponsiveWidthBand.WIDE: 130},
+    ),
+    TableColumnPolicy(
+        column=4,
+        resize_mode=QHeaderView.ResizeMode.ResizeToContents,
+        widths={ResponsiveWidthBand.WIDE: 120},
+    ),
+    TableColumnPolicy(
+        column=5,
+        resize_mode=QHeaderView.ResizeMode.ResizeToContents,
+        widths={ResponsiveWidthBand.WIDE: 120},
+    ),
+    TableColumnPolicy(
+        column=6,
+        visible_in=frozenset({ResponsiveWidthBand.MEDIUM, ResponsiveWidthBand.WIDE}),
+        resize_mode=QHeaderView.ResizeMode.ResizeToContents,
+        widths={ResponsiveWidthBand.WIDE: 135},
+    ),
+    TableColumnPolicy(
+        column=7,
+        visible_in=frozenset({ResponsiveWidthBand.WIDE}),
+        resize_mode=QHeaderView.ResizeMode.ResizeToContents,
+        widths={ResponsiveWidthBand.WIDE: 110},
+    ),
+)
+
+_TIMELINE_TABLE_POLICIES: tuple[TableColumnPolicy, ...] = (
+    TableColumnPolicy(
+        column=0,
+        resize_mode=QHeaderView.ResizeMode.ResizeToContents,
+        widths={ResponsiveWidthBand.WIDE: 140},
+    ),
+    TableColumnPolicy(column=1, resize_mode=QHeaderView.ResizeMode.Stretch),
+    TableColumnPolicy(
+        column=2,
+        resize_mode=QHeaderView.ResizeMode.ResizeToContents,
+        widths={ResponsiveWidthBand.WIDE: 90},
+    ),
+)
 
 
 class LiveSessionView(QWidget):
@@ -128,6 +199,11 @@ class LiveSessionView(QWidget):
         self._timeline_model = _LiveSessionTimelineModel(self)
         self._timeline = EventTimelineWidget(self)
         self._timeline.set_model(self._timeline_model)
+        self._timeline.set_column_policies(
+            _TIMELINE_TABLE_POLICIES,
+            breakpoints=_LIVE_SESSION_BREAKPOINTS,
+            default_resize_mode=QHeaderView.ResizeMode.Stretch,
+        )
         self._table = self._build_table()
         self._detail_panel = _EncounterDetailPanel(self)
 
@@ -138,16 +214,18 @@ class LiveSessionView(QWidget):
         header_status.addWidget(self._adb_pill)
         header_status.addWidget(self._ml_pill)
 
-        dashboard_grid = QGridLayout()
-        dashboard_grid.setContentsMargins(0, 0, 0, 0)
-        dashboard_grid.setHorizontalSpacing(14)
-        dashboard_grid.setVerticalSpacing(14)
-        dashboard_grid.addWidget(self._phone_preview, 0, 0, 2, 1)
-        dashboard_grid.addWidget(self._smile_card, 0, 1)
-        dashboard_grid.addWidget(self._timeline, 1, 1)
-        dashboard_grid.setColumnStretch(0, 2)
-        dashboard_grid.setColumnStretch(1, 3)
-        dashboard_grid.setRowStretch(1, 1)
+        self._dashboard_grid = ResponsiveMetricGrid(
+            breakpoints=_LIVE_SESSION_BREAKPOINTS,
+            columns=MetricGridColumns(wide=2, medium=2, narrow=1),
+            parent=self,
+        )
+        self._dashboard_grid.set_widgets(
+            [
+                self._phone_preview,
+                self._smile_card,
+                self._timeline,
+            ]
+        )
 
         self._trust_label = QLabel("Secondary trust data", self)
         self._trust_label.setObjectName("PanelTitle")
@@ -164,8 +242,15 @@ class LiveSessionView(QWidget):
         body.setSpacing(14)
         body.addWidget(self._setup_overlay)
         body.addWidget(self._live_analytics_notice)
-        body.addLayout(dashboard_grid, 2)
+        body.addWidget(self._dashboard_grid, 2)
         body.addLayout(trust_layout, 3)
+
+        self._scroll = QScrollArea(self)
+        self._scroll.setObjectName("LiveSessionScrollArea")
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._scroll.setWidget(self._body_container)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 24, 24, 24)
@@ -174,7 +259,7 @@ class LiveSessionView(QWidget):
         layout.addWidget(self._error_banner)
         layout.addWidget(self._session_panel)
         layout.addWidget(self._empty_state)
-        layout.addWidget(self._body_container, 1)
+        layout.addWidget(self._scroll, 1)
         layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
         self._countdown_timer = QTimer(self)
@@ -212,6 +297,10 @@ class LiveSessionView(QWidget):
         """
         self._countdown_timer.stop()
 
+    def resizeEvent(self, event: QResizeEvent) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self._apply_responsive_layout()
+
     # ------------------------------------------------------------------
     # Construction helpers
     # ------------------------------------------------------------------
@@ -230,6 +319,7 @@ class LiveSessionView(QWidget):
         horizontal = table.horizontalHeader()
         if horizontal is not None:
             horizontal.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        table.setWordWrap(False)
         selection_model = table.selectionModel()
         if selection_model is not None:
             selection_model.selectionChanged.connect(self._on_table_selection_changed)
@@ -256,10 +346,11 @@ class LiveSessionView(QWidget):
         setup_display = self._vm.ttv_setup_display()
         if setup_display.dashboard_mode == "gate":
             self._set_setup_gate(setup_display)
-            self._body_container.setVisible(False)
+            self._scroll.setVisible(False)
             self._sync_countdown_timer()
             return
         self._empty_state.setVisible(False)
+        self._scroll.setVisible(True)
         self._body_container.setVisible(True)
         self._set_setup_overlay(setup_display)
         self._set_dashboard_muted(setup_display.dashboard_mode == "calibrating")
@@ -348,6 +439,21 @@ class LiveSessionView(QWidget):
             self._live_analytics_notice.set_alert(None, None)
             return
         self._live_analytics_notice.set_alert(AlertSeverity.INFO, message)
+
+    def _apply_responsive_layout(self) -> None:
+        width = max(self.width(), self._scroll.viewport().width())
+        band = _LIVE_SESSION_BREAKPOINTS.band_for_width(width)
+        self._dashboard_grid.apply_width(width)
+        apply_table_column_policies(
+            self._table,
+            _ENCOUNTER_TABLE_POLICIES,
+            width=width,
+            breakpoints=_LIVE_SESSION_BREAKPOINTS,
+            default_resize_mode=QHeaderView.ResizeMode.Stretch,
+        )
+        self._timeline.apply_responsive_width(width)
+        self._detail_panel.apply_responsive_width(width)
+        self._phone_preview.set_compact(band is ResponsiveWidthBand.NARROW)
 
     def _set_smile_card(self, value: int | None, live_analytics_notice: str | None) -> None:
         if value is None:
@@ -571,7 +677,7 @@ class _PhonePreviewPanel(QFrame):
         self._placeholder = QLabel("Derived visual telemetry", self)
         self._placeholder.setObjectName("MetricCardPrimary")
         self._placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._placeholder.setMinimumHeight(220)
+        self._placeholder.setMinimumHeight(_WIDE_PHONE_PREVIEW_HEIGHT)
         self._status = QLabel(
             "Raw phone frames are not shown. Waiting for capture and face tracking.",
             self,
@@ -588,6 +694,11 @@ class _PhonePreviewPanel(QFrame):
 
     def set_status(self, text: str) -> None:
         self._status.setText(text)
+
+    def set_compact(self, enabled: bool) -> None:
+        self._placeholder.setMinimumHeight(
+            _NARROW_PHONE_PREVIEW_HEIGHT if enabled else _WIDE_PHONE_PREVIEW_HEIGHT
+        )
 
 
 def _timeline_value(row: object, name: str) -> object:
@@ -828,23 +939,23 @@ class _EncounterDetailPanel(QFrame):
         self._baseline_card = MetricCard("AU12 baseline pre", self)
         self._physiology_card = MetricCard("Physiology", self)
 
-        grid = QGridLayout()
-        grid.setContentsMargins(0, 0, 0, 0)
-        grid.setHorizontalSpacing(10)
-        grid.setVerticalSpacing(10)
-        order: list[MetricCard] = [
-            self._p90_card,
-            self._gate_card,
-            self._reward_card,
-            self._frames_card,
-            self._baseline_card,
-            self._physiology_card,
-        ]
-        for idx, card in enumerate(order):
-            row, col = divmod(idx, 3)
-            grid.addWidget(card, row, col)
-        for col in range(3):
-            grid.setColumnStretch(col, 1)
+        self._reward_grid = ResponsiveMetricGrid(
+            breakpoints=_LIVE_SESSION_BREAKPOINTS,
+            columns=MetricGridColumns(wide=3, medium=2, narrow=1),
+            horizontal_spacing=10,
+            vertical_spacing=10,
+            parent=self,
+        )
+        self._reward_grid.set_widgets(
+            [
+                self._p90_card,
+                self._gate_card,
+                self._reward_card,
+                self._frames_card,
+                self._baseline_card,
+                self._physiology_card,
+            ]
+        )
 
         self._explanation = QLabel("", self)
         self._explanation.setObjectName("MetricCardSecondary")
@@ -869,16 +980,16 @@ class _EncounterDetailPanel(QFrame):
         self._f0_mean_card = MetricCard(acoustic_labels.f0_metric_title, self)
         self._jitter_mean_card = MetricCard(acoustic_labels.jitter_metric_title, self)
         self._shimmer_mean_card = MetricCard(acoustic_labels.shimmer_metric_title, self)
-        acoustic_grid = QGridLayout()
-        acoustic_grid.setContentsMargins(0, 0, 0, 0)
-        acoustic_grid.setHorizontalSpacing(10)
-        acoustic_grid.setVerticalSpacing(10)
-        for idx, card in enumerate(
+        self._acoustic_grid = ResponsiveMetricGrid(
+            breakpoints=_LIVE_SESSION_BREAKPOINTS,
+            columns=MetricGridColumns(wide=3, medium=2, narrow=1),
+            horizontal_spacing=10,
+            vertical_spacing=10,
+            parent=self,
+        )
+        self._acoustic_grid.set_widgets(
             [self._f0_mean_card, self._jitter_mean_card, self._shimmer_mean_card]
-        ):
-            acoustic_grid.addWidget(card, 0, idx)
-        for col in range(3):
-            acoustic_grid.setColumnStretch(col, 1)
+        )
 
         self._voiced_coverage_label = QLabel("", self)
         self._voiced_coverage_label.setObjectName("MetricCardSecondary")
@@ -892,7 +1003,7 @@ class _EncounterDetailPanel(QFrame):
         acoustic_layout.setContentsMargins(0, 0, 0, 0)
         acoustic_layout.setSpacing(8)
         acoustic_layout.addLayout(validity_row)
-        acoustic_layout.addLayout(acoustic_grid)
+        acoustic_layout.addWidget(self._acoustic_grid)
         acoustic_layout.addWidget(self._voiced_coverage_label)
         acoustic_layout.addWidget(self._acoustic_explanation)
 
@@ -924,23 +1035,23 @@ class _EncounterDetailPanel(QFrame):
         self._synchrony_card = MetricCard("Synchrony", self)
         self._outcome_link_lag_card = MetricCard("Outcome-link lag", self)
 
-        semantic_grid = QGridLayout()
-        semantic_grid.setContentsMargins(0, 0, 0, 0)
-        semantic_grid.setHorizontalSpacing(10)
-        semantic_grid.setVerticalSpacing(10)
-        semantic_cards: list[MetricCard] = [
-            self._confidence_card,
-            self._soft_reward_card,
-            self._au12_lifts_card,
-            self._peak_latency_card,
-            self._synchrony_card,
-            self._outcome_link_lag_card,
-        ]
-        for idx, card in enumerate(semantic_cards):
-            row, col = divmod(idx, 3)
-            semantic_grid.addWidget(card, row, col)
-        for col in range(3):
-            semantic_grid.setColumnStretch(col, 1)
+        self._semantic_grid = ResponsiveMetricGrid(
+            breakpoints=_LIVE_SESSION_BREAKPOINTS,
+            columns=MetricGridColumns(wide=3, medium=2, narrow=1),
+            horizontal_spacing=10,
+            vertical_spacing=10,
+            parent=self,
+        )
+        self._semantic_grid.set_widgets(
+            [
+                self._confidence_card,
+                self._soft_reward_card,
+                self._au12_lifts_card,
+                self._peak_latency_card,
+                self._synchrony_card,
+                self._outcome_link_lag_card,
+            ]
+        )
 
         self._semantic_metrics_container = QWidget(self)
         semantic_layout = QVBoxLayout(self._semantic_metrics_container)
@@ -949,7 +1060,7 @@ class _EncounterDetailPanel(QFrame):
         semantic_layout.addLayout(semantic_pill_row)
         semantic_layout.addWidget(self._semantic_reason_label)
         semantic_layout.addWidget(self._attribution_finality_pill)
-        semantic_layout.addLayout(semantic_grid)
+        semantic_layout.addWidget(self._semantic_grid)
 
         self._countdown_label = QLabel("", self)
         self._countdown_label.setObjectName("ActionBarCountdown")
@@ -960,7 +1071,7 @@ class _EncounterDetailPanel(QFrame):
         layout.setSpacing(8)
         layout.addWidget(self._title)
         layout.addWidget(self._subtitle)
-        layout.addLayout(grid)
+        layout.addWidget(self._reward_grid)
         layout.addWidget(self._explanation)
         layout.addWidget(self._acoustic_title)
         layout.addWidget(self._acoustic_empty)
@@ -970,6 +1081,12 @@ class _EncounterDetailPanel(QFrame):
         layout.addWidget(self._semantic_metrics_container)
         layout.addWidget(self._semantic_observational_note)
         layout.addWidget(self._countdown_label)
+
+    def apply_responsive_width(self, width: int) -> ResponsiveWidthBand:
+        band = self._reward_grid.apply_width(width)
+        self._acoustic_grid.apply_width(width)
+        self._semantic_grid.apply_width(width)
+        return band
 
     def set_encounter(
         self,

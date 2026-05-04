@@ -29,7 +29,7 @@ from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 from PySide6.QtCore import Slot
-from PySide6.QtGui import QCloseEvent
+from PySide6.QtGui import QCloseEvent, QResizeEvent
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
@@ -102,6 +102,12 @@ _NAV_SPEC: tuple[_NavEntry, ...] = (
     _NavEntry(AppRoute.SESSIONS, "Sessions"),
 )
 _INITIAL_ROUTE = AppRoute.LIVE_SESSION
+_MIN_WINDOW_WIDTH = 900
+_MIN_WINDOW_HEIGHT = 640
+_SIDEBAR_MIN_WIDTH = 160
+_SIDEBAR_MAX_WIDTH = 220
+_SIDEBAR_RATIO = 0.18
+_ACTION_BAR_COMPACT_WIDTH = 1024
 
 
 class MainWindow(QMainWindow):
@@ -123,10 +129,12 @@ class MainWindow(QMainWindow):
         self._inflight_stimulus: dict[str, OneShotSignals] = {}
 
         self.setWindowTitle(f"LSIE-MLF Operator Console — {config.environment_label}")
+        self.setMinimumSize(_MIN_WINDOW_WIDTH, _MIN_WINDOW_HEIGHT)
         self.resize(1280, 800)
 
         self._pages: dict[AppRoute, QWidget] = {}
         self._nav_buttons: dict[AppRoute, QPushButton] = {}
+        self._sidebar: QWidget | None = None
 
         self._register_pages()
         self._stack = self._build_stack()
@@ -148,6 +156,7 @@ class MainWindow(QMainWindow):
         root_layout.addWidget(sidebar)
         root_layout.addWidget(content, stretch=1)
         self.setCentralWidget(root)
+        self._update_responsive_layout(self.width())
 
         status_bar = QStatusBar(self)
         api_label = QLabel(
@@ -236,6 +245,7 @@ class MainWindow(QMainWindow):
 
     def _build_action_bar(self) -> ActionBar:
         bar = ActionBar(self)
+        bar.set_compact_mode(self.width() < _ACTION_BAR_COMPACT_WIDTH)
         # No session yet — bar starts disabled. `_update_action_bar_context`
         # re-enables it when the store emits `selected_session_changed`.
         bar.set_session_context(None, None, None)
@@ -244,7 +254,8 @@ class MainWindow(QMainWindow):
     def _build_sidebar(self) -> QWidget:
         sidebar = QFrame(self)
         sidebar.setObjectName("SidebarNav")
-        sidebar.setFixedWidth(220)
+        sidebar.setMinimumWidth(_SIDEBAR_MIN_WIDTH)
+        sidebar.setMaximumWidth(_SIDEBAR_MAX_WIDTH)
 
         layout = QVBoxLayout(sidebar)
         layout.setContentsMargins(12, 20, 12, 12)
@@ -274,6 +285,7 @@ class MainWindow(QMainWindow):
             layout.addWidget(btn)
 
         layout.addStretch(1)
+        self._sidebar = sidebar
         return sidebar
 
     # ------------------------------------------------------------------
@@ -445,6 +457,20 @@ class MainWindow(QMainWindow):
     def _on_stimulus_state_changed(self, ctx: object) -> None:
         if isinstance(ctx, StimulusUiContext):
             self._action_bar.set_action_state(ctx)
+
+    def resizeEvent(self, event: QResizeEvent) -> None:  # noqa: N802 — Qt override
+        super().resizeEvent(event)
+        if hasattr(self, "_action_bar"):
+            self._update_responsive_layout(event.size().width())
+
+    def _update_responsive_layout(self, window_width: int) -> None:
+        sidebar_width = min(
+            _SIDEBAR_MAX_WIDTH,
+            max(_SIDEBAR_MIN_WIDTH, int(window_width * _SIDEBAR_RATIO)),
+        )
+        if self._sidebar is not None:
+            self._sidebar.setFixedWidth(sidebar_width)
+        self._action_bar.set_compact_mode(window_width < _ACTION_BAR_COMPACT_WIDTH)
 
     # ------------------------------------------------------------------
     # Lifecycle

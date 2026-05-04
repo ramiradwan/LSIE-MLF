@@ -11,6 +11,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 import pytest
+from PySide6.QtWidgets import QHeaderView
 
 from packages.schemas.operator_console import (
     AlertEvent,
@@ -76,7 +77,7 @@ def _snapshot(
 def test_health_view_empty_until_snapshot_set() -> None:
     view, _store = _view()
     assert view._empty_state.isHidden() is False
-    assert view._body_container.isHidden() is True
+    assert view._scroll.isHidden() is True
     assert "desktop process graph" in view._empty_state._message.text().lower()
 
 
@@ -194,3 +195,59 @@ def test_health_view_alerts_model_rows_insert_triggers_scroll() -> None:
     )
     # Model now holds the row; the timeline widget exists.
     assert view._vm.alerts_model().rowCount() == 1
+
+
+def test_health_view_uses_scroll_container_when_snapshot_present() -> None:
+    view, store = _view()
+    store.set_health(_snapshot(HealthState.OK))
+
+    assert view._scroll.isHidden() is False
+    assert view._scroll.widget() is view._body_container
+
+
+def test_health_view_compacts_cards_and_tables_at_narrow_width() -> None:
+    view, store = _view()
+    store.set_health(
+        _snapshot(
+            HealthState.ERROR,
+            degraded=1,
+            recovering=1,
+            errors=1,
+            subsystems=[
+                HealthSubsystemStatus(
+                    subsystem_key="capture",
+                    label="Capture",
+                    state=HealthState.DEGRADED,
+                    detail="ADB drift exceeded threshold for the active session.",
+                    recovery_mode="drift-reset",
+                    operator_action_hint="Confirm the phone stays attached during recovery.",
+                )
+            ],
+            subsystem_probes=[
+                HealthSubsystemProbe(
+                    subsystem_key="azure_openai",
+                    label="Azure OpenAI",
+                    state=HealthProbeState.NOT_CONFIGURED,
+                    latency_ms=None,
+                    detail="missing AZURE_OPENAI_ENDPOINT",
+                    checked_at_utc=_NOW,
+                )
+            ],
+        )
+    )
+
+    view.resize(640, 900)
+    view.show()
+    view._apply_responsive_layout()
+
+    assert view._cards_grid.column_count() == 1
+    assert view._subsystem_table.isColumnHidden(2) is True
+    assert view._subsystem_table.isColumnHidden(4) is True
+    assert view._subsystem_table.isColumnHidden(5) is True
+    assert (
+        view._subsystem_table.horizontalHeader().sectionResizeMode(0)
+        is QHeaderView.ResizeMode.ResizeToContents
+    )
+    assert view._alerts_timeline.current_width_band().value == "narrow"
+    assert view._probe_panel._subtitle.isHidden() is True
+    assert view._probe_matrix._header_labels[0].isHidden() is True

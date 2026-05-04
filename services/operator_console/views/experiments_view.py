@@ -22,10 +22,11 @@ Spec references:
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QResizeEvent
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QFrame,
-    QHBoxLayout,
+    QGridLayout,
     QHeaderView,
     QLabel,
     QLineEdit,
@@ -50,7 +51,66 @@ from services.operator_console.viewmodels.experiments_vm import ExperimentsViewM
 from services.operator_console.widgets.alert_banner import AlertBanner
 from services.operator_console.widgets.empty_state import EmptyStateWidget
 from services.operator_console.widgets.metric_card import MetricCard
+from services.operator_console.widgets.responsive_layout import (
+    MetricGridColumns,
+    ResponsiveBreakpoints,
+    ResponsiveMetricGrid,
+    ResponsiveWidthBand,
+    TableColumnPolicy,
+    apply_table_column_policies,
+)
 from services.operator_console.widgets.section_header import SectionHeader
+
+_EXPERIMENT_BREAKPOINTS = ResponsiveBreakpoints(medium_min_width=760, wide_min_width=1040)
+
+_EXPERIMENT_TABLE_POLICIES: tuple[TableColumnPolicy, ...] = (
+    TableColumnPolicy(
+        column=0,
+        resize_mode=QHeaderView.ResizeMode.ResizeToContents,
+        widths={ResponsiveWidthBand.WIDE: 130},
+    ),
+    TableColumnPolicy(column=1, resize_mode=QHeaderView.ResizeMode.Stretch),
+    TableColumnPolicy(
+        column=2,
+        resize_mode=QHeaderView.ResizeMode.ResizeToContents,
+        widths={ResponsiveWidthBand.WIDE: 96},
+    ),
+    TableColumnPolicy(
+        column=3,
+        visible_in=frozenset({ResponsiveWidthBand.MEDIUM, ResponsiveWidthBand.WIDE}),
+        resize_mode=QHeaderView.ResizeMode.ResizeToContents,
+        widths={ResponsiveWidthBand.WIDE: 112},
+    ),
+    TableColumnPolicy(
+        column=4,
+        visible_in=frozenset({ResponsiveWidthBand.MEDIUM, ResponsiveWidthBand.WIDE}),
+        resize_mode=QHeaderView.ResizeMode.ResizeToContents,
+        widths={ResponsiveWidthBand.WIDE: 112},
+    ),
+    TableColumnPolicy(
+        column=5,
+        visible_in=frozenset({ResponsiveWidthBand.WIDE}),
+        resize_mode=QHeaderView.ResizeMode.ResizeToContents,
+        widths={ResponsiveWidthBand.WIDE: 120},
+    ),
+    TableColumnPolicy(
+        column=6,
+        resize_mode=QHeaderView.ResizeMode.ResizeToContents,
+        widths={ResponsiveWidthBand.WIDE: 104},
+    ),
+    TableColumnPolicy(
+        column=7,
+        visible_in=frozenset({ResponsiveWidthBand.WIDE}),
+        resize_mode=QHeaderView.ResizeMode.ResizeToContents,
+        widths={ResponsiveWidthBand.WIDE: 148},
+    ),
+    TableColumnPolicy(
+        column=8,
+        visible_in=frozenset({ResponsiveWidthBand.WIDE}),
+        resize_mode=QHeaderView.ResizeMode.ResizeToContents,
+        widths={ResponsiveWidthBand.WIDE: 164},
+    ),
+)
 
 
 class ExperimentsView(QWidget):
@@ -81,12 +141,18 @@ class ExperimentsView(QWidget):
         self._active_arm_card = MetricCard("Active arm", self)
         self._arms_card = MetricCard("Arms", self)
 
-        cards = QHBoxLayout()
-        cards.setContentsMargins(0, 0, 0, 0)
-        cards.setSpacing(14)
-        cards.addWidget(self._experiment_card, 1)
-        cards.addWidget(self._active_arm_card, 1)
-        cards.addWidget(self._arms_card, 1)
+        self._cards_grid = ResponsiveMetricGrid(
+            breakpoints=_EXPERIMENT_BREAKPOINTS,
+            columns=MetricGridColumns(wide=3, medium=2, narrow=1),
+            parent=self,
+        )
+        self._cards_grid.set_widgets(
+            [
+                self._experiment_card,
+                self._active_arm_card,
+                self._arms_card,
+            ]
+        )
 
         self._manage_panel = _ManagePanel(self._vm, self)
         self._table = self._build_table()
@@ -95,7 +161,7 @@ class ExperimentsView(QWidget):
         body = QVBoxLayout()
         body.setContentsMargins(0, 0, 0, 0)
         body.setSpacing(14)
-        body.addLayout(cards)
+        body.addWidget(self._cards_grid)
         body.addWidget(self._table, 2)
         body.addWidget(self._update_panel, 1)
 
@@ -130,6 +196,10 @@ class ExperimentsView(QWidget):
         coordinator's concern, not the view's."""
         return None
 
+    def resizeEvent(self, event: QResizeEvent) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self._apply_responsive_layout(event.size().width())
+
     # ------------------------------------------------------------------
     # Construction helpers
     # ------------------------------------------------------------------
@@ -145,12 +215,19 @@ class ExperimentsView(QWidget):
             QAbstractItemView.EditTrigger.DoubleClicked
             | QAbstractItemView.EditTrigger.EditKeyPressed
         )
+        table.setWordWrap(True)
         vertical = table.verticalHeader()
         if vertical is not None:
             vertical.setVisible(False)
         horizontal = table.horizontalHeader()
         if horizontal is not None:
             horizontal.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        apply_table_column_policies(
+            table,
+            _EXPERIMENT_TABLE_POLICIES,
+            breakpoints=_EXPERIMENT_BREAKPOINTS,
+            default_resize_mode=QHeaderView.ResizeMode.Stretch,
+        )
         return table
 
     # ------------------------------------------------------------------
@@ -163,6 +240,7 @@ class ExperimentsView(QWidget):
             detail,
             default_experiment_id=self._vm.current_experiment_id(),
         )
+        self._apply_responsive_layout(self.width())
         if detail is None:
             self._empty_state.setVisible(True)
             self._body_container.setVisible(False)
@@ -236,6 +314,18 @@ class ExperimentsView(QWidget):
         else:
             self._error_banner.set_alert(None, None)
 
+    def _apply_responsive_layout(self, width: int) -> None:
+        effective_width = max(width, self._body_container.width())
+        self._cards_grid.apply_width(effective_width)
+        apply_table_column_policies(
+            self._table,
+            _EXPERIMENT_TABLE_POLICIES,
+            width=effective_width,
+            breakpoints=_EXPERIMENT_BREAKPOINTS,
+            default_resize_mode=QHeaderView.ResizeMode.Stretch,
+        )
+        self._manage_panel.apply_responsive_width(effective_width)
+
 
 # ----------------------------------------------------------------------
 # Panels + helpers
@@ -287,14 +377,10 @@ class _ManagePanel(QFrame):
         self._create_button = QPushButton("Create experiment", self)
         self._create_button.setObjectName("CreateExperimentButton")
 
-        create_row = QHBoxLayout()
-        create_row.setContentsMargins(0, 0, 0, 0)
-        create_row.setSpacing(8)
-        create_row.addWidget(self._create_experiment_id, 2)
-        create_row.addWidget(self._create_label, 2)
-        create_row.addWidget(self._create_arm_id, 1)
-        create_row.addWidget(self._create_greeting, 3)
-        create_row.addWidget(self._create_button)
+        self._create_row = QGridLayout()
+        self._create_row.setContentsMargins(0, 0, 0, 0)
+        self._create_row.setHorizontalSpacing(8)
+        self._create_row.setVerticalSpacing(8)
 
         self._add_arm_id = QLineEdit(self)
         self._add_arm_id.setObjectName("AddArmIdInput")
@@ -305,20 +391,18 @@ class _ManagePanel(QFrame):
         self._add_button = QPushButton("Add arm", self)
         self._add_button.setObjectName("AddArmButton")
 
-        add_row = QHBoxLayout()
-        add_row.setContentsMargins(0, 0, 0, 0)
-        add_row.setSpacing(8)
-        add_row.addWidget(self._add_arm_id, 1)
-        add_row.addWidget(self._add_greeting, 3)
-        add_row.addWidget(self._add_button)
+        self._add_row = QGridLayout()
+        self._add_row.setContentsMargins(0, 0, 0, 0)
+        self._add_row.setHorizontalSpacing(8)
+        self._add_row.setVerticalSpacing(8)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 12, 16, 16)
         layout.setSpacing(8)
         layout.addWidget(self._title)
         layout.addWidget(self._hint)
-        layout.addLayout(create_row)
-        layout.addLayout(add_row)
+        layout.addLayout(self._create_row)
+        layout.addLayout(self._add_row)
 
         for edit in (
             self._create_experiment_id,
@@ -331,6 +415,7 @@ class _ManagePanel(QFrame):
             edit.textChanged.connect(self._sync_enabled)
         self._create_button.clicked.connect(self._on_create_clicked)
         self._add_button.clicked.connect(self._on_add_clicked)
+        self._apply_grid_layout(band=ResponsiveWidthBand.WIDE)
         self._sync_enabled()
 
     def set_detail(
@@ -353,6 +438,55 @@ class _ManagePanel(QFrame):
             else "Load or create an experiment before adding arms."
         )
         self._sync_enabled()
+
+    def apply_responsive_width(self, width: int) -> None:
+        band = _EXPERIMENT_BREAKPOINTS.band_for_width(width)
+        self._apply_grid_layout(band=band)
+
+    def _apply_grid_layout(self, *, band: ResponsiveWidthBand) -> None:
+        while self._create_row.count() > 0:
+            self._create_row.takeAt(0)
+        while self._add_row.count() > 0:
+            self._add_row.takeAt(0)
+
+        if band is ResponsiveWidthBand.WIDE:
+            self._create_row.addWidget(self._create_experiment_id, 0, 0)
+            self._create_row.addWidget(self._create_label, 0, 1)
+            self._create_row.addWidget(self._create_arm_id, 0, 2)
+            self._create_row.addWidget(self._create_greeting, 0, 3)
+            self._create_row.addWidget(self._create_button, 0, 4)
+            self._add_row.addWidget(self._add_arm_id, 0, 0)
+            self._add_row.addWidget(self._add_greeting, 0, 1, 1, 3)
+            self._add_row.addWidget(self._add_button, 0, 4)
+            create_stretches = (1, 1, 1, 2, 0)
+            add_stretches = (1, 2, 0, 0, 0)
+        elif band is ResponsiveWidthBand.MEDIUM:
+            self._create_row.addWidget(self._create_experiment_id, 0, 0)
+            self._create_row.addWidget(self._create_label, 0, 1)
+            self._create_row.addWidget(self._create_arm_id, 1, 0)
+            self._create_row.addWidget(self._create_greeting, 1, 1)
+            self._create_row.addWidget(self._create_button, 2, 0, 1, 2)
+            self._add_row.addWidget(self._add_arm_id, 0, 0)
+            self._add_row.addWidget(self._add_greeting, 0, 1)
+            self._add_row.addWidget(self._add_button, 1, 0, 1, 2)
+            create_stretches = (1, 1, 0, 0, 0)
+            add_stretches = (1, 2, 0, 0, 0)
+        else:
+            self._create_row.addWidget(self._create_experiment_id, 0, 0)
+            self._create_row.addWidget(self._create_label, 1, 0)
+            self._create_row.addWidget(self._create_arm_id, 2, 0)
+            self._create_row.addWidget(self._create_greeting, 3, 0)
+            self._create_row.addWidget(self._create_button, 4, 0)
+            self._add_row.addWidget(self._add_arm_id, 0, 0)
+            self._add_row.addWidget(self._add_greeting, 1, 0)
+            self._add_row.addWidget(self._add_button, 2, 0)
+            create_stretches = (1, 0, 0, 0, 0)
+            add_stretches = (1, 0, 0, 0, 0)
+
+        for column, stretch in enumerate(create_stretches):
+            self._create_row.setColumnStretch(column, stretch)
+        for column, stretch in enumerate(add_stretches):
+            self._add_row.setColumnStretch(column, stretch)
 
     def _on_create_clicked(self) -> None:
         self._vm.create_experiment(

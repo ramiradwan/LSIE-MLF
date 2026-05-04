@@ -21,6 +21,7 @@ Spec references:
 from __future__ import annotations
 
 from PySide6.QtCore import QModelIndex, Qt, Slot
+from PySide6.QtGui import QResizeEvent
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QFrame,
@@ -29,6 +30,7 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QLabel,
     QPushButton,
+    QScrollArea,
     QTableView,
     QVBoxLayout,
     QWidget,
@@ -55,6 +57,14 @@ from services.operator_console.widgets.alert_banner import AlertBanner
 from services.operator_console.widgets.empty_state import EmptyStateWidget
 from services.operator_console.widgets.event_timeline import EventTimelineWidget
 from services.operator_console.widgets.metric_card import MetricCard
+from services.operator_console.widgets.responsive_layout import (
+    MetricGridColumns,
+    ResponsiveBreakpoints,
+    ResponsiveMetricGrid,
+    ResponsiveWidthBand,
+    TableColumnPolicy,
+    apply_table_column_policies,
+)
 from services.operator_console.widgets.section_header import SectionHeader
 from services.operator_console.widgets.status_pill import StatusPill
 
@@ -76,6 +86,78 @@ _PROBE_STATUS: dict[HealthProbeState, UiStatusKind] = {
     HealthProbeState.NOT_CONFIGURED: UiStatusKind.NEUTRAL,
     HealthProbeState.UNKNOWN: UiStatusKind.NEUTRAL,
 }
+
+_HEALTH_BREAKPOINTS = ResponsiveBreakpoints(medium_min_width=760, wide_min_width=1120)
+
+_SUBSYSTEM_TABLE_POLICIES: tuple[TableColumnPolicy, ...] = (
+    TableColumnPolicy(
+        column=0,
+        resize_modes={
+            ResponsiveWidthBand.NARROW: QHeaderView.ResizeMode.ResizeToContents,
+            ResponsiveWidthBand.MEDIUM: QHeaderView.ResizeMode.ResizeToContents,
+        },
+        widths={ResponsiveWidthBand.WIDE: 180},
+    ),
+    TableColumnPolicy(
+        column=1,
+        resize_mode=QHeaderView.ResizeMode.ResizeToContents,
+        widths={ResponsiveWidthBand.WIDE: 120},
+    ),
+    TableColumnPolicy(
+        column=2,
+        visible_in=frozenset({ResponsiveWidthBand.MEDIUM, ResponsiveWidthBand.WIDE}),
+        resize_mode=QHeaderView.ResizeMode.ResizeToContents,
+        widths={ResponsiveWidthBand.WIDE: 150},
+    ),
+    TableColumnPolicy(
+        column=3,
+        resize_mode=QHeaderView.ResizeMode.Stretch,
+    ),
+    TableColumnPolicy(
+        column=4,
+        visible_in=frozenset({ResponsiveWidthBand.WIDE}),
+        resize_mode=QHeaderView.ResizeMode.ResizeToContents,
+        widths={ResponsiveWidthBand.WIDE: 170},
+    ),
+    TableColumnPolicy(
+        column=5,
+        visible_in=frozenset({ResponsiveWidthBand.WIDE}),
+        resize_mode=QHeaderView.ResizeMode.Stretch,
+    ),
+)
+
+_ALERT_TIMELINE_POLICIES: tuple[TableColumnPolicy, ...] = (
+    TableColumnPolicy(
+        column=0,
+        resize_mode=QHeaderView.ResizeMode.ResizeToContents,
+        widths={ResponsiveWidthBand.WIDE: 165},
+    ),
+    TableColumnPolicy(
+        column=1,
+        visible_in=frozenset({ResponsiveWidthBand.MEDIUM, ResponsiveWidthBand.WIDE}),
+        resize_mode=QHeaderView.ResizeMode.ResizeToContents,
+        widths={ResponsiveWidthBand.WIDE: 100},
+    ),
+    TableColumnPolicy(
+        column=2,
+        visible_in=frozenset({ResponsiveWidthBand.WIDE}),
+        resize_mode=QHeaderView.ResizeMode.ResizeToContents,
+        widths={ResponsiveWidthBand.WIDE: 150},
+    ),
+    TableColumnPolicy(
+        column=3,
+        visible_in=frozenset({ResponsiveWidthBand.WIDE}),
+        resize_mode=QHeaderView.ResizeMode.ResizeToContents,
+        widths={ResponsiveWidthBand.WIDE: 160},
+    ),
+    TableColumnPolicy(column=4, resize_mode=QHeaderView.ResizeMode.Stretch),
+    TableColumnPolicy(
+        column=5,
+        visible_in=frozenset({ResponsiveWidthBand.WIDE}),
+        resize_mode=QHeaderView.ResizeMode.ResizeToContents,
+        widths={ResponsiveWidthBand.WIDE: 70},
+    ),
+)
 
 
 class HealthView(QWidget):
@@ -115,18 +197,29 @@ class HealthView(QWidget):
         self._recovering_card = MetricCard("Recovering", self)
         self._error_card = MetricCard("Error", self)
 
-        cards = QHBoxLayout()
-        cards.setContentsMargins(0, 0, 0, 0)
-        cards.setSpacing(14)
-        cards.addWidget(self._overall_card, 1)
-        cards.addWidget(self._degraded_card, 1)
-        cards.addWidget(self._recovering_card, 1)
-        cards.addWidget(self._error_card, 1)
+        self._cards_grid = ResponsiveMetricGrid(
+            breakpoints=_HEALTH_BREAKPOINTS,
+            columns=MetricGridColumns(wide=4, medium=2, narrow=1),
+            parent=self,
+        )
+        self._cards_grid.set_widgets(
+            [
+                self._overall_card,
+                self._degraded_card,
+                self._recovering_card,
+                self._error_card,
+            ]
+        )
 
         self._probe_matrix = _ProbeMatrix(self)
         self._subsystem_table = self._build_subsystem_table()
         self._alerts_timeline = EventTimelineWidget(self)
         self._alerts_timeline.set_model(self._vm.alerts_model())
+        self._alerts_timeline.set_column_policies(
+            _ALERT_TIMELINE_POLICIES,
+            breakpoints=_HEALTH_BREAKPOINTS,
+            default_resize_mode=QHeaderView.ResizeMode.Stretch,
+        )
 
         self._probe_panel = _TablePanel(
             "Subsystem probes",
@@ -150,13 +243,21 @@ class HealthView(QWidget):
         body = QVBoxLayout()
         body.setContentsMargins(0, 0, 0, 0)
         body.setSpacing(14)
-        body.addLayout(cards)
-        body.addWidget(self._probe_panel, 1)
-        body.addWidget(self._subsystem_panel, 2)
-        body.addWidget(self._alerts_panel, 2)
+        body.addWidget(self._cards_grid)
+        body.addWidget(self._probe_panel)
+        body.addWidget(self._subsystem_panel)
+        body.addWidget(self._alerts_panel)
+        body.addStretch(1)
 
         self._body_container = QWidget(self)
         self._body_container.setLayout(body)
+
+        self._scroll = QScrollArea(self)
+        self._scroll.setObjectName("HealthScrollArea")
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._scroll.setWidget(self._body_container)
 
         header_row = QHBoxLayout()
         header_row.setContentsMargins(0, 0, 0, 0)
@@ -171,7 +272,7 @@ class HealthView(QWidget):
         layout.addLayout(header_row)
         layout.addWidget(self._error_banner)
         layout.addWidget(self._empty_state)
-        layout.addWidget(self._body_container, 1)
+        layout.addWidget(self._scroll, 1)
         layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
         self._vm.changed.connect(self._refresh)
@@ -194,6 +295,10 @@ class HealthView(QWidget):
     def on_deactivated(self) -> None:
         return None
 
+    def resizeEvent(self, event: QResizeEvent) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self._apply_responsive_layout()
+
     # ------------------------------------------------------------------
     # Construction helpers
     # ------------------------------------------------------------------
@@ -206,6 +311,7 @@ class HealthView(QWidget):
         table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        table.setWordWrap(True)
         vertical = table.verticalHeader()
         if vertical is not None:
             vertical.setVisible(False)
@@ -223,14 +329,15 @@ class HealthView(QWidget):
         self._repair_button.setEnabled(self._vm.repair_available())
         if snapshot is None:
             self._empty_state.setVisible(True)
-            self._body_container.setVisible(False)
+            self._scroll.setVisible(False)
             return
         self._empty_state.setVisible(False)
-        self._body_container.setVisible(True)
+        self._scroll.setVisible(True)
 
         self._render_overall(snapshot)
         self._render_counts(snapshot)
         self._probe_matrix.set_probes(self._vm.subsystem_probes())
+        self._apply_responsive_layout()
 
     def _render_overall(self, snapshot: HealthSnapshot) -> None:
         kind = _HEALTH_STATUS[snapshot.overall_state]
@@ -267,6 +374,21 @@ class HealthView(QWidget):
             UiStatusKind.ERROR if snapshot.error_count else UiStatusKind.NEUTRAL,
             "error" if snapshot.error_count else None,
         )
+
+    def _apply_responsive_layout(self) -> None:
+        width = max(self.width(), self._scroll.viewport().width())
+        band = _HEALTH_BREAKPOINTS.band_for_width(width)
+        self._probe_matrix.set_width_band(band)
+        apply_table_column_policies(
+            self._subsystem_table,
+            _SUBSYSTEM_TABLE_POLICIES,
+            width=width,
+            breakpoints=_HEALTH_BREAKPOINTS,
+            default_resize_mode=QHeaderView.ResizeMode.Stretch,
+        )
+        self._subsystem_panel.set_compact(band is ResponsiveWidthBand.NARROW)
+        self._alerts_panel.set_compact(band is ResponsiveWidthBand.NARROW)
+        self._probe_panel.set_compact(band is ResponsiveWidthBand.NARROW)
 
     # ------------------------------------------------------------------
     # Slots
@@ -305,7 +427,7 @@ class HealthView(QWidget):
 
 
 class _ProbeMatrix(QFrame):
-    """Compact three-column matrix for bounded subsystem probes."""
+    """Bounded subsystem probes with width-aware presentation."""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -317,52 +439,85 @@ class _ProbeMatrix(QFrame):
         self._grid.setVerticalSpacing(8)
         self._state_pills: list[StatusPill] = []
         self._latency_labels: list[QLabel] = []
+        self._name_labels: list[QLabel] = []
+        self._header_labels: list[QLabel] = []
+        self._probes: list[HealthSubsystemProbe] = []
+        self._width_band = ResponsiveWidthBand.WIDE
         self._empty_label = QLabel("No bounded probes reported", self)
         self._empty_label.setObjectName("PanelSubtitle")
         self._render_headers()
         self._show_empty()
 
     def set_probes(self, probes: list[HealthSubsystemProbe]) -> None:
+        self._probes = list(probes)
+        self._render_rows()
+
+    def set_width_band(self, band: ResponsiveWidthBand) -> None:
+        if band is self._width_band:
+            return
+        self._width_band = band
+        self._render_rows()
+
+    def _render_rows(self) -> None:
         self._clear_rows()
-        if not probes:
+        if not self._probes:
             self._show_empty()
             return
         self._empty_label.setVisible(False)
-        for row_index, probe in enumerate(probes, start=1):
+        compact = self._width_band is ResponsiveWidthBand.NARROW
+        for row_index, probe in enumerate(self._probes, start=1):
+            detail = build_health_probe_detail(probe)
             name = QLabel(probe.label or probe.subsystem_key, self)
             name.setObjectName("MetricCardSecondary")
-            name.setToolTip(build_health_probe_detail(probe))
+            name.setToolTip(detail)
+            name.setWordWrap(True)
 
             pill = StatusPill(self)
             pill.set_kind(_PROBE_STATUS[probe.state])
             pill.set_text(format_health_probe_state(probe.state))
-            pill.setToolTip(build_health_probe_detail(probe))
+            pill.setToolTip(detail)
 
             latency = QLabel(format_latency_ms(probe.latency_ms), self)
             latency.setObjectName("MetricCardSecondary")
-            latency.setToolTip(build_health_probe_detail(probe))
+            latency.setToolTip(detail)
 
-            self._grid.addWidget(name, row_index, 0)
-            self._grid.addWidget(pill, row_index, 1)
-            self._grid.addWidget(latency, row_index, 2)
+            self._name_labels.append(name)
             self._state_pills.append(pill)
             self._latency_labels.append(latency)
+
+            if compact:
+                self._grid.addWidget(name, row_index, 0, 1, 2)
+                self._grid.addWidget(pill, row_index, 2)
+                self._grid.addWidget(latency, row_index, 3)
+            else:
+                self._grid.addWidget(name, row_index, 0)
+                self._grid.addWidget(pill, row_index, 1)
+                self._grid.addWidget(latency, row_index, 2)
+        self._apply_header_visibility(compact)
 
     def _render_headers(self) -> None:
         for column, title in enumerate(("Subsystem", "State", "Latency")):
             label = QLabel(title, self)
             label.setObjectName("PanelSubtitle")
             self._grid.addWidget(label, 0, column)
+            self._header_labels.append(label)
+
+    def _apply_header_visibility(self, compact: bool) -> None:
+        for label in self._header_labels:
+            label.setVisible(not compact)
 
     def _show_empty(self) -> None:
+        self._apply_header_visibility(self._width_band is ResponsiveWidthBand.NARROW)
         self._empty_label.setVisible(True)
-        self._grid.addWidget(self._empty_label, 1, 0, 1, 3)
+        span = 4 if self._width_band is ResponsiveWidthBand.NARROW else 3
+        self._grid.addWidget(self._empty_label, 1, 0, 1, span)
 
     def _clear_rows(self) -> None:
+        self._name_labels.clear()
         self._state_pills.clear()
         self._latency_labels.clear()
-        while self._grid.count() > 3:
-            item = self._grid.takeAt(3)
+        while self._grid.count() > len(self._header_labels):
+            item = self._grid.takeAt(len(self._header_labels))
             widget = item.widget() if item is not None else None
             if widget is self._empty_label:
                 widget.setVisible(False)
@@ -393,13 +548,19 @@ class _TablePanel(QFrame):
         self._subtitle = QLabel(subtitle, self)
         self._subtitle.setObjectName("PanelSubtitle")
         self._subtitle.setWordWrap(True)
+        self._inner = inner
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 12, 16, 12)
-        layout.setSpacing(6)
-        layout.addWidget(self._title)
-        layout.addWidget(self._subtitle)
-        layout.addWidget(inner, 1)
+        self._layout = QVBoxLayout(self)
+        self._layout.setContentsMargins(16, 12, 16, 12)
+        self._layout.setSpacing(6)
+        self._layout.addWidget(self._title)
+        self._layout.addWidget(self._subtitle)
+        self._layout.addWidget(inner, 1)
+
+    def set_compact(self, compact: bool) -> None:
+        self._layout.setContentsMargins(12, 10, 12, 10 if compact else 12)
+        self._layout.setSpacing(4 if compact else 6)
+        self._subtitle.setVisible(not compact)
 
 
 def _describe_error_hint(snapshot: HealthSnapshot) -> str:

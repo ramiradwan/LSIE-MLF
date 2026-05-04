@@ -13,7 +13,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
-from PySide6.QtWidgets import QDialog
+from PySide6.QtWidgets import QDialog, QHeaderView
 
 from packages.schemas.operator_console import (
     AttributionSummary,
@@ -35,9 +35,12 @@ from services.operator_console.table_models.encounters_table_model import (
 )
 from services.operator_console.viewmodels.live_session_vm import LiveSessionViewModel
 from services.operator_console.views.live_session_view import (
+    _NARROW_PHONE_PREVIEW_HEIGHT,
+    _WIDE_PHONE_PREVIEW_HEIGHT,
     LiveSessionView,
     _StartSessionDialog,
 )
+from services.operator_console.widgets.responsive_layout import ResponsiveWidthBand
 
 pytestmark = pytest.mark.usefixtures("qt_app")
 
@@ -134,13 +137,13 @@ def test_live_session_view_shows_empty_state_without_session() -> None:
     # `isHidden()` reads the local flag and tells us the page was wired to
     # show the empty state rather than the body container.
     assert view._empty_state.isHidden() is False  # type: ignore[attr-defined]
-    assert view._body_container.isHidden() is True  # type: ignore[attr-defined]
+    assert view._scroll.isHidden() is True  # type: ignore[attr-defined]
 
 
 def test_live_session_view_ttv_waiting_for_device_uses_instructional_empty_state() -> None:
     view, _store, _vm = _build_view()
     assert view._empty_state.isHidden() is False  # type: ignore[attr-defined]
-    assert view._body_container.isHidden() is True  # type: ignore[attr-defined]
+    assert view._scroll.isHidden() is True  # type: ignore[attr-defined]
     assert "Waiting for phone" in view._empty_state._title.text()  # type: ignore[attr-defined]
 
 
@@ -171,7 +174,7 @@ def test_live_session_view_ttv_gate_shows_connected_capture_status() -> None:
     )
 
     assert view._empty_state.isHidden() is False  # type: ignore[attr-defined]
-    assert view._body_container.isHidden() is True  # type: ignore[attr-defined]
+    assert view._scroll.isHidden() is True  # type: ignore[attr-defined]
     assert "Phone connected" in view._empty_state._title.text()  # type: ignore[attr-defined]
     assert "Audio capture ok" in view._empty_state._message.text()  # type: ignore[attr-defined]
     assert "Video capture ok" in view._empty_state._message.text()  # type: ignore[attr-defined]
@@ -209,6 +212,7 @@ def test_live_session_view_ttv_ready_shows_dashboard_and_smile_timeline() -> Non
     store.set_encounters([_encounter("e-smile", session_id=session.session_id, p90=0.64)])
 
     assert view._empty_state.isHidden() is True  # type: ignore[attr-defined]
+    assert view._scroll.isHidden() is False  # type: ignore[attr-defined]
     assert view._body_container.isHidden() is False  # type: ignore[attr-defined]
     assert view._setup_overlay.isHidden() is True  # type: ignore[attr-defined]
     assert view._phone_preview.isEnabled() is True  # type: ignore[attr-defined]
@@ -217,6 +221,58 @@ def test_live_session_view_ttv_ready_shows_dashboard_and_smile_timeline() -> Non
     assert view._live_analytics_notice.isHidden() is True  # type: ignore[attr-defined]
     assert view._smile_card._primary.text() == "64%"  # type: ignore[attr-defined]
     assert view._timeline_model.rowCount() == 1  # type: ignore[attr-defined]
+
+
+def test_live_session_view_applies_narrow_width_responsive_layout() -> None:
+    view, store, _vm = _build_view()
+    session = _session(
+        is_calibrating=True,
+        calibration_frames_accumulated=45,
+        calibration_frames_required=45,
+    )
+    store.set_selected_session_id(session.session_id)
+    store.set_live_session(session)
+    store.set_encounters([_encounter("e-smile", session_id=session.session_id, p90=0.64)])
+
+    view.resize(900, 640)
+    view._apply_responsive_layout()  # type: ignore[attr-defined]
+
+    assert view._dashboard_grid.column_count() == 2  # type: ignore[attr-defined]
+    assert view._phone_preview._placeholder.minimumHeight() == _WIDE_PHONE_PREVIEW_HEIGHT  # type: ignore[attr-defined]
+    assert view._detail_panel._reward_grid.column_count() == 2  # type: ignore[attr-defined]
+    assert view._detail_panel._acoustic_grid.column_count() == 2  # type: ignore[attr-defined]
+    assert view._detail_panel._semantic_grid.column_count() == 2  # type: ignore[attr-defined]
+    assert view._table.isColumnHidden(2) is True  # type: ignore[attr-defined]
+    assert view._table.isColumnHidden(6) is False  # type: ignore[attr-defined]
+    assert view._table.isColumnHidden(7) is True  # type: ignore[attr-defined]
+    header = view._table.horizontalHeader()  # type: ignore[attr-defined]
+    assert header.sectionResizeMode(4) == QHeaderView.ResizeMode.ResizeToContents
+    assert view._timeline.current_width_band() == ResponsiveWidthBand.MEDIUM  # type: ignore[attr-defined]
+
+
+def test_live_session_view_applies_extra_narrow_column_policy_and_preview_height() -> None:
+    view, store, _vm = _build_view()
+    session = _session(
+        is_calibrating=True,
+        calibration_frames_accumulated=45,
+        calibration_frames_required=45,
+    )
+    store.set_selected_session_id(session.session_id)
+    store.set_live_session(session)
+    store.set_encounters([_encounter("e-smile", session_id=session.session_id, p90=0.64)])
+
+    view.resize(620, 640)
+    view._apply_responsive_layout()  # type: ignore[attr-defined]
+
+    assert view._dashboard_grid.column_count() == 1  # type: ignore[attr-defined]
+    assert view._phone_preview._placeholder.minimumHeight() == _NARROW_PHONE_PREVIEW_HEIGHT  # type: ignore[attr-defined]
+    assert view._detail_panel._reward_grid.column_count() == 1  # type: ignore[attr-defined]
+    assert view._detail_panel._acoustic_grid.column_count() == 1  # type: ignore[attr-defined]
+    assert view._detail_panel._semantic_grid.column_count() == 1  # type: ignore[attr-defined]
+    assert view._table.isColumnHidden(2) is True  # type: ignore[attr-defined]
+    assert view._table.isColumnHidden(6) is True  # type: ignore[attr-defined]
+    assert view._table.isColumnHidden(7) is True  # type: ignore[attr-defined]
+    assert view._timeline.current_width_band() == ResponsiveWidthBand.NARROW  # type: ignore[attr-defined]
 
 
 def test_live_session_view_ready_shows_no_producer_notice_without_error_banner() -> None:

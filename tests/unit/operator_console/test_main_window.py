@@ -330,6 +330,39 @@ def test_stimulus_state_changed_reaches_action_bar() -> None:
 # ---------------------------------------------------------------------
 
 
+def test_window_sets_supported_minimum_size() -> None:
+    window, _store, _coord = _make_window()
+    assert window.minimumWidth() == 900
+    assert window.minimumHeight() == 640
+
+
+def test_sidebar_width_reflows_with_window_resize() -> None:
+    window, _store, _coord = _make_window()
+
+    window.resize(1280, 800)
+    window._update_responsive_layout(window.width())
+    wide_width = window._sidebar.width()
+
+    window.resize(900, 640)
+    window._update_responsive_layout(window.width())
+    narrow_width = window._sidebar.width()
+
+    assert wide_width == 220
+    assert narrow_width == 162
+
+
+def test_action_bar_switches_to_compact_mode_on_narrow_window() -> None:
+    window, _store, _coord = _make_window()
+
+    window.resize(900, 640)
+    window._update_responsive_layout(window.width())
+    assert window._action_bar._compact_mode is True
+
+    window.resize(1280, 800)
+    window._update_responsive_layout(window.width())
+    assert window._action_bar._compact_mode is False
+
+
 def test_close_event_stops_coordinator() -> None:
     window, _store, coord = _make_window()
     coord.stop = MagicMock()  # type: ignore[method-assign]

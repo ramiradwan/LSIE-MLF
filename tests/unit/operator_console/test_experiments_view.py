@@ -18,6 +18,7 @@ from services.operator_console.table_models.experiments_table_model import (
 )
 from services.operator_console.viewmodels.experiments_vm import ExperimentsViewModel
 from services.operator_console.views.experiments_view import ExperimentsView
+from services.operator_console.widgets.responsive_layout import ResponsiveWidthBand
 
 pytestmark = pytest.mark.usefixtures("qt_app")
 
@@ -152,3 +153,48 @@ def test_experiments_view_reflects_rename_disable_create_readback() -> None:
     assert view._experiment_card._primary.text() == "created label"  # type: ignore[attr-defined]
     assert model.data(model.index(0, 1)) == "Hei new"
     assert model.data(model.index(0, 2)) == "disabled"
+
+
+def test_experiments_view_narrow_width_reflows_cards_and_table() -> None:
+    view, store = _view()
+    store.set_experiment(_detail())
+
+    view._apply_responsive_layout(620)  # type: ignore[attr-defined]
+
+    assert view._cards_grid.current_band() is ResponsiveWidthBand.NARROW  # type: ignore[attr-defined]
+    assert view._cards_grid.column_count() == 1  # type: ignore[attr-defined]
+    table = view._table  # type: ignore[attr-defined]
+    assert table.isColumnHidden(0) is False
+    assert table.isColumnHidden(1) is False
+    assert table.isColumnHidden(2) is False
+    assert table.isColumnHidden(3) is True
+    assert table.isColumnHidden(4) is True
+    assert table.isColumnHidden(5) is True
+    assert table.isColumnHidden(6) is False
+    assert table.isColumnHidden(7) is True
+    assert table.isColumnHidden(8) is True
+
+
+def test_experiments_manage_panel_reflows_for_medium_and_narrow_widths() -> None:
+    view, _store = _view()
+    panel = view._manage_panel  # type: ignore[attr-defined]
+
+    panel.apply_responsive_width(900)
+    assert panel._create_row.itemAtPosition(0, 0).widget() is panel._create_experiment_id  # type: ignore[attr-defined]
+    assert panel._create_row.itemAtPosition(0, 1).widget() is panel._create_label  # type: ignore[attr-defined]
+    assert panel._create_row.itemAtPosition(1, 0).widget() is panel._create_arm_id  # type: ignore[attr-defined]
+    assert panel._create_row.itemAtPosition(1, 1).widget() is panel._create_greeting  # type: ignore[attr-defined]
+    assert panel._create_row.itemAtPosition(2, 0).widget() is panel._create_button  # type: ignore[attr-defined]
+    assert panel._add_row.itemAtPosition(0, 0).widget() is panel._add_arm_id  # type: ignore[attr-defined]
+    assert panel._add_row.itemAtPosition(0, 1).widget() is panel._add_greeting  # type: ignore[attr-defined]
+    assert panel._add_row.itemAtPosition(1, 0).widget() is panel._add_button  # type: ignore[attr-defined]
+
+    panel.apply_responsive_width(620)
+    assert panel._create_row.itemAtPosition(0, 0).widget() is panel._create_experiment_id  # type: ignore[attr-defined]
+    assert panel._create_row.itemAtPosition(1, 0).widget() is panel._create_label  # type: ignore[attr-defined]
+    assert panel._create_row.itemAtPosition(2, 0).widget() is panel._create_arm_id  # type: ignore[attr-defined]
+    assert panel._create_row.itemAtPosition(3, 0).widget() is panel._create_greeting  # type: ignore[attr-defined]
+    assert panel._create_row.itemAtPosition(4, 0).widget() is panel._create_button  # type: ignore[attr-defined]
+    assert panel._add_row.itemAtPosition(0, 0).widget() is panel._add_arm_id  # type: ignore[attr-defined]
+    assert panel._add_row.itemAtPosition(1, 0).widget() is panel._add_greeting  # type: ignore[attr-defined]
+    assert panel._add_row.itemAtPosition(2, 0).widget() is panel._add_button  # type: ignore[attr-defined]

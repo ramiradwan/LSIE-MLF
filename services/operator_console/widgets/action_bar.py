@@ -20,6 +20,7 @@ from uuid import UUID
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -80,6 +81,7 @@ class ActionBar(QWidget):
         self._active_arm: str | None = None
         self._expected_greeting: str | None = None
         self._operator_ready_for_submit: bool = True
+        self._compact_mode = False
 
         self._session_label = QLabel("No session selected", self)
         self._session_label.setObjectName("ActionBarSession")
@@ -114,27 +116,26 @@ class ActionBar(QWidget):
         self._message_label.setWordWrap(True)
         self._message_label.setVisible(False)
 
-        top = QHBoxLayout()
-        top.setContentsMargins(0, 0, 0, 0)
-        top.setSpacing(12)
-        top.addWidget(self._session_label)
-        top.addStretch(1)
-        top.addWidget(self._state_pill)
-        top.addWidget(self._countdown_label)
+        self._header_layout = QHBoxLayout()
+        self._header_layout.setContentsMargins(0, 0, 0, 0)
+        self._header_layout.setSpacing(12)
 
-        mid = QHBoxLayout()
-        mid.setContentsMargins(0, 0, 0, 0)
-        mid.setSpacing(12)
-        mid.addWidget(self._note_input, 1)
-        mid.addWidget(self._submit_button)
+        self._status_layout = QHBoxLayout()
+        self._status_layout.setContentsMargins(0, 0, 0, 0)
+        self._status_layout.setSpacing(12)
+        self._status_layout.addWidget(self._state_pill)
+        self._status_layout.addWidget(self._countdown_label)
+
+        self._input_layout = QHBoxLayout()
+        self._input_layout.setContentsMargins(0, 0, 0, 0)
+        self._input_layout.setSpacing(12)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(16, 12, 16, 12)
         root.setSpacing(6)
-        root.addLayout(top)
-        root.addWidget(self._greeting_label)
-        root.addLayout(mid)
-        root.addWidget(self._message_label)
+        self._root_layout = root
+
+        self._rebuild_layout()
 
     # ---- external API --------------------------------------------------
 
@@ -217,7 +218,61 @@ class ActionBar(QWidget):
             self._message_label.setText("")
             self._message_label.setVisible(False)
 
+    def set_compact_mode(self, compact: bool) -> None:
+        if self._compact_mode == compact:
+            return
+        self._compact_mode = compact
+        self._rebuild_layout()
+
     # ---- internals -----------------------------------------------------
+
+    def _rebuild_layout(self) -> None:
+        self._clear_layout(self._root_layout)
+        self._clear_layout(self._header_layout)
+        self._clear_layout(self._status_layout)
+        self._clear_layout(self._input_layout)
+
+        self._status_layout.addWidget(self._state_pill)
+        self._status_layout.addWidget(self._countdown_label)
+        self._status_layout.addStretch(1)
+
+        if self._compact_mode:
+            self._header_layout.addWidget(self._session_label)
+            self._header_layout.addStretch(1)
+
+            self._input_layout.addWidget(self._submit_button)
+            self._input_layout.addStretch(1)
+
+            self._root_layout.setContentsMargins(12, 10, 12, 10)
+            self._root_layout.setSpacing(4)
+            self._root_layout.addLayout(self._header_layout)
+            self._root_layout.addLayout(self._status_layout)
+            self._root_layout.addWidget(self._greeting_label)
+            self._root_layout.addWidget(self._note_input)
+            self._root_layout.addLayout(self._input_layout)
+            self._root_layout.addWidget(self._message_label)
+            return
+
+        self._header_layout.addWidget(self._session_label)
+        self._header_layout.addStretch(1)
+        self._header_layout.addLayout(self._status_layout)
+
+        self._input_layout.addWidget(self._note_input, 1)
+        self._input_layout.addWidget(self._submit_button)
+
+        self._root_layout.setContentsMargins(16, 12, 16, 12)
+        self._root_layout.setSpacing(6)
+        self._root_layout.addLayout(self._header_layout)
+        self._root_layout.addWidget(self._greeting_label)
+        self._root_layout.addLayout(self._input_layout)
+        self._root_layout.addWidget(self._message_label)
+
+    def _clear_layout(self, layout: QHBoxLayout | QVBoxLayout) -> None:
+        while layout.count() > 0:
+            item = layout.takeAt(0)
+            child_layout = item.layout()
+            if isinstance(child_layout, (QHBoxLayout, QVBoxLayout, QGridLayout)):
+                self._clear_layout(child_layout)
 
     def _on_submit_clicked(self) -> None:
         if not self._submit_button.isEnabled() or self._session_id is None:

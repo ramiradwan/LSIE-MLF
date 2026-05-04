@@ -25,7 +25,6 @@ from __future__ import annotations
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QFrame,
-    QGridLayout,
     QHBoxLayout,
     QLabel,
     QVBoxLayout,
@@ -48,6 +47,7 @@ from services.operator_console.viewmodels.physiology_vm import PhysiologyViewMod
 from services.operator_console.widgets.alert_banner import AlertBanner
 from services.operator_console.widgets.empty_state import EmptyStateWidget
 from services.operator_console.widgets.metric_card import MetricCard
+from services.operator_console.widgets.responsive_layout import ResponsiveMetricGrid
 from services.operator_console.widgets.section_header import SectionHeader
 from services.operator_console.widgets.status_pill import StatusPill
 
@@ -81,16 +81,13 @@ class PhysiologyView(QWidget):
         self._operator_panel = _RolePanel("Operator", self)
         self._comodulation_panel = _CoModulationPanel(self)
 
-        roles_row = QHBoxLayout()
-        roles_row.setContentsMargins(0, 0, 0, 0)
-        roles_row.setSpacing(14)
-        roles_row.addWidget(self._streamer_panel, 1)
-        roles_row.addWidget(self._operator_panel, 1)
+        self._roles_grid = ResponsiveMetricGrid(parent=self)
+        self._roles_grid.set_widgets([self._streamer_panel, self._operator_panel])
 
         body = QVBoxLayout()
         body.setContentsMargins(0, 0, 0, 0)
         body.setSpacing(14)
-        body.addLayout(roles_row)
+        body.addWidget(self._roles_grid)
         body.addWidget(self._comodulation_panel)
         body.addStretch(1)
 
@@ -189,22 +186,21 @@ class _RolePanel(QFrame):
         top.addStretch(1)
         top.addWidget(self._status)
 
-        grid = QGridLayout()
-        grid.setContentsMargins(0, 0, 0, 0)
-        grid.setHorizontalSpacing(10)
-        grid.setVerticalSpacing(10)
-        grid.addWidget(self._rmssd_card, 0, 0)
-        grid.addWidget(self._hr_card, 0, 1)
-        grid.addWidget(self._freshness_card, 1, 0)
-        grid.addWidget(self._provider_card, 1, 1)
-        for col in range(2):
-            grid.setColumnStretch(col, 1)
+        self._metrics_grid = ResponsiveMetricGrid(parent=self)
+        self._metrics_grid.set_widgets(
+            [
+                self._rmssd_card,
+                self._hr_card,
+                self._freshness_card,
+                self._provider_card,
+            ]
+        )
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 12, 16, 16)
         layout.setSpacing(10)
         layout.addLayout(top)
-        layout.addLayout(grid)
+        layout.addWidget(self._metrics_grid)
 
     def set_snapshot(self, snap: PhysiologyCurrentSnapshot | None) -> None:
         if snap is None:
@@ -312,16 +308,15 @@ class _CoModulationPanel(QFrame):
         self._coverage_card = MetricCard("Coverage", self)
         self._window_card = MetricCard("Window", self)
 
-        grid = QGridLayout()
-        grid.setContentsMargins(0, 0, 0, 0)
-        grid.setHorizontalSpacing(10)
-        grid.setVerticalSpacing(10)
-        grid.addWidget(self._index_card, 0, 0)
-        grid.addWidget(self._observations_card, 0, 1)
-        grid.addWidget(self._coverage_card, 0, 2)
-        grid.addWidget(self._window_card, 0, 3)
-        for col in range(4):
-            grid.setColumnStretch(col, 1)
+        self._metrics_grid = ResponsiveMetricGrid(parent=self)
+        self._metrics_grid.set_widgets(
+            [
+                self._index_card,
+                self._observations_card,
+                self._coverage_card,
+                self._window_card,
+            ]
+        )
 
         self._explanation = QLabel("", self)
         self._explanation.setObjectName("MetricCardSecondary")
@@ -332,7 +327,7 @@ class _CoModulationPanel(QFrame):
         layout.setSpacing(8)
         layout.addWidget(self._title)
         layout.addWidget(self._subtitle)
-        layout.addLayout(grid)
+        layout.addWidget(self._metrics_grid)
         layout.addWidget(self._explanation)
 
     def set_summary(

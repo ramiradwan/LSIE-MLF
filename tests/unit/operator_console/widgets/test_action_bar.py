@@ -135,3 +135,26 @@ def test_countdown_visibility() -> None:
 
     bar.set_countdown_remaining(0)
     assert bar._countdown_label.isHidden() is True  # type: ignore[attr-defined]
+
+
+def test_compact_mode_moves_submit_below_note_input() -> None:
+    bar = ActionBar()
+    bar.set_session_context(uuid4(), "arm1", "hello")
+
+    bar.set_compact_mode(True)
+
+    assert bar._compact_mode is True  # type: ignore[attr-defined]
+    assert bar._input_layout.count() >= 1  # type: ignore[attr-defined]
+    assert bar._input_layout.itemAt(0).widget() is bar._submit_button  # type: ignore[attr-defined]
+
+
+def test_compact_mode_round_trips_to_wide_layout() -> None:
+    bar = ActionBar()
+    bar.set_session_context(uuid4(), "arm1", "hello")
+
+    bar.set_compact_mode(True)
+    bar.set_compact_mode(False)
+
+    assert bar._compact_mode is False  # type: ignore[attr-defined]
+    assert bar._input_layout.itemAt(0).widget() is bar._note_input  # type: ignore[attr-defined]
+    assert bar._input_layout.itemAt(1).widget() is bar._submit_button  # type: ignore[attr-defined]
