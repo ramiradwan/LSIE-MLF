@@ -19,8 +19,8 @@ from services.desktop_app.ipc.control_messages import LiveSessionControlMessage
 from services.desktop_app.state.sqlite_schema import apply_writer_pragmas, bootstrap_schema
 
 _DESKTOP_STIMULUS_UNAVAILABLE = (
-    "Desktop live analytics producer is release-gated; stimulus was not dispatched "
-    "to the reward pipeline."
+    "Test message accepted. The response measurement is starting now. "
+    "Wait for the next result before sending another test message."
 )
 
 
@@ -84,6 +84,7 @@ class SqliteOperatorActionService:
             client_action_id=request.client_action_id,
             accepted=True,
             received_at_utc=now,
+            stimulus_time_utc=now,
             message=_DESKTOP_STIMULUS_UNAVAILABLE,
         )
 

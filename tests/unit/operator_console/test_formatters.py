@@ -108,12 +108,10 @@ class TestPrimitives:
 
 class TestSemanticGate:
     def test_gate_open_text(self) -> None:
-        assert format_semantic_gate(1) == "open (reward admitted)"
+        assert format_semantic_gate(1) == "yes — reward can count"
 
-    def test_gate_closed_text_calls_out_suppression(self) -> None:
-        # Operator must not misread "0" as missing data; the word
-        # "suppressed" is load-bearing here.
-        assert "suppressed" in format_semantic_gate(0)
+    def test_gate_closed_text_calls_out_reward_being_held_back(self) -> None:
+        assert "held back" in format_semantic_gate(0)
 
     def test_gate_none_renders_em_dash(self) -> None:
         assert format_semantic_gate(None) == "—"
@@ -131,30 +129,30 @@ class TestSemanticGate:
 class TestSemanticAttributionDiagnostics:
     def test_semantic_method_labels_cover_cross_encoder_and_gray_band(self) -> None:
         assert format_semantic_method_label("cross_encoder", "ce-v1") == (
-            "local cross-encoder · ce-v1"
+            "local greeting checker · ce-v1"
         )
         assert format_semantic_method_label("llm_gray_band", "llm-v2") == (
-            "LLM gray-band fallback · llm-v2"
+            "backup greeting checker · llm-v2"
         )
         assert format_semantic_method_label(None) == "—"
 
     def test_bounded_reason_code_labels_are_operator_friendly(self) -> None:
         assert format_bounded_reason_code_label("cross_encoder_high_match") == (
-            "Cross-encoder high-confidence match"
+            "Greeting clearly matched"
         )
         assert format_bounded_reason_code_label("gray_band_llm_nonmatch") == (
-            "Gray-band fallback non-match"
+            "Backup checker did not find a match"
         )
         assert "{" not in format_bounded_reason_code_label("semantic_timeout")
         assert format_bounded_reason_code_label(None) == "—"
 
     def test_probability_finality_soft_reward_and_lag_labels(self) -> None:
-        assert format_probability_confidence(0.834) == "p_match 83%"
+        assert format_probability_confidence(0.834) == "match confidence 83%"
         assert format_probability_confidence(None) == "—"
         assert format_attribution_finality_label("online_provisional") == "online provisional"
         assert format_attribution_finality_label("offline_final") == "offline final"
-        assert format_soft_reward_candidate(0.4264) == "r_t^soft 0.426"
-        assert format_outcome_link_lag(42.25) == "lag_s 42.2s"
+        assert format_soft_reward_candidate(0.4264) == "possible follow-up reward 0.426"
+        assert format_outcome_link_lag(42.25) == "after 42.2s"
 
     def test_attribution_metric_formatters_render_au12_and_synchrony(self) -> None:
         attribution = AttributionSummary(
@@ -169,10 +167,10 @@ class TestSemanticAttributionDiagnostics:
             outcome_link_lag_s=42.0,
         )
         assert format_au12_lift_metrics(attribution) == (
-            "pre baseline 0.120 · P90 lift 0.420 · peak lift 0.680"
+            "before greeting 0.120 · strong smile lift 0.420 · peak smile lift 0.680"
         )
         assert format_au12_peak_latency(attribution) == "1.25s"
-        assert format_synchrony_metrics(attribution) == "peak corr -0.314 · peak lag 3"
+        assert format_synchrony_metrics(attribution) == "movement together -0.314 · lag 3"
         assert format_au12_lift_metrics(None) == "—"
         assert format_au12_peak_latency(None) == "—"
         assert format_synchrony_metrics(None) == "—"
@@ -196,12 +194,12 @@ class TestSemanticAttributionDiagnostics:
             ),
         )
         assert display.has_diagnostics is True
-        assert display.semantic_method == "local cross-encoder · ce-v1"
-        assert display.bounded_reason_code == "Cross-encoder high-confidence match"
-        assert display.probability_confidence == "p_match 91%"
+        assert display.semantic_method == "local greeting checker · ce-v1"
+        assert display.bounded_reason_code == "Greeting clearly matched"
+        assert display.probability_confidence == "match confidence 91%"
         assert display.match_result == "match"
         assert display.attribution_finality == "offline final"
-        assert "§7B reward path unchanged" in display.observational_note
+        assert "do not change the reward" in display.observational_note
 
     def test_display_combines_gray_band_fallback_diagnostics_from_encounter(self) -> None:
         encounter = _encounter(
@@ -221,8 +219,8 @@ class TestSemanticAttributionDiagnostics:
             }
         )
         display = semantic_attribution_diagnostics_for_encounter(encounter)
-        assert display.semantic_method == "LLM gray-band fallback · gray-v1"
-        assert display.bounded_reason_code == "Gray-band fallback non-match"
+        assert display.semantic_method == "backup greeting checker · gray-v1"
+        assert display.bounded_reason_code == "Backup checker did not find a match"
         assert display.match_result == "non-match"
         assert display.attribution_finality == "online provisional"
 
@@ -262,7 +260,7 @@ class TestCalibrationStatus:
             started_at_utc=_utc(2026, 4, 17, 12, 0),
         )
         assert operator_ready_for_submit(summary) is True
-        assert format_calibration_status(summary) == (UiStatusKind.OK, "Ready")
+        assert format_calibration_status(summary) == (UiStatusKind.OK, "Healthy")
 
     def test_explicit_false_calibrating_state_is_ready(self) -> None:
         summary = SessionSummary(
@@ -272,7 +270,7 @@ class TestCalibrationStatus:
             is_calibrating=False,
         )
         assert operator_ready_for_submit(summary) is True
-        assert format_calibration_status(summary) == (UiStatusKind.OK, "Ready")
+        assert format_calibration_status(summary) == (UiStatusKind.OK, "Healthy")
 
     def test_progress_includes_frame_counts_below_threshold(self) -> None:
         summary = SessionSummary(
@@ -286,7 +284,7 @@ class TestCalibrationStatus:
         assert operator_ready_for_submit(summary) is False
         assert format_calibration_status(summary) == (
             UiStatusKind.PROGRESS,
-            "Calibrating · 12/45 frames",
+            "Preparing smile baseline · 12/45 face frames",
         )
 
     def test_pre_stimulus_threshold_renders_ready_while_lifecycle_calibrating(self) -> None:
@@ -299,7 +297,7 @@ class TestCalibrationStatus:
             calibration_frames_required=45,
         )
         assert operator_ready_for_submit(summary) is True
-        assert format_calibration_status(summary) == (UiStatusKind.OK, "Ready")
+        assert format_calibration_status(summary) == (UiStatusKind.OK, "Healthy")
 
     def test_missing_calibration_counts_render_ready(self) -> None:
         summary = SessionSummary(
@@ -309,7 +307,7 @@ class TestCalibrationStatus:
             is_calibrating=True,
         )
         assert operator_ready_for_submit(summary) is True
-        assert format_calibration_status(summary) == (UiStatusKind.OK, "Ready")
+        assert format_calibration_status(summary) == (UiStatusKind.OK, "Healthy")
 
 
 # ----------------------------------------------------------------------
@@ -423,7 +421,9 @@ class TestAcousticRendering:
         assert display.f0_mean.primary == "measure 220.0 Hz"
         assert display.f0_mean.secondary == "baseline 200.0 Hz · Δ +1.65 st"
         assert display.voiced_coverage_text == format_acoustic_voiced_coverage(2.2, 2.1)
-        assert display.voiced_coverage_text == "Voiced coverage: measure 2.20s · baseline 2.10s"
+        assert display.voiced_coverage_text == (
+            "Voiced speech needed: at least 1.00s in each window · measure 2.20s · baseline 2.10s"
+        )
 
     def test_validity_pill_display_distinguishes_invalid_and_absent(self) -> None:
         invalid = format_acoustic_validity_pill("F0", False, True)
@@ -439,7 +439,7 @@ class TestAcousticRendering:
         assert format_acoustic_ratio(0.01234) == "0.0123"
         assert format_acoustic_ratio(0.0) == "0.0000"
         assert format_acoustic_voiced_coverage(None, 2.0) == (
-            "Voiced coverage: measure — · baseline 2.00s"
+            "Voiced speech needed: at least 1.00s in each window · measure — · baseline 2.00s"
         )
 
     def test_absent_acoustic_summary_message(self) -> None:
@@ -550,10 +550,8 @@ class TestRewardExplanation:
         text = build_reward_explanation(
             _encounter(semantic_gate=0, gated_reward=0.0, p90_intensity=0.42)
         )
-        assert "gate closed" in text.lower()
-        assert "suppressed" in text.lower()
-        # The intensity still shown — operators need to see that the
-        # pipeline measured something, it just wasn't admitted.
+        assert "greeting did not match" in text.lower()
+        assert "held back" in text.lower()
         assert "0.420" in text
 
     def test_no_frames_message_calls_out_frames_not_gate(self) -> None:
@@ -572,7 +570,7 @@ class TestRewardExplanation:
         # §7B formula reads as a product
         assert "0.500" in text  # p90_intensity
         assert "0.420" in text  # gated_reward
-        assert "baseline" in text.lower()
+        assert "before-greeting" in text.lower()
 
     def test_physiology_attached_stale_surfaces_stale(self) -> None:
         text = build_reward_explanation(_encounter(physiology_attached=True, physiology_stale=True))

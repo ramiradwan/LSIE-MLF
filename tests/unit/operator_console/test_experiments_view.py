@@ -8,8 +8,10 @@ is covered in `test_viewmodels.py`; this file focuses on the view.
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import cast
 
 import pytest
+from PySide6.QtWidgets import QWidget
 
 from packages.schemas.operator_console import ArmSummary, ExperimentDetail
 from services.operator_console.state import OperatorStore
@@ -24,6 +26,14 @@ pytestmark = pytest.mark.usefixtures("qt_app")
 
 
 _NOW = datetime(2026, 4, 17, 12, 0, 0, tzinfo=UTC)
+
+
+def _grid_widget(grid: object, row: int, column: int) -> QWidget:
+    item = grid.itemAtPosition(row, column)  # type: ignore[attr-defined]
+    assert item is not None
+    widget = item.widget()
+    assert widget is not None
+    return cast(QWidget, widget)
 
 
 def _arm(
@@ -81,10 +91,10 @@ def test_experiments_view_populates_cards_on_detail() -> None:
     # Experiment card shows the human label and id as secondary.
     assert "greeting v1" in view._experiment_card._primary.text()  # type: ignore[attr-defined]
     assert "exp-42" in view._experiment_card._secondary.text()  # type: ignore[attr-defined]
-    # Active arm card shows the arm id and its α/β summary.
+    # Active arm card shows the arm id and plain-language posterior summary.
     assert view._active_arm_card._primary.text() == "a1"  # type: ignore[attr-defined]
     secondary = view._active_arm_card._secondary.text()  # type: ignore[attr-defined]
-    assert "α" in secondary and "β" in secondary
+    assert "positive history" in secondary and "miss history" in secondary
     # Arms card lists best-recent arm in the secondary line.
     arms_secondary = view._arms_card._secondary.text()  # type: ignore[attr-defined]
     assert "a1" in arms_secondary  # a1 has the higher recent reward
@@ -180,21 +190,23 @@ def test_experiments_manage_panel_reflows_for_medium_and_narrow_widths() -> None
     panel = view._manage_panel  # type: ignore[attr-defined]
 
     panel.apply_responsive_width(900)
-    assert panel._create_row.itemAtPosition(0, 0).widget() is panel._create_experiment_id  # type: ignore[attr-defined]
-    assert panel._create_row.itemAtPosition(0, 1).widget() is panel._create_label  # type: ignore[attr-defined]
-    assert panel._create_row.itemAtPosition(1, 0).widget() is panel._create_arm_id  # type: ignore[attr-defined]
-    assert panel._create_row.itemAtPosition(1, 1).widget() is panel._create_greeting  # type: ignore[attr-defined]
-    assert panel._create_row.itemAtPosition(2, 0).widget() is panel._create_button  # type: ignore[attr-defined]
-    assert panel._add_row.itemAtPosition(0, 0).widget() is panel._add_arm_id  # type: ignore[attr-defined]
-    assert panel._add_row.itemAtPosition(0, 1).widget() is panel._add_greeting  # type: ignore[attr-defined]
-    assert panel._add_row.itemAtPosition(1, 0).widget() is panel._add_button  # type: ignore[attr-defined]
+    create_row = panel._create_row  # type: ignore[attr-defined]
+    add_row = panel._add_row  # type: ignore[attr-defined]
+    assert _grid_widget(create_row, 0, 0) is panel._create_experiment_id  # type: ignore[attr-defined]
+    assert _grid_widget(create_row, 0, 1) is panel._create_label  # type: ignore[attr-defined]
+    assert _grid_widget(create_row, 1, 0) is panel._create_arm_id  # type: ignore[attr-defined]
+    assert _grid_widget(create_row, 1, 1) is panel._create_greeting  # type: ignore[attr-defined]
+    assert _grid_widget(create_row, 2, 0) is panel._create_button  # type: ignore[attr-defined]
+    assert _grid_widget(add_row, 0, 0) is panel._add_arm_id  # type: ignore[attr-defined]
+    assert _grid_widget(add_row, 0, 1) is panel._add_greeting  # type: ignore[attr-defined]
+    assert _grid_widget(add_row, 1, 0) is panel._add_button  # type: ignore[attr-defined]
 
     panel.apply_responsive_width(620)
-    assert panel._create_row.itemAtPosition(0, 0).widget() is panel._create_experiment_id  # type: ignore[attr-defined]
-    assert panel._create_row.itemAtPosition(1, 0).widget() is panel._create_label  # type: ignore[attr-defined]
-    assert panel._create_row.itemAtPosition(2, 0).widget() is panel._create_arm_id  # type: ignore[attr-defined]
-    assert panel._create_row.itemAtPosition(3, 0).widget() is panel._create_greeting  # type: ignore[attr-defined]
-    assert panel._create_row.itemAtPosition(4, 0).widget() is panel._create_button  # type: ignore[attr-defined]
-    assert panel._add_row.itemAtPosition(0, 0).widget() is panel._add_arm_id  # type: ignore[attr-defined]
-    assert panel._add_row.itemAtPosition(1, 0).widget() is panel._add_greeting  # type: ignore[attr-defined]
-    assert panel._add_row.itemAtPosition(2, 0).widget() is panel._add_button  # type: ignore[attr-defined]
+    assert _grid_widget(create_row, 0, 0) is panel._create_experiment_id  # type: ignore[attr-defined]
+    assert _grid_widget(create_row, 1, 0) is panel._create_label  # type: ignore[attr-defined]
+    assert _grid_widget(create_row, 2, 0) is panel._create_arm_id  # type: ignore[attr-defined]
+    assert _grid_widget(create_row, 3, 0) is panel._create_greeting  # type: ignore[attr-defined]
+    assert _grid_widget(create_row, 4, 0) is panel._create_button  # type: ignore[attr-defined]
+    assert _grid_widget(add_row, 0, 0) is panel._add_arm_id  # type: ignore[attr-defined]
+    assert _grid_widget(add_row, 1, 0) is panel._add_greeting  # type: ignore[attr-defined]
+    assert _grid_widget(add_row, 2, 0) is panel._add_button  # type: ignore[attr-defined]

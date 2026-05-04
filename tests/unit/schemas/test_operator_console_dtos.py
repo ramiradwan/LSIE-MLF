@@ -132,6 +132,17 @@ class TestUtcTimestampEnforcement:
                 received_at_utc=naive,
             )
 
+    def test_stimulus_accepted_requires_utc_stimulus_time(self) -> None:
+        naive = datetime(2026, 1, 1, 12, 0)
+        with pytest.raises(ValidationError):
+            StimulusAccepted(
+                session_id=uuid.uuid4(),
+                client_action_id=uuid.uuid4(),
+                accepted=True,
+                received_at_utc=datetime(2026, 1, 1, 12, 0, tzinfo=UTC),
+                stimulus_time_utc=naive,
+            )
+
 
 # ----------------------------------------------------------------------
 # §7C null-valid co-modulation

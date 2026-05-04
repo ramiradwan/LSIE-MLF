@@ -125,14 +125,15 @@ def test_overview_view_populates_all_cards_from_snapshot() -> None:
     assert "greeting_v1" in view._active_session_card._secondary.text()  # type: ignore[attr-defined]
     assert "greeting line v1" in view._experiment_card._primary.text()  # type: ignore[attr-defined]
     assert "ok" in view._health_card._primary.text()  # type: ignore[attr-defined]
-    # Physiology card reads live when an RMSSD value is present.
-    assert view._physiology_card._primary.text() == "Live"  # type: ignore[attr-defined]
-    # Latest encounter card surfaces the gated reward plus compact §8/§7E summary.
+    # Physiology card reads live when heart variability is present.
+    assert view._physiology_card._primary.text() == "Live heart data"  # type: ignore[attr-defined]
+    # Latest encounter card surfaces the reward plus compact greeting/follow-up summary.
     latest_secondary = view._latest_encounter_card._secondary.text()  # type: ignore[attr-defined]
     assert "reward" in view._latest_encounter_card._primary.text()  # type: ignore[attr-defined]
-    assert "semantic match" in latest_secondary
-    assert "p_match 91%" in latest_secondary
-    assert "attribution online provisional" in latest_secondary
+    assert "Greeting matched? yes" in latest_secondary
+    assert "greeting match" in latest_secondary
+    assert "match confidence 91%" in latest_secondary
+    assert "follow-up signals online provisional" in latest_secondary
 
 
 def test_overview_view_marks_active_conflict_as_error() -> None:

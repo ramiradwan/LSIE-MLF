@@ -122,8 +122,9 @@ def test_physiology_view_no_rmssd_path_is_distinct_from_absent() -> None:
         )
     )
     panel = view._streamer_panel  # type: ignore[attr-defined]
-    assert panel._status._label.text() == "no RMSSD"  # type: ignore[attr-defined]
+    assert panel._status._label.text() == "no variability"  # type: ignore[attr-defined]
     assert panel._rmssd_card._primary.text() == "—"  # type: ignore[attr-defined]
+    assert "heart-rate variability" in panel._rmssd_card._secondary.text()  # type: ignore[attr-defined]
 
 
 def test_physiology_view_comodulation_null_valid_renders_as_info() -> None:
@@ -147,8 +148,9 @@ def test_physiology_view_comodulation_null_valid_renders_as_info() -> None:
         )
     )
     panel = view._comodulation_panel  # type: ignore[attr-defined]
-    assert panel._index_card._status._label.text() == "null-valid"  # type: ignore[attr-defined]
+    assert panel._index_card._status._label.text() == "not enough data yet"  # type: ignore[attr-defined]
     assert panel._index_card._status._kind is UiStatusKind.INFO  # type: ignore[attr-defined]
+    assert panel._title.text() == "Shared stress/recovery movement"  # type: ignore[attr-defined]
 
 
 def test_physiology_view_error_changed_shows_alert_banner() -> None:

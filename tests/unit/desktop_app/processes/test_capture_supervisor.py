@@ -56,7 +56,7 @@ def test_write_capture_statuses_records_device_and_stream_details(tmp_path: Path
     db = _bootstrap(tmp_path)
     audio = tmp_path / "audio_stream.wav"
     video = tmp_path / "video_stream.mkv"
-    audio.write_bytes(b"a" * 128)
+    audio.write_bytes(b"R" * 44 + b"a" * 84)
     video.write_bytes(b"v" * 256)
     layout = CaptureLayout(
         capture_dir=tmp_path,
@@ -80,6 +80,35 @@ def test_write_capture_statuses_records_device_and_stream_details(tmp_path: Path
     assert rows["audio_capture"]["detail"] == "Audio stream recording: audio_stream.wav · 128 bytes"
     assert rows["video_capture"]["state"] == "ok"
     assert rows["video_capture"]["detail"] == "Video stream recording: video_stream.mkv · 256 bytes"
+
+
+def test_write_capture_statuses_reports_silent_audio_stream(tmp_path: Path) -> None:
+    db = _bootstrap(tmp_path)
+    audio = tmp_path / "audio_stream.wav"
+    video = tmp_path / "video_stream.mkv"
+    audio.write_bytes(b"R" * 44 + b"\x00" * 960)
+    video.write_bytes(b"v" * 256)
+    layout = CaptureLayout(
+        capture_dir=tmp_path,
+        audio_path=audio,
+        video_path=video,
+    )
+    device = _AdbDevice(
+        serial="abc123",
+        model="Pixel 8",
+        active_app="com.zhiliaoapp.musically",
+    )
+
+    _write_capture_statuses(db, device, _AliveProc(), _AliveProc(), layout)
+
+    rows = _capture_statuses(db)
+    assert rows["audio_capture"]["state"] == "recovering"
+    assert rows["audio_capture"]["detail"] == (
+        "Audio stream is recording but the captured signal is silent"
+    )
+    assert rows["audio_capture"]["operator_action_hint"] == (
+        "Make sure the phone is playing audible media; some apps block Android playback capture"
+    )
 
 
 class _AliveProc:

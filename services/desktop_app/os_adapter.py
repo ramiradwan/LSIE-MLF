@@ -14,6 +14,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -389,7 +390,12 @@ def _apply_windows_child_process_policy(popen_kwargs: dict[str, Any]) -> dict[st
     return kwargs
 
 
-def secure_delete_file(path: Path) -> bool:
+def secure_delete_file(
+    path: Path,
+    *,
+    attempts: int = 6,
+    retry_delay_s: float = 0.25,
+) -> bool:
     """Best-effort secure delete for a raw-media file; returns ``True`` if removed."""
     if not path.exists():
         return False
@@ -409,14 +415,31 @@ def secure_delete_file(path: Path) -> bool:
                 return True
             logger.warning("secure delete via shred failed for %s", path)
 
-    try:
-        path.unlink()
-    except FileNotFoundError:
-        return False
-    except OSError as exc:
-        logger.warning("capture file delete failed: %s (%s)", path, exc)
-        return False
-    return True
+    last_error: OSError | None = None
+    for attempt in range(max(1, attempts)):
+        try:
+            with path.open("r+b") as file:
+                size = file.seek(0, os.SEEK_END)
+                file.seek(0)
+                chunk = b"\x00" * min(size, 1024 * 1024)
+                remaining = size
+                while remaining > 0:
+                    write_size = min(remaining, len(chunk))
+                    file.write(chunk[:write_size])
+                    remaining -= write_size
+                file.flush()
+                os.fsync(file.fileno())
+            path.unlink()
+            return True
+        except FileNotFoundError:
+            return False
+        except OSError as exc:
+            last_error = exc
+            if attempt < max(1, attempts) - 1:
+                time.sleep(retry_delay_s)
+
+    logger.warning("capture file delete failed: %s (%s)", path, last_error)
+    return False
 
 
 class SupervisedProcess:
@@ -525,6 +548,10 @@ class SupervisedProcess:
 
     def poll(self) -> int | None:
         return self._proc.poll()
+
+    @property
+    def stdout(self) -> Any:
+        return self._proc.stdout
 
     def wait(self, timeout: float | None = None) -> int:
         return self._proc.wait(timeout=timeout)

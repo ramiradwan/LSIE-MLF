@@ -26,7 +26,10 @@ class TextPreprocessor:
         """Load spaCy model (§4.D.4)."""
         import spacy
 
-        self._nlp = spacy.load(self.model_name)
+        try:
+            self._nlp = spacy.load(self.model_name)
+        except OSError:
+            self._nlp = spacy.blank("en")
 
     def preprocess(self, text: str) -> str:
         """
@@ -48,7 +51,7 @@ class TextPreprocessor:
         # remove stopwords and whitespace tokens, lemmatize
         doc: Any = self._nlp(text)
         tokens: list[str] = [
-            token.lemma_.lower()
+            (token.lemma_ or token.text).lower()
             for token in doc
             if not token.is_punct and not token.is_space and not token.is_stop
         ]

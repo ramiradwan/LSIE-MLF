@@ -42,6 +42,7 @@ from services.operator_console.formatters import (
     format_freshness,
     format_percentage,
     format_timestamp,
+    physiology_labels,
 )
 from services.operator_console.viewmodels.physiology_vm import PhysiologyViewModel
 from services.operator_console.widgets.alert_banner import AlertBanner
@@ -66,7 +67,7 @@ class PhysiologyView(QWidget):
 
         self._header = SectionHeader(
             "Physiology",
-            "Streamer / operator freshness and §7C Co-Modulation Index.",
+            "Heart data freshness and whether streamer/operator recovery moved together.",
             self,
         )
         self._error_banner = AlertBanner(self)
@@ -174,7 +175,7 @@ class _RolePanel(QFrame):
         self._status.set_kind(UiStatusKind.NEUTRAL)
         self._status.set_text("absent")
 
-        self._rmssd_card = MetricCard("RMSSD", self)
+        self._rmssd_card = MetricCard(physiology_labels().rmssd_title, self)
         self._hr_card = MetricCard("Heart rate", self)
         self._freshness_card = MetricCard("Freshness", self)
         self._provider_card = MetricCard("Provider", self)
@@ -210,7 +211,7 @@ class _RolePanel(QFrame):
             self._apply_no_rmssd(snap)
             return
         self._rmssd_card.set_primary_text(f"{snap.rmssd_ms:.0f} ms")
-        self._rmssd_card.set_secondary_text("root mean square of successive differences")
+        self._rmssd_card.set_secondary_text(physiology_labels().rmssd_explanation)
         self._rmssd_card.set_status(UiStatusKind.INFO, None)
 
         if snap.heart_rate_bpm is not None:
@@ -256,7 +257,7 @@ class _RolePanel(QFrame):
         # treat as absent for the numeric cards but surface the provider
         # so the operator can tell "strap off" from "strap on, no data".
         self._rmssd_card.set_primary_text("—")
-        self._rmssd_card.set_secondary_text("no RMSSD in snapshot")
+        self._rmssd_card.set_secondary_text(physiology_labels().no_rmssd_detail)
         self._rmssd_card.set_status(UiStatusKind.NEUTRAL, None)
         if snap.heart_rate_bpm is not None:
             self._hr_card.set_primary_text(f"{snap.heart_rate_bpm} bpm")
@@ -275,7 +276,7 @@ class _RolePanel(QFrame):
         self._provider_card.set_secondary_text("")
         self._provider_card.set_status(UiStatusKind.NEUTRAL, None)
         self._status.set_kind(UiStatusKind.NEUTRAL)
-        self._status.set_text("no RMSSD")
+        self._status.set_text("no variability")
 
 
 class _CoModulationPanel(QFrame):
@@ -294,10 +295,11 @@ class _CoModulationPanel(QFrame):
         self.setObjectName("Panel")
         self.setFrameShape(QFrame.Shape.NoFrame)
 
-        self._title = QLabel("Co-Modulation Index", self)
+        labels = physiology_labels()
+        self._title = QLabel(labels.comodulation_title, self)
         self._title.setObjectName("PanelTitle")
         self._subtitle = QLabel(
-            "Rolling Pearson correlation over aligned RMSSD bins.",
+            labels.comodulation_subtitle,
             self,
         )
         self._subtitle.setObjectName("PanelSubtitle")
@@ -342,20 +344,23 @@ class _CoModulationPanel(QFrame):
         self._index_card.set_primary_text(format_comodulation_index(summary))
         if summary.co_modulation_index is None:
             # §7C null-valid: info pill (not warn/error).
-            self._index_card.set_status(UiStatusKind.INFO, "null-valid")
+            self._index_card.set_status(
+                UiStatusKind.INFO,
+                physiology_labels().comodulation_null_status,
+            )
             self._index_card.set_secondary_text(
                 summary.null_reason or "insufficient aligned non-stale pairs"
             )
         else:
-            self._index_card.set_status(UiStatusKind.OK, "valid")
-            self._index_card.set_secondary_text("Pearson r ∈ [-1, 1]")
+            self._index_card.set_status(UiStatusKind.OK, "ready")
+            self._index_card.set_secondary_text("+ means moving together; - means moving apart")
 
         self._observations_card.set_primary_text(str(summary.n_paired_observations))
-        self._observations_card.set_secondary_text("aligned non-stale pairs")
+        self._observations_card.set_secondary_text(physiology_labels().observations_detail)
         self._observations_card.set_status(UiStatusKind.NEUTRAL, None)
 
         self._coverage_card.set_primary_text(format_percentage(summary.coverage_ratio, digits=0))
-        self._coverage_card.set_secondary_text("window coverage")
+        self._coverage_card.set_secondary_text(physiology_labels().coverage_detail)
         self._coverage_card.set_status(UiStatusKind.NEUTRAL, None)
 
         window_text = (

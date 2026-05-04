@@ -75,6 +75,8 @@ SCRCPY_STAGGER_S: float = 4.0
 RESTART_BACKOFF_S: float = 2.0
 
 SQLITE_FILENAME = "desktop.sqlite"
+_WAV_HEADER_BYTES = 44
+_AUDIO_SILENCE_SAMPLE_BYTES = 48_000 * 2 * 3
 
 
 @dataclass(frozen=True)
@@ -203,6 +205,51 @@ def _capture_file_detail(path: Path, *, label: str) -> str:
     return f"{label} stream recording: {path.name} · {size:,} bytes"
 
 
+def _audio_capture_is_silent(path: Path) -> bool:
+    if not path.exists():
+        return False
+    size = path.stat().st_size
+    if size <= _WAV_HEADER_BYTES:
+        return False
+    sample_size = min(_AUDIO_SILENCE_SAMPLE_BYTES, size - _WAV_HEADER_BYTES)
+    with path.open("rb") as audio_file:
+        audio_file.seek(size - sample_size)
+        sample = audio_file.read(sample_size)
+    return bool(sample) and all(byte == 0 for byte in sample)
+
+
+def _audio_capture_status(
+    audio_alive: bool,
+    layout: CaptureLayout | None,
+) -> CaptureStatusRecord:
+    if not audio_alive or layout is None:
+        return CaptureStatusRecord(
+            status_key="audio_capture",
+            state="recovering",
+            label="Audio Capture",
+            detail="Audio scrcpy recorder is starting or restarting",
+            operator_action_hint="Keep the target app producing audio",
+        )
+    if _audio_capture_is_silent(layout.audio_path):
+        return CaptureStatusRecord(
+            status_key="audio_capture",
+            state="recovering",
+            label="Audio Capture",
+            detail="Audio stream is recording but the captured signal is silent",
+            operator_action_hint=(
+                "Make sure the phone is playing audible media; "
+                "some apps block Android playback capture"
+            ),
+        )
+    return CaptureStatusRecord(
+        status_key="audio_capture",
+        state="ok",
+        label="Audio Capture",
+        detail=_capture_file_detail(layout.audio_path, label="Audio"),
+        operator_action_hint=None,
+    )
+
+
 def _write_capture_statuses(
     db_path: Path,
     device: _AdbDevice | None,
@@ -247,17 +294,7 @@ def _write_capture_statuses(
                 detail=_format_device_detail(device),
                 operator_action_hint=None,
             ),
-            CaptureStatusRecord(
-                status_key="audio_capture",
-                state="ok" if audio_alive else "recovering",
-                label="Audio Capture",
-                detail=(
-                    _capture_file_detail(layout.audio_path, label="Audio")
-                    if layout is not None and audio_alive
-                    else "Audio scrcpy recorder is starting or restarting"
-                ),
-                operator_action_hint=None if audio_alive else "Keep the target app producing audio",
-            ),
+            _audio_capture_status(audio_alive, layout),
             CaptureStatusRecord(
                 status_key="video_capture",
                 state="ok" if video_alive else "recovering",
@@ -344,8 +381,8 @@ def _build_audio_scrcpy_args(scrcpy: str, layout: CaptureLayout) -> list[str]:
         "--no-playback",
         "--no-window",
         "--audio-codec=raw",
+        "--audio-source=playback",
         "--audio-buffer=30",
-        "--audio-dup",
         f"--record={layout.audio_path}",
         "--record-format=wav",
         f"--port={AUDIO_SCRCPY_PORT_RANGE}",

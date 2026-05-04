@@ -174,7 +174,7 @@ class HealthView(QWidget):
 
         self._header = SectionHeader(
             "Health",
-            "Subsystem rollup — degraded, recovering, and error states kept distinct.",
+            "Readiness summary with the next action for anything that needs attention.",
             self,
         )
         self._repair_button = QPushButton("Repair install", self)
@@ -193,8 +193,8 @@ class HealthView(QWidget):
         )
 
         self._overall_card = MetricCard("Overall", self)
-        self._degraded_card = MetricCard("Degraded", self)
-        self._recovering_card = MetricCard("Recovering", self)
+        self._degraded_card = MetricCard("Needs attention", self)
+        self._recovering_card = MetricCard("Getting ready", self)
         self._error_card = MetricCard("Error", self)
 
         self._cards_grid = ResponsiveMetricGrid(
@@ -222,14 +222,14 @@ class HealthView(QWidget):
         )
 
         self._probe_panel = _TablePanel(
-            "Subsystem probes",
-            "Bounded read-only diagnostics; not configured is distinct from error.",
+            "Readiness checks",
+            "Read-only checks; not configured is distinct from error.",
             self._probe_matrix,
             self,
         )
         self._subsystem_panel = _TablePanel(
-            "Subsystems",
-            "Recovery mode and operator hints stay distinct from the detail column.",
+            "Readiness details",
+            "Each row shows what is happening and the next operator action.",
             self._subsystem_table,
             self,
         )
@@ -350,7 +350,7 @@ class HealthView(QWidget):
     def _render_counts(self, snapshot: HealthSnapshot) -> None:
         self._degraded_card.set_primary_text(str(snapshot.degraded_count))
         self._degraded_card.set_secondary_text(
-            "impaired but stable" if snapshot.degraded_count else "none"
+            "check the next action" if snapshot.degraded_count else "none"
         )
         self._degraded_card.set_status(
             UiStatusKind.WARN if snapshot.degraded_count else UiStatusKind.NEUTRAL,
@@ -359,7 +359,7 @@ class HealthView(QWidget):
 
         self._recovering_card.set_primary_text(str(snapshot.recovering_count))
         self._recovering_card.set_secondary_text(
-            "self-healing in flight" if snapshot.recovering_count else "none"
+            "wait for startup" if snapshot.recovering_count else "none"
         )
         self._recovering_card.set_status(
             UiStatusKind.PROGRESS if snapshot.recovering_count else UiStatusKind.NEUTRAL,

@@ -26,6 +26,7 @@ from packages.ml_core.semantic import (
     OUTPUT_SCHEMA,
     SEMANTIC_CALIBRATION_VERSION,
     SYSTEM_PROMPT,
+    LocalCrossEncoderScorer,
     SemanticEvaluator,
     calibrate_cross_encoder_score,
 )
@@ -382,4 +383,26 @@ class TestGrayBandFallbackFailureHandling:
         assert result["reasoning"] == "semantic_local_failure_fallback"
         assert result["is_match"] is False
         assert result["confidence_score"] == 0.0
+        mock_openai.AzureOpenAI.assert_not_called()
+
+    def test_missing_local_model_uses_deterministic_lexical_fallback(
+        self,
+        env_vars: None,
+        mock_openai: MagicMock,
+    ) -> None:
+        evaluator = SemanticEvaluator(
+            primary_scorer=LocalCrossEncoderScorer(model_id="local://missing/semantic-model"),
+            gray_band_fallback_enabled=True,
+        )
+
+        result = evaluator.evaluate("Say hello to the creator", "hello creator")
+
+        assert result is not None
+        assert result["reasoning"] == "cross_encoder_high_match"
+        assert result["is_match"] is True
+        assert result["confidence_score"] >= MATCH_THRESHOLD
+        assert evaluator.last_semantic_method == "cross_encoder"
+        assert evaluator.last_semantic_method_version == (
+            f"{CROSS_ENCODER_METHOD_VERSION}+lexical-unavailable-fallback"
+        )
         mock_openai.AzureOpenAI.assert_not_called()

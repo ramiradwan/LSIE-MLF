@@ -207,6 +207,24 @@ class OperatorReadService:
             )
         return [self._build_encounter_summary(row) for row in rows]
 
+    def list_experiments(self) -> list[ExperimentSummary]:
+        with self._cursor() as cur:
+            rows = self._queries.fetch_experiment_summaries(cur)
+            summaries: list[ExperimentSummary] = []
+            for row in rows:
+                experiment_id = _as_str(row.get("experiment_id"))
+                if experiment_id is None:
+                    continue
+                summaries.append(
+                    ExperimentSummary(
+                        experiment_id=experiment_id,
+                        label=_as_str(row.get("label")),
+                        arm_count=_as_int(row.get("arm_count")) or 0,
+                        last_updated_utc=_ensure_utc(row.get("last_updated_utc")),
+                    )
+                )
+            return summaries
+
     def get_experiment_detail(self, experiment_id: str) -> ExperimentDetail | None:
         with self._cursor() as cur:
             arm_rows = self._queries.fetch_experiment_arms(cur, experiment_id)
@@ -384,6 +402,7 @@ class OperatorReadService:
             stimulus_time_utc=_stimulus_epoch_to_utc(row.get("stimulus_time")),
             semantic_gate=_as_int(row.get("semantic_gate")),
             semantic_confidence=None,
+            transcription=_as_str(row.get("transcription")),
             p90_intensity=_as_float(row.get("p90_intensity")),
             gated_reward=_as_float(row.get("gated_reward")),
             n_frames_in_window=_as_int(row.get("n_frames_in_window")),

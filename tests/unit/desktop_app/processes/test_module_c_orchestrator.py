@@ -3,6 +3,7 @@ from __future__ import annotations
 import multiprocessing as mp
 import queue
 import sqlite3
+import struct
 import threading
 import time
 import uuid
@@ -59,13 +60,34 @@ def _bootstrap_db(tmp_path: Path) -> Path:
     return db_path
 
 
-def _write_audio_header(path: Path) -> None:
-    path.write_bytes(b"R" * module_c_orchestrator.WAV_HEADER_BYTES)
+def _write_audio_header(
+    path: Path,
+    *,
+    channels: int = 1,
+    sample_rate_hz: int = module_c_orchestrator.AUDIO_SAMPLE_RATE_HZ,
+) -> None:
+    sample_width_bytes = module_c_orchestrator.AUDIO_SAMPLE_WIDTH_BYTES
+    byte_rate = sample_rate_hz * channels * sample_width_bytes
+    block_align = channels * sample_width_bytes
+    header = b"".join(
+        (
+            b"RIFF",
+            struct.pack("<I", 36),
+            b"WAVE",
+            b"fmt ",
+            struct.pack("<I", 16),
+            struct.pack("<HHIIHH", 1, channels, sample_rate_hz, byte_rate, block_align, 16),
+            b"data",
+            struct.pack("<I", 0),
+        )
+    )
+    path.write_bytes(header)
 
 
-def _append_audio(path: Path, frames: int) -> None:
+def _append_audio(path: Path, frames: int, *, channels: int = 1) -> None:
+    frame = b"\x01\x02" * channels
     with path.open("ab") as audio_file:
-        audio_file.write(b"\x01\x02" * frames)
+        audio_file.write(frame * frames)
 
 
 def _segment() -> module_c_orchestrator.DesktopSegment:
@@ -98,11 +120,11 @@ def test_dispatcher_writes_pcm_shared_memory_and_sends_control_message() -> None
 
     assert audio == segment.pcm_s16le_16khz_mono
     assert "_audio_data" not in message.handoff
-    assert message.forward_fields == {}
+    assert message.forward_fields == {"_drift_offset_s": 0.125}
     assert message.handoff["session_id"] == str(segment.session_id)
     assert message.handoff["_active_arm"] == "warm_welcome"
     assert message.handoff["_expected_greeting"] == "Say hello to the creator"
-    assert message.handoff["_stimulus_time"] == 100.125
+    assert message.handoff["_stimulus_time"] == segment.stimulus_time_s
     assert message.handoff["_au12_series"] == []
     assert message.handoff["_bandit_decision_snapshot"]["selected_arm_id"] == "warm_welcome"
 
@@ -161,7 +183,31 @@ def test_dispatcher_blocks_new_segments_until_pcm_ack_releases_oldest() -> None:
         dispatcher.close_inflight_blocks()
 
 
-def test_drain_segment_controls_tracks_start_stimulus_and_end() -> None:
+def test_capture_audio_conversion_handles_stereo_duration(tmp_path: Path) -> None:
+    audio_path = tmp_path / "audio_stream.wav"
+    _write_audio_header(audio_path, channels=2)
+    _append_audio(
+        audio_path,
+        frames=module_c_orchestrator.AUDIO_SAMPLE_RATE_HZ,
+        channels=2,
+    )
+    audio_format = module_c_orchestrator._read_capture_audio_format(audio_path)  # noqa: SLF001
+    assert audio_format is not None
+
+    raw, cursor = module_c_orchestrator._read_new_capture_audio(  # noqa: SLF001
+        audio_path,
+        0,
+        audio_format,
+    )
+    pcm_16k = module_c_orchestrator._source_pcm_to_16k_mono(raw, audio_format)  # noqa: SLF001
+
+    assert cursor == audio_path.stat().st_size
+    assert len(pcm_16k) == module_c_orchestrator.PCM_SAMPLE_RATE_HZ * 2
+    assert module_c_orchestrator._audio_duration_for_bytes(len(pcm_16k)).total_seconds() == 1.0  # noqa: SLF001
+
+
+def test_drain_segment_controls_tracks_start_stimulus_and_end(tmp_path: Path) -> None:
+    db_path = _bootstrap_db(tmp_path)
     channels = IpcChannels(
         ml_inbox=cast("Any", queue.Queue()),
         drift_updates=cast("Any", queue.Queue()),
@@ -195,9 +241,12 @@ def test_drain_segment_controls_tracks_start_stimulus_and_end() -> None:
     ):
         channels.segment_control.put(control.model_dump(mode="json"))
 
-    active = module_c_orchestrator._drain_segment_controls(channels, None)
+    active = module_c_orchestrator._drain_segment_controls(channels, None, db_path=db_path)
 
     assert active is not None
+    assert active.experiment_row_id > 0
+    assert active.experiment_id == "greeting_line_v1"
+    assert active.active_arm == "warm_welcome"
     assert active.stimulus_time_s == now.timestamp()
 
     channels.segment_control.put(
@@ -208,12 +257,14 @@ def test_drain_segment_controls_tracks_start_stimulus_and_end() -> None:
         ).model_dump(mode="json")
     )
 
-    assert module_c_orchestrator._drain_segment_controls(channels, active) is None
+    assert module_c_orchestrator._drain_segment_controls(channels, active, db_path=db_path) is None
 
 
-def test_run_segment_loop_dispatches_audio_for_active_session(
+@pytest.mark.parametrize("channels", [1, 2])
+def test_run_segment_loop_dispatches_audio_for_active_stimulus(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    channels: int,
 ) -> None:
     db_path = _bootstrap_db(tmp_path)
     conn = sqlite3.connect(str(db_path), isolation_level=None)
@@ -221,6 +272,90 @@ def test_run_segment_loop_dispatches_audio_for_active_session(
         conn.execute("UPDATE sessions SET ended_at = ?", ("2026-05-02 12:01:00",))
     finally:
         conn.close()
+    audio_path = tmp_path / "audio_stream.wav"
+    _write_audio_header(audio_path, channels=channels)
+    ipc_channels = _make_channels()
+    shutdown = mp.get_context("spawn").Event()
+    dispatcher = MagicMock()
+    drift_state = SimpleNamespace(drift_corrector=SimpleNamespace(drift_offset=0.125))
+    monkeypatch.setattr(module_c_orchestrator, "SESSION_POLL_INTERVAL_S", 0.01)
+
+    runner = threading.Thread(
+        target=module_c_orchestrator._run_segment_loop,
+        args=(shutdown, ipc_channels, dispatcher, drift_state),
+        kwargs={"db_path": db_path, "audio_path": audio_path},
+        daemon=True,
+    )
+    runner.start()
+    try:
+        assert ipc_channels.segment_control is not None
+        session_id = uuid.UUID("00000000-0000-4000-8000-000000000001")
+        ipc_channels.segment_control.put(
+            LiveSessionControlMessage(
+                action="start",
+                session_id=session_id,
+                stream_url="test://stream",
+                experiment_id="greeting_line_v1",
+                active_arm="warm_welcome",
+                expected_greeting="Say hello to the creator",
+                timestamp_utc=datetime(2026, 5, 2, 12, 0, tzinfo=UTC),
+            ).model_dump(mode="json")
+        )
+        _append_audio(
+            audio_path,
+            frames=module_c_orchestrator.AUDIO_SAMPLE_RATE_HZ * 10,
+            channels=channels,
+        )
+        time.sleep(0.05)
+        stimulus_time = datetime.now(UTC).timestamp()
+        ipc_channels.segment_control.put(
+            LiveSessionControlMessage(
+                action="stimulus",
+                session_id=session_id,
+                stream_url="test://stream",
+                experiment_id="greeting_line_v1",
+                active_arm="warm_welcome",
+                expected_greeting="Say hello to the creator",
+                stimulus_time_s=stimulus_time,
+                timestamp_utc=datetime.now(UTC),
+            ).model_dump(mode="json")
+        )
+        _append_audio(
+            audio_path,
+            frames=module_c_orchestrator.AUDIO_SAMPLE_RATE_HZ
+            * module_c_orchestrator.SEGMENT_WINDOW_SECONDS,
+            channels=channels,
+        )
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline:
+            if dispatcher.dispatch.called:
+                break
+            time.sleep(0.01)
+    finally:
+        shutdown.set()
+        runner.join(timeout=2.0)
+
+    assert dispatcher.dispatch.called
+    segment = dispatcher.dispatch.call_args.args[0]
+    assert segment.session_id == uuid.UUID("00000000-0000-4000-8000-000000000001")
+    assert segment.experiment_row_id > 0
+    assert segment.experiment_id == "greeting_line_v1"
+    assert segment.active_arm == "warm_welcome"
+    assert segment.stimulus_time_s == pytest.approx(stimulus_time)
+    assert len(segment.pcm_s16le_16khz_mono) == 16_000 * 2 * 30
+    assert segment.segment_window_start_utc.timestamp() <= stimulus_time - 5.0
+    assert segment.segment_window_start_utc.timestamp() + 30.0 >= stimulus_time + 5.0
+    assert dispatcher.dispatch.call_args.kwargs == {
+        "drift_offset_s": 0.125,
+        "shutdown_event": shutdown,
+    }
+
+
+def test_run_segment_loop_does_not_dispatch_without_stimulus(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = _bootstrap_db(tmp_path)
     audio_path = tmp_path / "audio_stream.wav"
     _write_audio_header(audio_path)
     channels = _make_channels()
@@ -254,23 +389,62 @@ def test_run_segment_loop_dispatches_audio_for_active_session(
             frames=module_c_orchestrator.AUDIO_SAMPLE_RATE_HZ
             * module_c_orchestrator.SEGMENT_WINDOW_SECONDS,
         )
-        deadline = time.monotonic() + 2.0
-        while time.monotonic() < deadline:
-            if dispatcher.dispatch.called:
-                break
-            time.sleep(0.01)
+        time.sleep(0.1)
     finally:
         shutdown.set()
         runner.join(timeout=2.0)
 
-    assert dispatcher.dispatch.called
-    segment = dispatcher.dispatch.call_args.args[0]
-    assert segment.session_id == uuid.UUID("00000000-0000-4000-8000-000000000001")
-    assert len(segment.pcm_s16le_16khz_mono) == 16_000 * 2 * 30
-    assert dispatcher.dispatch.call_args.kwargs == {
-        "drift_offset_s": 0.125,
-        "shutdown_event": shutdown,
-    }
+    assert not dispatcher.dispatch.called
+
+
+def test_stimulus_time_attaches_only_to_segment_covering_baseline_and_measurement() -> None:
+    active = module_c_orchestrator._ActiveSession(  # noqa: SLF001
+        session_id=uuid.UUID("00000000-0000-4000-8000-000000000001"),
+        stream_url="test://stream",
+        experiment_id="greeting_line_v1",
+        experiment_row_id=1,
+        active_arm="warm_welcome",
+        expected_greeting="Say hello to the creator",
+        stimulus_time_s=datetime(2026, 5, 2, 12, 0, 10, tzinfo=UTC).timestamp(),
+    )
+    covering_start = datetime(2026, 5, 2, 11, 59, 45, tzinfo=UTC)
+    too_late_start = datetime(2026, 5, 2, 12, 0, 30, tzinfo=UTC)
+
+    covering = module_c_orchestrator._segment_from_active_session(  # noqa: SLF001
+        active,
+        segment_start_utc=covering_start,
+        pcm_s16le_16khz_mono=b"\0\0" * 16000 * 30,
+        drift_offset_s=0.125,
+    )
+    too_late = module_c_orchestrator._segment_from_active_session(  # noqa: SLF001
+        active,
+        segment_start_utc=too_late_start,
+        pcm_s16le_16khz_mono=b"\0\0" * 16000 * 30,
+        drift_offset_s=0.125,
+    )
+
+    assert covering.stimulus_time_s == active.stimulus_time_s
+    assert too_late.stimulus_time_s is None
+
+
+def test_stimulus_aligned_segment_start_ends_at_measurement_window_close() -> None:
+    active = module_c_orchestrator._ActiveSession(  # noqa: SLF001
+        session_id=uuid.UUID("00000000-0000-4000-8000-000000000001"),
+        stream_url="test://stream",
+        experiment_id="greeting_line_v1",
+        experiment_row_id=1,
+        active_arm="warm_welcome",
+        expected_greeting="Say hello to the creator",
+        stimulus_time_s=datetime(2026, 5, 2, 12, 0, 40, tzinfo=UTC).timestamp(),
+    )
+    buffer_start = datetime(2026, 5, 2, 12, 0, 0, tzinfo=UTC)
+
+    start = module_c_orchestrator._stimulus_aligned_segment_start_utc(  # noqa: SLF001
+        active,
+        buffer_start_utc=buffer_start,
+    )
+
+    assert start == datetime(2026, 5, 2, 12, 0, 15, tzinfo=UTC)
 
 
 def test_drain_drift_updates_applies_numeric_offsets() -> None:

@@ -26,6 +26,7 @@ from packages.schemas.operator_console import (
     ArmSummary,
     ExperimentDetail,
     SessionSummary,
+    StimulusAccepted,
     StimulusActionState,
 )
 from services.operator_console.app import (
@@ -319,10 +320,45 @@ def test_stimulus_state_changed_reaches_action_bar() -> None:
     store.set_selected_session_id(session_id)
     store.set_live_session(_make_session(session_id))
 
-    store.set_stimulus_ui_context(StimulusUiContext(state=StimulusActionState.MEASURING))
+    store.set_stimulus_ui_context(
+        StimulusUiContext(
+            state=StimulusActionState.MEASURING,
+            authoritative_stimulus_time_utc=datetime.now(UTC),
+        )
+    )
     bar = window._action_bar
     assert bar._submit_button.text() == "Measuring…"
     assert bar._submit_button.isEnabled() is False
+    assert bar._countdown_label.isHidden() is False  # type: ignore[attr-defined]
+    assert "response window" in bar._message_label.text().lower()  # type: ignore[attr-defined]
+
+
+def test_stimulus_success_with_time_starts_action_bar_countdown() -> None:
+    window, store, _coord = _make_window()
+    session_id = uuid4()
+    action_id = uuid4()
+    stimulus_time = datetime.now(UTC)
+    store.set_selected_session_id(session_id)
+    store.set_live_session(_make_session(session_id))
+
+    window._on_stimulus_succeeded(
+        "stimulus",
+        StimulusAccepted(
+            session_id=session_id,
+            client_action_id=action_id,
+            accepted=True,
+            received_at_utc=stimulus_time,
+            stimulus_time_utc=stimulus_time,
+            message="Test message accepted.",
+        ),
+    )
+
+    ctx = store.stimulus_ui_context()
+    bar = window._action_bar
+    assert ctx.state == StimulusActionState.MEASURING
+    assert ctx.authoritative_stimulus_time_utc == stimulus_time
+    assert bar._submit_button.text() == "Measuring…"
+    assert bar._countdown_label.isHidden() is False  # type: ignore[attr-defined]
 
 
 # ---------------------------------------------------------------------
@@ -339,13 +375,16 @@ def test_window_sets_supported_minimum_size() -> None:
 def test_sidebar_width_reflows_with_window_resize() -> None:
     window, _store, _coord = _make_window()
 
+    sidebar = window._sidebar
+    assert sidebar is not None
+
     window.resize(1280, 800)
     window._update_responsive_layout(window.width())
-    wide_width = window._sidebar.width()
+    wide_width = sidebar.width()
 
     window.resize(900, 640)
     window._update_responsive_layout(window.width())
-    narrow_width = window._sidebar.width()
+    narrow_width = sidebar.width()
 
     assert wide_width == 220
     assert narrow_width == 162

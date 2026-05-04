@@ -54,6 +54,7 @@ from services.desktop_app.ipc.control_messages import (
     VisualAnalyticsStateMessage,
 )
 from services.desktop_app.ipc.shared_buffers import read_pcm_block
+from services.desktop_app.os_adapter import SupervisedProcess, find_executable
 
 logger = logging.getLogger(__name__)
 
@@ -63,9 +64,14 @@ _PCM_SAMPLE_WIDTH_BYTES = 2
 _VIDEO_FILENAME = "video_stream.mkv"
 _VISUAL_CALIBRATION_FRAMES_REQUIRED = 45
 _VISUAL_AU12_RING_MAXLEN = 1800
-_DESKTOP_SCREENCAP_INTERVAL_S = 1.0 / 15.0
-_DESKTOP_SCREENCAP_STOP_TIMEOUT_S = 1.0
-_DESKTOP_SCREENCAP_MAX_BYTES = 20 * 1024 * 1024
+_VISUAL_FRAME_WIDTH = 540
+_VISUAL_FRAME_HEIGHT = 960
+_VISUAL_OUTPUT_FPS = 15
+_VISUAL_FRAME_BYTES = _VISUAL_FRAME_WIDTH * _VISUAL_FRAME_HEIGHT * 3
+_VISUAL_TICK_INTERVAL_S = 1.0 / float(_VISUAL_OUTPUT_FPS)
+_DESKTOP_STREAM_STOP_TIMEOUT_S = 1.0
+_DESKTOP_SCREENRECORD_TIME_LIMIT_S = 180
+_DESKTOP_SCREENRECORD_BIT_RATE = 2_000_000
 _GPU_STATUS_KEY = "gpu_ml_worker"
 _NO_FRAME_DETAIL = "No shared desktop video frames available yet for live face tracking."
 _NO_FRAME_HINT = "Verify Video Capture is recording and keep a visible face on screen."
@@ -93,12 +99,15 @@ class _VisualTickOutcome:
     missing_frame: bool = False
 
 
-class DesktopScreencapCapture:
-    def __init__(self, adb_path: str) -> None:
+class DesktopScreenrecordCapture:
+    def __init__(self, adb_path: str, ffmpeg_path: str) -> None:
         self._adb_path = adb_path
+        self._ffmpeg_path = ffmpeg_path
         self._frame_buffer: deque[Any] = deque(maxlen=1)
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
+        self._source_proc: SupervisedProcess | None = None
+        self._decoder_proc: SupervisedProcess | None = None
 
     def start(self) -> None:
         if self.is_running:
@@ -106,30 +115,28 @@ class DesktopScreencapCapture:
         self._stop_event.clear()
         self._thread = threading.Thread(
             target=self._capture_loop,
-            name="desktop-screencap-capture",
+            name="desktop-screenrecord-capture",
             daemon=True,
         )
         self._thread.start()
 
     def stop(self) -> None:
         self._stop_event.set()
+        self._stop_stream()
         thread = self._thread
         if thread is not None:
-            thread.join(timeout=_DESKTOP_SCREENCAP_STOP_TIMEOUT_S)
+            thread.join(timeout=_DESKTOP_STREAM_STOP_TIMEOUT_S)
             if thread.is_alive():
-                logger.warning("Desktop screencap capture thread did not stop within timeout")
+                logger.warning("Desktop screenrecord capture thread did not stop within timeout")
             else:
                 self._thread = None
         self._frame_buffer.clear()
 
     def get_latest_frame(self) -> Any | None:
-        latest: Any | None = None
-        while self._frame_buffer:
-            try:
-                latest = self._frame_buffer.popleft()
-            except IndexError:
-                break
-        return latest
+        try:
+            return self._frame_buffer[-1]
+        except IndexError:
+            return None
 
     @property
     def is_running(self) -> bool:
@@ -137,30 +144,86 @@ class DesktopScreencapCapture:
 
     def _capture_loop(self) -> None:
         while not self._stop_event.is_set():
-            started = time.monotonic()
-            frame = self._capture_frame()
-            if frame is not None:
-                self._frame_buffer.append(frame)
-            elapsed = time.monotonic() - started
-            self._stop_event.wait(timeout=max(0.0, _DESKTOP_SCREENCAP_INTERVAL_S - elapsed))
+            try:
+                self._start_stream()
+                stdout = self._decoder_proc.stdout if self._decoder_proc is not None else None
+                if stdout is None:
+                    raise EOFError("desktop visual decoder has no stdout")
+                while not self._stop_event.is_set():
+                    payload = _read_exact(stdout, _VISUAL_FRAME_BYTES)
+                    if len(payload) != _VISUAL_FRAME_BYTES:
+                        raise EOFError("desktop visual stream ended")
+                    self._frame_buffer.append(_bgr_frame_from_raw(payload))
+            except (EOFError, OSError):
+                if not self._stop_event.is_set():
+                    logger.debug("Desktop screenrecord stream restarting", exc_info=True)
+                    self._stop_stream()
+                    self._stop_event.wait(timeout=0.5)
+            except Exception:
+                if not self._stop_event.is_set():
+                    logger.warning("Desktop screenrecord stream failed", exc_info=True)
+                    self._stop_stream()
+                    self._stop_event.wait(timeout=1.0)
+        self._stop_stream()
 
-    def _capture_frame(self) -> Any | None:
-        try:
-            result = subprocess.run(
-                [self._adb_path, "exec-out", "screencap", "-p"],
-                capture_output=True,
-                timeout=2.0,
-                check=False,
-            )
-        except (OSError, subprocess.TimeoutExpired):
-            logger.debug("Desktop screencap probe failed", exc_info=True)
-            return None
-        if result.returncode != 0 or not result.stdout:
-            return None
-        if len(result.stdout) > _DESKTOP_SCREENCAP_MAX_BYTES:
-            logger.warning("Desktop screencap frame exceeded maximum byte size")
-            return None
-        return _decode_png_screencap(result.stdout)
+    def _start_stream(self) -> None:
+        self._stop_stream()
+        source = SupervisedProcess(
+            [
+                self._adb_path,
+                "exec-out",
+                "screenrecord",
+                "--output-format=h264",
+                f"--time-limit={_DESKTOP_SCREENRECORD_TIME_LIMIT_S}",
+                f"--size={_VISUAL_FRAME_WIDTH}x{_VISUAL_FRAME_HEIGHT}",
+                f"--bit-rate={_DESKTOP_SCREENRECORD_BIT_RATE}",
+                "-",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            bufsize=0,
+        )
+        if source.stdout is None:
+            source.close()
+            raise EOFError("desktop screenrecord has no stdout")
+        decoder = SupervisedProcess(
+            [
+                self._ffmpeg_path,
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-f",
+                "h264",
+                "-i",
+                "pipe:0",
+                "-an",
+                "-vf",
+                (
+                    f"fps={_VISUAL_OUTPUT_FPS},"
+                    f"scale={_VISUAL_FRAME_WIDTH}:{_VISUAL_FRAME_HEIGHT}:"
+                    "force_original_aspect_ratio=decrease,"
+                    f"pad={_VISUAL_FRAME_WIDTH}:{_VISUAL_FRAME_HEIGHT}:(ow-iw)/2:(oh-ih)/2"
+                ),
+                "-pix_fmt",
+                "bgr24",
+                "-f",
+                "rawvideo",
+                "pipe:1",
+            ],
+            stdin=source.stdout,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            bufsize=0,
+        )
+        self._source_proc = source
+        self._decoder_proc = decoder
+
+    def _stop_stream(self) -> None:
+        for proc in (self._decoder_proc, self._source_proc):
+            if proc is not None:
+                proc.close()
+        self._decoder_proc = None
+        self._source_proc = None
 
 
 @dataclass
@@ -216,11 +279,12 @@ class LiveVisualTracker:
         self.active_arm = control.active_arm or self.active_arm
         self.expected_greeting = control.expected_greeting or self.expected_greeting
         self.stimulus_time_s = control.stimulus_time_s
+        ready = self._calibration_frames_accumulated >= _VISUAL_CALIBRATION_FRAMES_REQUIRED
         return self._visual_state(
             session_id=control.session_id,
             timestamp_utc=control.timestamp_utc,
-            status="post_stimulus",
-            face_present=False,
+            status="post_stimulus" if ready else "waiting_for_face",
+            face_present=ready,
         )
 
     def tick(self, now: datetime | None = None) -> _VisualTickOutcome:
@@ -229,14 +293,18 @@ class LiveVisualTracker:
         timestamp_utc = now or datetime.now(UTC)
         frame = self._latest_frame()
         if frame is None:
+            calibrated = self._calibration_frames_accumulated >= _VISUAL_CALIBRATION_FRAMES_REQUIRED
+            status = "waiting_for_face"
+            if calibrated:
+                status = "post_stimulus" if self.stimulus_time_s is not None else "ready"
             return _VisualTickOutcome(
                 visual=self._visual_state(
                     session_id=self.session_id,
                     timestamp_utc=timestamp_utc,
-                    status="waiting_for_face",
-                    face_present=False,
+                    status=status,
+                    face_present=calibrated,
                 ),
-                missing_frame=True,
+                missing_frame=not calibrated,
             )
         landmarks = self._extract_landmarks(frame)
         if landmarks is None:
@@ -284,10 +352,9 @@ class LiveVisualTracker:
         self._latest_au12_intensity = intensity
         self._latest_au12_timestamp_s = timestamp_s
         status = "post_stimulus" if self.stimulus_time_s is not None else "ready"
-        if self.stimulus_time_s is not None:
-            self._au12_observations.append(
-                _Au12Observation(timestamp_s=timestamp_s, intensity=intensity)
-            )
+        self._au12_observations.append(
+            _Au12Observation(timestamp_s=timestamp_s, intensity=intensity)
+        )
         return _VisualTickOutcome(
             visual=self._visual_state(
                 session_id=self.session_id,
@@ -427,22 +494,32 @@ class LiveVisualTracker:
 
 
 def _default_video_capture_factory(path: str) -> Any:
-    from services.worker.pipeline.video_capture import VideoCapture
+    del path
+    adb_path = find_executable("adb", env_override="LSIE_ADB_PATH")
+    ffmpeg_path = find_executable("ffmpeg", env_override="LSIE_FFMPEG_PATH")
+    return DesktopScreenrecordCapture(adb_path, ffmpeg_path)
 
-    return VideoCapture(pipe_path=path)
+
+def _read_exact(stream: Any, size: int) -> bytes:
+    chunks: list[bytes] = []
+    remaining = size
+    while remaining > 0:
+        chunk = stream.read(remaining)
+        if not chunk:
+            break
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    return b"".join(chunks)
 
 
-def _decode_png_screencap(payload: bytes) -> Any | None:
-    try:
-        import cv2
-        import numpy as np
+def _bgr_frame_from_raw(payload: bytes) -> Any:
+    import numpy as np
 
-        encoded = np.frombuffer(payload, dtype=np.uint8)
-        frame = cv2.imdecode(encoded, cv2.IMREAD_COLOR)
-    except Exception:
-        logger.debug("Desktop screencap PNG decode failed", exc_info=True)
-        return None
-    return frame
+    return (
+        np.frombuffer(payload, dtype=np.uint8)
+        .reshape((_VISUAL_FRAME_HEIGHT, _VISUAL_FRAME_WIDTH, 3))
+        .copy()
+    )
 
 
 def _default_face_mesh_factory() -> Any:
@@ -560,7 +637,10 @@ def _parse_utc_timestamp_s(value: Any) -> float | None:
     return None
 
 
-def _handoff_window_s(handoff: dict[str, Any], audio_data: bytes) -> tuple[float, float] | None:
+def _handoff_window_s(
+    handoff: dict[str, Any],
+    audio_data: bytes,
+) -> tuple[float, float] | None:
     start_s = _parse_utc_timestamp_s(handoff.get("segment_window_start_utc"))
     end_s = _parse_utc_timestamp_s(handoff.get("segment_window_end_utc"))
     if start_s is not None and end_s is not None:
@@ -584,10 +664,14 @@ def _handoff_with_tracker_au12(
     tracker: LiveVisualTracker | None,
 ) -> dict[str, Any]:
     enriched = dict(handoff)
+    if enriched.get("_physiological_context") is None:
+        enriched.pop("_physiological_context", None)
+    if enriched.get("physiological_context") is None:
+        enriched.pop("physiological_context", None)
     if tracker is None:
         return enriched
     window = _handoff_window_s(enriched, audio_data)
-    enriched["_au12_series"] = (
+    observations = (
         []
         if window is None
         else tracker.drain_au12_observations(
@@ -595,6 +679,7 @@ def _handoff_with_tracker_au12(
             end_s=window[1],
         )
     )
+    enriched["_au12_series"] = observations
     return enriched
 
 
@@ -712,7 +797,11 @@ def _build_analytics_result(
     *,
     transcription_engine: Any | None = None,
 ) -> AnalyticsResultMessage | None:
-    handoff = _handoff_with_tracker_au12(msg.handoff, audio_data=audio, tracker=tracker)
+    handoff = _handoff_with_tracker_au12(
+        msg.handoff,
+        audio_data=audio,
+        tracker=tracker,
+    )
     segment_id = str(handoff.get("segment_id", "unknown"))
     timestamp_utc = str(handoff["timestamp_utc"])
     stimulus_time = handoff.get("_stimulus_time")
@@ -758,27 +847,44 @@ def _build_analytics_result(
             logger.warning("Acoustic analysis failed for %s", segment_id, exc_info=True)
             acoustic_payload = _default_acoustic_payload()
 
-    if not transcription:
-        return None
-
     semantic: dict[str, Any] | None = None
-    try:
-        from packages.ml_core.preprocessing import TextPreprocessor
-        from packages.ml_core.semantic import SemanticEvaluator
-
-        preprocessed_text = TextPreprocessor().preprocess(transcription)
-        evaluator = SemanticEvaluator()
-        live_semantic = evaluator.evaluate(
-            str(handoff.get("_expected_greeting", "Hello, welcome to the stream!")),
-            preprocessed_text,
-        )
+    if not transcription:
         semantic = _normalize_semantic_result(
-            live_semantic,
-            semantic_method=getattr(evaluator, "last_semantic_method", None),
-            semantic_method_version=getattr(evaluator, "last_semantic_method_version", None),
+            {
+                "reasoning": "semantic_error",
+                "is_match": False,
+                "confidence_score": 0.0,
+            },
+            semantic_method="cross_encoder",
+            semantic_method_version="desktop-gpu-worker-empty-transcription-v1",
         )
-    except Exception:
-        logger.warning("Semantic evaluation failed for %s", segment_id, exc_info=True)
+    else:
+        try:
+            from packages.ml_core.preprocessing import TextPreprocessor
+            from packages.ml_core.semantic import SemanticEvaluator
+
+            preprocessed_text = TextPreprocessor().preprocess(transcription)
+            evaluator = SemanticEvaluator()
+            live_semantic = evaluator.evaluate(
+                str(handoff.get("_expected_greeting", "Hello, welcome to the stream!")),
+                preprocessed_text,
+            )
+            semantic = _normalize_semantic_result(
+                live_semantic,
+                semantic_method=getattr(evaluator, "last_semantic_method", None),
+                semantic_method_version=getattr(evaluator, "last_semantic_method_version", None),
+            )
+        except Exception:
+            logger.warning("Semantic evaluation failed for %s", segment_id, exc_info=True)
+            semantic = _normalize_semantic_result(
+                {
+                    "reasoning": "semantic_error",
+                    "is_match": False,
+                    "confidence_score": 0.0,
+                },
+                semantic_method="cross_encoder",
+                semantic_method_version="desktop-gpu-worker-semantic-fallback-v1",
+            )
 
     if semantic is None:
         return None
@@ -803,16 +909,6 @@ def _publish_analytics_result(
     status_callback: Callable[[_GpuWorkerStatus], None] | None = None,
 ) -> None:
     audio_name = msg.audio.name
-    if transcription_engine is None:
-        _ack_pcm_block(channels, audio_name)
-        if status_callback is not None:
-            status_callback(
-                _GpuWorkerStatus(
-                    state="recovering",
-                    detail="Speech model warmup is still in progress.",
-                )
-            )
-        return
     try:
         audio = read_pcm_block(msg.audio.to_metadata())
     except FileNotFoundError:
@@ -875,22 +971,34 @@ def _publish_visual_tick(
                 )
             )
         return
-    if outcome.missing_frame and status_callback is not None:
-        status_callback(
-            _GpuWorkerStatus(
-                state="recovering",
-                detail=_NO_FRAME_DETAIL,
-                operator_action_hint=_NO_FRAME_HINT,
+    if status_callback is not None:
+        if outcome.missing_frame:
+            status_callback(
+                _GpuWorkerStatus(
+                    state="recovering",
+                    detail=_NO_FRAME_DETAIL,
+                    operator_action_hint=_NO_FRAME_HINT,
+                )
             )
-        )
+        elif outcome.visual is not None and outcome.visual.face_present:
+            status_callback(
+                _GpuWorkerStatus(
+                    state="ok",
+                    detail="Live visual tracking is receiving phone frames.",
+                )
+            )
     if outcome.visual is not None:
         channels.analytics_inbox.put(outcome.visual.model_dump(mode="json"))
+
+
+def _ml_inbox_poll_timeout(next_visual_tick: float, now_monotonic: float) -> float:
+    return min(INBOX_POLL_TIMEOUT_S, max(0.0, next_visual_tick - now_monotonic))
 
 
 def run(shutdown_event: mpsync.Event, channels: IpcChannels) -> None:
     logger.info("gpu_ml_worker started")
 
-    from services.desktop_app.os_adapter import resolve_capture_dir, resolve_state_dir
+    from services.desktop_app.os_adapter import resolve_state_dir
     from services.desktop_app.state.heartbeats import HeartbeatRecorder
 
     state_dir = resolve_state_dir()
@@ -898,7 +1006,7 @@ def run(shutdown_event: mpsync.Event, channels: IpcChannels) -> None:
     heartbeat = HeartbeatRecorder(db_path, "gpu_ml_worker")
     heartbeat.start()
     _upsert_gpu_worker_status(db_path, _initial_worker_status())
-    tracker = LiveVisualTracker(capture_path=str(resolve_capture_dir() / _VIDEO_FILENAME))
+    tracker = LiveVisualTracker()
     warm_runtime: dict[str, Any] = {
         "engine": None,
         "status": _GpuWorkerStatus(
@@ -922,19 +1030,25 @@ def run(shutdown_event: mpsync.Event, channels: IpcChannels) -> None:
     warm_thread.start()
     warm_status_reported = False
 
+    next_visual_tick = time.monotonic()
     try:
         while not shutdown_event.is_set():
             if bool(warm_runtime["ready"]) and not warm_status_reported:
                 _upsert_gpu_worker_status(db_path, warm_runtime["status"])
                 warm_status_reported = True
             _drain_live_control(channels, tracker)
-            _publish_visual_tick(
-                channels,
-                tracker,
-                status_callback=lambda status: _upsert_gpu_worker_status(db_path, status),
-            )
+            now_monotonic = time.monotonic()
+            if now_monotonic >= next_visual_tick:
+                _publish_visual_tick(
+                    channels,
+                    tracker,
+                    status_callback=lambda status: _upsert_gpu_worker_status(db_path, status),
+                )
+                next_visual_tick = now_monotonic + _VISUAL_TICK_INTERVAL_S
             try:
-                raw = channels.ml_inbox.get(timeout=INBOX_POLL_TIMEOUT_S)
+                raw = channels.ml_inbox.get(
+                    timeout=_ml_inbox_poll_timeout(next_visual_tick, time.monotonic())
+                )
             except queue.Empty:
                 continue
             try:

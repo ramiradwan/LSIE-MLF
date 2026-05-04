@@ -289,6 +289,7 @@ class EncounterSummary(OperatorConsoleModel):
     stimulus_time_utc: datetime | None = None
     semantic_gate: int | None = Field(default=None, ge=0, le=1)
     semantic_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    transcription: str | None = None
     p90_intensity: float | None = None
     gated_reward: float | None = None
     n_frames_in_window: int | None = Field(default=None, ge=0)
@@ -627,25 +628,19 @@ class StimulusRequest(OperatorConsoleModel):
 
 
 class StimulusAccepted(OperatorConsoleModel):
-    """API Server acknowledgment of a stimulus submission.
-
-    `received_at_utc` is the API Server's receive time for audit only;
-    the pipeline-authoritative `stimulus_time` that defines the §7B
-    measurement window is surfaced later via the encounter readback.
-    """
+    """API Server acknowledgment of a stimulus submission."""
 
     session_id: UUID
     client_action_id: UUID
     accepted: bool
     received_at_utc: datetime
+    stimulus_time_utc: datetime | None = None
     message: str | None = None
 
-    @field_validator("received_at_utc")
+    @field_validator("received_at_utc", "stimulus_time_utc")
     @classmethod
-    def _utc_only(cls, value: datetime) -> datetime:
-        validated = _require_utc(value)
-        assert validated is not None
-        return validated
+    def _utc_only(cls, value: datetime | None) -> datetime | None:
+        return _require_utc(value)
 
 
 class SessionCreateRequest(OperatorConsoleModel):

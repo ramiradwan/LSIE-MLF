@@ -173,6 +173,7 @@ class MainWindow(QMainWindow):
         self._store.set_route(_INITIAL_ROUTE)
         self._on_store_route_changed(self._store.route().value)
         self._update_action_bar_context()
+        self._update_action_bar_progress()
 
     # ------------------------------------------------------------------
     # Construction helpers
@@ -198,10 +199,18 @@ class MainWindow(QMainWindow):
         # read-only getters plus safe operator intents (stimulus,
         # experiment management, and Sessions' selection push).
         self._overview_vm = OverviewViewModel(self._store, self)
-        self._live_session_vm = LiveSessionViewModel(self._store, self._encounters_model, self)
+        self._live_session_vm = LiveSessionViewModel(
+            self._store,
+            self._encounters_model,
+            self,
+            default_experiment_id=self._config.default_experiment_id,
+        )
         self._live_session_vm.bind_session_lifecycle_actions(
             self._coordinator.request_session_start,
             self._coordinator.request_session_end,
+        )
+        self._live_session_vm.action_state_changed.connect(
+            self._on_live_session_action_state_changed
         )
         self._experiments_vm = ExperimentsViewModel(
             self._store,
@@ -386,6 +395,17 @@ class MainWindow(QMainWindow):
             expected_greeting,
             operator_ready_for_submit=operator_ready,
         )
+        self._update_action_bar_progress()
+
+    def _update_action_bar_progress(self) -> None:
+        state = self._live_session_vm.stimulus_ui_context().state
+        if state is StimulusActionState.MEASURING:
+            self._action_bar.set_countdown_remaining(
+                self._live_session_vm.measurement_window_remaining_s(datetime.now(UTC))
+            )
+        else:
+            self._action_bar.set_countdown_remaining(None)
+        self._action_bar.set_last_message(self._live_session_vm.stimulus_progress_message())
 
     # ------------------------------------------------------------------
     # Stimulus submit path (§4.C)
@@ -429,14 +449,18 @@ class MainWindow(QMainWindow):
     def _on_stimulus_succeeded(self, _job: str, payload: object) -> None:
         if not isinstance(payload, StimulusAccepted):
             return
-        next_state = (
-            StimulusActionState.ACCEPTED if payload.accepted else StimulusActionState.FAILED
-        )
+        if not payload.accepted:
+            next_state = StimulusActionState.FAILED
+        elif payload.stimulus_time_utc is not None:
+            next_state = StimulusActionState.MEASURING
+        else:
+            next_state = StimulusActionState.ACCEPTED
         self._store.set_stimulus_ui_context(
             StimulusUiContext(
                 state=next_state,
                 client_action_id=payload.client_action_id,
                 accepted_at_utc=payload.received_at_utc,
+                authoritative_stimulus_time_utc=payload.stimulus_time_utc,
                 message=payload.message,
             )
         )
@@ -457,6 +481,11 @@ class MainWindow(QMainWindow):
     def _on_stimulus_state_changed(self, ctx: object) -> None:
         if isinstance(ctx, StimulusUiContext):
             self._action_bar.set_action_state(ctx)
+            self._update_action_bar_progress()
+
+    @Slot(object)
+    def _on_live_session_action_state_changed(self, _ctx: object) -> None:
+        self._update_action_bar_progress()
 
     def resizeEvent(self, event: QResizeEvent) -> None:  # noqa: N802 — Qt override
         super().resizeEvent(event)

@@ -55,6 +55,8 @@ from services.operator_console.formatters import (
     format_reward,
     format_semantic_gate,
     format_timestamp,
+    physiology_labels,
+    reward_detail_labels,
     truncate_expected_greeting,
 )
 from services.operator_console.viewmodels.overview_vm import OverviewViewModel
@@ -112,7 +114,7 @@ class OverviewView(QWidget):
 
         self._header = SectionHeader(
             "Overview",
-            "Active session, experiment, physiology, health, latest encounter.",
+            "What is running now, what needs attention, and why the latest result counted.",
             self,
         )
         self._error_banner = AlertBanner(self)
@@ -257,9 +259,9 @@ class OverviewView(QWidget):
             for snap in (snapshot.operator, snapshot.streamer)
         )
         if not any_present:
-            self._physiology_card.set_primary_text("No RMSSD")
+            self._physiology_card.set_primary_text(physiology_labels().no_rmssd_summary)
         else:
-            self._physiology_card.set_primary_text("Live")
+            self._physiology_card.set_primary_text("Live heart data")
         self._physiology_card.set_secondary_text(build_physiology_explanation(snapshot))
         if not any_present:
             self._physiology_card.set_status(UiStatusKind.NEUTRAL, "absent")
@@ -304,9 +306,10 @@ class OverviewView(QWidget):
         # §8/§7E diagnostics stay compact here; the full readback lives in
         # Live Session and does not add Overview table columns.
         diagnostics = self._vm.latest_encounter_semantic_attribution_diagnostics()
+        reward_labels = reward_detail_labels()
         parts: list[str] = [
-            f"P90 {format_reward(encounter.p90_intensity)}",
-            format_semantic_gate(encounter.semantic_gate),
+            f"{reward_labels.p90_title} {format_reward(encounter.p90_intensity)}",
+            f"{reward_labels.gate_title} {format_semantic_gate(encounter.semantic_gate)}",
         ]
         if encounter.n_frames_in_window is not None:
             parts.append(f"{encounter.n_frames_in_window} frames")

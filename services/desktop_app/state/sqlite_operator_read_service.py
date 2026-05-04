@@ -120,10 +120,10 @@ class SqliteOperatorReadService(OperatorReadService):
             ),
             (
                 "gpu_ml_worker",
-                "gpu_ml_worker",
+                "Live Analysis",
                 "last_gpu_ml_worker_at",
-                "model_loading",
-                "wait for model download/load to complete or check gpu_ml_worker logs",
+                "Preparing live analysis",
+                "Wait for live analysis to finish starting.",
                 "gpu_ml_worker_state",
                 "gpu_ml_worker_detail",
                 "gpu_ml_worker_hint",
@@ -226,13 +226,10 @@ class SqliteOperatorReadService(OperatorReadService):
             detail = f"{active_session_count} active desktop sessions found; end stale sessions."
         elif pulse.get("gpu_ml_worker_state") == HealthState.RECOVERING.value:
             state = HealthState.RECOVERING
-            detail = str(
-                pulse.get("gpu_ml_worker_detail")
-                or "gpu_ml_worker is loading models for live analytics."
-            )
+            detail = "Preparing live analysis."
         elif active_session_count == 0:
             state = HealthState.UNKNOWN
-            detail = "No active desktop session is currently producing live analytics."
+            detail = "Setup not ready: start or select a Live Session."
         elif last_success is None:
             capture_ok = all(
                 pulse.get(field) == HealthState.OK.value
@@ -240,34 +237,32 @@ class SqliteOperatorReadService(OperatorReadService):
             )
             state = HealthState.RECOVERING if capture_ok else HealthState.UNKNOWN
             detail = (
-                "Capture is healthy; waiting for first live visual state "
-                "or completed analytics row."
+                "Waiting for first result."
                 if capture_ok
-                else "Waiting for live visual state or completed analytics row."
+                else "Setup not ready: connect the phone and wait for capture to start."
             )
         elif state is HealthState.OK:
-            visual_status = pulse.get("live_visual_state_status")
-            detail = (
-                f"Live analytics fresh from visual state {visual_status!r}."
-                if visual_status is not None
-                else "Live analytics fresh from completed encounter rows."
-            )
+            detail = "Healthy: live analysis is updating."
         else:
             state = HealthState.DEGRADED
-            detail = "Live analytics state is stale for the active desktop session."
+            detail = "Live analysis has stopped updating."
         needs_action = state.value in {"degraded", "recovering", "unknown"}
+        if state is HealthState.RECOVERING:
+            action_hint = "Wait for the first result before sending another test message."
+        elif state is HealthState.UNKNOWN:
+            action_hint = "Start or select a Live Session and confirm the phone is connected."
+        elif state is HealthState.DEGRADED:
+            action_hint = "Check that the face is visible, then send one test message."
+        else:
+            action_hint = None
         return HealthSubsystemStatus(
             subsystem_key="live_analytics_producer",
-            label="Live Analytics Producer",
+            label="Live Analysis Results",
             state=state,
             last_success_utc=last_success,
             detail=detail,
-            recovery_mode="analytics_freshness" if needs_action else None,
-            operator_action_hint=(
-                "Verify face tracking is visible and submit a test message after calibration."
-                if needs_action
-                else None
-            ),
+            recovery_mode="Waiting for live analysis" if needs_action else None,
+            operator_action_hint=action_hint,
         )
 
     def _latest_live_analytics_timestamp(self, pulse: dict[str, Any]) -> Any:

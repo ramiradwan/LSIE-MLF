@@ -127,7 +127,7 @@ class ExperimentsView(QWidget):
 
         self._header = SectionHeader(
             "Experiments",
-            "Thompson Sampling posteriors per arm — §7B reward = p90 × gate.",
+            "Compare greeting options and see which one is currently being tried.",
             self,
         )
         self._error_banner = AlertBanner(self)
@@ -276,11 +276,11 @@ class ExperimentsView(QWidget):
             self._active_arm_card.set_status(UiStatusKind.WARN, "missing")
             return
         secondary_bits: list[str] = [
-            f"α {format_reward(active.posterior_alpha)}",
-            f"β {format_reward(active.posterior_beta)}",
+            f"positive history {format_reward(active.posterior_alpha)}",
+            f"miss history {format_reward(active.posterior_beta)}",
         ]
         if active.evaluation_variance is not None:
-            secondary_bits.append(f"var {format_reward(active.evaluation_variance)}")
+            secondary_bits.append(f"uncertainty {format_reward(active.evaluation_variance)}")
         secondary_bits.append(f"{active.selection_count} selection(s)")
         self._active_arm_card.set_secondary_text(" · ".join(secondary_bits))
         self._active_arm_card.set_status(UiStatusKind.OK, "active")
@@ -300,7 +300,7 @@ class ExperimentsView(QWidget):
         self._arms_card.set_secondary_text(
             f"best recent reward {format_reward(best.recent_reward_mean)} "
             f"on arm {best.arm_id} "
-            f"(semantic pass {format_percentage(best.recent_semantic_pass_rate, digits=0)})"
+            f"(greeting matched {format_percentage(best.recent_semantic_pass_rate, digits=0)})"
         )
         self._arms_card.set_status(UiStatusKind.INFO, None)
 
@@ -354,9 +354,9 @@ class _ManagePanel(QFrame):
         self._title = QLabel("Manage", self)
         self._title.setObjectName("PanelTitle")
         self._hint = QLabel(
-            "Create or seed the current experiment, add arms, double-click a Greeting "
-            "cell to rename it, or uncheck Enabled to disable an arm. Posterior "
-            "columns are read-only.",
+            "Create or seed the current experiment, add greeting options, double-click a "
+            "Greeting cell to rename it, or uncheck Enabled to disable an option. "
+            "Learning-history columns are read-only.",
             self,
         )
         self._hint.setObjectName("PanelSubtitle")

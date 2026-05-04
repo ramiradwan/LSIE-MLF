@@ -43,6 +43,7 @@ from packages.schemas.operator_console import (
     AlertEvent,
     EncounterSummary,
     ExperimentDetail,
+    ExperimentSummary,
     HealthSnapshot,
     OverviewSnapshot,
     SessionPhysiologySnapshot,
@@ -158,6 +159,19 @@ async def list_session_encounters(
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
         logger.error("operator list_encounters failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error") from exc
+
+
+@router.get("/experiments", response_model=list[ExperimentSummary])
+async def list_experiments(
+    service: OperatorReadService = _ReadDep,
+) -> list[ExperimentSummary]:
+    try:
+        return service.list_experiments()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        logger.error("operator list_experiments failed: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail="Internal server error") from exc
 
 

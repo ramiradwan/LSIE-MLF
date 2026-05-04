@@ -80,11 +80,13 @@ def _session(
     is_calibrating: bool | None = None,
     calibration_frames_accumulated: int | None = None,
     calibration_frames_required: int | None = None,
+    ended_at_utc: datetime | None = None,
 ) -> SessionSummary:
     return SessionSummary(
         session_id=session_id or uuid4(),
-        status="active",
+        status="ended" if ended_at_utc is not None else "active",
         started_at_utc=_NOW,
+        ended_at_utc=ended_at_utc,
         active_arm=active_arm,
         expected_greeting=expected,
         is_calibrating=is_calibrating,
@@ -105,6 +107,7 @@ def _encounter(
     stimulus_time: datetime | None = None,
     session_id: UUID | None = None,
     segment_timestamp_utc: datetime = _NOW,
+    transcription: str | None = None,
 ) -> EncounterSummary:
     return EncounterSummary(
         encounter_id=encounter_id,
@@ -119,6 +122,7 @@ def _encounter(
         p90_intensity=p90,
         gated_reward=gated_reward,
         n_frames_in_window=frames,
+        transcription=transcription,
     )
 
 
@@ -238,8 +242,8 @@ def test_overview_vm_formats_latest_encounter_semantic_attribution_diagnostics()
     )
 
     display = vm.latest_encounter_semantic_attribution_diagnostics()
-    assert display.semantic_method == "local cross-encoder · ce-v1"
-    assert display.bounded_reason_code == "Cross-encoder high-confidence non-match"
+    assert display.semantic_method == "local greeting checker · ce-v1"
+    assert display.bounded_reason_code == "Greeting clearly did not match"
     assert display.attribution_finality == "offline final"
 
 
@@ -262,13 +266,11 @@ def test_live_session_vm_ttv_state_waits_for_live_session_readback() -> None:
     store = OperatorStore()
     vm = LiveSessionViewModel(store, EncountersTableModel())
     assert vm.ttv_state() == "WAITING_FOR_DEVICE"
-    assert (
-        vm.ttv_empty_message() == "Waiting for phone... Please connect your Android device via USB."
-    )
+    assert vm.ttv_empty_message() == "Connect the Android phone with USB debugging allowed."
     display = vm.ttv_setup_display()
     assert display.step_label == "Step 1 of 3"
     assert display.dashboard_mode == "gate"
-    assert display.title == "Waiting for phone"
+    assert display.title == "Setup not ready"
 
     selected_session_id = uuid4()
     store.set_selected_session_id(selected_session_id)
@@ -308,11 +310,12 @@ def test_live_session_vm_ttv_gate_surfaces_connected_capture_until_session_readb
 
     assert vm.ttv_state() == "WAITING_FOR_DEVICE"
     display = vm.ttv_setup_display()
-    assert display.title == "Phone connected"
-    assert display.message == (
-        "Phone connected. Start or select a Live Session to begin Face Tracking."
+    assert display.title == "Setup not ready"
+    assert display.message == ("Start or select a Live Session to begin live analysis.")
+    assert display.detail == (
+        "Phone healthy · Audio capture healthy · Video capture healthy · "
+        "Live analysis status unknown"
     )
-    assert display.detail == ("ADB ok · Audio capture ok · Video capture ok · ML backend unknown")
     assert emissions == []
 
 
@@ -333,12 +336,14 @@ def test_live_session_vm_ttv_state_waits_for_face_until_calibration_ready() -> N
         )
     )
     assert vm.ttv_state() == "WAITING_FOR_FACE"
-    assert vm.ttv_empty_message() == "Open a stream or video with a visible face on your phone."
+    assert vm.ttv_empty_message() == (
+        "Open a stream or video with a clearly visible face on your phone."
+    )
     display = vm.ttv_setup_display()
     assert display.step_label == "Step 2 of 3"
     assert display.dashboard_mode == "calibrating"
-    assert display.title == "Face Tracking calibration"
-    assert display.detail == "Face Tracking calibration · 12/45 frames"
+    assert display.title == "Preparing live analysis"
+    assert display.detail == "Preparing smile baseline · 12/45 face frames"
 
     store.set_live_session(
         _session(
@@ -352,8 +357,8 @@ def test_live_session_vm_ttv_state_waits_for_face_until_calibration_ready() -> N
     display = vm.ttv_setup_display()
     assert display.step_label == "Step 3 of 3"
     assert display.dashboard_mode == "ready"
-    assert display.title == "Face locked. Ready for a test message."
-    assert display.message == "Send a test message to start the post-stimulus analytics window."
+    assert display.title == "Healthy"
+    assert display.message == "Send one test message and wait for the first result."
     assert emissions == ["WAITING_FOR_FACE", "READY"]
 
 
@@ -410,20 +415,23 @@ def test_live_session_vm_does_not_treat_capture_supervisor_as_adb() -> None:
         )
     )
 
-    assert vm.adb_status() == (UiStatusKind.NEUTRAL, "ADB unknown")
-    assert vm.ttv_setup_display().title == "Waiting for phone"
+    assert vm.adb_status() == (UiStatusKind.NEUTRAL, "Phone status unknown")
+    assert vm.ttv_setup_display().title == "Setup not ready"
 
 
 def test_live_session_vm_health_helpers_map_adb_ml_and_live_analytics() -> None:
     store = OperatorStore()
     vm = LiveSessionViewModel(store, EncountersTableModel())
-    assert vm.adb_status() == (UiStatusKind.NEUTRAL, "ADB unknown")
-    assert vm.audio_capture_status() == (UiStatusKind.NEUTRAL, "Audio capture unknown")
-    assert vm.video_capture_status() == (UiStatusKind.NEUTRAL, "Video capture unknown")
-    assert vm.ml_backend_status() == (UiStatusKind.NEUTRAL, "ML backend unknown")
+    assert vm.adb_status() == (UiStatusKind.NEUTRAL, "Phone status unknown")
+    assert vm.audio_capture_status() == (UiStatusKind.NEUTRAL, "Audio capture status unknown")
+    assert vm.video_capture_status() == (UiStatusKind.NEUTRAL, "Video capture status unknown")
+    assert vm.ml_backend_status() == (
+        UiStatusKind.NEUTRAL,
+        "Live analysis status unknown",
+    )
     assert vm.live_analytics_status() == (
         UiStatusKind.NEUTRAL,
-        "Live analytics unknown",
+        "Live analysis results unknown",
     )
 
     store.set_health(
@@ -460,13 +468,13 @@ def test_live_session_vm_health_helpers_map_adb_ml_and_live_analytics() -> None:
             ],
         )
     )
-    assert vm.adb_status() == (UiStatusKind.OK, "ADB ok")
-    assert vm.audio_capture_status() == (UiStatusKind.OK, "Audio capture ok")
-    assert vm.video_capture_status() == (UiStatusKind.WARN, "Video capture degraded")
-    assert vm.ml_backend_status() == (UiStatusKind.ERROR, "ML backend error")
+    assert vm.adb_status() == (UiStatusKind.OK, "Phone healthy")
+    assert vm.audio_capture_status() == (UiStatusKind.OK, "Audio capture healthy")
+    assert vm.video_capture_status() == (UiStatusKind.WARN, "Video capture needs attention")
+    assert vm.ml_backend_status() == (UiStatusKind.ERROR, "Live analysis needs operator action")
     assert vm.live_analytics_status() == (
         UiStatusKind.WARN,
-        "Live analytics degraded",
+        "Live analysis results need attention",
     )
 
 
@@ -485,7 +493,7 @@ def test_live_session_vm_surfaces_calibration_status_from_live_session() -> None
     assert vm.is_calibrating() is True
     assert vm.operator_ready_for_submit() is False
     assert kind is UiStatusKind.PROGRESS
-    assert text == "Calibrating · 12/45 frames"
+    assert text == "Preparing smile baseline · 12/45 face frames"
 
 
 def test_live_session_vm_ready_at_threshold_preserves_authoritative_calibrating_flag() -> None:
@@ -503,7 +511,7 @@ def test_live_session_vm_ready_at_threshold_preserves_authoritative_calibrating_
     assert vm.is_calibrating() is True
     assert vm.operator_ready_for_submit() is True
     assert kind is UiStatusKind.OK
-    assert text == "Ready"
+    assert text == "Healthy"
 
 
 def test_live_session_vm_false_and_none_calibration_are_submit_ready() -> None:
@@ -515,7 +523,7 @@ def test_live_session_vm_false_and_none_calibration_are_submit_ready() -> None:
 
         assert vm.is_calibrating() is False
         assert vm.operator_ready_for_submit() is True
-        assert vm.calibration_status() == (UiStatusKind.OK, "Ready")
+        assert vm.calibration_status() == (UiStatusKind.OK, "Healthy")
 
 
 def test_live_session_vm_missing_calibration_frames_are_submit_ready() -> None:
@@ -528,7 +536,7 @@ def test_live_session_vm_missing_calibration_frames_are_submit_ready() -> None:
     store.set_live_session(_session(session_id, is_calibrating=True))
 
     assert vm.operator_ready_for_submit() is True
-    assert vm.calibration_status() == (UiStatusKind.OK, "Ready")
+    assert vm.calibration_status() == (UiStatusKind.OK, "Healthy")
     assert vm.ttv_state() == "READY"
 
 
@@ -568,8 +576,8 @@ def test_live_session_vm_exposes_no_producer_notice_without_blocking_ready() -> 
     assert vm.has_live_encounter_analytics() is False
     notice = vm.live_analytics_notice()
     assert notice is not None
-    assert "waiting for a completed post-stimulus inference window" in notice
-    assert "Visual readiness can update before smile" in notice
+    assert "Waiting for the first result" in notice
+    assert "before sending another test message" in notice
 
     store.set_encounters([_encounter("e1", session_id=session_id)])
     assert vm.has_live_encounter_analytics() is True
@@ -595,8 +603,8 @@ def test_live_session_vm_reward_explanation_for_gate_closed() -> None:
     )
     vm.select_encounter("e1")
     text = vm.reward_explanation()
-    assert "Semantic gate closed" in text
-    assert "reward suppressed" in text
+    assert "Greeting did not match" in text
+    assert "reward was held back" in text
 
 
 def test_live_session_vm_reward_explanation_for_zero_frames() -> None:
@@ -617,7 +625,7 @@ def test_live_session_vm_reward_explanation_for_zero_frames() -> None:
     )
     vm.select_encounter("e1")
     text = vm.reward_explanation()
-    assert "No valid AU12 frames" in text
+    assert "No usable face frames" in text
 
 
 def test_live_session_vm_reward_explanation_without_encounters() -> None:
@@ -653,10 +661,10 @@ def test_live_session_vm_semantic_attribution_diagnostics_ride_encounters_cache(
     vm.select_encounter("e1")
 
     display = vm.semantic_attribution_diagnostics()
-    assert display.semantic_method == "LLM gray-band fallback · gray-v1"
-    assert display.bounded_reason_code == "Gray-band fallback match"
-    assert display.soft_reward_candidate == "r_t^soft 0.220"
-    assert display.au12_lift_metrics == "P90 lift 0.400"
+    assert display.semantic_method == "backup greeting checker · gray-v1"
+    assert display.bounded_reason_code == "Backup checker found a match"
+    assert display.soft_reward_candidate == "possible follow-up reward 0.220"
+    assert display.au12_lift_metrics == "strong smile lift 0.400"
 
 
 def test_live_session_vm_set_stimulus_submitting_emits_key() -> None:
@@ -687,6 +695,31 @@ def test_live_session_vm_apply_stimulus_accepted_true() -> None:
     assert ctx.state == StimulusActionState.ACCEPTED
     assert ctx.client_action_id == key
     assert ctx.accepted_at_utc == _NOW
+
+
+def test_live_session_vm_apply_stimulus_accepted_with_time_starts_measuring() -> None:
+    store = OperatorStore()
+    vm = LiveSessionViewModel(store, EncountersTableModel())
+    key = vm.set_stimulus_submitting(None)
+    stimulus_time = _NOW + timedelta(seconds=1)
+
+    vm.apply_stimulus_accepted(
+        StimulusAccepted(
+            session_id=uuid4(),
+            client_action_id=key,
+            accepted=True,
+            received_at_utc=_NOW,
+            stimulus_time_utc=stimulus_time,
+            message=None,
+        )
+    )
+
+    ctx = store.stimulus_ui_context()
+    assert ctx.state == StimulusActionState.MEASURING
+    assert ctx.client_action_id == key
+    assert ctx.accepted_at_utc == _NOW
+    assert ctx.authoritative_stimulus_time_utc == stimulus_time
+    assert vm.measurement_window_remaining_s(stimulus_time + timedelta(seconds=2)) == 3.0
 
 
 def test_live_session_vm_apply_stimulus_accepted_false_is_failed() -> None:
@@ -740,6 +773,213 @@ def test_live_session_vm_reconciles_authoritative_stimulus_time() -> None:
     assert ctx.authoritative_stimulus_time_utc == authoritative
 
 
+def test_live_session_vm_reconciles_rejected_gate_as_completed_stimulus() -> None:
+    store = OperatorStore()
+    model = EncountersTableModel()
+    vm = LiveSessionViewModel(store, model)
+    key = vm.set_stimulus_submitting(None)
+    vm.apply_stimulus_accepted(
+        StimulusAccepted(
+            session_id=uuid4(),
+            client_action_id=key,
+            accepted=True,
+            received_at_utc=_NOW,
+            message=None,
+        )
+    )
+    authoritative = _NOW + timedelta(seconds=1)
+
+    store.set_encounters(
+        [
+            _encounter(
+                "e1",
+                state=EncounterState.REJECTED_GATE_CLOSED,
+                semantic_gate=0,
+                gated_reward=0.0,
+                stimulus_time=authoritative,
+            )
+        ]
+    )
+
+    ctx = store.stimulus_ui_context()
+    assert ctx.state == StimulusActionState.COMPLETED
+    assert ctx.authoritative_stimulus_time_utc == authoritative
+
+
+def test_live_session_vm_ignores_old_completed_encounter_after_new_stimulus() -> None:
+    store = OperatorStore()
+    vm = LiveSessionViewModel(store, EncountersTableModel())
+    old_stimulus = _NOW + timedelta(seconds=1)
+    new_stimulus = _NOW + timedelta(seconds=20)
+    key = vm.set_stimulus_submitting(None)
+    vm.apply_stimulus_accepted(
+        StimulusAccepted(
+            session_id=uuid4(),
+            client_action_id=key,
+            accepted=True,
+            received_at_utc=new_stimulus,
+            stimulus_time_utc=new_stimulus,
+            message=None,
+        )
+    )
+
+    store.set_encounters(
+        [
+            _encounter(
+                "old",
+                state=EncounterState.COMPLETED,
+                stimulus_time=old_stimulus,
+                segment_timestamp_utc=old_stimulus + timedelta(seconds=5),
+            )
+        ]
+    )
+
+    ctx = store.stimulus_ui_context()
+    assert ctx.state == StimulusActionState.MEASURING
+    assert ctx.authoritative_stimulus_time_utc == new_stimulus
+
+
+def test_live_session_vm_completes_when_readback_stimulus_time_has_small_drift() -> None:
+    store = OperatorStore()
+    vm = LiveSessionViewModel(store, EncountersTableModel())
+    new_stimulus = _NOW + timedelta(seconds=20)
+    key = vm.set_stimulus_submitting(None)
+    vm.apply_stimulus_accepted(
+        StimulusAccepted(
+            session_id=uuid4(),
+            client_action_id=key,
+            accepted=True,
+            received_at_utc=new_stimulus,
+            stimulus_time_utc=new_stimulus,
+            message=None,
+        )
+    )
+
+    store.set_encounters(
+        [
+            _encounter(
+                "current",
+                state=EncounterState.COMPLETED,
+                stimulus_time=new_stimulus - timedelta(milliseconds=250),
+                segment_timestamp_utc=new_stimulus + timedelta(seconds=5),
+            )
+        ]
+    )
+
+    ctx = store.stimulus_ui_context()
+    assert ctx.state == StimulusActionState.COMPLETED
+    assert ctx.authoritative_stimulus_time_utc == new_stimulus - timedelta(milliseconds=250)
+
+
+def test_live_session_vm_completes_from_terminal_result_segment_after_submit() -> None:
+    store = OperatorStore()
+    vm = LiveSessionViewModel(store, EncountersTableModel())
+    new_stimulus = _NOW + timedelta(seconds=20)
+    key = vm.set_stimulus_submitting(None)
+    vm.apply_stimulus_accepted(
+        StimulusAccepted(
+            session_id=uuid4(),
+            client_action_id=key,
+            accepted=True,
+            received_at_utc=new_stimulus,
+            stimulus_time_utc=new_stimulus,
+            message=None,
+        )
+    )
+
+    store.set_encounters(
+        [
+            _encounter(
+                "current",
+                state=EncounterState.REJECTED_GATE_CLOSED,
+                semantic_gate=0,
+                gated_reward=0.0,
+                stimulus_time=new_stimulus - timedelta(seconds=10),
+                segment_timestamp_utc=new_stimulus + timedelta(seconds=21),
+            )
+        ]
+    )
+
+    ctx = store.stimulus_ui_context()
+    assert ctx.state == StimulusActionState.COMPLETED
+    assert ctx.authoritative_stimulus_time_utc == new_stimulus - timedelta(seconds=10)
+
+
+def test_live_session_vm_selects_completed_stimulus_readback_row() -> None:
+    store = OperatorStore()
+    model = EncountersTableModel()
+    vm = LiveSessionViewModel(store, model)
+    selected_session_id = uuid4()
+    store.set_selected_session_id(selected_session_id)
+    new_stimulus = _NOW + timedelta(seconds=20)
+    store.set_encounters(
+        [
+            _encounter(
+                "old-selected",
+                session_id=selected_session_id,
+                stimulus_time=_NOW,
+                transcription=None,
+                segment_timestamp_utc=_NOW + timedelta(seconds=5),
+            )
+        ]
+    )
+    vm.select_encounter("old-selected")
+    key = vm.set_stimulus_submitting(None)
+    vm.apply_stimulus_accepted(
+        StimulusAccepted(
+            session_id=selected_session_id,
+            client_action_id=key,
+            accepted=True,
+            received_at_utc=new_stimulus,
+            stimulus_time_utc=new_stimulus,
+            message=None,
+        )
+    )
+
+    store.set_encounters(
+        [
+            _encounter(
+                "new-result",
+                session_id=selected_session_id,
+                state=EncounterState.COMPLETED,
+                stimulus_time=new_stimulus,
+                transcription="hello creator",
+                segment_timestamp_utc=new_stimulus + timedelta(seconds=5),
+            ),
+            _encounter(
+                "old-selected",
+                session_id=selected_session_id,
+                stimulus_time=_NOW,
+                transcription=None,
+                segment_timestamp_utc=_NOW + timedelta(seconds=5),
+            ),
+        ]
+    )
+
+    assert vm.selected_encounter() is not None
+    assert vm.selected_encounter().encounter_id == "new-result"
+    assert vm.selected_encounter().transcription == "hello creator"
+
+
+def test_live_session_vm_clears_measuring_stimulus_when_session_ends() -> None:
+    store = OperatorStore()
+    session_id = uuid4()
+    store.set_selected_session_id(session_id)
+    store.set_live_session(_session(session_id))
+    vm = LiveSessionViewModel(store, EncountersTableModel())
+    assert vm.session() is not None
+    store.set_stimulus_ui_context(
+        StimulusUiContext(
+            state=StimulusActionState.MEASURING,
+            authoritative_stimulus_time_utc=_NOW,
+        )
+    )
+
+    store.set_live_session(_session(session_id, ended_at_utc=_NOW + timedelta(seconds=30)))
+
+    assert store.stimulus_ui_context().state == StimulusActionState.IDLE
+
+
 def test_live_session_vm_measurement_window_countdown() -> None:
     store = OperatorStore()
     vm = LiveSessionViewModel(store, EncountersTableModel())
@@ -752,11 +992,26 @@ def test_live_session_vm_measurement_window_countdown() -> None:
             authoritative_stimulus_time_utc=_NOW,
         )
     )
-    # §7B window default = 30s. 10s in → 20s remaining.
-    remaining = vm.measurement_window_remaining_s(_NOW + timedelta(seconds=10))
-    assert remaining == pytest.approx(20.0)
-    # Past the window → clamps to 0.
-    assert vm.measurement_window_remaining_s(_NOW + timedelta(seconds=60)) == 0.0
+    remaining = vm.measurement_window_remaining_s(_NOW + timedelta(seconds=2))
+    assert remaining == pytest.approx(3.0)
+    assert "00:03" in vm.stimulus_progress_message(_NOW + timedelta(seconds=2))
+    # Past the result window → clamps to 0.
+    assert vm.measurement_window_remaining_s(_NOW + timedelta(seconds=10)) == 0.0
+
+
+def test_live_session_vm_progress_message_uses_accepted_message_when_available() -> None:
+    store = OperatorStore()
+    vm = LiveSessionViewModel(store, EncountersTableModel())
+    store.set_stimulus_ui_context(
+        StimulusUiContext(
+            state=StimulusActionState.ACCEPTED,
+            message="Test message accepted. The response measurement is starting now.",
+        )
+    )
+
+    assert vm.stimulus_progress_message(_NOW) == (
+        "Test message accepted. The response measurement is starting now."
+    )
 
 
 def test_live_session_vm_selection_dropped_when_row_evicted() -> None:
@@ -785,18 +1040,12 @@ def test_live_session_vm_hides_mismatched_live_session_and_rows() -> None:
     assert model.rowCount() == 0
 
 
-def test_live_session_vm_start_new_session_validates_modal_fields() -> None:
+def test_live_session_vm_start_new_session_validates_experiment_choice() -> None:
     store = OperatorStore()
     vm = LiveSessionViewModel(store, EncountersTableModel())
 
-    assert vm.start_new_session("   ", "exp-a") is None
-    assert vm.error() == "Stream URL is required."
-
-    assert vm.start_new_session("rtmp://example/live", "   ") is None
-    assert vm.error() == "Experiment ID is required."
-
-    assert vm.start_new_session("123", "exp-a") is None
-    assert vm.error() == "Stream URL must be a valid URL."
+    assert vm.start_new_session("   ") is None
+    assert vm.error() == "Choose an experiment before starting the session."
 
 
 def test_live_session_vm_start_new_session_dispatches_and_switches_selection() -> None:
@@ -811,13 +1060,13 @@ def test_live_session_vm_start_new_session_dispatches_and_switches_selection() -
     end_dispatcher = _FakeSessionEndDispatcher()
     vm.bind_session_lifecycle_actions(start_dispatcher, end_dispatcher)
 
-    action_id = vm.start_new_session("  rtmp://example/live  ", "  greeting_line_v1  ")
+    action_id = vm.start_new_session("  greeting_line_v1  ")
 
     assert action_id is not None
     assert len(start_dispatcher.calls) == 1
     request = start_dispatcher.calls[0]
     assert request.client_action_id == action_id
-    assert request.stream_url == "rtmp://example/live"
+    assert request.stream_url == "android-device://connected-phone/tiktok-live"
     assert request.experiment_id == "greeting_line_v1"
     assert vm.session_start_in_progress() is True
 
@@ -894,7 +1143,7 @@ def test_live_session_vm_session_control_failure_sets_error_and_clears_pending()
     end_dispatcher = _FakeSessionEndDispatcher()
     vm.bind_session_lifecycle_actions(start_dispatcher, end_dispatcher)
 
-    vm.start_new_session("rtmp://example/live", "greeting_line_v1")
+    vm.start_new_session("greeting_line_v1")
     start_dispatcher.signals[0].failed.emit(
         "session_start",
         ApiError(message="broker unavailable", retryable=True),
@@ -1071,7 +1320,7 @@ def test_physiology_vm_comodulation_null_reads_as_legitimate() -> None:
     )
     store.set_physiology(snap)
     explanation = vm.comodulation_explanation()
-    assert "null" in explanation.lower()
+    assert "not ready yet" in explanation.lower()
     assert "insufficient aligned pairs" in explanation
 
 

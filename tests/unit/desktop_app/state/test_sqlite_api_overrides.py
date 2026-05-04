@@ -78,7 +78,9 @@ def test_configured_desktop_app_write_paths_do_not_use_server_dependencies(
                 json={"client_action_id": str(STIMULUS_ACTION_ID)},
             )
             assert stimulus_response.status_code == 200
-            assert "release-gated" in stimulus_response.json()["message"]
+            message = stimulus_response.json()["message"]
+            assert "response measurement is starting" in message.lower()
+            assert "before sending another test message" in message.lower()
 
             experiment_response = client.post(
                 "/api/v1/experiments",

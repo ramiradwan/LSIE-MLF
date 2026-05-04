@@ -15,17 +15,14 @@ concerns:
      hands operator notes in, the VM composes the context and stamps
      it back.
   4. The §7B reward explanation and the measurement-window countdown.
-     The countdown is derived from the *authoritative* `stimulus_time`
-     on the encounter read-back, not from the operator's click wall
-     clock — this is explicit in §4.C and is why a single stimulus
-     submission does not drive the countdown until the orchestrator
-     writes the timestamp back.
+     The countdown is derived from the *authoritative* `stimulus_time`,
+     either from the accepted desktop submit response or from encounter
+     read-back, not from the operator's click wall clock.
   5. Session lifecycle controls (`start` / `end`) dispatched through
      the coordinator's one-shot API path. The console stays API-only;
      no direct operator-host Postgres/Redis coupling is introduced.
 
 Spec references:
-  §2             — 30s segment size anchors the default measurement window
   §4.C           — `_active_arm`, `_expected_greeting`, authoritative
                    `_stimulus_time`; idempotent writes via client_action_id
   §4.E.1         — Live Session operator surface
@@ -50,6 +47,7 @@ from PySide6.QtCore import QObject, Signal
 from packages.schemas.operator_console import (
     EncounterState,
     EncounterSummary,
+    ExperimentSummary,
     HealthSubsystemStatus,
     ObservationalAcousticSummary,
     SessionCreateRequest,
@@ -66,6 +64,7 @@ from services.operator_console.formatters import (
     build_acoustic_detail_display,
     build_reward_explanation,
     format_calibration_status,
+    format_stimulus_progress_message,
     operator_ready_for_submit,
     semantic_attribution_diagnostics_for_encounter,
     ui_status_for_health,
@@ -77,12 +76,9 @@ from services.operator_console.table_models.encounters_table_model import (
 from services.operator_console.viewmodels.base import ViewModelBase
 from services.operator_console.workers import OneShotSignals
 
-# §2 pipeline uses 30s segments; the §7B measurement window aligns to
-# the post-stimulus segment, so 30 seconds is the UI-side default until
-# the orchestrator publishes the actual window length. This constant is
-# used only for countdown display; the authoritative encounter state
-# transition remains orchestrator-driven.
-_MEASUREMENT_WINDOW_S: float = 30.0
+_STIMULUS_RESULT_WINDOW_S: float = 5.0
+_STIMULUS_READBACK_TOLERANCE_S: float = 1.0
+_STIMULUS_TERMINAL_READBACK_GRACE_S: float = 35.0
 _SMILE_TIMELINE_WINDOW_S: float = 60.0
 _SESSION_START_SCOPE = "session_start"
 _SESSION_END_SCOPE = "session_end"
@@ -114,9 +110,8 @@ _AUDIO_CAPTURE_HEALTH_KEYS = frozenset({"audio_capture", "scrcpy_audio"})
 _VIDEO_CAPTURE_HEALTH_KEYS = frozenset({"video_capture", "scrcpy_video"})
 _LIVE_ANALYTICS_HEALTH_KEYS = frozenset({"live_analytics_producer"})
 _LIVE_ANALYTICS_NOTICE = (
-    "Live reward analytics are waiting for a completed post-stimulus inference window. "
-    "Visual readiness can update before smile, semantic, reward, and transcription rows "
-    "arrive from a valid encounter."
+    "Waiting for the first result. Keep the face visible and wait for the "
+    "post-message analysis window to finish before sending another test message."
 )
 
 SessionStartSubmitter = Callable[[SessionCreateRequest], OneShotSignals]
@@ -155,9 +150,12 @@ class LiveSessionViewModel(ViewModelBase):
         store: OperatorStore,
         encounters_model: EncountersTableModel,
         parent: QObject | None = None,
+        *,
+        default_experiment_id: str | None = None,
     ) -> None:
         super().__init__(store, parent)
         self._encounters_model = encounters_model
+        self._default_experiment_id = default_experiment_id
         self._selected_encounter_id: str | None = None
         self._start_session_submitter: SessionStartSubmitter | None = None
         self._end_session_submitter: SessionEndSubmitter | None = None
@@ -177,6 +175,8 @@ class LiveSessionViewModel(ViewModelBase):
         store.live_session_changed.connect(self._on_live_session_changed)
         store.stimulus_state_changed.connect(self._on_stimulus_state_changed)
         store.health_changed.connect(self._on_health_changed)
+        store.experiment_summaries_changed.connect(self._on_experiment_summaries_changed)
+        store.managed_experiment_changed.connect(self._on_managed_experiment_changed)
         store.error_changed.connect(self._on_error)
         store.error_cleared.connect(self._on_error_cleared)
 
@@ -265,25 +265,25 @@ class LiveSessionViewModel(ViewModelBase):
 
     def ttv_empty_title(self) -> str:
         if self._ttv_state == WAITING_FOR_FACE:
-            return "Waiting for face"
+            return "Preparing live analysis"
         if self._ttv_state == READY:
-            return "Face locked"
-        return "Waiting for phone"
+            return "Healthy"
+        return "Setup not ready"
 
     def ttv_empty_message(self) -> str:
         if self._ttv_state == WAITING_FOR_FACE:
-            return "Open a stream or video with a visible face on your phone."
+            return "Open a stream or video with a clearly visible face on your phone."
         if self._ttv_state == READY:
-            return "Face locked. Ready for a test message."
-        return "Waiting for phone... Please connect your Android device via USB."
+            return "Live analysis is ready. Send one test message."
+        return "Connect the Android phone with USB debugging allowed."
 
     def ttv_setup_display(self) -> TtvSetupDisplay:
         if self._ttv_state == WAITING_FOR_FACE:
             return TtvSetupDisplay(
                 state=self._ttv_state,
                 step_label="Step 2 of 3",
-                title="Face Tracking calibration",
-                message="Open a stream or video with a visible face on your phone.",
+                title="Preparing live analysis",
+                message="Keep a clearly visible face on the phone screen.",
                 dashboard_mode="calibrating",
                 detail=self._face_tracking_detail(),
             )
@@ -291,8 +291,8 @@ class LiveSessionViewModel(ViewModelBase):
             return TtvSetupDisplay(
                 state=self._ttv_state,
                 step_label="Step 3 of 3",
-                title="Face locked. Ready for a test message.",
-                message="Send a test message to start the post-stimulus analytics window.",
+                title="Healthy",
+                message="Send one test message and wait for the first result.",
                 dashboard_mode="ready",
                 detail=self._face_tracking_detail(),
             )
@@ -302,16 +302,16 @@ class LiveSessionViewModel(ViewModelBase):
             return TtvSetupDisplay(
                 state=self._ttv_state,
                 step_label="Step 1 of 3",
-                title="Phone connected",
-                message="Phone connected. Start or select a Live Session to begin Face Tracking.",
+                title="Setup not ready",
+                message="Start or select a Live Session to begin live analysis.",
                 dashboard_mode="gate",
                 detail=detail,
             )
         return TtvSetupDisplay(
             state=self._ttv_state,
             step_label="Step 1 of 3",
-            title="Waiting for phone",
-            message="Waiting for phone... Please connect your Android device via USB.",
+            title="Setup not ready",
+            message="Connect the Android phone with USB debugging allowed.",
             dashboard_mode="gate",
             detail=detail,
         )
@@ -351,26 +351,26 @@ class LiveSessionViewModel(ViewModelBase):
     def adb_status(self) -> tuple[UiStatusKind, str]:
         row = self._matching_health_row(_ADB_HEALTH_KEYS)
         if row is None:
-            return UiStatusKind.NEUTRAL, "ADB unknown"
-        return ui_status_for_health(row), f"ADB {row.state.value}"
+            return UiStatusKind.NEUTRAL, "Phone status unknown"
+        return ui_status_for_health(row), _plain_status_label("Phone", row)
 
     def ml_backend_status(self) -> tuple[UiStatusKind, str]:
         row = self._matching_health_row(_ML_BACKEND_HEALTH_KEYS)
         if row is None:
-            return UiStatusKind.NEUTRAL, "ML backend unknown"
-        return ui_status_for_health(row), f"ML backend {row.state.value}"
+            return UiStatusKind.NEUTRAL, "Live analysis status unknown"
+        return ui_status_for_health(row), _plain_status_label("Live analysis", row)
 
     def audio_capture_status(self) -> tuple[UiStatusKind, str]:
         row = self._matching_health_row(_AUDIO_CAPTURE_HEALTH_KEYS)
         if row is None:
-            return UiStatusKind.NEUTRAL, "Audio capture unknown"
-        return ui_status_for_health(row), f"Audio capture {row.state.value}"
+            return UiStatusKind.NEUTRAL, "Audio capture status unknown"
+        return ui_status_for_health(row), _plain_status_label("Audio capture", row)
 
     def video_capture_status(self) -> tuple[UiStatusKind, str]:
         row = self._matching_health_row(_VIDEO_CAPTURE_HEALTH_KEYS)
         if row is None:
-            return UiStatusKind.NEUTRAL, "Video capture unknown"
-        return ui_status_for_health(row), f"Video capture {row.state.value}"
+            return UiStatusKind.NEUTRAL, "Video capture status unknown"
+        return ui_status_for_health(row), _plain_status_label("Video capture", row)
 
     def capture_status_detail(self) -> str:
         statuses = (
@@ -384,8 +384,8 @@ class LiveSessionViewModel(ViewModelBase):
     def live_analytics_status(self) -> tuple[UiStatusKind, str]:
         row = self._matching_health_row(_LIVE_ANALYTICS_HEALTH_KEYS)
         if row is None:
-            return UiStatusKind.NEUTRAL, "Live analytics unknown"
-        return ui_status_for_health(row), f"Live analytics {row.state.value}"
+            return UiStatusKind.NEUTRAL, "Live analysis results unknown"
+        return ui_status_for_health(row), _plain_status_label("Live analysis results", row)
 
     def has_live_encounter_analytics(self) -> bool:
         return bool(self._current_session_encounters())
@@ -398,30 +398,48 @@ class LiveSessionViewModel(ViewModelBase):
             return None
         return _LIVE_ANALYTICS_NOTICE
 
-    def validate_start_session_inputs(
-        self,
-        stream_url: str,
-        experiment_id: str,
-    ) -> tuple[str, str]:
-        normalized_stream_url = stream_url.strip()
-        if not normalized_stream_url:
-            raise ValueError("Stream URL is required.")
+    def experiment_summaries(self) -> list[ExperimentSummary]:
+        return self._store.experiment_summaries()
+
+    def current_experiment_id(self) -> str | None:
+        managed_id = self._store.managed_experiment_id()
+        if managed_id:
+            return managed_id
+        summaries = self._store.experiment_summaries()
+        if self._default_experiment_id is not None:
+            for summary in summaries:
+                if summary.experiment_id == self._default_experiment_id:
+                    return summary.experiment_id
+        return summaries[0].experiment_id if summaries else None
+
+    def start_session_source_summary(self) -> str:
+        return (
+            "Capture comes from the connected Android device. Open the TikTok stream "
+            "on the phone before you start the session."
+        )
+
+    def start_session_disabled_reason(self) -> str | None:
+        if self.experiment_summaries():
+            return None
+        return "Create an experiment on the Experiments page before starting a session."
+
+    def validate_start_session_inputs(self, experiment_id: str) -> str:
         normalized_experiment_id = experiment_id.strip()
+        if not normalized_experiment_id:
+            raise ValueError("Choose an experiment before starting the session.")
         try:
             request = SessionCreateRequest(
-                stream_url=normalized_stream_url,
+                stream_url=_synthesized_stream_url(),
                 experiment_id=normalized_experiment_id,
                 client_action_id=uuid4(),
             )
         except ValidationError as exc:
             for error in exc.errors():
                 location = error.get("loc", ())
-                if location == ("stream_url",):
-                    raise ValueError("Stream URL must be a valid URL.") from exc
                 if location == ("experiment_id",):
-                    raise ValueError("Experiment ID is required.") from exc
+                    raise ValueError("Choose an experiment before starting the session.") from exc
             raise ValueError("Session start input is invalid.") from exc
-        return request.stream_url, request.experiment_id
+        return request.experiment_id
 
     def session_start_in_progress(self) -> bool:
         return self._start_request_inflight or self._pending_start_session_id is not None
@@ -454,17 +472,14 @@ class LiveSessionViewModel(ViewModelBase):
     # Session lifecycle controls
     # ------------------------------------------------------------------
 
-    def start_new_session(self, stream_url: str, experiment_id: str) -> UUID | None:
+    def start_new_session(self, experiment_id: str) -> UUID | None:
         """Dispatch a start-session write through the injected coordinator path."""
         if self.session_start_in_progress() or self.session_end_in_progress():
             return None
         try:
-            normalized_stream_url, normalized_experiment_id = self.validate_start_session_inputs(
-                stream_url,
-                experiment_id,
-            )
+            normalized_experiment_id = self.validate_start_session_inputs(experiment_id)
             request = SessionCreateRequest(
-                stream_url=normalized_stream_url,
+                stream_url=_synthesized_stream_url(),
                 experiment_id=normalized_experiment_id,
                 client_action_id=uuid4(),
             )
@@ -575,14 +590,7 @@ class LiveSessionViewModel(ViewModelBase):
         return action_id
 
     def apply_stimulus_accepted(self, accepted: StimulusAccepted) -> None:
-        """Apply the API Server's ack. `accepted=False` → FAILED.
-
-        Note: `received_at_utc` is the API receive time for audit only;
-        the authoritative `stimulus_time` that anchors the §7B
-        measurement window is not on this payload. It will arrive via
-        the next encounters poll and be reconciled into the context by
-        `reconcile_authoritative_stimulus_time()`.
-        """
+        """Apply the API Server's ack. `accepted=False` → FAILED."""
         ctx = self._store.stimulus_ui_context()
         if not accepted.accepted:
             new_ctx = StimulusUiContext(
@@ -593,22 +601,21 @@ class LiveSessionViewModel(ViewModelBase):
             )
         else:
             new_ctx = StimulusUiContext(
-                state=StimulusActionState.ACCEPTED,
+                state=(
+                    StimulusActionState.MEASURING
+                    if accepted.stimulus_time_utc is not None
+                    else StimulusActionState.ACCEPTED
+                ),
                 client_action_id=ctx.client_action_id,
                 operator_note=ctx.operator_note,
                 accepted_at_utc=accepted.received_at_utc,
+                authoritative_stimulus_time_utc=accepted.stimulus_time_utc,
                 message=accepted.message,
             )
         self._store.set_stimulus_ui_context(new_ctx)
 
     def reconcile_authoritative_stimulus_time(self) -> None:
-        """Promote the context to MEASURING when the orchestrator's
-        `stimulus_time_utc` lands on the latest encounter.
-
-        Looking at the latest encounter — the one whose state is
-        `STIMULUS_ISSUED` or `MEASURING` — is safe here because only
-        one stimulus can be in flight at a time per §4.C.
-        """
+        """Reconcile the UI stimulus context against encounter readback."""
         ctx = self._store.stimulus_ui_context()
         if ctx.state not in (
             StimulusActionState.ACCEPTED,
@@ -616,12 +623,12 @@ class LiveSessionViewModel(ViewModelBase):
         ):
             return
         encounters = self._current_session_encounters()
-        latest = _latest_encounter_for_stimulus(encounters)
+        latest = _latest_encounter_for_stimulus(encounters, ctx)
         if latest is None or latest.stimulus_time_utc is None:
             return
         next_state = (
             StimulusActionState.COMPLETED
-            if latest.state == EncounterState.COMPLETED
+            if _encounter_is_terminal_for_stimulus(latest)
             else StimulusActionState.MEASURING
         )
         if (
@@ -639,23 +646,31 @@ class LiveSessionViewModel(ViewModelBase):
                 message=ctx.message,
             )
         )
+        if next_state == StimulusActionState.COMPLETED:
+            self.select_encounter(latest.encounter_id)
 
     def measurement_window_remaining_s(self, now_utc: datetime) -> float | None:
-        """Seconds remaining in the §7B measurement window.
-
-        Returns ``None`` when no authoritative stimulus time has landed
-        yet (the operator's click time is never used — §4.C). Clamps
-        to zero rather than going negative so the view can render 0
-        while the encounter transitions to COMPLETED.
-        """
+        """Seconds remaining until the first stimulus result window closes."""
         ctx = self._store.stimulus_ui_context()
         if ctx.authoritative_stimulus_time_utc is None:
             return None
         elapsed = (now_utc - ctx.authoritative_stimulus_time_utc).total_seconds()
-        remaining = _MEASUREMENT_WINDOW_S - elapsed
+        remaining = _STIMULUS_RESULT_WINDOW_S - elapsed
         if remaining < 0.0:
             return 0.0
         return remaining
+
+    def stimulus_progress_message(self, now_utc: datetime | None = None) -> str:
+        """Single plain-language progress line for the stimulus surfaces."""
+
+        current_time = now_utc or datetime.now(UTC)
+        ctx = self._store.stimulus_ui_context()
+        return format_stimulus_progress_message(
+            ctx.state,
+            accepted_message=ctx.message,
+            ready_for_submit=self.operator_ready_for_submit(),
+            countdown_seconds=self.measurement_window_remaining_s(current_time),
+        )
 
     # ------------------------------------------------------------------
     # Reward explanation
@@ -739,8 +754,19 @@ class LiveSessionViewModel(ViewModelBase):
         self._transition_ttv_state()
         self.emit_changed()
 
-    def _on_live_session_changed(self, _session: object) -> None:
+    def _on_live_session_changed(self, session_update: object) -> None:
         # Arm / expected greeting / session-end readback may have moved.
+        session = self.session()
+        selected_session_id = self._store.selected_session_id()
+        ended_selected_session = (
+            isinstance(session_update, SessionSummary)
+            and session_update.ended_at_utc is not None
+            and (selected_session_id is None or session_update.session_id == selected_session_id)
+        )
+        if (
+            session is None or session.ended_at_utc is not None or ended_selected_session
+        ) and self._store.stimulus_ui_context().state != StimulusActionState.IDLE:
+            self._store.set_stimulus_ui_context(StimulusUiContext())
         self._reconcile_session_lifecycle_waiters()
         self._transition_ttv_state()
         self.emit_changed()
@@ -755,6 +781,12 @@ class LiveSessionViewModel(ViewModelBase):
 
     def _on_health_changed(self, _snapshot: object) -> None:
         self._transition_ttv_state()
+        self.emit_changed()
+
+    def _on_experiment_summaries_changed(self, _summaries: object) -> None:
+        self.emit_changed()
+
+    def _on_managed_experiment_changed(self, _experiment_id: object) -> None:
         self.emit_changed()
 
     def _on_error(self, scope: str, message: str) -> None:
@@ -866,12 +898,10 @@ class LiveSessionViewModel(ViewModelBase):
         session = self.session()
         if session is None:
             return None
-        accumulated = session.calibration_frames_accumulated
-        required = session.calibration_frames_required
-        if accumulated is None or required is None:
+        status, detail = format_calibration_status(session)
+        if status is not UiStatusKind.PROGRESS:
             return None
-        current = min(max(accumulated, 0), required)
-        return f"Face Tracking calibration · {current}/{required} frames"
+        return detail
 
     def _matching_health_row(
         self,
@@ -937,27 +967,75 @@ class LiveSessionViewModel(ViewModelBase):
 # ----------------------------------------------------------------------
 
 
+def _plain_status_label(prefix: str, row: HealthSubsystemStatus) -> str:
+    if row.state.value == "degraded" and prefix.endswith("results"):
+        return f"{prefix} need attention"
+    mapping = {
+        "ok": "healthy",
+        "degraded": "needs attention",
+        "recovering": "getting ready",
+        "error": "needs operator action",
+        "unknown": "status unknown",
+    }
+    return f"{prefix} {mapping[row.state.value]}"
+
+
+def _synthesized_stream_url() -> str:
+    return "android-device://connected-phone/tiktok-live"
+
+
 def _latest_encounter_for_stimulus(
     encounters: list[EncounterSummary],
+    ctx: StimulusUiContext,
 ) -> EncounterSummary | None:
-    """Return the most recent encounter that carries a stimulus_time.
-
-    Encounters are assumed newest-first per the API's ordering (the
-    aggregate read-service `fetch_session_encounters` sorts by segment
-    timestamp descending). We still scan and pick the max defensively.
-    """
+    """Return the most recent encounter for the current stimulus context."""
     if not encounters:
         return None
-    with_stim = [e for e in encounters if e.stimulus_time_utc is not None]
+    with_stim = [e for e in encounters if _encounter_matches_stimulus_context(e, ctx)]
     if not with_stim:
         return None
     return max(with_stim, key=lambda e: e.segment_timestamp_utc)
 
 
+def _encounter_matches_stimulus_context(
+    encounter: EncounterSummary,
+    ctx: StimulusUiContext,
+) -> bool:
+    stimulus_time = encounter.stimulus_time_utc
+    if stimulus_time is None:
+        return False
+    if ctx.authoritative_stimulus_time_utc is not None:
+        earliest = ctx.authoritative_stimulus_time_utc - timedelta(
+            seconds=_STIMULUS_READBACK_TOLERANCE_S
+        )
+        if stimulus_time >= earliest:
+            return True
+        if not _encounter_is_terminal_for_stimulus(encounter):
+            return False
+        latest_expected_result = ctx.authoritative_stimulus_time_utc + timedelta(
+            seconds=_STIMULUS_TERMINAL_READBACK_GRACE_S
+        )
+        return encounter.segment_timestamp_utc >= earliest and (
+            encounter.segment_timestamp_utc <= latest_expected_result
+        )
+    if ctx.submitted_at_utc is not None:
+        earliest = ctx.submitted_at_utc - timedelta(seconds=_STIMULUS_READBACK_TOLERANCE_S)
+        return stimulus_time >= earliest
+    return True
+
+
+def _encounter_is_terminal_for_stimulus(encounter: EncounterSummary) -> bool:
+    return encounter.state in {
+        EncounterState.COMPLETED,
+        EncounterState.REJECTED_GATE_CLOSED,
+        EncounterState.REJECTED_NO_FRAMES,
+    }
+
+
 def _latest_completed_encounter(
     encounters: list[EncounterSummary],
 ) -> EncounterSummary | None:
-    completed = [e for e in encounters if e.state == EncounterState.COMPLETED]
+    completed = [e for e in encounters if _encounter_is_terminal_for_stimulus(e)]
     if not completed:
         return None
     return max(completed, key=lambda e: e.segment_timestamp_utc)

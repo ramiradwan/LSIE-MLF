@@ -70,7 +70,7 @@ class PhysiologyViewModel(ViewModelBase):
             return "No co-modulation window yet."
         if summary.co_modulation_index is None:
             reason = summary.null_reason or "insufficient aligned non-stale pairs"
-            return f"Co-Modulation Index: null — {reason}."
+            return f"Shared movement not ready yet — {reason}."
         return build_physiology_explanation(self._store.physiology())
 
     # ------------------------------------------------------------------

@@ -74,9 +74,10 @@ def test_submit_stimulus_accepts_active_session_without_pool_or_redis(tmp_path: 
     assert accepted.session_id == SESSION_ID
     assert accepted.client_action_id == CLIENT_ACTION_ID
     assert accepted.received_at_utc == _NOW
+    assert accepted.stimulus_time_utc == _NOW
     assert accepted.message is not None
-    assert "release-gated" in accepted.message
-    assert "reward pipeline" in accepted.message
+    assert "response measurement is starting" in accepted.message.lower()
+    assert "before sending another test message" in accepted.message.lower()
     assert len(publisher.messages) == 1
     assert publisher.messages[0].action == "stimulus"
     assert publisher.messages[0].session_id == SESSION_ID

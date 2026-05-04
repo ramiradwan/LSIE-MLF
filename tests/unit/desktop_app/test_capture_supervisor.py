@@ -111,8 +111,9 @@ def test_audio_scrcpy_args_match_spec() -> None:
     assert "--no-video" in args
     assert "--no-window" in args
     assert "--audio-codec=raw" in args
+    assert "--audio-source=playback" in args
     assert "--audio-buffer=30" in args
-    assert "--audio-dup" in args
+    assert "--audio-dup" not in args
     assert f"--port={AUDIO_SCRCPY_PORT_RANGE}" in args
     assert any(arg.startswith("--record=") and "audio_stream.wav" in arg for arg in args)
     assert "--record-format=wav" in args

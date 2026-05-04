@@ -44,12 +44,11 @@ def _row(
 # ---------------------------------------------------------------------
 
 
-def test_column_count_covers_recovery_mode_column() -> None:
+def test_column_count_covers_next_action_columns() -> None:
     model = HealthTableModel()
     assert model.columnCount() == len(HealthTableModel.COLUMNS)
-    # Recovery mode column is mandatory — the spec requires degraded /
-    # recovering to read distinct from error.
-    assert "Recovery mode" in HealthTableModel.COLUMNS
+    assert "What is happening" in HealthTableModel.COLUMNS
+    assert "Next action" in HealthTableModel.COLUMNS
 
 
 def test_rows_after_set() -> None:

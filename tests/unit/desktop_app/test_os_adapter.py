@@ -14,8 +14,11 @@ import subprocess
 import sys
 import textwrap
 import time
+from collections.abc import Callable
 from pathlib import Path
 from types import SimpleNamespace
+from typing import BinaryIO, cast
+from unittest.mock import patch
 
 import psutil
 import pytest
@@ -135,6 +138,69 @@ def test_create_shortcut_is_noop_on_posix(tmp_path: Path) -> None:
 
     assert created is False
     assert not (tmp_path / "LSIE-MLF.lnk").exists()
+
+
+def test_secure_delete_file_zeroes_before_unlink(tmp_path: Path) -> None:
+    target = tmp_path / "video_stream.mkv"
+    target.write_bytes(b"secret raw media")
+    writes: list[bytes] = []
+    original_open = Path.open
+    original_unlink = Path.unlink
+
+    def recording_open(
+        path: Path,
+        mode: str = "r",
+        buffering: int = -1,
+        encoding: str | None = None,
+        errors: str | None = None,
+        newline: str | None = None,
+    ) -> BinaryIO:
+        file_obj = cast(
+            BinaryIO,
+            original_open(path, mode, buffering, encoding, errors, newline),
+        )
+        original_write = cast(Callable[[bytes], int], file_obj.write)
+
+        def recording_write(payload: bytes) -> int:
+            writes.append(bytes(payload))
+            return original_write(payload)
+
+        file_obj.write = recording_write  # type: ignore[assignment, method-assign]
+        return file_obj
+
+    with (
+        patch.object(Path, "open", recording_open),
+        patch.object(Path, "unlink", lambda path: original_unlink(path)),
+    ):
+        assert os_adapter.secure_delete_file(target, attempts=1) is True
+
+    assert writes
+    assert all(set(chunk) <= {0} for chunk in writes)
+    assert not target.exists()
+
+
+def test_secure_delete_file_retries_locked_unlink(tmp_path: Path) -> None:
+    target = tmp_path / "video_stream.mkv"
+    target.write_bytes(b"video")
+    calls = 0
+    original_unlink = Path.unlink
+
+    def flaky_unlink(path: Path) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise PermissionError("locked")
+        original_unlink(path)
+
+    with (
+        patch.object(Path, "unlink", flaky_unlink),
+        patch("services.desktop_app.os_adapter.time.sleep") as sleep,
+    ):
+        assert os_adapter.secure_delete_file(target, attempts=2, retry_delay_s=0.01) is True
+
+    sleep.assert_called_once_with(0.01)
+    assert calls == 2
+    assert not target.exists()
 
 
 def test_apply_windows_child_process_policy_is_noop_on_posix() -> None:

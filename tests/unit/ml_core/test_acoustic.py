@@ -729,10 +729,9 @@ class TestAcousticAnalyzer:
                 return 200.0
             if cmd == "To PointProcess (periodic, cc)":
                 return mock_point_process
-            if cmd == "Get number of points":
-                start_s = float(args[2])
-                if start_s < 3.0:
-                    return 5
+            if cmd == "Get low index":
+                return 1
+            if cmd == "Get high index":
                 return 6
             if cmd == "Get jitter (local)":
                 start_s = float(args[2])

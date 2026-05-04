@@ -138,6 +138,32 @@ class ProcessGraph:
                 proc.join(timeout=timeout)
         self.children.clear()
         self.shutdown_events.clear()
+        self.cleanup_capture_artifacts()
+
+    def cleanup_capture_artifacts(self) -> None:
+        from services.desktop_app.os_adapter import resolve_capture_dir
+        from services.desktop_app.privacy.zeroize import cleanup_capture_files
+
+        deleted, retained = cleanup_capture_files(
+            resolve_capture_dir(),
+            attempts=12,
+            retry_delay_s=0.5,
+        )
+        if retained:
+            retained_paths = [str(path) for path in retained]
+            logger.error(
+                "desktop shutdown retained transient capture artifacts: %s",
+                retained_paths,
+            )
+            raise RuntimeError(
+                "desktop shutdown retained transient capture artifacts: "
+                + ", ".join(retained_paths)
+            )
+        elif deleted:
+            logger.info(
+                "desktop shutdown deleted transient capture artifacts: %s",
+                [str(path) for path in deleted],
+            )
 
     def wait(self, poll_interval: float = 0.25, shutdown_timeout: float = 5.0) -> None:
         shutdown_started_at: float | None = None

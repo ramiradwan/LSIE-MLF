@@ -140,11 +140,12 @@ def test_list_encounters_carries_reward_explanation(tmp_path: Path) -> None:
                 "started_at": "2026-04-01 12:00:00",
             },
         )
+        segment_id = "a" * 64
         writer.enqueue(
             "encounter_log",
             {
                 "session_id": str(SESSION_A),
-                "segment_id": "a" * 64,
+                "segment_id": segment_id,
                 "experiment_id": "greeting_line_v1",
                 "arm": "warm_welcome",
                 "timestamp_utc": "2026-04-01 12:01:00",
@@ -154,6 +155,15 @@ def test_list_encounters_carries_reward_explanation(tmp_path: Path) -> None:
                 "n_frames_in_window": 30,
                 "au12_baseline_pre": 0.05,
                 "stimulus_time": 1714737660.0,
+            },
+        )
+        writer.enqueue(
+            "transcripts",
+            {
+                "session_id": str(SESSION_A),
+                "segment_id": segment_id,
+                "timestamp_utc": "2026-04-01 12:01:00",
+                "text": "hello welcome to the stream",
             },
         )
         writer.flush()
@@ -170,6 +180,7 @@ def test_list_encounters_carries_reward_explanation(tmp_path: Path) -> None:
     assert enc.semantic_gate == 1
     assert enc.n_frames_in_window == 30
     assert enc.au12_baseline_pre == pytest.approx(0.05)
+    assert enc.transcription == "hello welcome to the stream"
     # No metrics / attribution rows yet → optional summaries omitted.
     assert enc.observational_acoustic is None
     assert enc.semantic_evaluation is None
@@ -299,11 +310,11 @@ def test_get_health_surfaces_desktop_adb_and_ml_processes(tmp_path: Path) -> Non
     )
     assert live_producer.detail is not None
     assert live_producer.operator_action_hint is not None
-    assert "No active desktop session" in live_producer.detail
-    assert "face tracking" in live_producer.operator_action_hint
+    assert "Setup not ready" in live_producer.detail
+    assert "Start or select a Live Session" in live_producer.operator_action_hint
 
 
-def test_get_health_surfaces_model_loading_status(tmp_path: Path) -> None:
+def test_get_health_surfaces_preparing_live_analysis_status(tmp_path: Path) -> None:
     db = tmp_path / "desktop.sqlite"
     writer = SqliteWriter(db)
     writer.close()
@@ -346,11 +357,14 @@ def test_get_health_surfaces_model_loading_status(tmp_path: Path) -> None:
     rows = {row.subsystem_key: row for row in snapshot.subsystems}
 
     assert rows["gpu_ml_worker"].state is HealthState.RECOVERING
-    assert rows["gpu_ml_worker"].recovery_mode == "model_loading"
+    assert rows["gpu_ml_worker"].recovery_mode == "Preparing live analysis"
     assert rows["gpu_ml_worker"].detail is not None
     assert "Loading speech transcription model" in rows["gpu_ml_worker"].detail
     assert rows["live_analytics_producer"].state is HealthState.RECOVERING
-    assert rows["live_analytics_producer"].detail == rows["gpu_ml_worker"].detail
+    assert rows["live_analytics_producer"].detail == "Preparing live analysis."
+    assert rows["live_analytics_producer"].operator_action_hint == (
+        "Wait for the first result before sending another test message."
+    )
 
 
 def test_get_health_flags_multiple_active_sessions(tmp_path: Path) -> None:
@@ -455,6 +469,8 @@ def test_get_health_marks_live_analytics_ok_from_fresh_visual_state(tmp_path: Pa
     rows = {row.subsystem_key: row for row in snapshot.subsystems}
 
     assert rows["live_analytics_producer"].state is HealthState.OK
+    assert rows["live_analytics_producer"].detail == "Healthy: live analysis is updating."
+    assert rows["live_analytics_producer"].operator_action_hint is None
     assert rows["live_analytics_producer"].last_success_utc == datetime(
         2026, 4, 1, 12, 0, 5, tzinfo=UTC
     )
@@ -493,7 +509,10 @@ def test_get_health_degrades_stale_live_analytics_for_active_session(tmp_path: P
     rows = {row.subsystem_key: row for row in snapshot.subsystems}
 
     assert rows["live_analytics_producer"].state is HealthState.DEGRADED
-    assert rows["live_analytics_producer"].operator_action_hint is not None
+    assert rows["live_analytics_producer"].detail == "Live analysis has stopped updating."
+    assert rows["live_analytics_producer"].operator_action_hint == (
+        "Check that the face is visible, then send one test message."
+    )
 
 
 def test_get_overview_with_encounter_renders_experiment(tmp_path: Path) -> None:

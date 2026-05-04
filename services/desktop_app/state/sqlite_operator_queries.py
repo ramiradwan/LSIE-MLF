@@ -210,6 +210,17 @@ acoustic_latest AS (
             ORDER BY m.created_at DESC, m.id DESC
         ) AS rn
     FROM metrics m
+),
+transcript_latest AS (
+    SELECT
+        t.session_id,
+        t.segment_id,
+        t.text AS transcription,
+        ROW_NUMBER() OVER (
+            PARTITION BY t.session_id, t.segment_id
+            ORDER BY t.created_at DESC, t.id DESC
+        ) AS rn
+    FROM transcripts t
 )
 """
 )
@@ -298,6 +309,7 @@ _ENCOUNTERS_PROJECTION: str = (
         CASE WHEN attr.event_id IS NULL THEN NULL ELSE (e.semantic_gate = 1) END
             AS semantic_is_match,
         attr.semantic_p_match     AS semantic_confidence_score,
+        transcript.transcription  AS transcription,
         attr.semantic_method      AS semantic_method,
         attr.semantic_method_version AS semantic_method_version,
         attr.finality             AS attribution_finality,
@@ -320,6 +332,10 @@ _ENCOUNTERS_FROM_BLOCK: str = """
         ON acoustic.session_id = e.session_id
         AND acoustic.segment_id = e.segment_id
         AND acoustic.rn = 1
+    LEFT JOIN transcript_latest transcript
+        ON transcript.session_id = e.session_id
+        AND transcript.segment_id = e.segment_id
+        AND transcript.rn = 1
     LEFT JOIN attribution_event_latest attr
         ON attr.session_id = e.session_id
         AND attr.segment_id = e.segment_id
@@ -403,6 +419,18 @@ FROM encounter_log e
 WHERE e.experiment_id = :experiment_id
 ORDER BY e.timestamp_utc DESC
 LIMIT 1
+"""
+
+
+_EXPERIMENT_SUMMARIES_SQL: str = """
+SELECT
+    ex.experiment_id,
+    COALESCE(ex.label, ex.experiment_id) AS label,
+    COUNT(*) AS arm_count,
+    MAX(ex.updated_at) AS last_updated_utc
+FROM experiments ex
+GROUP BY ex.experiment_id, COALESCE(ex.label, ex.experiment_id)
+ORDER BY ex.experiment_id
 """
 
 
@@ -707,6 +735,11 @@ def fetch_session_encounters(
 def fetch_latest_encounter(cursor: sqlite3.Cursor, session_id: UUID) -> dict[str, Any] | None:
     cursor.execute(_LATEST_ENCOUNTER_SQL, {"session_id": str(session_id)})
     return _row_to_dict(cursor)
+
+
+def fetch_experiment_summaries(cursor: sqlite3.Cursor) -> list[dict[str, Any]]:
+    cursor.execute(_EXPERIMENT_SUMMARIES_SQL)
+    return _rows_to_dicts(cursor)
 
 
 def fetch_experiment_arms(cursor: sqlite3.Cursor, experiment_id: str) -> list[dict[str, Any]]:

@@ -6,6 +6,7 @@ can be driven without Phase-7's production table models.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any
 
 import pytest
@@ -33,7 +34,7 @@ _ROOT_INDEX: QModelIndex = QModelIndex()
 class _ListModel(QAbstractTableModel):
     def __init__(
         self,
-        rows: list[str] | list[tuple[str, ...]],
+        rows: Sequence[str | tuple[str, ...]],
         parent: QObject | None = None,
     ) -> None:
         super().__init__(parent)

@@ -40,6 +40,7 @@ from packages.schemas.operator_console import (
     EncounterState,
     EncounterSummary,
     ExperimentDetail,
+    ExperimentSummary,
     HealthSnapshot,
     HealthState,
     OverviewSnapshot,
@@ -56,6 +57,7 @@ from services.operator_console.polling import (
     JOB_ALERTS,
     JOB_ENCOUNTERS,
     JOB_EXPERIMENT,
+    JOB_EXPERIMENT_SUMMARIES,
     JOB_HEALTH,
     JOB_LIVE_SESSION,
     JOB_OVERVIEW,
@@ -204,6 +206,7 @@ class TestRouteScoping:
         harness.started.clear()
         store.set_route(AppRoute.LIVE_SESSION)
         assert JOB_HEALTH in harness.started
+        assert JOB_EXPERIMENT_SUMMARIES in harness.started
 
     def test_health_route_starts_health_job(self, harness: _CoordinatorHarness) -> None:
         coord = harness.coordinator
@@ -436,9 +439,10 @@ class TestStimulusOneShot:
             assert registry, "run_one_shot not invoked"
             registry[0].fire()
 
-        # Success should have fanned out to overview/live/alerts
+        # Success should have fanned out to overview/live/encounters/alerts
         assert JOB_OVERVIEW in harness.refresh_calls
         assert JOB_LIVE_SESSION in harness.refresh_calls
+        assert JOB_ENCOUNTERS in harness.refresh_calls
         assert JOB_ALERTS in harness.refresh_calls
         # And cleared any stimulus error scope
         assert coord._store.error(JOB_STIMULUS) is None
@@ -843,11 +847,14 @@ class TestSessionLifecycleOneShot:
                 assert requested_session_id == session_id
                 return []
 
+            def list_experiments(self) -> list[ExperimentSummary]:
+                return [ExperimentSummary(experiment_id="greeting_line_v1", arm_count=1)]
+
         coord = PollingCoordinator(cfg, _Client(), store)  # type: ignore[arg-type]
         vm.bind_session_lifecycle_actions(coord.request_session_start, coord.request_session_end)
         coord.start()
 
-        action_id = vm.start_new_session("test://stream", "greeting_line_v1")
+        action_id = vm.start_new_session("greeting_line_v1")
         _drain_events_until(qt_app, lambda: vm.ttv_state() == "READY")
         coord.stop()
 
@@ -1267,12 +1274,18 @@ class TestNonBlockingTeardown:
 
         store.set_route(AppRoute.OVERVIEW)
 
-        assert set(stopped) == {JOB_LIVE_SESSION, JOB_ENCOUNTERS, JOB_HEALTH}
+        assert set(stopped) == {
+            JOB_LIVE_SESSION,
+            JOB_ENCOUNTERS,
+            JOB_EXPERIMENT_SUMMARIES,
+            JOB_HEALTH,
+        }
         assert started == [JOB_OVERVIEW]
         assert set(coord._jobs) == {JOB_ALERTS, JOB_OVERVIEW}
         assert {handle.spec.name for handle in coord._orphan_jobs} == {
             JOB_LIVE_SESSION,
             JOB_ENCOUNTERS,
+            JOB_EXPERIMENT_SUMMARIES,
             JOB_HEALTH,
         }
 

@@ -110,11 +110,10 @@ def test_header_composes_calibration_status_with_session_lifecycle_controls() ->
     view, _vm, _start, end = _build_live_session_view(session)
 
     panel = view._session_panel  # type: ignore[attr-defined]
-    assert "greeting_v1" in panel._arm_label.text()  # type: ignore[attr-defined]
-    assert "Hei rakas" in panel._greeting_label.text()  # type: ignore[attr-defined]
+    assert str(session.session_id) in panel._session_label.text()  # type: ignore[attr-defined]
+    assert "active" in panel._session_meta_label.text()  # type: ignore[attr-defined]
     assert panel._calibration_pill.kind() == UiStatusKind.PROGRESS  # type: ignore[attr-defined]
-    assert panel._calibration_pill.text() == "Calibrating · 12/45 frames"  # type: ignore[attr-defined]
-    assert panel._controls_label.text() == "Session controls"  # type: ignore[attr-defined]
+    assert panel._calibration_pill.text() == "Preparing smile baseline · 12/45 face frames"  # type: ignore[attr-defined]
     assert panel._start_button.text() == "Start new session"  # type: ignore[attr-defined]
     assert panel._start_button.isEnabled() is True  # type: ignore[attr-defined]
     assert panel._end_button.isHidden() is False  # type: ignore[attr-defined]
@@ -132,13 +131,13 @@ def test_session_start_dispatch_uses_bound_coordinator_submitter_not_backend_cli
     )
     _view, vm, start, _end = _build_live_session_view(session)
 
-    action_id = vm.start_new_session("  rtmp://example/live  ", "  greeting_line_v1  ")
+    action_id = vm.start_new_session("  greeting_line_v1  ")
 
     assert action_id is not None
     assert len(start.calls) == 1
     request = start.calls[0]
     assert request.client_action_id == action_id
-    assert request.stream_url == "rtmp://example/live"
+    assert request.stream_url == "android-device://connected-phone/tiktok-live"
     assert request.experiment_id == "greeting_line_v1"
 
 

@@ -12,15 +12,25 @@ Covers the bits that the operator actually relies on:
 
 from __future__ import annotations
 
+from typing import cast
 from uuid import uuid4
 
 import pytest
+from PySide6.QtWidgets import QWidget
 
 from packages.schemas.operator_console import StimulusActionState
 from services.operator_console.state import StimulusUiContext
 from services.operator_console.widgets.action_bar import ActionBar
 
 pytestmark = pytest.mark.usefixtures("qt_app")
+
+
+def _layout_widget(layout: object, index: int) -> QWidget:
+    item = layout.itemAt(index)  # type: ignore[attr-defined]
+    assert item is not None
+    widget = item.widget()
+    assert widget is not None
+    return cast(QWidget, widget)
 
 
 def test_button_disabled_without_session() -> None:
@@ -145,7 +155,7 @@ def test_compact_mode_moves_submit_below_note_input() -> None:
 
     assert bar._compact_mode is True  # type: ignore[attr-defined]
     assert bar._input_layout.count() >= 1  # type: ignore[attr-defined]
-    assert bar._input_layout.itemAt(0).widget() is bar._submit_button  # type: ignore[attr-defined]
+    assert _layout_widget(bar._input_layout, 0) is bar._submit_button  # type: ignore[attr-defined]
 
 
 def test_compact_mode_round_trips_to_wide_layout() -> None:
@@ -156,5 +166,5 @@ def test_compact_mode_round_trips_to_wide_layout() -> None:
     bar.set_compact_mode(False)
 
     assert bar._compact_mode is False  # type: ignore[attr-defined]
-    assert bar._input_layout.itemAt(0).widget() is bar._note_input  # type: ignore[attr-defined]
-    assert bar._input_layout.itemAt(1).widget() is bar._submit_button  # type: ignore[attr-defined]
+    assert _layout_widget(bar._input_layout, 0) is bar._note_input  # type: ignore[attr-defined]
+    assert _layout_widget(bar._input_layout, 1) is bar._submit_button  # type: ignore[attr-defined]

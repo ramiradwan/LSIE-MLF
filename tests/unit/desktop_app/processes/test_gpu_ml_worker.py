@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import multiprocessing as mp
 import queue
-import subprocess
 import uuid
 from collections import deque
 from datetime import UTC, datetime
@@ -23,10 +22,15 @@ from services.desktop_app.ipc.control_messages import (
 from services.desktop_app.ipc.shared_buffers import PcmBlock, PcmBlockMetadata, write_pcm_block
 from services.desktop_app.processes import gpu_ml_worker
 from services.desktop_app.processes.gpu_ml_worker import (
-    DesktopScreencapCapture,
+    DesktopScreenrecordCapture,
     LiveVisualTracker,
-    _decode_png_screencap,
+    _bgr_frame_from_raw,
+    _default_video_capture_factory,
+    _derive_segment_start_time_s,
     _drain_live_control,
+    _handoff_window_s,
+    _handoff_with_tracker_au12,
+    _ml_inbox_poll_timeout,
     _publish_analytics_result,
 )
 
@@ -223,7 +227,7 @@ def test_gpu_ml_worker_drains_live_control_to_visual_state_messages() -> None:
     ]
     assert [message.status for message in visual] == [
         "waiting_for_face",
-        "post_stimulus",
+        "waiting_for_face",
         "no_session",
     ]
     assert visual[0].face_present is False
@@ -232,6 +236,64 @@ def test_gpu_ml_worker_drains_live_control_to_visual_state_messages() -> None:
     assert visual[0].expected_greeting == "Say hello to the creator"
     assert visual[1].active_arm == "warm_welcome"
     assert visual[1].latest_au12_intensity is None
+
+
+def test_gpu_ml_worker_visual_tick_restores_health_after_receiving_face_frame(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(gpu_ml_worker, "_VISUAL_CALIBRATION_FRAMES_REQUIRED", 1)
+    now = datetime(2026, 5, 2, 12, 0, tzinfo=UTC)
+    channels = IpcChannels(
+        ml_inbox=cast("Any", queue.Queue()),
+        drift_updates=cast("Any", queue.Queue()),
+        analytics_inbox=cast("Any", queue.Queue()),
+        pcm_acks=cast("Any", queue.Queue()),
+        live_control=cast("Any", queue.Queue()),
+    )
+    tracker = LiveVisualTracker(
+        video_capture_factory=lambda _path: FakeVideoCapture([object()]),
+        face_mesh_factory=lambda: FakeFaceMesh([object()]),
+        au12_factory=lambda: FakeAu12Normalizer([]),
+    )
+    statuses: list[gpu_ml_worker._GpuWorkerStatus] = []  # noqa: SLF001
+    tracker.handle_control(_start_control(now))
+
+    gpu_ml_worker._publish_visual_tick(channels, tracker, status_callback=statuses.append)  # noqa: SLF001
+
+    assert statuses[-1].state == "ok"
+    assert statuses[-1].detail == "Live visual tracking is receiving phone frames."
+
+
+def test_gpu_ml_worker_stimulus_control_preserves_calibrated_visual_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(gpu_ml_worker, "_VISUAL_CALIBRATION_FRAMES_REQUIRED", 1)
+    now = datetime(2026, 5, 2, 12, 0, tzinfo=UTC)
+    tracker = LiveVisualTracker(
+        video_capture_factory=lambda _path: FakeVideoCapture([object()]),
+        face_mesh_factory=lambda: FakeFaceMesh([object()]),
+        au12_factory=lambda: FakeAu12Normalizer([]),
+    )
+    tracker.handle_control(_start_control(now))
+    tracker.tick(now)
+
+    visual = tracker.handle_control(
+        LiveSessionControlMessage(
+            action="stimulus",
+            session_id=SESSION_UUID,
+            stream_url="test://stream",
+            experiment_id="greeting_line_v1",
+            active_arm="warm_welcome",
+            expected_greeting="Say hello to the creator",
+            stimulus_time_s=now.timestamp(),
+            timestamp_utc=now,
+        )
+    )
+
+    assert visual.status == "post_stimulus"
+    assert visual.face_present is True
+    assert visual.is_calibrating is False
+    assert visual.calibration_frames_accumulated == 1
 
 
 def test_gpu_ml_worker_visual_tick_publishes_waiting_state_when_no_frame() -> None:
@@ -341,6 +403,141 @@ def test_gpu_ml_worker_visual_tick_records_real_post_stimulus_au12(
     assert observations == [{"timestamp_s": now.timestamp(), "intensity": 0.62}]
 
 
+def test_gpu_ml_worker_visual_tracker_keeps_pre_stimulus_baseline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(gpu_ml_worker, "_VISUAL_CALIBRATION_FRAMES_REQUIRED", 1)
+    now = datetime(2026, 5, 2, 12, 0, tzinfo=UTC)
+    baseline = datetime(2026, 5, 2, 12, 0, 6, tzinfo=UTC)
+    response = datetime(2026, 5, 2, 12, 0, 10, tzinfo=UTC)
+    capture = FakeVideoCapture([object(), object(), object(), object()])
+    tracker = LiveVisualTracker(
+        video_capture_factory=lambda _path: capture,
+        face_mesh_factory=lambda: FakeFaceMesh([object(), object(), object(), object()]),
+        au12_factory=lambda: FakeAu12Normalizer([0.25, 0.75, 0.9]),
+    )
+    tracker.handle_control(_start_control(now))
+    tracker.tick(now)
+    tracker.tick(baseline)
+    tracker.handle_control(
+        LiveSessionControlMessage(
+            action="stimulus",
+            session_id=SESSION_UUID,
+            stream_url="test://stream",
+            experiment_id="greeting_line_v1",
+            stimulus_time_s=response.timestamp() - 1.0,
+            timestamp_utc=response,
+        )
+    )
+    tracker.tick(response)
+
+    observations = tracker.drain_au12_observations(
+        start_s=response.timestamp() - 5.0,
+        end_s=response.timestamp(),
+    )
+
+    assert observations == [
+        {"timestamp_s": baseline.timestamp(), "intensity": 0.25},
+        {"timestamp_s": response.timestamp(), "intensity": 0.75},
+    ]
+
+
+def test_gpu_ml_worker_visual_tick_keeps_calibrated_state_without_new_frame(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(gpu_ml_worker, "_VISUAL_CALIBRATION_FRAMES_REQUIRED", 1)
+    now = datetime(2026, 5, 2, 12, 0, tzinfo=UTC)
+    capture = FakeVideoCapture([object()])
+    tracker = LiveVisualTracker(
+        video_capture_factory=lambda _path: capture,
+        face_mesh_factory=lambda: FakeFaceMesh([object(), object()]),
+        au12_factory=lambda: FakeAu12Normalizer([0.25]),
+    )
+    tracker.handle_control(_start_control(now))
+    tracker.tick(now)
+    post_stimulus = tracker.handle_control(
+        LiveSessionControlMessage(
+            action="stimulus",
+            session_id=SESSION_UUID,
+            stream_url="test://stream",
+            experiment_id="greeting_line_v1",
+            stimulus_time_s=now.timestamp(),
+            timestamp_utc=now,
+        )
+    )
+    visual = tracker.tick(now).visual
+
+    assert post_stimulus.status == "post_stimulus"
+    assert visual is not None
+    assert visual.status == "post_stimulus"
+    assert visual.face_present is True
+    assert visual.is_calibrating is False
+
+
+def test_gpu_ml_worker_inbox_poll_waits_only_until_next_visual_tick() -> None:
+    now = 10.0
+
+    assert _ml_inbox_poll_timeout(
+        now + gpu_ml_worker._VISUAL_TICK_INTERVAL_S,  # noqa: SLF001
+        now,
+    ) == pytest.approx(gpu_ml_worker._VISUAL_TICK_INTERVAL_S)  # noqa: SLF001
+    assert _ml_inbox_poll_timeout(now + 2.0, now) == gpu_ml_worker.INBOX_POLL_TIMEOUT_S
+    assert _ml_inbox_poll_timeout(now - 0.1, now) == 0.0
+
+
+def test_gpu_ml_worker_derives_acoustic_segment_start_from_handoff_clock() -> None:
+    timestamp = datetime(2026, 5, 2, 12, 0, 30, tzinfo=UTC)
+    audio = b"\0\0" * 16000 * 30
+    start = _derive_segment_start_time_s(
+        timestamp_utc=timestamp.isoformat(),
+        audio_data=audio,
+        sample_rate=16000,
+    )
+
+    assert start == pytest.approx(timestamp.timestamp() - 30.0)
+
+
+def test_gpu_ml_worker_uses_handoff_clock_for_tracker_au12_window() -> None:
+    timestamp = datetime(2026, 5, 2, 12, 0, 30, tzinfo=UTC)
+    audio = b"\0\0" * 16000 * 30
+    handoff = {
+        "segment_window_start_utc": (timestamp.replace(second=0)).isoformat(),
+        "segment_window_end_utc": timestamp.isoformat(),
+    }
+
+    window = _handoff_window_s(handoff, audio)
+
+    assert window == pytest.approx(
+        (
+            timestamp.replace(second=0).timestamp(),
+            timestamp.timestamp(),
+        )
+    )
+
+
+def test_gpu_ml_worker_keeps_tracker_au12_timestamps_on_handoff_clock() -> None:
+    timestamp = datetime(2026, 5, 2, 12, 0, 30, tzinfo=UTC)
+    tracker = LiveVisualTracker()
+    tracker._au12_observations.append(  # noqa: SLF001
+        gpu_ml_worker._Au12Observation(  # noqa: SLF001
+            timestamp_s=timestamp.timestamp(),
+            intensity=0.7,
+        )
+    )
+    handoff = {
+        "segment_window_start_utc": timestamp.replace(second=0).isoformat(),
+        "segment_window_end_utc": timestamp.isoformat(),
+    }
+
+    enriched = _handoff_with_tracker_au12(
+        handoff,
+        audio_data=b"\0\0" * 16000 * 30,
+        tracker=tracker,
+    )
+
+    assert enriched["_au12_series"] == [{"timestamp_s": timestamp.timestamp(), "intensity": 0.7}]
+
+
 def test_gpu_ml_worker_visual_tracker_releases_resources() -> None:
     now = datetime(2026, 5, 2, 12, 0, tzinfo=UTC)
     capture = FakeVideoCapture([object()])
@@ -366,50 +563,83 @@ def test_gpu_ml_worker_visual_tracker_releases_resources() -> None:
     assert face_mesh.closed is True
 
 
-def test_desktop_screencap_capture_returns_none_when_adb_fails(
+def test_default_live_visual_capture_uses_screenrecord_stream(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    def fail_run(*args: object, **kwargs: object) -> object:
-        del args, kwargs
-        raise subprocess.TimeoutExpired(cmd="adb", timeout=2.0)
+    monkeypatch.setattr(
+        "services.desktop_app.processes.gpu_ml_worker.find_executable",
+        lambda name, env_override=None: f"resolved-{name}",
+    )
 
-    monkeypatch.setattr(subprocess, "run", fail_run)
-    capture = DesktopScreencapCapture("adb")
+    capture = _default_video_capture_factory("ignored-video-stream.mkv")
 
-    assert capture._capture_frame() is None
+    assert isinstance(capture, DesktopScreenrecordCapture)
+    assert capture._adb_path == "resolved-adb"  # noqa: SLF001
+    assert capture._ffmpeg_path == "resolved-ffmpeg"  # noqa: SLF001
 
 
-def test_desktop_screencap_capture_decodes_volatile_png_payload(
+def test_desktop_screenrecord_capture_starts_adb_and_ffmpeg_stream(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    frame = object()
-    monkeypatch.setattr(gpu_ml_worker, "_decode_png_screencap", lambda _payload: frame)
+    spawned: list[tuple[list[str], dict[str, object]]] = []
 
-    class Result:
-        returncode = 0
-        stdout = b"png"
+    class FakeSupervisedProcess:
+        def __init__(self, args: list[str], **kwargs: object) -> None:
+            spawned.append((args, kwargs))
+            self.stdout = object()
+            self.closed = False
 
-    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: Result())
-    capture = DesktopScreencapCapture("adb")
+        def close(self) -> None:
+            self.closed = True
 
-    assert capture._capture_frame() is frame
+    monkeypatch.setattr(gpu_ml_worker, "SupervisedProcess", FakeSupervisedProcess)
+    capture = DesktopScreenrecordCapture("adb", "ffmpeg")
+
+    capture._start_stream()  # noqa: SLF001
+
+    assert spawned[0][0][:4] == ["adb", "exec-out", "screenrecord", "--output-format=h264"]
+    expected_size = (
+        f"--size={gpu_ml_worker._VISUAL_FRAME_WIDTH}x"  # noqa: SLF001
+        f"{gpu_ml_worker._VISUAL_FRAME_HEIGHT}"  # noqa: SLF001
+    )
+    assert expected_size in spawned[0][0]
+    assert spawned[1][0][:8] == [
+        "ffmpeg",
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-f",
+        "h264",
+        "-i",
+        "pipe:0",
+    ]
+    assert "rawvideo" in spawned[1][0]
+    assert spawned[1][1]["stdin"] is cast(Any, capture._source_proc).stdout  # noqa: SLF001
 
 
-def test_desktop_screencap_stop_does_not_block_on_hung_capture_thread() -> None:
-    capture = DesktopScreencapCapture("adb")
+def test_bgr_frame_from_raw_returns_expected_shape() -> None:
+    payload = b"\0" * gpu_ml_worker._VISUAL_FRAME_BYTES  # noqa: SLF001
+
+    frame = _bgr_frame_from_raw(payload)
+
+    assert frame.shape == (
+        gpu_ml_worker._VISUAL_FRAME_HEIGHT,  # noqa: SLF001
+        gpu_ml_worker._VISUAL_FRAME_WIDTH,  # noqa: SLF001
+        3,
+    )
+
+
+def test_desktop_screenrecord_stop_does_not_block_on_hung_capture_thread() -> None:
+    capture = DesktopScreenrecordCapture("adb", "ffmpeg")
     hanging = _HangingThread()
     capture._thread = cast("Any", hanging)
     capture._frame_buffer = deque([object()])
 
     capture.stop()
 
-    assert hanging.join_timeout == gpu_ml_worker._DESKTOP_SCREENCAP_STOP_TIMEOUT_S
+    assert hanging.join_timeout == gpu_ml_worker._DESKTOP_STREAM_STOP_TIMEOUT_S
     assert capture._thread is hanging
     assert not capture._frame_buffer
-
-
-def test_decode_png_screencap_returns_none_for_invalid_payload() -> None:
-    assert _decode_png_screencap(b"not-png") is None
 
 
 def test_gpu_ml_worker_discards_malformed_live_control() -> None:
@@ -428,7 +658,7 @@ def test_gpu_ml_worker_discards_malformed_live_control() -> None:
     assert channels.analytics_inbox.empty()
 
 
-def test_gpu_ml_worker_reports_recovering_while_speech_model_warms() -> None:
+def test_gpu_ml_worker_publishes_bounded_result_while_speech_model_warms() -> None:
     ctx = mp.get_context("spawn")
     channels = IpcChannels(
         ml_inbox=ctx.Queue(),
@@ -439,14 +669,23 @@ def test_gpu_ml_worker_reports_recovering_while_speech_model_warms() -> None:
     statuses: list[gpu_ml_worker._GpuWorkerStatus] = []  # noqa: SLF001
     msg, block = _control_message()
     try:
-        _publish_analytics_result(channels, msg, status_callback=statuses.append)
+        with (
+            patch("packages.ml_core.audio_pipe.pcm_to_wav_bytes", return_value=b"RIFF"),
+            patch("packages.ml_core.transcription.TranscriptionEngine") as engine_cls,
+        ):
+            engine_cls.return_value.transcribe.side_effect = RuntimeError("not warm yet")
+            _publish_analytics_result(channels, msg, status_callback=statuses.append)
 
         assert channels.pcm_acks is not None
         ack = PcmBlockAckMessage.model_validate(channels.pcm_acks.get(timeout=1.0))
         assert ack.name == msg.audio.name
-        assert [status.state for status in statuses] == ["recovering"]
-        assert statuses[0].detail == "Speech model warmup is still in progress."
-        assert channels.analytics_inbox.empty()
+        raw = channels.analytics_inbox.get(timeout=1.0)
+        analytics = AnalyticsResultMessage.model_validate(raw)
+        assert analytics.handoff.segment_id == SEGMENT_ID
+        assert analytics.transcription == ""
+        assert analytics.semantic.is_match is False
+        assert analytics.semantic.reasoning == "semantic_error"
+        assert [status.state for status in statuses] == ["ok"]
     finally:
         block.close_and_unlink()
 
@@ -479,6 +718,40 @@ def test_gpu_ml_worker_drops_expired_pcm_block_without_traceback() -> None:
     assert ack.name == msg.audio.name
     assert channels.analytics_inbox.empty()
     assert statuses == []
+
+
+def test_gpu_ml_worker_publishes_analytics_result_with_null_physiology_omitted() -> None:
+    ctx = mp.get_context("spawn")
+    channels = IpcChannels(
+        ml_inbox=ctx.Queue(),
+        drift_updates=ctx.Queue(),
+        analytics_inbox=ctx.Queue(),
+        pcm_acks=ctx.Queue(),
+    )
+    msg, block = _control_message()
+    msg.handoff["_physiological_context"] = None
+    try:
+        with (
+            patch("packages.ml_core.audio_pipe.pcm_to_wav_bytes", return_value=b"RIFF"),
+            patch("packages.ml_core.preprocessing.TextPreprocessor", StubTextPreprocessor),
+            patch("packages.ml_core.semantic.SemanticEvaluator", StubSemanticEvaluator),
+        ):
+            _publish_analytics_result(
+                channels,
+                msg,
+                transcription_engine=StubTranscriptionEngine(),
+            )
+
+        raw = channels.analytics_inbox.get(timeout=1.0)
+        analytics = AnalyticsResultMessage.model_validate(raw)
+        assert analytics.handoff.physiological_context is None
+        assert "_physiological_context" not in analytics.handoff.model_dump(
+            mode="json",
+            by_alias=True,
+            exclude_none=True,
+        )
+    finally:
+        block.close_and_unlink()
 
 
 def test_gpu_ml_worker_publishes_analytics_result_to_inbox() -> None:
@@ -554,7 +827,7 @@ def test_gpu_ml_worker_uses_real_tracker_au12_observations() -> None:
         block.close_and_unlink()
 
 
-def test_gpu_ml_worker_does_not_publish_without_semantic_result() -> None:
+def test_gpu_ml_worker_publishes_bounded_result_for_empty_transcription() -> None:
     class EmptyTranscriptionEngine:
         def transcribe(self, audio: object) -> str:
             del audio
@@ -579,6 +852,11 @@ def test_gpu_ml_worker_does_not_publish_without_semantic_result() -> None:
         assert channels.pcm_acks is not None
         ack = PcmBlockAckMessage.model_validate(channels.pcm_acks.get(timeout=1.0))
         assert ack.name == msg.audio.name
-        assert channels.analytics_inbox.empty()
+        raw = channels.analytics_inbox.get(timeout=1.0)
+        analytics = AnalyticsResultMessage.model_validate(raw)
+        assert analytics.transcription == ""
+        assert analytics.semantic.is_match is False
+        assert analytics.semantic.reasoning == "semantic_error"
+        assert analytics.semantic.confidence_score == 0.0
     finally:
         block.close_and_unlink()

@@ -31,12 +31,12 @@ class HealthTableModel(QAbstractTableModel):
     """Per-subsystem health rollup with recovery-mode column."""
 
     COLUMNS: ClassVar[tuple[str, ...]] = (
-        "Subsystem",
-        "State",
-        "Recovery mode",
+        "Area",
+        "Readiness",
+        "What is happening",
         "Detail",
-        "Last ok (UTC)",
-        "Operator hint",
+        "Last healthy (UTC)",
+        "Next action",
     )
 
     def __init__(self, parent: QObject | None = None) -> None:

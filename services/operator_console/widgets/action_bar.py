@@ -20,9 +20,9 @@ from uuid import UUID
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
-    QGridLayout,
     QHBoxLayout,
     QLabel,
+    QLayout,
     QLineEdit,
     QPushButton,
     QVBoxLayout,
@@ -267,11 +267,13 @@ class ActionBar(QWidget):
         self._root_layout.addLayout(self._input_layout)
         self._root_layout.addWidget(self._message_label)
 
-    def _clear_layout(self, layout: QHBoxLayout | QVBoxLayout) -> None:
+    def _clear_layout(self, layout: QLayout) -> None:
         while layout.count() > 0:
             item = layout.takeAt(0)
+            if item is None:
+                continue
             child_layout = item.layout()
-            if isinstance(child_layout, (QHBoxLayout, QVBoxLayout, QGridLayout)):
+            if isinstance(child_layout, QLayout):
                 self._clear_layout(child_layout)
 
     def _on_submit_clicked(self) -> None:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from multiprocessing import shared_memory
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -85,3 +86,41 @@ def test_cleanup_capture_files_deletes_known_artifacts(tmp_path: Path) -> None:
     assert retained == []
     assert not audio.exists()
     assert not video.exists()
+
+
+def test_cleanup_capture_files_passes_retry_policy(tmp_path: Path) -> None:
+    audio = tmp_path / "audio_stream.wav"
+    audio.write_bytes(b"audio")
+    calls: list[tuple[Path, int, float]] = []
+
+    def fake_secure_delete_file(
+        path: Path,
+        *,
+        attempts: int = 6,
+        retry_delay_s: float = 0.25,
+    ) -> bool:
+        calls.append((path, attempts, retry_delay_s))
+        path.unlink()
+        return True
+
+    with patch(
+        "services.desktop_app.privacy.zeroize.secure_delete_file",
+        fake_secure_delete_file,
+    ):
+        deleted, retained = cleanup_capture_files(tmp_path, attempts=9, retry_delay_s=0.1)
+
+    assert deleted == [audio]
+    assert retained == []
+    assert calls == [(audio, 9, 0.1)]
+
+
+def test_cleanup_capture_files_reports_retained_artifacts(tmp_path: Path) -> None:
+    video = tmp_path / "video_stream.mkv"
+    video.write_bytes(b"video")
+
+    with patch("services.desktop_app.privacy.zeroize.secure_delete_file", return_value=False):
+        deleted, retained = cleanup_capture_files(tmp_path, attempts=1, retry_delay_s=0.0)
+
+    assert deleted == []
+    assert retained == [video]
+    assert video.exists()

@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+from pathlib import Path
 from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
@@ -146,6 +147,62 @@ def test_request_shutdown_sets_every_child_event() -> None:
     assert graph._shutdown_requested is True
     evt_a.set.assert_called_once_with()
     evt_b.set.assert_called_once_with()
+
+
+def test_stop_all_cleans_capture_artifacts_after_children_stop() -> None:
+    from services.desktop_app.process_graph import ProcessGraph
+
+    child = MagicMock()
+    child.is_alive.return_value = False
+    graph = ProcessGraph(children=cast(Any, {"capture_supervisor": child}))
+
+    with patch.object(graph, "cleanup_capture_artifacts") as cleanup_capture_artifacts:
+        graph.stop_all(timeout=1.0)
+
+    child.join.assert_called_once_with(timeout=1.0)
+    cleanup_capture_artifacts.assert_called_once_with()
+    assert graph.children == {}
+
+
+def test_cleanup_capture_artifacts_uses_shutdown_retry_policy(tmp_path: Path) -> None:
+    from services.desktop_app.process_graph import ProcessGraph
+
+    calls: list[tuple[Path, int, float]] = []
+
+    def fake_cleanup_capture_files(
+        capture_dir: Path,
+        *,
+        attempts: int,
+        retry_delay_s: float,
+    ) -> tuple[list[Path], list[Path]]:
+        calls.append((capture_dir, attempts, retry_delay_s))
+        return [], []
+
+    with (
+        patch("services.desktop_app.os_adapter.resolve_capture_dir", return_value=tmp_path),
+        patch(
+            "services.desktop_app.privacy.zeroize.cleanup_capture_files",
+            fake_cleanup_capture_files,
+        ),
+    ):
+        ProcessGraph().cleanup_capture_artifacts()
+
+    assert calls == [(tmp_path, 12, 0.5)]
+
+
+def test_cleanup_capture_artifacts_raises_on_retained_raw_media(tmp_path: Path) -> None:
+    from services.desktop_app.process_graph import ProcessGraph
+
+    video = tmp_path / "video_stream.mkv"
+    with (
+        patch("services.desktop_app.os_adapter.resolve_capture_dir", return_value=tmp_path),
+        patch(
+            "services.desktop_app.privacy.zeroize.cleanup_capture_files",
+            return_value=([], [video]),
+        ),
+        pytest.raises(RuntimeError, match="retained transient capture artifacts"),
+    ):
+        ProcessGraph().cleanup_capture_artifacts()
 
 
 def test_wait_requests_shutdown_when_any_child_exits() -> None:

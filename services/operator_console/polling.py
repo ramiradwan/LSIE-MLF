@@ -56,6 +56,7 @@ from packages.schemas.operator_console import (
     ArmSummary,
     EncounterSummary,
     ExperimentDetail,
+    ExperimentSummary,
     HealthSnapshot,
     OverviewSnapshot,
     SessionCreateRequest,
@@ -85,6 +86,7 @@ JOB_SESSIONS = "sessions"
 JOB_LIVE_SESSION = "live_session"
 JOB_ENCOUNTERS = "encounters"
 JOB_EXPERIMENT = "experiment"
+JOB_EXPERIMENT_SUMMARIES = "experiment_summaries"
 JOB_PHYSIOLOGY = "physiology"
 JOB_HEALTH = "health"
 JOB_ALERTS = "alerts"
@@ -261,7 +263,7 @@ class PollingCoordinator(QObject):
             # stimulus belongs to needs the next read to include the
             # accepted state, and the attention queue may gain a new
             # alert entry.
-            for target in (JOB_OVERVIEW, JOB_LIVE_SESSION, JOB_ALERTS):
+            for target in (JOB_OVERVIEW, JOB_LIVE_SESSION, JOB_ENCOUNTERS, JOB_ALERTS):
                 self.refresh_now(target)
 
         def on_failed(_job: str, error: object) -> None:
@@ -505,6 +507,11 @@ class PollingCoordinator(QObject):
                 AppRoute.LIVE_SESSION,
                 session_scoped=True,
             ),
+            PollJobSpec(
+                JOB_EXPERIMENT_SUMMARIES,
+                cfg.experiments_poll_ms,
+                AppRoute.LIVE_SESSION,
+            ),
             # Experiment detail — EXPERIMENTS route.
             PollJobSpec(JOB_EXPERIMENT, cfg.experiments_poll_ms, AppRoute.EXPERIMENTS),
             # Physiology — PHYSIOLOGY route.
@@ -679,6 +686,8 @@ class PollingCoordinator(QObject):
             self._store.set_live_session(payload)
         elif job_name == JOB_ENCOUNTERS and isinstance(payload, list):
             self._store.set_encounters(_as_list(payload, EncounterSummary))
+        elif job_name == JOB_EXPERIMENT_SUMMARIES and isinstance(payload, list):
+            self._store.set_experiment_summaries(_as_list(payload, ExperimentSummary))
         elif job_name == JOB_EXPERIMENT and isinstance(payload, ExperimentDetail):
             self._store.set_experiment(payload)
         elif job_name == JOB_PHYSIOLOGY and isinstance(payload, SessionPhysiologySnapshot):
@@ -707,6 +716,8 @@ class PollingCoordinator(QObject):
             return self._make_fetch_live_session()
         if job_name == JOB_ENCOUNTERS:
             return self._make_fetch_encounters()
+        if job_name == JOB_EXPERIMENT_SUMMARIES:
+            return self._make_fetch_experiment_summaries()
         if job_name == JOB_EXPERIMENT:
             return self._make_fetch_experiment()
         if job_name == JOB_PHYSIOLOGY:
@@ -754,6 +765,14 @@ class PollingCoordinator(QObject):
 
         def fetch() -> list[EncounterSummary]:
             return client.list_session_encounters(captured_id)
+
+        return fetch
+
+    def _make_fetch_experiment_summaries(self) -> Callable[[], list[ExperimentSummary]]:
+        client = self._client
+
+        def fetch() -> list[ExperimentSummary]:
+            return client.list_experiments()
 
         return fetch
 

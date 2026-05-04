@@ -47,6 +47,16 @@ class TestTextPreprocessor:
         proc.load_model()
         mock_spacy.load.assert_called_once_with("en_core_web_sm")
 
+    def test_load_model_falls_back_to_blank_english(self, mock_spacy: MagicMock) -> None:
+        mock_spacy.load.side_effect = OSError("missing model")
+        mock_spacy.blank.return_value = MagicMock()
+
+        proc = TextPreprocessor()
+        proc.load_model()
+
+        mock_spacy.load.assert_called_once_with("en_core_web_sm")
+        mock_spacy.blank.assert_called_once_with("en")
+
     def test_preprocess_removes_stopwords_and_punctuation(self, mock_spacy: MagicMock) -> None:
         """§4.D.4 — Strips punctuation, stopwords, whitespace tokens."""
         mock_nlp = MagicMock()
@@ -86,6 +96,21 @@ class TestTextPreprocessor:
 
         proc = TextPreprocessor()
         result = proc.preprocess("HELLO")
+
+        assert result == "hello"
+
+    def test_preprocess_uses_token_text_when_blank_model_has_no_lemma(
+        self,
+        mock_spacy: MagicMock,
+    ) -> None:
+        mock_nlp = MagicMock()
+        tok = _make_token("")
+        tok.text = "hello"
+        mock_nlp.return_value = [tok]
+        mock_spacy.load.return_value = mock_nlp
+
+        proc = TextPreprocessor()
+        result = proc.preprocess("hello")
 
         assert result == "hello"
 
