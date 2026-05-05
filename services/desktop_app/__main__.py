@@ -39,6 +39,14 @@ def _build_parser() -> ArgumentParser:
             "Validate preflight and parent-process startup hooks without launching child processes."
         ),
     )
+    parser.add_argument(
+        "--operator-api",
+        action="store_true",
+        help=(
+            "Start the loopback operator API/control runtime without opening the PySide "
+            "Operator Console."
+        ),
+    )
     return parser
 
 
@@ -53,7 +61,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         logger.info("desktop app smoke ok")
         return 0
 
-    graph = ProcessGraph()
+    graph = ProcessGraph(runtime_mode="operator_api" if args.operator_api else "operator_console")
 
     def _handle_signal(signum: int, _frame: FrameType | None) -> None:
         logger.info("received signal %s — initiating cooperative shutdown", signum)

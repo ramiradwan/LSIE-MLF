@@ -26,6 +26,11 @@ prerequisites for launching the v4 desktop runtime with
 memory and local state uses SQLite WAL. The active v4 desktop tree does not
 track Docker Compose or Dockerfile manifests.
 
+Use `python -m services.desktop_app` for the full GUI desktop app. Use
+`python -m services.desktop_app --operator-api` for CLI automation and E2E
+checks that need the loopback API/control graph without opening the PySide
+Operator Console.
+
 ## 2. Environment hydration
 
 ```powershell
@@ -85,7 +90,34 @@ and above. Latency parity between the two paths is **not** the
 contract; output text equality on the Gate 0 corpus is — see
 `tests/v4_gate0/`.
 
-## 4. Running the test suite
+## 4. Running locally
+
+Full GUI app:
+
+```powershell
+uv run python -m services.desktop_app
+```
+
+Operator API runtime for CLI use:
+
+```powershell
+uv run python -m services.desktop_app --operator-api
+```
+
+Basic CLI flow while either mode is running. The CLI defaults to `http://127.0.0.1:8000` or `LSIE_API_URL` if set:
+
+```powershell
+uv run python -m scripts status
+uv run python -m scripts health
+uv run python -m scripts sessions start android://device --experiment greeting_line_v1
+uv run python -m scripts stimulus submit <session-id> --note "test stimulus"
+uv run python -m scripts live-session readback <session-id>
+uv run python -m scripts sessions end <session-id>
+```
+
+If the preferred port is occupied, set `LSIE_API_URL` once or use the logged loopback URL with `--api-url <url>`.
+
+## 5. Running the test suite
 
 ```powershell
 # Full v4 desktop surface (123+ tests, fast):
@@ -109,7 +141,7 @@ $env:LSIE_INTEGRATION_KEYRING = "1"
 .venv\Scripts\python.exe -m ruff check services/ packages/ tests/
 ```
 
-## 5. Local validation gates
+## 6. Local validation gates
 
 Standard desktop validation does not require Docker Compose, Redis, or
 PostgreSQL. For desktop-runtime changes, prefer the targeted desktop surface
@@ -120,7 +152,7 @@ validation because no compose/Dockerfile manifests are tracked. Historical/spec
 Docker references describe retired or external server/container context, not a
 local validation prerequisite.
 
-## 6. References
+## 7. References
 
 - **Current spec reference:** `docs/SPEC_REFERENCE.md`
 - **Spec amendments registry:** `docs/SPEC_AMENDMENTS.md`

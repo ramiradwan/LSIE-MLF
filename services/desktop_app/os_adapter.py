@@ -556,6 +556,18 @@ class SupervisedProcess:
     def wait(self, timeout: float | None = None) -> int:
         return self._proc.wait(timeout=timeout)
 
+    def terminate_root(self, grace_s: float = 3.0) -> bool:
+        if self._closed:
+            return True
+        if self._proc.poll() is None:
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                self._proc.terminate()
+        try:
+            self._proc.wait(timeout=grace_s)
+        except subprocess.TimeoutExpired:
+            return False
+        return True
+
     def terminate(self, grace_s: float = 3.0) -> None:
         """Force-kill the child and every descendant. Idempotent."""
         if self._closed:

@@ -117,4 +117,41 @@ without re-derivation:
 
 ---
 
+## §9.x — Operator Launch Modes and CLI Surface
+
+**Author.** Operator API runtime / CLI follow-up (`feature/v4-desktop`).
+
+The v4 runtime exposes two local launch modes over the same Windows-native
+ProcessGraph:
+
+1. `python -m services.desktop_app` launches the full GUI desktop app. It
+   starts the ProcessGraph and opens the PySide Operator Console.
+2. `python -m services.desktop_app --operator-api` launches the operator API
+   runtime. It starts the same capture, orchestration, ML, analytics, and
+   cloud-sync workers, but serves only the loopback operator API/control
+   surface and does not open the PySide GUI.
+
+Both modes use the local `ui_api_shell` health identity for the loopback API
+surface, SQLite local state, IPC queues/shared-memory blocks, and the cloud
+outbox. The operator API runtime exists for CLI automation, smoke tests, and
+E2E checks where opening the GUI would be intrusive.
+
+The CLI entrypoint is `python -m scripts`. It targets the loopback API through
+`services.operator_console.api_client.ApiClient` and never reads SQLite
+directly. Basic operator flow:
+
+```powershell
+python -m scripts status --api-url http://127.0.0.1:8000
+python -m scripts health --api-url http://127.0.0.1:8000
+python -m scripts sessions start android://device --experiment greeting_line_v1 --api-url http://127.0.0.1:8000
+python -m scripts stimulus submit <session-id> --note "test stimulus" --api-url http://127.0.0.1:8000
+python -m scripts live-session readback <session-id> --api-url http://127.0.0.1:8000
+python -m scripts sessions end <session-id> --api-url http://127.0.0.1:8000
+```
+
+If the preferred `127.0.0.1:8000` port is unavailable, the runtime logs the
+fallback loopback URL and operators pass it with `--api-url`.
+
+---
+
 <!-- Subsequent workstreams append their drafts below this line. -->

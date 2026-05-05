@@ -271,3 +271,39 @@ def test_run_cleans_capture_files_on_startup_and_shutdown(tmp_path: Path) -> Non
     heartbeat.stop.assert_called_once()
     drift_thread.start.assert_called_once()
     drift_thread.join.assert_called_once_with(timeout=5.0)
+
+
+def test_kill_pair_keeps_manifest_entry_when_process_survives(tmp_path: Path) -> None:
+    from services.desktop_app.processes.capture_supervisor import _kill_pair
+
+    db_path = _bootstrap_db(tmp_path)
+    proc = MagicMock()
+    proc.pid = 101
+    proc.is_alive.return_value = True
+
+    proc.terminate_root.return_value = False
+
+    with patch("services.desktop_app.processes.capture_supervisor.forget_capture_pid") as forget:
+        _kill_pair(proc, None, db_path)
+
+    proc.terminate_root.assert_called_once_with(grace_s=3.0)
+    proc.terminate.assert_called_once_with(grace_s=3.0)
+    forget.assert_not_called()
+
+
+def test_kill_pair_forgets_manifest_entry_when_process_exits(tmp_path: Path) -> None:
+    from services.desktop_app.processes.capture_supervisor import _kill_pair
+
+    db_path = _bootstrap_db(tmp_path)
+    proc = MagicMock()
+    proc.pid = 101
+    proc.is_alive.return_value = False
+
+    proc.terminate_root.return_value = True
+
+    with patch("services.desktop_app.processes.capture_supervisor.forget_capture_pid") as forget:
+        _kill_pair(proc, None, db_path)
+
+    proc.terminate_root.assert_called_once_with(grace_s=3.0)
+    proc.terminate.assert_not_called()
+    forget.assert_called_once_with(db_path, 101)

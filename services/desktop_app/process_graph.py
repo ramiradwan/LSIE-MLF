@@ -19,10 +19,13 @@ import multiprocessing.context as mpcontext
 import multiprocessing.synchronize as mpsync
 import time
 from dataclasses import dataclass, field
+from typing import Literal
 
 from services.desktop_app.ipc import IpcChannels
 
 logger = logging.getLogger(__name__)
+
+RuntimeMode = Literal["operator_console", "operator_api"]
 
 # Canonical process-name → module-path mapping. The order is the order
 # in which processes are spawned and is the same order the v4.0 spec
@@ -36,6 +39,14 @@ PROCESS_MODULES: dict[str, str] = {
     "cloud_sync_worker": "services.desktop_app.processes.cloud_sync_worker",
 }
 
+
+def process_modules_for_mode(runtime_mode: RuntimeMode) -> dict[str, str]:
+    modules = dict(PROCESS_MODULES)
+    if runtime_mode == "operator_api":
+        modules["ui_api_shell"] = "services.desktop_app.processes.operator_api_runtime"
+    return modules
+
+
 # Modules that MUST NOT appear in the parent's ``sys.modules`` after
 # importing process_graph. A canary test re-asserts this in a clean
 # subprocess on every CI run.
@@ -44,6 +55,7 @@ ML_LIB_ROOTS: frozenset[str] = frozenset({"torch", "mediapipe", "faster_whisper"
 SQLITE_FILENAME = "desktop.sqlite"
 ML_INBOX_MAXSIZE = 8
 PCM_ACKS_MAXSIZE = 32
+COOPERATIVE_SHUTDOWN_TIMEOUT_S = 15.0
 
 
 def _prepare_runtime_state() -> None:
@@ -92,6 +104,7 @@ class ProcessGraph:
     without needing private accessors.
     """
 
+    runtime_mode: RuntimeMode = "operator_console"
     children: dict[str, mpcontext.SpawnProcess] = field(default_factory=dict)
     shutdown_events: dict[str, mpsync.Event] = field(default_factory=dict)
     channels: IpcChannels | None = field(default=None)
@@ -110,7 +123,7 @@ class ProcessGraph:
                 live_control=ctx.Queue(),
                 segment_control=ctx.Queue(),
             )
-        for name, module in PROCESS_MODULES.items():
+        for name, module in process_modules_for_mode(self.runtime_mode).items():
             evt = ctx.Event()
             proc = ctx.Process(
                 name=name,
@@ -128,7 +141,7 @@ class ProcessGraph:
         for evt in self.shutdown_events.values():
             evt.set()
 
-    def stop_all(self, timeout: float = 5.0) -> None:
+    def stop_all(self, timeout: float = COOPERATIVE_SHUTDOWN_TIMEOUT_S) -> None:
         self.request_shutdown()
         for name, proc in self.children.items():
             proc.join(timeout=timeout)
@@ -141,8 +154,17 @@ class ProcessGraph:
         self.cleanup_capture_artifacts()
 
     def cleanup_capture_artifacts(self) -> None:
-        from services.desktop_app.os_adapter import resolve_capture_dir
+        from services.desktop_app.os_adapter import resolve_capture_dir, resolve_state_dir
         from services.desktop_app.privacy.zeroize import cleanup_capture_files
+        from services.desktop_app.state.recovery import reap_orphan_capture_processes
+
+        reaped, survived = reap_orphan_capture_processes(resolve_state_dir() / SQLITE_FILENAME)
+        if reaped or survived:
+            logger.info(
+                "desktop shutdown capture process reap: reaped=%s survived=%s",
+                reaped,
+                survived,
+            )
 
         deleted, retained = cleanup_capture_files(
             resolve_capture_dir(),
@@ -165,7 +187,11 @@ class ProcessGraph:
                 [str(path) for path in deleted],
             )
 
-    def wait(self, poll_interval: float = 0.25, shutdown_timeout: float = 5.0) -> None:
+    def wait(
+        self,
+        poll_interval: float = 0.25,
+        shutdown_timeout: float = COOPERATIVE_SHUTDOWN_TIMEOUT_S,
+    ) -> None:
         shutdown_started_at: float | None = None
         while self.children:
             exited: list[tuple[str, int | None]] = []

@@ -7,6 +7,8 @@ LSIE-MLF is a desktop-first monorepo for real-time multimodal inference during l
 The v4 runtime is organized around a host-side desktop process graph:
 
 - **`services.desktop_app`** is the primary operator/runtime entrypoint
+- **full GUI mode** opens the PySide Operator Console
+- **operator API runtime** serves the same loopback API/control graph for CLI use without opening the GUI
 - **`ui_api_shell`** serves the local desktop UI/API surface
 - **`capture_supervisor`** manages physical capture supervision
 - **`module_c_orchestrator`** assembles synchronized inference segments
@@ -113,15 +115,39 @@ Recommended local prerequisites:
 uv sync --frozen --extra ml_backend
 ```
 
-### 4) Launch the v4 desktop runtime
+### 4) Launch the app or operator API runtime
+
+Full GUI app:
 
 ```bash
 uv run python -m services.desktop_app
 ```
 
-This entrypoint runs preflight, then starts the desktop ProcessGraph with `ui_api_shell`, `capture_supervisor`, `module_c_orchestrator`, `gpu_ml_worker`, `analytics_state_worker`, and `cloud_sync_worker`.
+CLI/API-only workflow:
 
-### 5) Reusable Operator Console host
+```bash
+uv run python -m services.desktop_app --operator-api
+```
+
+Both modes run preflight and start the ProcessGraph with capture, orchestration, ML, analytics, and cloud-sync workers. The default command opens the PySide Operator Console; `--operator-api` starts the same loopback API/control surface for CLI use without opening the GUI.
+
+### 5) Use the CLI
+
+With either the full GUI app or operator API runtime running, the CLI defaults to `http://127.0.0.1:8000` or `LSIE_API_URL` if set:
+
+```bash
+uv run python -m scripts status
+uv run python -m scripts health
+uv run python -m scripts sessions start android://device --experiment greeting_line_v1
+uv run python -m scripts sessions list
+uv run python -m scripts stimulus submit <session-id> --note "test stimulus"
+uv run python -m scripts live-session readback <session-id>
+uv run python -m scripts sessions end <session-id>
+```
+
+If the loopback API selects another port, set `LSIE_API_URL` once for the shell or pass `--api-url <url>` on individual commands. The CLI talks only to the loopback API; it does not read SQLite directly.
+
+### 6) Reusable Operator Console host
 
 `services.operator_console` is a reusable/standalone PySide6 UI-only host. It polls an external API Server's `/api/v1/operator/*` aggregate routes and does **not** start capture, GPU inference, SQLite state, or cloud sync.
 

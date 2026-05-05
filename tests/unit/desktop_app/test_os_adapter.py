@@ -234,6 +234,22 @@ def test_apply_windows_child_process_policy_hides_windows_children() -> None:
     assert startupinfo.wShowWindow == fake_subprocess.SW_HIDE
 
 
+def test_terminate_root_waits_for_direct_child_without_tree_kill(tmp_path: Path) -> None:
+    pid_file = tmp_path / "pids.txt"
+    sp = SupervisedProcess(
+        [sys.executable, "-c", _grandchild_spawning_script(pid_file)],
+    )
+    try:
+        child_pid, _grandchild_pid = _read_pids(pid_file)
+        assert sp.is_alive()
+
+        assert sp.terminate_root(grace_s=5.0) is True
+        assert _wait_for_dead(child_pid), f"child pid={child_pid} survived terminate_root()"
+        assert _wait_for_dead(sp.pid), f"launcher pid={sp.pid} survived terminate_root()"
+    finally:
+        sp.close()
+
+
 def test_terminate_kills_child(tmp_path: Path) -> None:
     """A long-running supervised child must die on terminate().
 

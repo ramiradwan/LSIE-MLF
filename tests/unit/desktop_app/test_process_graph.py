@@ -19,6 +19,7 @@ own ``sys.modules`` does not pollute the result.
 from __future__ import annotations
 
 import json
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -31,6 +32,7 @@ ML_LIB_ROOTS: tuple[str, ...] = ("torch", "mediapipe", "faster_whisper", "ctrans
 
 NON_ML_PROCESS_MODULES: tuple[str, ...] = (
     "services.desktop_app.processes.ui_api_shell",
+    "services.desktop_app.processes.operator_api_runtime",
     "services.desktop_app.processes.capture_supervisor",
     "services.desktop_app.processes.module_c_orchestrator",
     "services.desktop_app.processes.analytics_state_worker",
@@ -94,6 +96,56 @@ def test_main_smoke_runs_preflight_and_skips_process_graph(monkeypatch: pytest.M
     assert guard_calls == ["called"]
 
 
+def test_main_operator_api_uses_operator_api_runtime_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from services.desktop_app import __main__ as desktop_main
+
+    modes: list[str] = []
+    lifecycle: list[str] = []
+
+    monkeypatch.setattr("services.desktop_app.__main__.preflight.ensure_preflight", lambda: None)
+    monkeypatch.setattr(desktop_main, "install_crash_privacy_guards", lambda: None)
+    monkeypatch.setattr(signal, "signal", lambda *_args: None)
+
+    class FakeGraph:
+        def __init__(self, *, runtime_mode: str) -> None:
+            modes.append(runtime_mode)
+
+        def request_shutdown(self) -> None:
+            lifecycle.append("request_shutdown")
+
+        def start_all(self) -> None:
+            lifecycle.append("start_all")
+
+        def wait(self) -> None:
+            lifecycle.append("wait")
+
+        def stop_all(self) -> None:
+            lifecycle.append("stop_all")
+
+    monkeypatch.setattr(desktop_main, "ProcessGraph", FakeGraph)
+
+    assert desktop_main.main(["--operator-api"]) == 0
+    assert modes == ["operator_api"]
+    assert lifecycle == ["start_all", "wait", "stop_all"]
+
+
+def test_main_smoke_skips_operator_api_graph(monkeypatch: pytest.MonkeyPatch) -> None:
+    from services.desktop_app import __main__ as desktop_main
+
+    monkeypatch.setattr("services.desktop_app.__main__.preflight.ensure_preflight", lambda: None)
+    monkeypatch.setattr(desktop_main, "install_crash_privacy_guards", lambda: None)
+
+    class UnexpectedGraph:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            raise AssertionError("ProcessGraph should not be constructed in --smoke mode")
+
+    monkeypatch.setattr(desktop_main, "ProcessGraph", UnexpectedGraph)
+
+    assert desktop_main.main(["--smoke", "--operator-api"]) == 0
+
+
 @pytest.mark.parametrize("module_path", NON_ML_PROCESS_MODULES)
 def test_non_ml_process_module_is_clean(module_path: str) -> None:
     """Each non-ML process module must not import any ML library, even transitively."""
@@ -112,6 +164,52 @@ def test_process_modules_table_is_complete() -> None:
         "analytics_state_worker",
         "cloud_sync_worker",
     }
+
+
+def test_operator_api_mode_replaces_only_shell_module() -> None:
+    from services.desktop_app.process_graph import PROCESS_MODULES, process_modules_for_mode
+
+    modules = process_modules_for_mode("operator_api")
+
+    assert set(modules) == set(PROCESS_MODULES)
+    assert modules["ui_api_shell"] == "services.desktop_app.processes.operator_api_runtime"
+    for name in set(PROCESS_MODULES) - {"ui_api_shell"}:
+        assert modules[name] == PROCESS_MODULES[name]
+
+
+def test_process_graph_operator_api_mode_uses_selected_module_table() -> None:
+    from services.desktop_app import process_graph
+
+    graph = process_graph.ProcessGraph(runtime_mode="operator_api")
+    modules = process_graph.process_modules_for_mode("operator_api")
+    launched: list[tuple[str, str]] = []
+
+    context = MagicMock()
+    context.Queue.side_effect = lambda maxsize=0: MagicMock(maxsize=maxsize)
+    context.Event.side_effect = lambda: MagicMock()
+
+    def fake_process(
+        *,
+        name: str,
+        target: object,
+        args: tuple[object, ...],
+        daemon: bool,
+    ) -> MagicMock:
+        launched.append((name, cast(str, args[0])))
+        proc = MagicMock()
+        proc.pid = len(launched)
+        return proc
+
+    context.Process.side_effect = fake_process
+
+    with (
+        patch("services.desktop_app.process_graph._prepare_runtime_state"),
+        patch("services.desktop_app.process_graph.mp.get_context", return_value=context),
+    ):
+        graph.start_all()
+
+    assert launched == list(modules.items())
+    assert set(graph.children) == set(modules)
 
 
 def test_process_graph_starts_and_stops_cleanly() -> None:
@@ -149,6 +247,19 @@ def test_request_shutdown_sets_every_child_event() -> None:
     evt_b.set.assert_called_once_with()
 
 
+def test_stop_all_uses_cooperative_shutdown_timeout_by_default() -> None:
+    from services.desktop_app.process_graph import COOPERATIVE_SHUTDOWN_TIMEOUT_S, ProcessGraph
+
+    child = MagicMock()
+    child.is_alive.return_value = False
+    graph = ProcessGraph(children=cast(Any, {"capture_supervisor": child}))
+
+    with patch.object(graph, "cleanup_capture_artifacts"):
+        graph.stop_all()
+
+    child.join.assert_called_once_with(timeout=COOPERATIVE_SHUTDOWN_TIMEOUT_S)
+
+
 def test_stop_all_cleans_capture_artifacts_after_children_stop() -> None:
     from services.desktop_app.process_graph import ProcessGraph
 
@@ -180,6 +291,11 @@ def test_cleanup_capture_artifacts_uses_shutdown_retry_policy(tmp_path: Path) ->
 
     with (
         patch("services.desktop_app.os_adapter.resolve_capture_dir", return_value=tmp_path),
+        patch("services.desktop_app.os_adapter.resolve_state_dir", return_value=tmp_path),
+        patch(
+            "services.desktop_app.state.recovery.reap_orphan_capture_processes",
+            return_value=([], []),
+        ),
         patch(
             "services.desktop_app.privacy.zeroize.cleanup_capture_files",
             fake_cleanup_capture_files,
@@ -190,12 +306,58 @@ def test_cleanup_capture_artifacts_uses_shutdown_retry_policy(tmp_path: Path) ->
     assert calls == [(tmp_path, 12, 0.5)]
 
 
+def test_cleanup_capture_artifacts_reaps_capture_processes_before_file_cleanup(
+    tmp_path: Path,
+) -> None:
+    from services.desktop_app.process_graph import ProcessGraph
+
+    calls: list[str] = []
+
+    def fake_reap_orphan_capture_processes(db_path: Path) -> tuple[list[int], list[int]]:
+        assert db_path == tmp_path / "desktop.sqlite"
+        calls.append("reap")
+        return [101], []
+
+    def fake_cleanup_capture_files(
+        capture_dir: Path,
+        *,
+        attempts: int,
+        retry_delay_s: float,
+    ) -> tuple[list[Path], list[Path]]:
+        assert capture_dir == tmp_path
+        assert attempts == 12
+        assert retry_delay_s == 0.5
+        calls.append("cleanup")
+        return [], []
+
+    with (
+        patch("services.desktop_app.os_adapter.resolve_capture_dir", return_value=tmp_path),
+        patch("services.desktop_app.os_adapter.resolve_state_dir", return_value=tmp_path),
+        patch(
+            "services.desktop_app.state.recovery.reap_orphan_capture_processes",
+            fake_reap_orphan_capture_processes,
+        ),
+        patch(
+            "services.desktop_app.privacy.zeroize.cleanup_capture_files",
+            fake_cleanup_capture_files,
+        ),
+    ):
+        ProcessGraph().cleanup_capture_artifacts()
+
+    assert calls == ["reap", "cleanup"]
+
+
 def test_cleanup_capture_artifacts_raises_on_retained_raw_media(tmp_path: Path) -> None:
     from services.desktop_app.process_graph import ProcessGraph
 
     video = tmp_path / "video_stream.mkv"
     with (
         patch("services.desktop_app.os_adapter.resolve_capture_dir", return_value=tmp_path),
+        patch("services.desktop_app.os_adapter.resolve_state_dir", return_value=tmp_path),
+        patch(
+            "services.desktop_app.state.recovery.reap_orphan_capture_processes",
+            return_value=([], []),
+        ),
         patch(
             "services.desktop_app.privacy.zeroize.cleanup_capture_files",
             return_value=([], [video]),

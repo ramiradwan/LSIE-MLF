@@ -492,12 +492,14 @@ def _kill_pair(
         if proc is None:
             continue
         try:
-            proc.terminate(grace_s=3.0)
+            if not proc.terminate_root(grace_s=3.0):
+                proc.terminate(grace_s=3.0)
         except Exception:  # noqa: BLE001
             logger.debug("terminate failed for pid=%s", proc.pid, exc_info=True)
-        # Always forget — even on terminate failure the manifest entry
-        # is stale by definition once we've left the spawn pair.
         try:
+            if proc.is_alive():
+                logger.warning("capture child pid=%s survived termination", proc.pid)
+                continue
             forget_capture_pid(db_path, proc.pid)
         except Exception:  # noqa: BLE001
             logger.debug("manifest cleanup failed for pid=%s", proc.pid, exc_info=True)
