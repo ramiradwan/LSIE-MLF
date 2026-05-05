@@ -54,12 +54,17 @@ def test_focus_note_input_moves_keyboard_focus() -> None:
 
 def test_set_session_context_enables_button() -> None:
     bar = ActionBar()
+    session_id = uuid4()
     bar.set_session_context(
-        session_id=uuid4(),
+        session_id=session_id,
         active_arm="greeting_v1",
         expected_greeting="hei rakas",
     )
     assert bar._submit_button.isEnabled() is True  # type: ignore[attr-defined]
+    assert bar._session_label.text() == (  # type: ignore[attr-defined]
+        f"Session {session_id} — stimulus strategy: greeting_v1"
+    )
+    assert bar._greeting_label.text() == "Expected response: “hei rakas”"  # type: ignore[attr-defined]
 
 
 def test_operator_not_ready_session_context_disables_button() -> None:
@@ -162,11 +167,19 @@ def test_countdown_visibility() -> None:
 
 def test_compact_mode_moves_submit_below_note_input() -> None:
     bar = ActionBar()
-    bar.set_session_context(uuid4(), "arm1", "hello")
+    session_id = uuid4()
+    bar.set_session_context(session_id, "arm1", "hello")
 
     bar.set_compact_mode(True)
 
     assert bar._compact_mode is True  # type: ignore[attr-defined]
+    assert (
+        bar._session_label.text()
+        == (  # type: ignore[attr-defined]
+            f"Session {str(session_id)[:8]}…{str(session_id)[-4:]} · stimulus strategy arm1"
+        )
+    )
+    assert bar._greeting_label.text() == "Expected response: “hello”"  # type: ignore[attr-defined]
     assert bar._input_layout.count() >= 1  # type: ignore[attr-defined]
     assert _layout_widget(bar._input_layout, 0) is bar._submit_button  # type: ignore[attr-defined]
 

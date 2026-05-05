@@ -30,9 +30,11 @@ from services.operator_console.formatters import (
     format_reward,
     format_semantic_gate,
     format_timestamp,
+    reward_detail_labels,
 )
 
 _EM_DASH = "—"
+_REWARD_LABELS = reward_detail_labels()
 
 
 class EncountersTableModel(QAbstractTableModel):
@@ -48,10 +50,10 @@ class EncountersTableModel(QAbstractTableModel):
     COLUMNS: ClassVar[tuple[str, ...]] = (
         "Timestamp (UTC)",
         "State",
-        "Active arm",
-        "Semantic gate",
-        "P90 intensity",
-        "Gated reward",
+        "Stimulus strategy",
+        _REWARD_LABELS.gate_title,
+        _REWARD_LABELS.p90_title,
+        _REWARD_LABELS.reward_title,
         "Frames in window",
         "Physiology",
     )
@@ -158,7 +160,7 @@ class EncountersTableModel(QAbstractTableModel):
                 return int(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             return int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         if role == Qt.ItemDataRole.ToolTipRole and col == 2:
-            # Full expected greeting on the arm column — table width stays tight.
+            # Full expected response text on the strategy column — table width stays tight.
             return row.expected_greeting or ""
         return None
 

@@ -232,7 +232,7 @@ class LiveSessionView(QWidget):
             ]
         )
 
-        self._trust_label = QLabel("Why this result was trusted", self)
+        self._trust_label = QLabel("Why this observed response counted", self)
         self._trust_label.setObjectName("PanelTitle")
         trust_layout = QVBoxLayout()
         trust_layout.setContentsMargins(0, 0, 0, 0)
@@ -450,7 +450,8 @@ class LiveSessionView(QWidget):
         self._live_analytics_notice.set_alert(AlertSeverity.INFO, message)
 
     def _apply_responsive_layout(self) -> None:
-        width = max(self.width(), self._scroll.viewport().width())
+        viewport_width = self._scroll.viewport().width()
+        width = viewport_width if viewport_width >= 320 else self.width()
         band = _LIVE_SESSION_BREAKPOINTS.band_for_width(width)
         self._dashboard_grid.apply_width(width)
         apply_table_column_policies(
@@ -786,17 +787,16 @@ class _CauseEffectPanel(QFrame):
         self._detail = QLabel("", self)
         self._detail.setObjectName("MetricCardSecondary")
         self._detail.setWordWrap(True)
-        self._response_card = MetricCard("Response signal", self)
         self._voice_card = MetricCard("Voice response", self)
         self._technical_card = MetricCard("Why it counted", self)
         self._grid = ResponsiveMetricGrid(
             breakpoints=_LIVE_SESSION_BREAKPOINTS,
-            columns=MetricGridColumns(wide=3, medium=2, narrow=1),
+            columns=MetricGridColumns(wide=2, medium=2, narrow=1),
             horizontal_spacing=10,
             vertical_spacing=10,
             parent=self,
         )
-        self._grid.set_widgets([self._response_card, self._voice_card, self._technical_card])
+        self._grid.set_widgets([self._voice_card, self._technical_card])
 
         top = QHBoxLayout()
         top.setContentsMargins(0, 0, 0, 0)
@@ -818,9 +818,6 @@ class _CauseEffectPanel(QFrame):
         self._status.set_text(display.status.value)
         self._headline.setText(display.headline)
         self._detail.setText(display.detail)
-        self._response_card.set_primary_text(display.response_summary)
-        self._response_card.set_secondary_text("derived from the response window")
-        self._response_card.set_status(display.status, None)
         self._voice_card.set_primary_text(display.voice_summary)
         self._voice_card.set_secondary_text("derived from stable voice coverage when available")
         self._voice_card.set_status(UiStatusKind.INFO, None)
@@ -1003,8 +1000,8 @@ class _StartSessionDialog(QDialog):
 class _SessionHeaderPanel(QFrame):
     """Header row: session readback, calibration pill, and lifecycle controls.
 
-    §4.C: arm and expected greeting come from the live-session DTO, not
-    from any encounter row. The calibration pill receives the centralized
+    §4.C: stimulus strategy and expected response text come from the
+    live-session DTO, not from any encounter row. The calibration pill receives the centralized
     console-readiness status. Start/end controls stay independent from
     calibration so AU12 readiness can only gate stimulus submission.
     """
@@ -1123,7 +1120,7 @@ class _EncounterDetailPanel(QFrame):
         self.setObjectName("Panel")
         self.setFrameShape(QFrame.Shape.NoFrame)
 
-        self._title = QLabel("Encounter detail", self)
+        self._title = QLabel("Stimulus-response detail", self)
         self._title.setObjectName("PanelTitle")
         self._subtitle = QLabel("No encounter selected.", self)
         self._subtitle.setObjectName("PanelSubtitle")
@@ -1231,7 +1228,7 @@ class _EncounterDetailPanel(QFrame):
         semantic_pill_row.addWidget(self._semantic_match_pill)
         semantic_pill_row.addStretch(1)
 
-        self._confidence_card = MetricCard("Confirmation confidence", self)
+        self._confidence_card = MetricCard("Stimulus confirmation confidence", self)
         self._attribution_finality_pill = StatusPill(self)
         self._soft_reward_card = MetricCard("Possible follow-up reward", self)
         self._au12_lifts_card = MetricCard("Response lift after stimulus", self)
@@ -1320,9 +1317,8 @@ class _EncounterDetailPanel(QFrame):
             f"Encounter {encounter.encounter_id} · {ts_text} · state {encounter.state.value}"
         )
         self._p90_card.set_primary_text(format_reward(encounter.p90_intensity))
-        self._p90_card.set_secondary_text(
-            f"confirmation confidence {format_semantic_confidence(encounter.semantic_confidence)}"
-        )
+        confidence = format_semantic_confidence(encounter.semantic_confidence)
+        self._p90_card.set_secondary_text(f"stimulus confirmation confidence {confidence}")
         self._p90_card.set_status(UiStatusKind.INFO, None)
 
         self._gate_card.set_primary_text(
@@ -1430,7 +1426,9 @@ class _EncounterDetailPanel(QFrame):
         )
 
         self._confidence_card.set_primary_text(detail.probability_confidence)
-        self._confidence_card.set_secondary_text("how sure the stimulus confirmation was")
+        self._confidence_card.set_secondary_text(
+            "confidence that the expected response was observed"
+        )
         self._confidence_card.set_status(method_status, None)
 
         self._soft_reward_card.set_primary_text(detail.soft_reward_candidate)

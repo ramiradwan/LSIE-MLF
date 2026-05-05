@@ -312,7 +312,7 @@ class ExperimentsView(QWidget):
             self._arms_card.set_status(UiStatusKind.INFO, None)
             return
         self._arms_card.set_secondary_text(
-            f"best recent reward {format_reward(best.recent_reward_mean)} · "
+            f"strongest recent reward {format_reward(best.recent_reward_mean)} · "
             f"strategy {best.arm_id} · "
             f"confirmed {format_percentage(best.recent_semantic_pass_rate, digits=0)}"
         )

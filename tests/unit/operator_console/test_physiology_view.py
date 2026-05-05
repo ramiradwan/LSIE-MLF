@@ -153,7 +153,7 @@ def test_physiology_view_comodulation_null_valid_renders_as_info() -> None:
     co_modulation_panel = view._co_modulation_summary_panel  # type: ignore[attr-defined]
     assert co_modulation_panel.accessibleName() == "Co-Modulation Index"
     assert co_modulation_panel._title.text() == "Co-Modulation Index"  # type: ignore[attr-defined]
-    assert "Vibe Sync" in co_modulation_panel._subtitle.text()  # type: ignore[attr-defined]
+    assert "Paired heart-data trends" in co_modulation_panel._subtitle.text()  # type: ignore[attr-defined]
     assert co_modulation_panel._status._kind is UiStatusKind.INFO  # type: ignore[attr-defined]
     assert co_modulation_panel._primary_card._secondary.text() == "Sync data accumulating"  # type: ignore[attr-defined]
     assert "insufficient aligned non-stale pairs" in co_modulation_panel._explanation.text()  # type: ignore[attr-defined]

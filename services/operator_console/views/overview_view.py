@@ -50,7 +50,7 @@ from packages.schemas.operator_console import (
 )
 from services.operator_console.formatters import (
     build_physiology_explanation,
-    format_duration,
+    format_active_session_readback,
     format_health_state,
     format_reward,
     format_semantic_gate,
@@ -58,7 +58,6 @@ from services.operator_console.formatters import (
     format_timestamp,
     physiology_labels,
     reward_detail_labels,
-    truncate_expected_greeting,
 )
 from services.operator_console.viewmodels.overview_vm import OverviewViewModel
 from services.operator_console.widgets.alert_banner import AlertBanner
@@ -217,15 +216,8 @@ class OverviewView(QWidget):
             return
         self._active_session_id = session.session_id
         self._active_session_card.set_clickable(True)
-        full_session_id = str(session.session_id)
         self._active_session_card.set_primary_text(format_session_id_compact(session.session_id))
-        strategy_part = session.active_arm if session.active_arm else "no active strategy"
-        greeting_part = truncate_expected_greeting(session.expected_greeting, limit=42)
-        duration_part = format_duration(session.duration_s)
-        self._active_session_card.set_secondary_text(
-            f"id {full_session_id} · strategy {strategy_part} · "
-            f"confirmation text “{greeting_part}” · {duration_part}"
-        )
+        self._active_session_card.set_secondary_text(format_active_session_readback(session))
         status_kind = (
             UiStatusKind.ERROR if session.status == _ACTIVE_CONFLICT_STATUS else UiStatusKind.OK
         )

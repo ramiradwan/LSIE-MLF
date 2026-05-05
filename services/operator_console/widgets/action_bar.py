@@ -30,6 +30,10 @@ from PySide6.QtWidgets import (
 )
 
 from packages.schemas.operator_console import StimulusActionState, UiStatusKind
+from services.operator_console.formatters import (
+    format_action_bar_session_context,
+    format_session_id_compact,
+)
 from services.operator_console.state import StimulusUiContext
 from services.operator_console.widgets.status_pill import StatusPill
 
@@ -85,6 +89,7 @@ class ActionBar(QWidget):
 
         self._session_label = QLabel("No session selected", self)
         self._session_label.setObjectName("ActionBarSession")
+        self._session_label.setWordWrap(True)
         self._greeting_label = QLabel("", self)
         self._greeting_label.setObjectName("ActionBarGreeting")
         self._greeting_label.setWordWrap(True)
@@ -172,10 +177,14 @@ class ActionBar(QWidget):
             self._submit_button.setEnabled(False)
             return
 
-        strategy_part = active_arm if active_arm else "no active strategy"
-        self._session_label.setText(f"Session {session_id} — strategy: {strategy_part}")
-        if expected_greeting:
-            self._greeting_label.setText(f"Confirmation text: “{expected_greeting}”")
+        session_display = format_action_bar_session_context(
+            session_id,
+            active_arm,
+            expected_greeting,
+        )
+        self._session_label.setText(self._session_header_text(session_display.session_text))
+        if session_display.expected_response_text is not None:
+            self._greeting_label.setText(session_display.expected_response_text)
             self._greeting_label.setVisible(True)
         else:
             self._greeting_label.setText("")
@@ -228,9 +237,25 @@ class ActionBar(QWidget):
         if self._compact_mode == compact:
             return
         self._compact_mode = compact
+        if self._session_id is None:
+            self._session_label.setText("No session selected")
+        else:
+            display = format_action_bar_session_context(
+                self._session_id,
+                self._active_arm,
+                self._expected_greeting,
+            )
+            self._session_label.setText(self._session_header_text(display.session_text))
         self._rebuild_layout()
 
     # ---- internals -----------------------------------------------------
+
+    def _session_header_text(self, wide_text: str) -> str:
+        if not self._compact_mode or self._session_id is None:
+            return wide_text
+        strategy_part = self._active_arm if self._active_arm else "no active strategy"
+        compact_session = format_session_id_compact(self._session_id)
+        return f"Session {compact_session} · stimulus strategy {strategy_part}"
 
     def _rebuild_layout(self) -> None:
         self._clear_layout(self._root_layout)

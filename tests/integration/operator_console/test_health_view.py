@@ -78,7 +78,7 @@ def test_health_view_renders_degraded_recovering_error_as_three_states() -> None
                     label="Worker",
                     state=HealthState.ERROR,
                     detail="GPU not available",
-                    operator_action_hint="restart worker container",
+                    operator_action_hint="restart local worker process",
                 ),
             ],
             subsystem_probes={

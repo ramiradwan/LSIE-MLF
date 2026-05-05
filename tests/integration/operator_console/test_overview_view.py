@@ -112,7 +112,8 @@ def test_overview_view_renders_seeded_store_end_to_end() -> None:
     assert primary.startswith(str(session_id)[:8])
     assert primary.endswith(str(session_id)[-4:])
     assert str(session_id) in secondary
-    assert "greeting_v2" in secondary
+    assert "stimulus strategy greeting_v2" in secondary
+    assert "expected response “hei rakas”" in secondary
     # Experiment card binds to the experiment label.
     assert "greeting line v2" in view._experiment_card._primary.text()  # type: ignore[attr-defined]
     # Health card binds to the overall OK state.

@@ -157,6 +157,14 @@ class RewardDetailLabels:
 
 
 @dataclass(frozen=True)
+class ActionBarSessionDisplay:
+    """Preformatted session context for the persistent stimulus rail."""
+
+    session_text: str
+    expected_response_text: str | None
+
+
+@dataclass(frozen=True)
 class PhysiologyLabels:
     """Static labels for physiology and co-modulation cards."""
 
@@ -583,7 +591,7 @@ def format_probability_confidence(confidence_score: float | None) -> str:
 
     if confidence_score is None:
         return _EM_DASH
-    return f"confirmation confidence {format_percentage(confidence_score, digits=0)}"
+    return format_percentage(confidence_score, digits=0)
 
 
 def format_semantic_match_label(is_match: bool | None) -> str:
@@ -668,7 +676,8 @@ def format_semantic_attribution_compact_summary(
     if semantic is not None:
         parts.append(f"stimulus confirmation {format_semantic_match_label(semantic.is_match)}")
         if semantic.confidence_score is not None:
-            parts.append(format_probability_confidence(semantic.confidence_score))
+            confidence = format_probability_confidence(semantic.confidence_score)
+            parts.append(f"stimulus confirmation confidence {confidence}")
     else:
         parts.append("stimulus confirmation absent")
 
@@ -881,6 +890,37 @@ def truncate_expected_greeting(greeting: str | None, *, limit: int = 60) -> str:
     if len(stripped) <= limit:
         return stripped
     return stripped[: max(0, limit - 1)] + "…"
+
+
+def format_active_session_readback(session: SessionSummary) -> str:
+    """Overview readback for the selected session's stimulus context."""
+
+    strategy_part = session.active_arm if session.active_arm else "no active strategy"
+    expected_response = truncate_expected_greeting(session.expected_greeting, limit=42)
+    return (
+        f"id {session.session_id} · stimulus strategy {strategy_part} · "
+        f"expected response “{expected_response}” · {format_duration(session.duration_s)}"
+    )
+
+
+def format_action_bar_session_context(
+    session_id: UUID,
+    active_arm: str | None,
+    expected_greeting: str | None,
+) -> ActionBarSessionDisplay:
+    """Action rail readback for the current stimulus strategy."""
+
+    strategy_part = active_arm if active_arm else "no active strategy"
+    expected_response = truncate_expected_greeting(expected_greeting, limit=80)
+    response_text = (
+        None
+        if expected_greeting is None or not expected_greeting.strip()
+        else (f"Expected response: “{expected_response}”")
+    )
+    return ActionBarSessionDisplay(
+        session_text=f"Session {session_id} — stimulus strategy: {strategy_part}",
+        expected_response_text=response_text,
+    )
 
 
 def format_session_id_compact(session_id: UUID | str | None) -> str:

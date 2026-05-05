@@ -179,7 +179,7 @@ class _CoModulationSummaryPanel(QFrame):
         self._title = QLabel("Co-Modulation Index", self)
         self._title.setObjectName("PanelTitle")
         self._subtitle = QLabel(
-            "Vibe Sync: paired heart-data trends from the current session.",
+            "Paired heart-data trends from the current session.",
             self,
         )
         self._subtitle.setObjectName("PanelSubtitle")

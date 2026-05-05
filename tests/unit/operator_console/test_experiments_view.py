@@ -98,7 +98,7 @@ def test_experiments_view_populates_cards_on_detail() -> None:
     secondary = view._active_arm_card._secondary.text()  # type: ignore[attr-defined]
     assert "positive history" in secondary and "miss history" in secondary
     arms_secondary = view._arms_card._secondary.text()  # type: ignore[attr-defined]
-    assert "best recent reward" in arms_secondary
+    assert "strongest recent reward" in arms_secondary
     assert "strategy a1" in arms_secondary
     assert "confirmed" in arms_secondary
 

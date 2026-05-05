@@ -45,6 +45,8 @@ from services.operator_console.formatters import (
     format_acoustic_validity,
     format_acoustic_validity_pill,
     format_acoustic_voiced_coverage,
+    format_action_bar_session_context,
+    format_active_session_readback,
     format_attribution_finality_label,
     format_au12_lift_metrics,
     format_au12_peak_latency,
@@ -162,7 +164,7 @@ class TestSemanticAttributionDiagnostics:
         assert format_bounded_reason_code_label(None) == "—"
 
     def test_probability_finality_soft_reward_and_lag_labels(self) -> None:
-        assert format_probability_confidence(0.834) == "confirmation confidence 83%"
+        assert format_probability_confidence(0.834) == "83%"
         assert format_probability_confidence(None) == "—"
         assert format_attribution_finality_label("online_provisional") == "online provisional"
         assert format_attribution_finality_label("offline_final") == "offline final"
@@ -211,7 +213,7 @@ class TestSemanticAttributionDiagnostics:
         assert display.has_diagnostics is True
         assert display.semantic_method == "local stimulus confirmation checker · ce-v1"
         assert display.bounded_reason_code == "Stimulus was clearly confirmed"
-        assert display.probability_confidence == "confirmation confidence 91%"
+        assert display.probability_confidence == "91%"
         assert display.match_result == "match"
         assert display.attribution_finality == "offline final"
         assert "do not change the reward" in display.observational_note
@@ -852,8 +854,8 @@ class TestHealthRendering:
 
     def test_error_maps_to_error_status(self) -> None:
         row = HealthSubsystemStatus(
-            subsystem_key="db",
-            label="PostgreSQL",
+            subsystem_key="analytics_state_worker",
+            label="Analytics state worker",
             state=HealthState.ERROR,
         )
         assert ui_status_for_health(row) is UiStatusKind.ERROR
@@ -879,6 +881,62 @@ class TestHealthRendering:
         assert "recovery: backoff 5s" in text
         assert "monitor quota" in text
         assert "2026-04-17" in text
+
+
+# ----------------------------------------------------------------------
+# Session stimulus context
+# ----------------------------------------------------------------------
+
+
+class TestSessionStimulusContext:
+    def test_active_session_readback_uses_stimulus_response_language(self) -> None:
+        session = SessionSummary(
+            session_id=_SESSION_ID,
+            status="active",
+            started_at_utc=_utc(2026, 4, 17, 12, 0),
+            active_arm="greeting_v1",
+            expected_greeting="hei rakas",
+            duration_s=65.0,
+        )
+
+        text = format_active_session_readback(session)
+
+        assert f"id {_SESSION_ID}" in text
+        assert "stimulus strategy greeting_v1" in text
+        assert "expected response “hei rakas”" in text
+        assert "1m 5s" in text
+
+    def test_active_session_readback_handles_missing_strategy_and_response(self) -> None:
+        session = SessionSummary(
+            session_id=_SESSION_ID,
+            status="active",
+            started_at_utc=_utc(2026, 4, 17, 12, 0),
+            duration_s=None,
+        )
+
+        text = format_active_session_readback(session)
+
+        assert "stimulus strategy no active strategy" in text
+        assert "expected response “—”" in text
+        assert text.endswith("—")
+
+    def test_action_bar_context_splits_session_and_expected_response(self) -> None:
+        display = format_action_bar_session_context(
+            _SESSION_ID,
+            "greeting_v1",
+            "hei rakas",
+        )
+
+        assert display.session_text == f"Session {_SESSION_ID} — stimulus strategy: greeting_v1"
+        assert display.expected_response_text == "Expected response: “hei rakas”"
+
+    def test_action_bar_context_hides_blank_expected_response(self) -> None:
+        display = format_action_bar_session_context(_SESSION_ID, None, "   ")
+
+        assert display.session_text == (
+            f"Session {_SESSION_ID} — stimulus strategy: no active strategy"
+        )
+        assert display.expected_response_text is None
 
 
 # ----------------------------------------------------------------------

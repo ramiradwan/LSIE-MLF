@@ -85,7 +85,7 @@ def test_row_count_ignores_valid_parent() -> None:
 def test_display_semantic_gate_reads_closed_when_zero() -> None:
     model = EncountersTableModel()
     model.set_rows([_make_encounter("e1", semantic_gate=0)])
-    idx = model.index(0, 3)  # Semantic gate
+    idx = model.index(0, 3)  # Stimulus confirmed?
     assert "held back" in model.data(idx, Qt.ItemDataRole.DisplayRole)
 
 
@@ -116,6 +116,10 @@ def test_header_data_returns_column_label() -> None:
     model = EncountersTableModel()
     label = model.headerData(0, Qt.Orientation.Horizontal, Qt.ItemDataRole.DisplayRole)
     assert "Timestamp" in label
+    assert model.headerData(2, Qt.Orientation.Horizontal) == "Stimulus strategy"
+    assert model.headerData(3, Qt.Orientation.Horizontal) == "Stimulus confirmed?"
+    assert model.headerData(4, Qt.Orientation.Horizontal) == "Strongest response signal"
+    assert model.headerData(5, Qt.Orientation.Horizontal) == "Reward used"
 
 
 def test_header_data_vertical_returns_row_number() -> None:

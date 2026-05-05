@@ -5,8 +5,8 @@ concerns:
 
   1. The paired `EncountersTableModel`, updated whenever the store's
      `encounters_changed` fires, without losing operator selection.
-  2. The authoritative arm/greeting, read from the store's live-session
-     DTO (never from the last row of the table — rows are historical
+  2. The authoritative stimulus strategy / expected response text, read
+     from the store's live-session DTO (never from the last row of the table — rows are historical
      and the header can update independently when a new §4.C stimulus
      lands).
   3. The stimulus action-bar lifecycle, driven by a `StimulusUiContext`
@@ -20,7 +20,7 @@ concerns:
      read-back, not from the operator's click wall clock.
   5. Session lifecycle controls (`start` / `end`) dispatched through
      the coordinator's one-shot API path. The console stays API-only;
-     no direct operator-host Postgres/Redis coupling is introduced.
+     no direct operator-host local-state coupling is introduced.
 
 Spec references:
   §4.C           — `_active_arm`, `_expected_greeting`, authoritative

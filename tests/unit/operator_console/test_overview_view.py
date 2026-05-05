@@ -127,8 +127,8 @@ def test_overview_view_populates_all_cards_from_snapshot() -> None:
     assert active_primary.endswith(str(session.session_id)[-4:])
     active_secondary = view._active_session_card._secondary.text()  # type: ignore[attr-defined]
     assert str(session.session_id) in active_secondary
-    assert "strategy greeting_v1" in active_secondary
-    assert "confirmation text" in active_secondary
+    assert "stimulus strategy greeting_v1" in active_secondary
+    assert "expected response" in active_secondary
     assert "active strategy" not in view._experiment_card._secondary.text()  # type: ignore[attr-defined]
     assert "greeting line v1" in view._experiment_card._primary.text()  # type: ignore[attr-defined]
     assert "ok" in view._health_card._primary.text()  # type: ignore[attr-defined]
@@ -139,7 +139,7 @@ def test_overview_view_populates_all_cards_from_snapshot() -> None:
     assert "reward" in view._latest_encounter_card._primary.text()  # type: ignore[attr-defined]
     assert "Stimulus confirmed? yes" in latest_secondary
     assert "stimulus confirmation" in latest_secondary
-    assert "confirmation confidence 91%" in latest_secondary
+    assert "stimulus confirmation confidence 91%" in latest_secondary
     assert "follow-up signals online provisional" in latest_secondary
 
 

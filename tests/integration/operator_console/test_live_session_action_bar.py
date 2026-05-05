@@ -118,6 +118,8 @@ def test_action_bar_disables_submit_while_stimulus_submitting() -> None:
     bar.set_session_context(session.session_id, session.active_arm, session.expected_greeting)
     # Idle state — the button is enabled because a session is bound.
     assert bar._submit_button.isEnabled() is True  # type: ignore[attr-defined]
+    assert "stimulus strategy: greeting_v1" in bar._session_label.text()  # type: ignore[attr-defined]
+    assert bar._greeting_label.text() == "Expected response: “hei rakas”"  # type: ignore[attr-defined]
 
     # Submitting lands on the bar through the store → shell wiring.
     bar.set_action_state(

@@ -1365,8 +1365,8 @@ def test_health_vm_surfaces_probe_rows_without_touching_alerts() -> None:
     store = OperatorStore()
     vm = HealthViewModel(store, HealthTableModel(), AlertsTableModel())
     probe = HealthSubsystemProbe(
-        subsystem_key="redis",
-        label="Redis Broker",
+        subsystem_key="ui_api_shell",
+        label="UI API shell",
         state=HealthProbeState.OK,
         latency_ms=2.0,
         checked_at_utc=_NOW,
@@ -1386,15 +1386,15 @@ def test_health_vm_orders_keyed_probe_rows_locally() -> None:
     store = OperatorStore()
     vm = HealthViewModel(store, HealthTableModel(), AlertsTableModel())
     redis_probe = HealthSubsystemProbe(
-        subsystem_key="redis",
-        label="Redis Broker",
+        subsystem_key="ui_api_shell",
+        label="UI API shell",
         state=HealthProbeState.OK,
         latency_ms=2.0,
         checked_at_utc=_NOW,
     )
     postgres_probe = HealthSubsystemProbe(
-        subsystem_key="postgres",
-        label="Postgres",
+        subsystem_key="analytics_state_worker",
+        label="Analytics state worker",
         state=HealthProbeState.OK,
         latency_ms=1.0,
         checked_at_utc=_NOW,
@@ -1418,8 +1418,8 @@ def test_health_vm_orders_keyed_probe_rows_locally() -> None:
     )
 
     assert [probe.subsystem_key for probe in vm.subsystem_probes()] == [
-        "postgres",
-        "redis",
+        "analytics_state_worker",
+        "ui_api_shell",
         "zz_custom",
     ]
 

@@ -387,7 +387,8 @@ class HealthView(QWidget):
         )
 
     def _apply_responsive_layout(self) -> None:
-        width = max(self.width(), self._scroll.viewport().width())
+        viewport_width = self._scroll.viewport().width()
+        width = viewport_width if viewport_width >= 320 else self.width()
         band = _HEALTH_BREAKPOINTS.band_for_width(width)
         self._probe_matrix.set_width_band(band)
         apply_table_column_policies(

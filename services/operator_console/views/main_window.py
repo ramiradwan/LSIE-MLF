@@ -377,9 +377,9 @@ class MainWindow(QMainWindow):
         self._update_action_bar_context()
 
     def _update_action_bar_context(self) -> None:
-        """Push session / arm / greeting and safe-submit readiness into the ActionBar.
+        """Push session stimulus context and safe-submit readiness into the ActionBar.
 
-        The bar is only populated with arm/greeting/readiness when the
+        The bar is only populated with stimulus context/readiness when the
         live-session DTO we have on hand describes the selected session;
         readiness is the console-level threshold check, not the worker's
         authoritative ``is_calibrating`` lifecycle flag.
