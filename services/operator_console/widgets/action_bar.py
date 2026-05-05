@@ -38,11 +38,11 @@ from services.operator_console.widgets.status_pill import StatusPill
 # mapping is UI-semantic, not operator-language; formatters are about
 # translating DTO values, not widget internal states.
 _BUTTON_LABEL: dict[StimulusActionState, str] = {
-    StimulusActionState.IDLE: "Send Test Message",
+    StimulusActionState.IDLE: "Send Stimulus",
     StimulusActionState.SUBMITTING: "Sending…",
     StimulusActionState.ACCEPTED: "Accepted",
     StimulusActionState.MEASURING: "Measuring…",
-    StimulusActionState.COMPLETED: "Send Test Message",
+    StimulusActionState.COMPLETED: "Send Stimulus",
     StimulusActionState.FAILED: "Retry",
 }
 
@@ -91,6 +91,8 @@ class ActionBar(QWidget):
 
         self._note_input = QLineEdit(self)
         self._note_input.setObjectName("ActionBarNote")
+        self._note_input.setAccessibleName("Operator note")
+        self._note_input.setAccessibleDescription("Optional note sent with the stimulus.")
         self._note_input.setPlaceholderText("Optional operator note…")
         # §4.C stimulus may be dispatched from keyboard: return triggers submit.
         self._note_input.returnPressed.connect(self._on_submit_clicked)
@@ -100,6 +102,10 @@ class ActionBar(QWidget):
             self,
         )
         self._submit_button.setObjectName("ActionBarSubmit")
+        self._submit_button.setAccessibleName("Send stimulus")
+        self._submit_button.setAccessibleDescription(
+            "Sends the current stimulus when the session is ready."
+        )
         self._submit_button.setEnabled(False)  # no session yet
         self._submit_button.clicked.connect(self._on_submit_clicked)
 
@@ -166,10 +172,10 @@ class ActionBar(QWidget):
             self._submit_button.setEnabled(False)
             return
 
-        arm_part = active_arm if active_arm else "no active arm"
-        self._session_label.setText(f"Session {session_id} — arm: {arm_part}")
+        strategy_part = active_arm if active_arm else "no active strategy"
+        self._session_label.setText(f"Session {session_id} — strategy: {strategy_part}")
         if expected_greeting:
-            self._greeting_label.setText(f"Expected greeting: “{expected_greeting}”")
+            self._greeting_label.setText(f"Confirmation text: “{expected_greeting}”")
             self._greeting_label.setVisible(True)
         else:
             self._greeting_label.setText("")
@@ -297,13 +303,8 @@ class ActionBar(QWidget):
             return False
         return _BUTTON_ENABLED[self._current_state()]
 
-    # ---- keyboard shortcut hook ---------------------------------------
+    # ---- keyboard focus hook -------------------------------------------
 
     def focus_note_input(self) -> None:
-        """Give keyboard focus to the operator-note input.
-
-        The main window wires a global shortcut (e.g. Ctrl+Enter)
-        to this method so the operator can stimulate without leaving
-        the keyboard.
-        """
+        """Give keyboard focus to the operator-note input."""
         self._note_input.setFocus(Qt.FocusReason.ShortcutFocusReason)

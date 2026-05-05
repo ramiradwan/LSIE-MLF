@@ -87,6 +87,7 @@ class _NavEntry:
 
     route: AppRoute
     label: str
+    description: str
 
 
 # Declaration order is also rendering order in the sidebar and the stack.
@@ -94,12 +95,12 @@ class _NavEntry:
 # Live Session (the active action surface), then drill-downs, then the
 # historical Sessions page last.
 _NAV_SPEC: tuple[_NavEntry, ...] = (
-    _NavEntry(AppRoute.OVERVIEW, "Overview"),
-    _NavEntry(AppRoute.LIVE_SESSION, "Live Session"),
-    _NavEntry(AppRoute.EXPERIMENTS, "Experiments"),
-    _NavEntry(AppRoute.PHYSIOLOGY, "Physiology"),
-    _NavEntry(AppRoute.HEALTH, "Health"),
-    _NavEntry(AppRoute.SESSIONS, "Sessions"),
+    _NavEntry(AppRoute.OVERVIEW, "Overview", "Open the at-a-glance operator overview."),
+    _NavEntry(AppRoute.LIVE_SESSION, "Live Session", "Open the active stimulus workflow."),
+    _NavEntry(AppRoute.EXPERIMENTS, "Experiments", "Open stimulus strategy management."),
+    _NavEntry(AppRoute.PHYSIOLOGY, "Physiology", "Open derived heart-data and sync signals."),
+    _NavEntry(AppRoute.HEALTH, "Health", "Open readiness checks and operator actions."),
+    _NavEntry(AppRoute.SESSIONS, "Sessions", "Open recent sessions history."),
 )
 _INITIAL_ROUTE = AppRoute.LIVE_SESSION
 _MIN_WINDOW_WIDTH = 900
@@ -286,6 +287,9 @@ class MainWindow(QMainWindow):
         for index, entry in enumerate(_NAV_SPEC):
             btn = QPushButton(entry.label, sidebar)
             btn.setObjectName("NavButton")
+            btn.setAccessibleName(entry.label)
+            btn.setAccessibleDescription(entry.description)
+            btn.setToolTip(entry.description)
             btn.setCheckable(True)
             if entry.route is _INITIAL_ROUTE:
                 btn.setChecked(True)

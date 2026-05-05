@@ -11,7 +11,8 @@ from datetime import UTC, datetime
 from typing import cast
 
 import pytest
-from PySide6.QtWidgets import QWidget
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QHeaderView, QWidget
 
 from packages.schemas.operator_console import ArmSummary, ExperimentDetail
 from services.operator_console.state import OperatorStore
@@ -82,7 +83,8 @@ def test_experiments_view_shows_empty_state_when_no_detail() -> None:
     # Offscreen QPA: parents aren't shown, so `isVisible()` is False. Read
     # the local hide flag instead.
     assert view._empty_state.isHidden() is False  # type: ignore[attr-defined]
-    assert view._body_container.isHidden() is True  # type: ignore[attr-defined]
+    assert view._scroll.isHidden() is True  # type: ignore[attr-defined]
+    assert view._scroll.widget() is view._body_container  # type: ignore[attr-defined]
 
 
 def test_experiments_view_populates_cards_on_detail() -> None:
@@ -91,18 +93,64 @@ def test_experiments_view_populates_cards_on_detail() -> None:
     # Experiment card shows the human label and id as secondary.
     assert "greeting v1" in view._experiment_card._primary.text()  # type: ignore[attr-defined]
     assert "exp-42" in view._experiment_card._secondary.text()  # type: ignore[attr-defined]
-    # Active arm card shows the arm id and plain-language posterior summary.
+    # Active strategy card shows the id and plain-language posterior summary.
     assert view._active_arm_card._primary.text() == "a1"  # type: ignore[attr-defined]
     secondary = view._active_arm_card._secondary.text()  # type: ignore[attr-defined]
     assert "positive history" in secondary and "miss history" in secondary
-    # Arms card lists best-recent arm in the secondary line.
     arms_secondary = view._arms_card._secondary.text()  # type: ignore[attr-defined]
-    assert "a1" in arms_secondary  # a1 has the higher recent reward
+    assert "best recent reward" in arms_secondary
+    assert "strategy a1" in arms_secondary
+    assert "confirmed" in arms_secondary
+
+
+def test_experiments_view_strategy_evidence_panel_ranks_active_arm() -> None:
+    view, store = _view()
+    assert view._strategy_panel.accessibleName() == "Strategy evidence"  # type: ignore[attr-defined]
+    store.set_experiment(_detail())
+
+    cards = view._strategy_panel._cards  # type: ignore[attr-defined]
+    assert cards[0]._title.text() == "a1"  # type: ignore[attr-defined]
+    assert "Active · Lower uncertainty so far" in cards[0]._primary.text()  # type: ignore[attr-defined]
+    assert "stimulus confirmed 60%" in cards[0]._secondary.text()  # type: ignore[attr-defined]
+    assert "Confirmation text: Hei a1" in cards[0]._secondary.text()  # type: ignore[attr-defined]
+    assert cards[0]._status._label.text() == "active"  # type: ignore[attr-defined]
+
+
+def test_experiments_view_strategy_evidence_panel_handles_sparse_disabled_arm() -> None:
+    view, store = _view()
+    store.set_experiment(
+        ExperimentDetail(
+            experiment_id="exp-sparse",
+            label="sparse",
+            active_arm_id="new",
+            arms=[
+                _arm(
+                    "new",
+                    recent_reward=None,
+                    recent_pass=None,
+                    selection_count=0,
+                ),
+                _arm(
+                    "off",
+                    recent_reward=None,
+                    recent_pass=None,
+                    selection_count=0,
+                    enabled=False,
+                ),
+            ],
+            last_updated_utc=_NOW,
+        )
+    )
+
+    cards = view._strategy_panel._cards  # type: ignore[attr-defined]
+    assert "Active · Needs first try" in cards[0]._primary.text()  # type: ignore[attr-defined]
+    assert "No recent outcome yet" in cards[0]._secondary.text()  # type: ignore[attr-defined]
+    assert cards[1]._primary.text() == "Disabled"  # type: ignore[attr-defined]
 
 
 def test_experiments_view_active_arm_missing_surfaces_warn() -> None:
     view, store = _view()
-    # Active arm id not present in the arm list — surface as WARN.
+    # Active strategy id not present in the strategy list — surface as WARN.
     detail = _detail(active_arm_id="ghost")
     store.set_experiment(detail)
     assert view._active_arm_card._primary.text() == "ghost"  # type: ignore[attr-defined]
@@ -136,9 +184,27 @@ def test_experiments_view_add_arm_button_follows_loaded_detail_and_inputs() -> N
     panel = view._manage_panel  # type: ignore[attr-defined]
     store.set_experiment(_detail())
     assert panel._add_button.isEnabled() is False  # type: ignore[attr-defined]
+    assert panel._add_button.text() == "Add strategy"  # type: ignore[attr-defined]
+    assert "neutral starting history" in panel._add_button.toolTip()  # type: ignore[attr-defined]
     panel._add_arm_id.setText("a3")  # type: ignore[attr-defined]
     panel._add_greeting.setText("Hei uusi")  # type: ignore[attr-defined]
     assert panel._add_button.isEnabled() is True  # type: ignore[attr-defined]
+
+
+def test_experiments_manage_panel_labels_write_fields() -> None:
+    view, _store = _view()
+    panel = view._manage_panel  # type: ignore[attr-defined]
+
+    assert panel._create_experiment_id_label.buddy() is panel._create_experiment_id  # type: ignore[attr-defined]
+    assert panel._create_label_label.buddy() is panel._create_label  # type: ignore[attr-defined]
+    assert panel._create_arm_id_label.buddy() is panel._create_arm_id  # type: ignore[attr-defined]
+    assert panel._create_greeting_label.buddy() is panel._create_greeting  # type: ignore[attr-defined]
+    assert panel._add_arm_id_label.buddy() is panel._add_arm_id  # type: ignore[attr-defined]
+    assert panel._add_greeting_label.buddy() is panel._add_greeting  # type: ignore[attr-defined]
+    assert panel._create_arm_id.accessibleName() == "Initial strategy ID"  # type: ignore[attr-defined]
+    assert "stimulus strategy" in panel._create_arm_id.accessibleDescription()  # type: ignore[attr-defined]
+    assert panel._add_greeting.accessibleName() == "Confirmation text"  # type: ignore[attr-defined]
+    assert "host reacted" in panel._add_greeting.accessibleDescription()  # type: ignore[attr-defined]
 
 
 def test_experiments_view_reflects_rename_disable_create_readback() -> None:
@@ -169,8 +235,11 @@ def test_experiments_view_narrow_width_reflows_cards_and_table() -> None:
     view, store = _view()
     store.set_experiment(_detail())
 
+    view.resize(620, 520)
     view._apply_responsive_layout(620)  # type: ignore[attr-defined]
 
+    assert view._scroll.isHidden() is False  # type: ignore[attr-defined]
+    assert view._scroll.widget() is view._body_container  # type: ignore[attr-defined]
     assert view._cards_grid.current_band() is ResponsiveWidthBand.NARROW  # type: ignore[attr-defined]
     assert view._cards_grid.column_count() == 1  # type: ignore[attr-defined]
     table = view._table  # type: ignore[attr-defined]
@@ -185,6 +254,24 @@ def test_experiments_view_narrow_width_reflows_cards_and_table() -> None:
     assert table.isColumnHidden(8) is True
 
 
+def test_experiments_view_wide_width_shows_friendly_learning_headers() -> None:
+    view, store = _view()
+    store.set_experiment(_detail())
+
+    view._apply_responsive_layout(1200)  # type: ignore[attr-defined]
+
+    table = view._table  # type: ignore[attr-defined]
+    model = table.model()
+    assert model is not None
+    assert table.isColumnHidden(1) is False
+    assert table.isColumnHidden(8) is False
+    assert model.headerData(1, Qt.Orientation.Horizontal) == "Confirmation text"
+    assert model.headerData(8, Qt.Orientation.Horizontal) == "Recent stimulus confirmed"
+    header = table.horizontalHeader()
+    assert header.sectionResizeMode(1) == QHeaderView.ResizeMode.Stretch
+    assert header.sectionResizeMode(8) == QHeaderView.ResizeMode.ResizeToContents
+
+
 def test_experiments_manage_panel_reflows_for_medium_and_narrow_widths() -> None:
     view, _store = _view()
     panel = view._manage_panel  # type: ignore[attr-defined]
@@ -192,21 +279,33 @@ def test_experiments_manage_panel_reflows_for_medium_and_narrow_widths() -> None
     panel.apply_responsive_width(900)
     create_row = panel._create_row  # type: ignore[attr-defined]
     add_row = panel._add_row  # type: ignore[attr-defined]
-    assert _grid_widget(create_row, 0, 0) is panel._create_experiment_id  # type: ignore[attr-defined]
-    assert _grid_widget(create_row, 0, 1) is panel._create_label  # type: ignore[attr-defined]
-    assert _grid_widget(create_row, 1, 0) is panel._create_arm_id  # type: ignore[attr-defined]
-    assert _grid_widget(create_row, 1, 1) is panel._create_greeting  # type: ignore[attr-defined]
-    assert _grid_widget(create_row, 2, 0) is panel._create_button  # type: ignore[attr-defined]
-    assert _grid_widget(add_row, 0, 0) is panel._add_arm_id  # type: ignore[attr-defined]
-    assert _grid_widget(add_row, 0, 1) is panel._add_greeting  # type: ignore[attr-defined]
-    assert _grid_widget(add_row, 1, 0) is panel._add_button  # type: ignore[attr-defined]
+    assert _grid_widget(create_row, 0, 0) is panel._create_experiment_id_label  # type: ignore[attr-defined]
+    assert _grid_widget(create_row, 0, 1) is panel._create_label_label  # type: ignore[attr-defined]
+    assert _grid_widget(create_row, 1, 0) is panel._create_experiment_id  # type: ignore[attr-defined]
+    assert _grid_widget(create_row, 1, 1) is panel._create_label  # type: ignore[attr-defined]
+    assert _grid_widget(create_row, 2, 0) is panel._create_arm_id_label  # type: ignore[attr-defined]
+    assert _grid_widget(create_row, 2, 1) is panel._create_greeting_label  # type: ignore[attr-defined]
+    assert _grid_widget(create_row, 3, 0) is panel._create_arm_id  # type: ignore[attr-defined]
+    assert _grid_widget(create_row, 3, 1) is panel._create_greeting  # type: ignore[attr-defined]
+    assert _grid_widget(create_row, 4, 0) is panel._create_button  # type: ignore[attr-defined]
+    assert _grid_widget(add_row, 0, 0) is panel._add_arm_id_label  # type: ignore[attr-defined]
+    assert _grid_widget(add_row, 0, 1) is panel._add_greeting_label  # type: ignore[attr-defined]
+    assert _grid_widget(add_row, 1, 0) is panel._add_arm_id  # type: ignore[attr-defined]
+    assert _grid_widget(add_row, 1, 1) is panel._add_greeting  # type: ignore[attr-defined]
+    assert _grid_widget(add_row, 2, 0) is panel._add_button  # type: ignore[attr-defined]
 
     panel.apply_responsive_width(620)
-    assert _grid_widget(create_row, 0, 0) is panel._create_experiment_id  # type: ignore[attr-defined]
-    assert _grid_widget(create_row, 1, 0) is panel._create_label  # type: ignore[attr-defined]
-    assert _grid_widget(create_row, 2, 0) is panel._create_arm_id  # type: ignore[attr-defined]
-    assert _grid_widget(create_row, 3, 0) is panel._create_greeting  # type: ignore[attr-defined]
-    assert _grid_widget(create_row, 4, 0) is panel._create_button  # type: ignore[attr-defined]
-    assert _grid_widget(add_row, 0, 0) is panel._add_arm_id  # type: ignore[attr-defined]
-    assert _grid_widget(add_row, 1, 0) is panel._add_greeting  # type: ignore[attr-defined]
-    assert _grid_widget(add_row, 2, 0) is panel._add_button  # type: ignore[attr-defined]
+    assert _grid_widget(create_row, 0, 0) is panel._create_experiment_id_label  # type: ignore[attr-defined]
+    assert _grid_widget(create_row, 1, 0) is panel._create_experiment_id  # type: ignore[attr-defined]
+    assert _grid_widget(create_row, 2, 0) is panel._create_label_label  # type: ignore[attr-defined]
+    assert _grid_widget(create_row, 3, 0) is panel._create_label  # type: ignore[attr-defined]
+    assert _grid_widget(create_row, 4, 0) is panel._create_arm_id_label  # type: ignore[attr-defined]
+    assert _grid_widget(create_row, 5, 0) is panel._create_arm_id  # type: ignore[attr-defined]
+    assert _grid_widget(create_row, 6, 0) is panel._create_greeting_label  # type: ignore[attr-defined]
+    assert _grid_widget(create_row, 7, 0) is panel._create_greeting  # type: ignore[attr-defined]
+    assert _grid_widget(create_row, 8, 0) is panel._create_button  # type: ignore[attr-defined]
+    assert _grid_widget(add_row, 0, 0) is panel._add_arm_id_label  # type: ignore[attr-defined]
+    assert _grid_widget(add_row, 1, 0) is panel._add_arm_id  # type: ignore[attr-defined]
+    assert _grid_widget(add_row, 2, 0) is panel._add_greeting_label  # type: ignore[attr-defined]
+    assert _grid_widget(add_row, 3, 0) is panel._add_greeting  # type: ignore[attr-defined]
+    assert _grid_widget(add_row, 4, 0) is panel._add_button  # type: ignore[attr-defined]

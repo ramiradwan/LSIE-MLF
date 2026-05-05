@@ -28,6 +28,8 @@ class SectionHeader(QWidget):
         self._subtitle.setObjectName("SectionHeaderSubtitle")
         self._subtitle.setWordWrap(True)
         self._subtitle.setVisible(bool(subtitle))
+        self.setAccessibleName(title)
+        self.setAccessibleDescription(subtitle or "")
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -37,7 +39,9 @@ class SectionHeader(QWidget):
 
     def set_title(self, title: str) -> None:
         self._title.setText(title)
+        self.setAccessibleName(title)
 
     def set_subtitle(self, subtitle: str | None) -> None:
         self._subtitle.setText(subtitle or "")
         self._subtitle.setVisible(bool(subtitle))
+        self.setAccessibleDescription(subtitle or "")

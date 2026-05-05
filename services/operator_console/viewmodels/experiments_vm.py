@@ -30,6 +30,10 @@ from packages.schemas.experiments import (
     ExperimentCreateRequest,
 )
 from packages.schemas.operator_console import ExperimentDetail
+from services.operator_console.formatters import (
+    StrategyEvidenceDisplay,
+    build_strategy_evidence_display,
+)
 from services.operator_console.state import OperatorStore
 from services.operator_console.table_models.experiments_table_model import (
     ExperimentsTableModel,
@@ -105,6 +109,11 @@ class ExperimentsViewModel(ViewModelBase):
             return "No experiment update yet."
         return detail.last_update_summary
 
+    def strategy_evidence(self) -> list[StrategyEvidenceDisplay]:
+        """Display-ready current strategy evidence from exposed arm summaries."""
+
+        return build_strategy_evidence_display(self._store.experiment())
+
     # ------------------------------------------------------------------
     # Management commands — emit intents, coordinator performs writes
     # ------------------------------------------------------------------
@@ -124,7 +133,7 @@ class ExperimentsViewModel(ViewModelBase):
         if not all(
             (normalized_experiment_id, normalized_label, normalized_arm, normalized_greeting)
         ):
-            self.set_error("Experiment id, label, arm id, and greeting are required.")
+            self.set_error("Experiment id, label, arm id, and confirmation text are required.")
             return False
         try:
             request = ExperimentCreateRequest(
@@ -153,7 +162,7 @@ class ExperimentsViewModel(ViewModelBase):
         normalized_arm = arm_id.strip()
         normalized_greeting = greeting_text.strip()
         if not normalized_arm or not normalized_greeting:
-            self.set_error("Arm id and greeting are required.")
+            self.set_error("Arm id and confirmation text are required.")
             return False
         try:
             request = ExperimentArmCreateRequest(
@@ -179,7 +188,7 @@ class ExperimentsViewModel(ViewModelBase):
             return False
         normalized_greeting = greeting_text.strip()
         if not normalized_greeting:
-            self.set_error("Greeting text is required.")
+            self.set_error("Confirmation text is required.")
             return False
         if normalized_greeting == arm.greeting_text:
             self.set_error(None)

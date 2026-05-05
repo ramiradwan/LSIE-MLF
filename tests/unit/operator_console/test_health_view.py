@@ -78,12 +78,15 @@ def test_health_view_empty_until_snapshot_set() -> None:
     view, _store = _view()
     assert view._empty_state.isHidden() is False
     assert view._scroll.isHidden() is True
-    assert "desktop process graph" in view._empty_state._message.text().lower()
+    assert "first readiness update" in view._empty_state._message.text().lower()
 
 
 def test_health_view_repair_button_tracks_action_binding() -> None:
     view, vm, store = _view_with_vm()
     assert view._repair_button.isEnabled() is False
+    assert view._repair_button.accessibleName() == "Repair install"
+    assert "desktop.sqlite" in view._repair_button.accessibleDescription()
+    assert view._repair_status.accessibleName() == "Repair status"
     vm.bind_repair_action(lambda: OneShotSignals())
     store.set_health(_snapshot(HealthState.OK))
 
@@ -105,6 +108,7 @@ def test_health_view_repair_click_invokes_bound_action() -> None:
     assert calls == ["repair"]
     assert view._repair_status.isHidden() is False
     assert view._repair_status.text() == "Repair requested"
+    assert view._repair_status.accessibleDescription() == "Repair requested"
 
 
 def test_health_view_renders_ok_snapshot() -> None:
@@ -165,10 +169,10 @@ def test_health_view_error_card_surfaces_operator_action_hint() -> None:
             errors=1,
             subsystems=[
                 HealthSubsystemStatus(
-                    subsystem_key="worker",
-                    label="Worker",
+                    subsystem_key="gpu_ml_worker",
+                    label="GPU ML worker",
                     state=HealthState.ERROR,
-                    operator_action_hint="restart worker container",
+                    operator_action_hint="restart local ML worker",
                 ),
             ],
         )
@@ -188,7 +192,7 @@ def test_health_view_alerts_model_rows_insert_triggers_scroll() -> None:
                 alert_id="a1",
                 severity=AlertSeverity.WARNING,
                 kind=AlertKind.SUBSYSTEM_DEGRADED,
-                message="Redis broker degraded",
+                message="IPC queue degraded",
                 emitted_at_utc=_NOW,
             ),
         ]
@@ -203,6 +207,8 @@ def test_health_view_uses_scroll_container_when_snapshot_present() -> None:
 
     assert view._scroll.isHidden() is False
     assert view._scroll.widget() is view._body_container
+    assert view._subsystem_table.accessibleName() == "Readiness details table"
+    assert "next operator action" in view._subsystem_table.accessibleDescription()
 
 
 def test_health_view_compacts_cards_and_tables_at_narrow_width() -> None:

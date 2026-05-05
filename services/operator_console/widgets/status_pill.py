@@ -51,21 +51,28 @@ class StatusPill(QWidget):
         layout.addWidget(self._dot)
         layout.addWidget(self._label)
         layout.addStretch(1)
+        self._sync_accessibility()
 
     def set_text(self, text: str) -> None:
         self._label.setText(text)
+        self._sync_accessibility()
 
     def set_kind(self, kind: UiStatusKind) -> None:
         if kind == self._kind:
             return
         self._kind = kind
         self._dot.set_color(self._color())
+        self._sync_accessibility()
 
     def kind(self) -> UiStatusKind:
         return self._kind
 
     def text(self) -> str:
         return self._label.text()
+
+    def _sync_accessibility(self) -> None:
+        self.setAccessibleName(self.text() or self._kind.value)
+        self.setAccessibleDescription(f"Status: {self._kind.value}")
 
     def _color(self) -> QColor:
         return QColor(_KIND_COLORS.get(self._kind, PALETTE.text_muted))

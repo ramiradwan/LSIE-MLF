@@ -93,7 +93,7 @@ def test_physiology_view_null_comodulation_renders_null_reason_as_info() -> None
 
     # Null-valid pill kind is INFO, not WARN/ERROR. §7C draws this line.
     assert panel._index_card._status._kind is UiStatusKind.INFO  # type: ignore[attr-defined]
-    assert panel._index_card._status._label.text() == "null-valid"  # type: ignore[attr-defined]
+    assert panel._index_card._status._label.text() == "not enough data yet"  # type: ignore[attr-defined]
 
     # And the rendered explanation surfaces the stored null_reason —
     # operator must see *why* the index is null, not just "null".

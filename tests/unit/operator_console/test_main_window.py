@@ -149,6 +149,18 @@ def test_nav_click_forwards_to_store_route(qtbot_unused: None = None) -> None:  
     assert store.route() == AppRoute.EXPERIMENTS
 
 
+def test_sidebar_nav_buttons_expose_accessible_descriptions() -> None:
+    window, _store, _coord = _make_window()
+    live_button = window._nav_buttons[AppRoute.LIVE_SESSION]
+    health_button = window._nav_buttons[AppRoute.HEALTH]
+
+    assert live_button.accessibleName() == "Live Session"
+    assert "stimulus workflow" in live_button.accessibleDescription()
+    assert live_button.toolTip() == live_button.accessibleDescription()
+    assert health_button.accessibleName() == "Health"
+    assert "readiness checks" in health_button.accessibleDescription()
+
+
 def test_store_route_change_syncs_stack_and_sidebar() -> None:
     window, store, _coord = _make_window()
     store.set_route(AppRoute.PHYSIOLOGY)
@@ -359,6 +371,62 @@ def test_stimulus_success_with_time_starts_action_bar_countdown() -> None:
     assert ctx.authoritative_stimulus_time_utc == stimulus_time
     assert bar._submit_button.text() == "Measuring…"
     assert bar._countdown_label.isHidden() is False  # type: ignore[attr-defined]
+
+
+def test_stimulus_success_without_time_keeps_action_bar_accepted() -> None:
+    window, store, _coord = _make_window()
+    session_id = uuid4()
+    action_id = uuid4()
+    accepted_at = datetime.now(UTC)
+    store.set_selected_session_id(session_id)
+    store.set_live_session(_make_session(session_id))
+
+    window._on_stimulus_succeeded(
+        "stimulus",
+        StimulusAccepted(
+            session_id=session_id,
+            client_action_id=action_id,
+            accepted=True,
+            received_at_utc=accepted_at,
+            stimulus_time_utc=None,
+            message="Accepted and waiting for phone timing.",
+        ),
+    )
+
+    ctx = store.stimulus_ui_context()
+    bar = window._action_bar
+    assert ctx.state == StimulusActionState.ACCEPTED
+    assert ctx.authoritative_stimulus_time_utc is None
+    assert bar._submit_button.text() == "Accepted"
+    assert bar._countdown_label.isHidden() is True  # type: ignore[attr-defined]
+
+
+def test_stimulus_success_rejected_marks_action_bar_failed() -> None:
+    window, store, _coord = _make_window()
+    session_id = uuid4()
+    action_id = uuid4()
+    rejected_at = datetime.now(UTC)
+    store.set_selected_session_id(session_id)
+    store.set_live_session(_make_session(session_id))
+
+    window._on_stimulus_succeeded(
+        "stimulus",
+        StimulusAccepted(
+            session_id=session_id,
+            client_action_id=action_id,
+            accepted=False,
+            received_at_utc=rejected_at,
+            stimulus_time_utc=None,
+            message="Phone did not accept the stimulus.",
+        ),
+    )
+
+    ctx = store.stimulus_ui_context()
+    bar = window._action_bar
+    assert ctx.state == StimulusActionState.FAILED
+    assert ctx.message == "Phone did not accept the stimulus."
+    assert bar._submit_button.text() == "Retry"
+    assert bar._countdown_label.isHidden() is True  # type: ignore[attr-defined]
 
 
 # ---------------------------------------------------------------------

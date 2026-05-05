@@ -12,10 +12,12 @@ from typing import Any
 from uuid import UUID
 
 from packages.schemas.operator_console import (
+    ArmSummary,
     AttributionSummary,
     CoModulationSummary,
     EncounterState,
     EncounterSummary,
+    ExperimentDetail,
     HealthState,
     HealthSubsystemStatus,
     ObservationalAcousticSummary,
@@ -23,15 +25,21 @@ from packages.schemas.operator_console import (
     SemanticEvaluationSummary,
     SessionPhysiologySnapshot,
     SessionSummary,
+    StimulusActionState,
     UiStatusKind,
 )
 from services.operator_console.formatters import (
     build_acoustic_detail_display,
     build_acoustic_explanation,
+    build_cause_effect_display,
+    build_co_modulation_display,
     build_health_detail,
+    build_live_telemetry_display,
     build_physiology_explanation,
+    build_readiness_display,
     build_reward_explanation,
     build_semantic_attribution_diagnostics_display,
+    build_strategy_evidence_display,
     format_acoustic_ratio,
     format_acoustic_seconds,
     format_acoustic_validity,
@@ -56,11 +64,13 @@ from services.operator_console.formatters import (
     format_semantic_gate,
     format_semantic_method_label,
     format_semitone_delta,
+    format_session_id_compact,
     format_soft_reward_candidate,
     format_synchrony_metrics,
     format_timestamp,
     operator_ready_for_submit,
     semantic_attribution_diagnostics_for_encounter,
+    semantic_confidence_for_encounter,
     truncate_expected_greeting,
     ui_status_for_health,
 )
@@ -100,6 +110,11 @@ class TestPrimitives:
         assert format_reward(0.12345) == "0.123"
         assert format_reward(None) == "—"
 
+    def test_session_id_compact_keeps_edges(self) -> None:
+        session_id = UUID("12345678-1234-5678-9abc-123456789abc")
+        assert format_session_id_compact(session_id) == "12345678…9abc"
+        assert format_session_id_compact(None) == "—"
+
 
 # ----------------------------------------------------------------------
 # §7B semantic gate
@@ -129,25 +144,25 @@ class TestSemanticGate:
 class TestSemanticAttributionDiagnostics:
     def test_semantic_method_labels_cover_cross_encoder_and_gray_band(self) -> None:
         assert format_semantic_method_label("cross_encoder", "ce-v1") == (
-            "local greeting checker · ce-v1"
+            "local stimulus confirmation checker · ce-v1"
         )
         assert format_semantic_method_label("llm_gray_band", "llm-v2") == (
-            "backup greeting checker · llm-v2"
+            "backup stimulus confirmation checker · llm-v2"
         )
         assert format_semantic_method_label(None) == "—"
 
     def test_bounded_reason_code_labels_are_operator_friendly(self) -> None:
         assert format_bounded_reason_code_label("cross_encoder_high_match") == (
-            "Greeting clearly matched"
+            "Stimulus was clearly confirmed"
         )
         assert format_bounded_reason_code_label("gray_band_llm_nonmatch") == (
-            "Backup checker did not find a match"
+            "Backup checker did not confirm the stimulus"
         )
         assert "{" not in format_bounded_reason_code_label("semantic_timeout")
         assert format_bounded_reason_code_label(None) == "—"
 
     def test_probability_finality_soft_reward_and_lag_labels(self) -> None:
-        assert format_probability_confidence(0.834) == "match confidence 83%"
+        assert format_probability_confidence(0.834) == "confirmation confidence 83%"
         assert format_probability_confidence(None) == "—"
         assert format_attribution_finality_label("online_provisional") == "online provisional"
         assert format_attribution_finality_label("offline_final") == "offline final"
@@ -167,7 +182,7 @@ class TestSemanticAttributionDiagnostics:
             outcome_link_lag_s=42.0,
         )
         assert format_au12_lift_metrics(attribution) == (
-            "before greeting 0.120 · strong smile lift 0.420 · peak smile lift 0.680"
+            "before stimulus 0.120 · strong response lift 0.420 · peak response lift 0.680"
         )
         assert format_au12_peak_latency(attribution) == "1.25s"
         assert format_synchrony_metrics(attribution) == "movement together -0.314 · lag 3"
@@ -194,9 +209,9 @@ class TestSemanticAttributionDiagnostics:
             ),
         )
         assert display.has_diagnostics is True
-        assert display.semantic_method == "local greeting checker · ce-v1"
-        assert display.bounded_reason_code == "Greeting clearly matched"
-        assert display.probability_confidence == "match confidence 91%"
+        assert display.semantic_method == "local stimulus confirmation checker · ce-v1"
+        assert display.bounded_reason_code == "Stimulus was clearly confirmed"
+        assert display.probability_confidence == "confirmation confidence 91%"
         assert display.match_result == "match"
         assert display.attribution_finality == "offline final"
         assert "do not change the reward" in display.observational_note
@@ -219,8 +234,8 @@ class TestSemanticAttributionDiagnostics:
             }
         )
         display = semantic_attribution_diagnostics_for_encounter(encounter)
-        assert display.semantic_method == "backup greeting checker · gray-v1"
-        assert display.bounded_reason_code == "Backup checker did not find a match"
+        assert display.semantic_method == "backup stimulus confirmation checker · gray-v1"
+        assert display.bounded_reason_code == "Backup checker did not confirm the stimulus"
         assert display.match_result == "non-match"
         assert display.attribution_finality == "online provisional"
 
@@ -284,7 +299,7 @@ class TestCalibrationStatus:
         assert operator_ready_for_submit(summary) is False
         assert format_calibration_status(summary) == (
             UiStatusKind.PROGRESS,
-            "Preparing smile baseline · 12/45 face frames",
+            "Preparing response baseline · 12/45 face frames",
         )
 
     def test_pre_stimulus_threshold_renders_ready_while_lifecycle_calibrating(self) -> None:
@@ -524,6 +539,9 @@ def _encounter(
     au12_baseline_pre: float | None = 0.1,
     physiology_attached: bool = False,
     physiology_stale: bool | None = None,
+    observational_acoustic: ObservationalAcousticSummary | None = None,
+    semantic_evaluation: SemanticEvaluationSummary | None = None,
+    attribution: AttributionSummary | None = None,
 ) -> EncounterSummary:
     return EncounterSummary(
         encounter_id="e1",
@@ -541,7 +559,152 @@ def _encounter(
         au12_baseline_pre=au12_baseline_pre,
         physiology_attached=physiology_attached,
         physiology_stale=physiology_stale,
+        observational_acoustic=observational_acoustic,
+        semantic_evaluation=semantic_evaluation,
+        attribution=attribution,
     )
+
+
+class TestCauseEffectDisplay:
+    def test_waiting_state_is_operator_friendly(self) -> None:
+        display = build_cause_effect_display(None)
+        assert display.headline == "Waiting for the first result"
+        assert display.status is UiStatusKind.NEUTRAL
+
+    def test_semantic_rejection_uses_required_plain_language(self) -> None:
+        display = build_cause_effect_display(
+            _encounter(
+                semantic_gate=0,
+                gated_reward=0.0,
+                p90_intensity=0.42,
+                semantic_evaluation=SemanticEvaluationSummary(
+                    is_match=False,
+                    confidence_score=0.72,
+                ),
+            )
+        )
+        assert display.headline == "Stimulus missed or ignored by host."
+        assert display.status is UiStatusKind.INFO
+        assert "42%" in display.response_summary
+        assert (
+            semantic_confidence_for_encounter(
+                _encounter(
+                    semantic_confidence=0.1,
+                    semantic_evaluation=SemanticEvaluationSummary(confidence_score=0.72),
+                )
+            )
+            == 0.72
+        )
+
+    def test_success_prefers_peak_latency_when_attribution_available(self) -> None:
+        display = build_cause_effect_display(
+            _encounter(
+                attribution=AttributionSummary(
+                    au12_lift_p90=0.31,
+                    au12_peak_latency_ms=1200.0,
+                ),
+                observational_acoustic=ObservationalAcousticSummary(
+                    f0_delta_semitones=2.0,
+                    voiced_coverage_measure_s=1.25,
+                ),
+            )
+        )
+        assert display.status is UiStatusKind.OK
+        assert "1.20s" in display.headline
+        assert "response lift 0.310" in display.response_summary
+        assert "pitch +2.00 st" in display.voice_summary
+
+    def test_success_falls_back_to_p90_and_baseline_without_attribution(self) -> None:
+        display = build_cause_effect_display(_encounter(p90_intensity=0.7, au12_baseline_pre=0.2))
+        assert "70%" in display.headline
+        assert "response lift 0.500" in display.response_summary
+
+    def test_no_frames_reads_as_not_measured(self) -> None:
+        display = build_cause_effect_display(_encounter(n_frames_in_window=0, gated_reward=None))
+        assert display.status is UiStatusKind.WARN
+        assert display.headline == "Response not measured"
+
+
+class TestWorkflowDisplayContracts:
+    def test_readiness_display_uses_capture_detail(self) -> None:
+        display = build_readiness_display(
+            ready_for_submit=True,
+            calibration_status=(UiStatusKind.OK, "Healthy"),
+            capture_detail="Phone healthy · Audio capture healthy",
+            progress_message="Send one stimulus.",
+        )
+        assert display.status is UiStatusKind.OK
+        assert display.title == "Ready for a stimulus"
+        assert "Phone healthy" in display.detail
+
+    def test_live_telemetry_display_shows_measuring_state(self) -> None:
+        display = build_live_telemetry_display(
+            stimulus_state=StimulusActionState.MEASURING,
+            progress_message="Measuring the response window now.",
+            response_signal_percent=64,
+            live_status=(UiStatusKind.OK, "Live analysis healthy"),
+        )
+        assert display.status is UiStatusKind.PROGRESS
+        assert display.headline == "Measuring response…"
+        assert display.response_signal == "64%"
+
+
+class TestStrategyEvidenceDisplay:
+    def test_strategy_rows_rank_active_enabled_arm_first(self) -> None:
+        detail = ExperimentDetail(
+            experiment_id="exp",
+            active_arm_id="a2",
+            arms=[
+                ArmSummary(
+                    arm_id="a1",
+                    greeting_text="Hei a1",
+                    posterior_alpha=1.0,
+                    posterior_beta=1.0,
+                    selection_count=0,
+                ),
+                ArmSummary(
+                    arm_id="a2",
+                    greeting_text="Hei a2",
+                    posterior_alpha=5.0,
+                    posterior_beta=2.0,
+                    evaluation_variance=0.01,
+                    selection_count=8,
+                    recent_reward_mean=0.62,
+                    recent_semantic_pass_rate=0.8,
+                ),
+            ],
+        )
+        rows = build_strategy_evidence_display(detail)
+        assert rows[0].arm_id == "a2"
+        assert rows[0].status is UiStatusKind.OK
+        assert rows[0].label == "Active · Lower uncertainty so far"
+        assert "recent observed reward 0.620" in rows[0].outcome
+        assert "stimulus confirmed 80%" in rows[0].outcome
+
+    def test_strategy_rows_mark_disabled_and_sparse_data(self) -> None:
+        detail = ExperimentDetail(
+            experiment_id="exp",
+            arms=[
+                ArmSummary(
+                    arm_id="disabled",
+                    greeting_text="Hei disabled",
+                    posterior_alpha=1.0,
+                    posterior_beta=1.0,
+                    selection_count=2,
+                    enabled=False,
+                ),
+                ArmSummary(
+                    arm_id="new",
+                    greeting_text="Hei new",
+                    posterior_alpha=1.0,
+                    posterior_beta=1.0,
+                    selection_count=0,
+                ),
+            ],
+        )
+        labels = {row.arm_id: row.label for row in build_strategy_evidence_display(detail)}
+        assert labels["disabled"] == "Disabled"
+        assert labels["new"] == "Needs first try"
 
 
 class TestRewardExplanation:
@@ -550,9 +713,21 @@ class TestRewardExplanation:
         text = build_reward_explanation(
             _encounter(semantic_gate=0, gated_reward=0.0, p90_intensity=0.42)
         )
-        assert "greeting did not match" in text.lower()
+        assert "stimulus was not confirmed" in text.lower()
         assert "held back" in text.lower()
         assert "0.420" in text
+
+    def test_gate_closed_uses_nested_semantic_confidence_when_present(self) -> None:
+        text = build_reward_explanation(
+            _encounter(
+                semantic_gate=0,
+                semantic_confidence=0.11,
+                semantic_evaluation=SemanticEvaluationSummary(confidence_score=0.72),
+                gated_reward=0.0,
+            )
+        )
+        assert "72% confidence" in text
+        assert "11% confidence" not in text
 
     def test_no_frames_message_calls_out_frames_not_gate(self) -> None:
         # §7B: n_frames_in_window=0 is a distinct outcome from gate=0
@@ -570,7 +745,7 @@ class TestRewardExplanation:
         # §7B formula reads as a product
         assert "0.500" in text  # p90_intensity
         assert "0.420" in text  # gated_reward
-        assert "before-greeting" in text.lower()
+        assert "before-stimulus" in text.lower()
 
     def test_physiology_attached_stale_surfaces_stale(self) -> None:
         text = build_reward_explanation(_encounter(physiology_attached=True, physiology_stale=True))
@@ -586,6 +761,42 @@ class TestRewardExplanation:
 # ----------------------------------------------------------------------
 # Physiology explanation + health rendering
 # ----------------------------------------------------------------------
+
+
+class TestCoModulationDisplay:
+    def test_absent_co_modulation_waits_for_window(self) -> None:
+        display = build_co_modulation_display(None)
+        assert display.primary == "—"
+        assert display.secondary == "No sync window yet"
+        assert display.status is UiStatusKind.NEUTRAL
+
+    def test_null_valid_co_modulation_accumulates_data(self) -> None:
+        display = build_co_modulation_display(
+            CoModulationSummary(
+                session_id=_SESSION_ID,
+                co_modulation_index=None,
+                n_paired_observations=1,
+                coverage_ratio=0.1,
+                null_reason="insufficient aligned non-stale pairs",
+            )
+        )
+        assert display.primary == "—"
+        assert display.secondary == "Sync data accumulating"
+        assert display.status is UiStatusKind.INFO
+        assert "insufficient aligned non-stale pairs" in display.detail
+
+    def test_numeric_co_modulation_formats_bounded_score(self) -> None:
+        display = build_co_modulation_display(
+            CoModulationSummary(
+                session_id=_SESSION_ID,
+                co_modulation_index=0.82,
+                n_paired_observations=6,
+                coverage_ratio=0.75,
+            )
+        )
+        assert display.primary == "+0.82"
+        assert "moving together" in display.secondary
+        assert "75%" in display.detail
 
 
 class TestPhysiologyExplanation:
@@ -671,15 +882,15 @@ class TestHealthRendering:
 
 
 # ----------------------------------------------------------------------
-# Greeting truncation
+# Stimulus-confirmation text truncation
 # ----------------------------------------------------------------------
 
 
-class TestGreetingTruncation:
-    def test_short_greeting_passes_through(self) -> None:
+class TestStimulusConfirmationTruncation:
+    def test_short_expected_greeting_passes_through(self) -> None:
         assert truncate_expected_greeting("hi there") == "hi there"
 
-    def test_long_greeting_gets_ellipsis(self) -> None:
+    def test_long_expected_greeting_gets_ellipsis(self) -> None:
         text = "x" * 100
         out = truncate_expected_greeting(text, limit=20)
         assert len(out) == 20

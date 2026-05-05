@@ -205,6 +205,10 @@ def test_live_session_view_ttv_waiting_for_face_shows_muted_dashboard_overlay() 
 
 def test_live_session_view_ttv_ready_shows_dashboard_and_smile_timeline() -> None:
     view, store, _vm = _build_view()
+    assert view._readiness_panel.accessibleName() == "Live Session next step"  # type: ignore[attr-defined]
+    assert view._telemetry_panel.accessibleName() == "Live response ticker"  # type: ignore[attr-defined]
+    assert view._phone_preview.accessibleName() == "Live visual status"  # type: ignore[attr-defined]
+    assert view._cause_effect_panel.accessibleName() == "Observed response"  # type: ignore[attr-defined]
     session = _session(
         is_calibrating=True,
         calibration_frames_accumulated=45,
@@ -323,8 +327,14 @@ def test_live_session_view_header_shows_session_status_without_repeating_action_
     view, store, _vm = _build_view()
     store.set_live_session(_session())
     panel = view._session_panel
+    assert panel.accessibleName() == "Session controls"  # type: ignore[attr-defined]
     assert "Session" in panel._session_label.text()  # type: ignore[attr-defined]
+    assert "Session" in panel._session_label.accessibleDescription()  # type: ignore[attr-defined]
     assert "active" in panel._session_meta_label.text()  # type: ignore[attr-defined]
+    assert "active" in panel._session_meta_label.accessibleDescription()  # type: ignore[attr-defined]
+    assert panel._start_button.accessibleName() == "Start new session"  # type: ignore[attr-defined]
+    assert "connected capture source" in panel._start_button.accessibleDescription()  # type: ignore[attr-defined]
+    assert panel._end_button.accessibleName() == "End session"  # type: ignore[attr-defined]
     assert panel._calibration_pill.kind() == UiStatusKind.OK  # type: ignore[attr-defined]
     assert panel._calibration_pill.text() == "Healthy"  # type: ignore[attr-defined]
 
@@ -340,7 +350,7 @@ def test_live_session_view_header_shows_calibration_progress() -> None:
     )
     panel = view._session_panel
     assert panel._calibration_pill.kind() == UiStatusKind.PROGRESS  # type: ignore[attr-defined]
-    assert panel._calibration_pill.text() == "Preparing smile baseline · 12/45 face frames"  # type: ignore[attr-defined]
+    assert panel._calibration_pill.text() == "Preparing response baseline · 12/45 face frames"  # type: ignore[attr-defined]
 
 
 def test_live_session_view_header_ready_at_safe_submit_threshold() -> None:
@@ -370,10 +380,18 @@ def test_start_session_dialog_uses_source_summary_and_experiment_picker() -> Non
         validator=vm.validate_start_session_inputs,
     )
 
+    assert dialog.accessibleName() == "Start new session"
+    assert "connected-phone capture" in dialog.accessibleDescription()
     assert "connected Android device" in dialog._source_summary.text()  # type: ignore[attr-defined]
+    assert dialog._source_summary.accessibleName() == "Session source"  # type: ignore[attr-defined]
+    assert dialog._experiment_label.buddy() is dialog._experiment_picker  # type: ignore[attr-defined]
     assert dialog._experiment_picker.count() == 2  # type: ignore[attr-defined]
     assert dialog._experiment_picker.currentData() == "greeting_line_v1"  # type: ignore[attr-defined]
+    assert dialog._experiment_picker.accessibleName() == "Experiment"  # type: ignore[attr-defined]
+    assert "stimulus strategies" in dialog._experiment_picker.accessibleDescription()  # type: ignore[attr-defined]
     assert dialog._start_button.isEnabled() is True  # type: ignore[attr-defined]
+    assert dialog._start_button.accessibleName() == "Start session"  # type: ignore[attr-defined]
+    assert "selected experiment" in dialog._start_button.accessibleDescription()  # type: ignore[attr-defined]
     assert dialog.values() == "greeting_line_v1"
 
 
@@ -389,6 +407,7 @@ def test_start_session_dialog_disables_start_without_experiments() -> None:
 
     assert dialog._start_button.isEnabled() is False  # type: ignore[attr-defined]
     assert "experiments page" in dialog._validation_label.text().lower()  # type: ignore[attr-defined]
+    assert "experiments page" in dialog._validation_label.accessibleDescription().lower()  # type: ignore[attr-defined]
 
 
 def test_live_session_view_start_button_dispatches_modal_values(
@@ -475,22 +494,22 @@ def test_live_session_view_detail_pane_shows_reward_explanation() -> None:
     vm.select_encounter("e1")
 
     detail = view._detail_panel
-    assert detail._p90_card._title.text() == "Strongest smile signal"  # type: ignore[attr-defined]
+    assert detail._p90_card._title.text() == "Strongest response signal"  # type: ignore[attr-defined]
     assert "0.420" in detail._p90_card._primary.text()  # type: ignore[attr-defined]
     assert "0.420" in detail._reward_card._primary.text()  # type: ignore[attr-defined]
     assert "150" in detail._frames_card._primary.text()  # type: ignore[attr-defined]
-    assert "Smile signal × greeting match" in detail._explanation.text()  # type: ignore[attr-defined]
+    assert "Response signal × stimulus confirmation" in detail._explanation.text()  # type: ignore[attr-defined]
     assert detail._transcription_title.text() == "Speech-to-text"  # type: ignore[attr-defined]
     assert "hello welcome" in detail._transcription_text.text()  # type: ignore[attr-defined]
-    assert detail._semantic_title.text() == "Greeting match and follow-up signals"  # type: ignore[attr-defined]
+    assert detail._semantic_title.text() == "Stimulus confirmation and follow-up signals"  # type: ignore[attr-defined]
     assert detail._semantic_empty.isHidden() is True  # type: ignore[attr-defined]
-    assert "local greeting checker" in detail._semantic_method_pill.text()  # type: ignore[attr-defined]
+    assert "local stimulus confirmation checker" in detail._semantic_method_pill.text()  # type: ignore[attr-defined]
     assert detail._semantic_match_pill.text() == "match"  # type: ignore[attr-defined]
-    assert "Greeting clearly matched" in detail._semantic_reason_label.text()  # type: ignore[attr-defined]
-    assert detail._confidence_card._primary.text() == "match confidence 91%"  # type: ignore[attr-defined]
+    assert "Stimulus was clearly confirmed" in detail._semantic_reason_label.text()  # type: ignore[attr-defined]
+    assert detail._confidence_card._primary.text() == "confirmation confidence 91%"  # type: ignore[attr-defined]
     assert "offline final" in detail._attribution_finality_pill.text()  # type: ignore[attr-defined]
     assert detail._soft_reward_card._primary.text() == "possible follow-up reward 0.770"  # type: ignore[attr-defined]
-    assert "strong smile lift 0.550" in detail._au12_lifts_card._primary.text()  # type: ignore[attr-defined]
+    assert "strong response lift 0.550" in detail._au12_lifts_card._primary.text()  # type: ignore[attr-defined]
     assert detail._peak_latency_card._primary.text() == "1.25s"  # type: ignore[attr-defined]
     assert "movement together +0.401" in detail._synchrony_card._primary.text()  # type: ignore[attr-defined]
     assert detail._outcome_link_lag_card._primary.text() == "after 15.0s"  # type: ignore[attr-defined]
@@ -752,7 +771,7 @@ def test_live_session_view_acoustic_empty_state_without_error_banner() -> None:
     assert view._error_banner.isHidden() is True  # type: ignore[attr-defined]
     assert detail._semantic_empty.text() == "No follow-up signal details for this encounter"  # type: ignore[attr-defined]
     assert detail._semantic_empty.isHidden() is False  # type: ignore[attr-defined]
-    assert "backup greeting checker" in detail._semantic_method_pill.text()  # type: ignore[attr-defined]
+    assert "backup stimulus confirmation checker" in detail._semantic_method_pill.text()  # type: ignore[attr-defined]
     assert detail._semantic_match_pill.text() == "non-match"  # type: ignore[attr-defined]
     assert detail._soft_reward_card.isHidden() is True  # type: ignore[attr-defined]
     assert "do not change the reward" in detail._semantic_observational_note.text()  # type: ignore[attr-defined]
@@ -795,7 +814,7 @@ def test_live_session_view_detail_pane_flags_gate_closed() -> None:
     )
     vm.select_encounter("e1")
     detail = view._detail_panel
-    assert "greeting did not match" in detail._explanation.text().lower()  # type: ignore[attr-defined]
+    assert "stimulus was not confirmed" in detail._explanation.text().lower()  # type: ignore[attr-defined]
 
 
 def test_live_session_view_countdown_timer_activates_on_measuring() -> None:

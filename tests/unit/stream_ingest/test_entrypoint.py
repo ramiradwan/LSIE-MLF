@@ -56,7 +56,7 @@ def test_audio_scrcpy_args_are_headless_raw_wav(tmp_path: Path) -> None:
     assert "--no-window" in args
     assert "--audio-codec=raw" in args
     assert "--audio-buffer=30" in args
-    assert "--audio-dup" in args
+    assert "--audio-dup" not in args
     assert "--record-format=wav" in args
     assert f"--port={AUDIO_SCRCPY_PORT_RANGE}" in args
     assert f"--record={tmp_path / 'audio_stream.wav'}" in args

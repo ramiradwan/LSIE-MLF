@@ -1055,6 +1055,7 @@ def _discover_variable_producers() -> dict[tuple[str, str], list[VariableEvidenc
         "last_segment_completed_at_utc",
         "latest_reward",
         "latest_semantic_gate",
+        "transcription",
         "au12_intensity",
         "semantic_gate",
         "p90_intensity",

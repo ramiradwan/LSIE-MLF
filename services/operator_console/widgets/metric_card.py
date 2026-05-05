@@ -16,8 +16,8 @@ Spec references:
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QMouseEvent
-from PySide6.QtWidgets import QFrame, QLabel, QVBoxLayout, QWidget
+from PySide6.QtGui import QKeyEvent, QMouseEvent
+from PySide6.QtWidgets import QFrame, QLabel, QSizePolicy, QVBoxLayout, QWidget
 
 from packages.schemas.operator_console import UiStatusKind
 from services.operator_console.widgets.status_pill import StatusPill
@@ -38,17 +38,23 @@ class MetricCard(QFrame):
         # Panel styling lives in `theme.STYLESHEET`; we only set the
         # object name so the stylesheet can target us.
         self.setFrameShape(QFrame.Shape.NoFrame)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+        self.setMinimumHeight(132)
 
         self._clickable = False
 
         self._title = QLabel(title, self)
         self._title.setObjectName("MetricCardTitle")
+        self._title.setWordWrap(True)
+        self._title.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
         self._primary = QLabel("—", self)
         self._primary.setObjectName("MetricCardPrimary")
         self._primary.setWordWrap(True)
+        self._primary.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
         self._secondary = QLabel("", self)
         self._secondary.setObjectName("MetricCardSecondary")
         self._secondary.setWordWrap(True)
+        self._secondary.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
         self._secondary.setVisible(False)
         self._status = StatusPill(self)
         self._status.setVisible(False)
@@ -61,18 +67,22 @@ class MetricCard(QFrame):
         layout.addWidget(self._secondary)
         layout.addWidget(self._status)
         layout.addStretch(1)
+        self._sync_accessibility()
 
     # ---- setters -------------------------------------------------------
 
     def set_title(self, text: str) -> None:
         self._title.setText(text)
+        self._sync_accessibility()
 
     def set_primary_text(self, text: str) -> None:
         self._primary.setText(text)
+        self._sync_accessibility()
 
     def set_secondary_text(self, text: str) -> None:
         self._secondary.setText(text)
         self._secondary.setVisible(bool(text))
+        self._sync_accessibility()
 
     def set_status(self, kind: UiStatusKind, text: str | None = None) -> None:
         """Show the embedded pill with the given kind and optional text.
@@ -87,13 +97,30 @@ class MetricCard(QFrame):
         else:
             self._status.set_text(text)
             self._status.setVisible(True)
+        self._sync_accessibility()
 
     def set_clickable(self, clickable: bool) -> None:
         self._clickable = clickable
         if clickable:
             self.setCursor(Qt.CursorShape.PointingHandCursor)
+            self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         else:
             self.unsetCursor()
+            self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._sync_accessibility()
+
+    def _sync_accessibility(self) -> None:
+        title = self._title.text()
+        primary = self._primary.text()
+        secondary = self._secondary.text()
+        status = self._status.text()
+        self.setAccessibleName(title)
+        description_parts = [part for part in (primary, secondary, status) if part]
+        self.setAccessibleDescription(". ".join(description_parts))
+        if self._clickable:
+            self.setToolTip(f"Open {title}")
+        else:
+            self.setToolTip("")
 
     # ---- events --------------------------------------------------------
 
@@ -103,3 +130,11 @@ class MetricCard(QFrame):
             event.accept()
             return
         super().mousePressEvent(event)
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:  # noqa: N802 — Qt override
+        activation_keys = (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_Space)
+        if self._clickable and event.key() in activation_keys:
+            self.clicked.emit()
+            event.accept()
+            return
+        super().keyPressEvent(event)

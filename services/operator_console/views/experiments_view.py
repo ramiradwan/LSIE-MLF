@@ -31,6 +31,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QPushButton,
+    QScrollArea,
     QTableView,
     QVBoxLayout,
     QWidget,
@@ -43,6 +44,7 @@ from packages.schemas.operator_console import (
     UiStatusKind,
 )
 from services.operator_console.formatters import (
+    StrategyEvidenceDisplay,
     format_percentage,
     format_reward,
     format_timestamp,
@@ -127,7 +129,7 @@ class ExperimentsView(QWidget):
 
         self._header = SectionHeader(
             "Experiments",
-            "Compare greeting options and see which one is currently being tried.",
+            "Compare stimulus strategies and see which one is currently being tried.",
             self,
         )
         self._error_banner = AlertBanner(self)
@@ -138,8 +140,9 @@ class ExperimentsView(QWidget):
         )
 
         self._experiment_card = MetricCard("Experiment", self)
-        self._active_arm_card = MetricCard("Active arm", self)
-        self._arms_card = MetricCard("Arms", self)
+        self._active_arm_card = MetricCard("Active strategy", self)
+        self._arms_card = MetricCard("Strategies", self)
+        self._strategy_panel = _StrategyEvidencePanel(self)
 
         self._cards_grid = ResponsiveMetricGrid(
             breakpoints=_EXPERIMENT_BREAKPOINTS,
@@ -162,11 +165,19 @@ class ExperimentsView(QWidget):
         body.setContentsMargins(0, 0, 0, 0)
         body.setSpacing(14)
         body.addWidget(self._cards_grid)
+        body.addWidget(self._strategy_panel)
         body.addWidget(self._table, 2)
         body.addWidget(self._update_panel, 1)
 
         self._body_container = QWidget(self)
         self._body_container.setLayout(body)
+
+        self._scroll = QScrollArea(self)
+        self._scroll.setObjectName("ExperimentsScrollArea")
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._scroll.setWidget(self._body_container)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 24, 24, 24)
@@ -175,7 +186,7 @@ class ExperimentsView(QWidget):
         layout.addWidget(self._error_banner)
         layout.addWidget(self._manage_panel)
         layout.addWidget(self._empty_state)
-        layout.addWidget(self._body_container, 1)
+        layout.addWidget(self._scroll, 1)
         layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
         self._vm.changed.connect(self._refresh)
@@ -243,14 +254,15 @@ class ExperimentsView(QWidget):
         self._apply_responsive_layout(self.width())
         if detail is None:
             self._empty_state.setVisible(True)
-            self._body_container.setVisible(False)
+            self._scroll.setVisible(False)
             return
         self._empty_state.setVisible(False)
-        self._body_container.setVisible(True)
+        self._scroll.setVisible(True)
 
         self._render_experiment_card(detail)
         self._render_active_arm_card(detail)
         self._render_arms_card(detail)
+        self._strategy_panel.set_rows(self._vm.strategy_evidence())
         self._update_panel.set_summary(
             self._vm.latest_update_summary(),
             last_updated_utc_text=format_timestamp(detail.last_updated_utc),
@@ -266,13 +278,15 @@ class ExperimentsView(QWidget):
         arm_id = detail.active_arm_id
         if arm_id is None:
             self._active_arm_card.set_primary_text("—")
-            self._active_arm_card.set_secondary_text("No active arm selected.")
+            self._active_arm_card.set_secondary_text("No active strategy selected.")
             self._active_arm_card.set_status(UiStatusKind.NEUTRAL, None)
             return
         active = _find_arm(detail.arms, arm_id)
         self._active_arm_card.set_primary_text(arm_id)
         if active is None:
-            self._active_arm_card.set_secondary_text("Active arm id not present in arm list.")
+            self._active_arm_card.set_secondary_text(
+                "Active strategy id not present in strategy list."
+            )
             self._active_arm_card.set_status(UiStatusKind.WARN, "missing")
             return
         secondary_bits: list[str] = [
@@ -298,9 +312,9 @@ class ExperimentsView(QWidget):
             self._arms_card.set_status(UiStatusKind.INFO, None)
             return
         self._arms_card.set_secondary_text(
-            f"best recent reward {format_reward(best.recent_reward_mean)} "
-            f"on arm {best.arm_id} "
-            f"(greeting matched {format_percentage(best.recent_semantic_pass_rate, digits=0)})"
+            f"best recent reward {format_reward(best.recent_reward_mean)} · "
+            f"strategy {best.arm_id} · "
+            f"confirmed {format_percentage(best.recent_semantic_pass_rate, digits=0)}"
         )
         self._arms_card.set_status(UiStatusKind.INFO, None)
 
@@ -315,8 +329,10 @@ class ExperimentsView(QWidget):
             self._error_banner.set_alert(None, None)
 
     def _apply_responsive_layout(self, width: int) -> None:
-        effective_width = max(width, self._body_container.width())
+        viewport_width = self._scroll.viewport().width()
+        effective_width = viewport_width if viewport_width >= 320 else width
         self._cards_grid.apply_width(effective_width)
+        self._strategy_panel.apply_responsive_width(effective_width)
         apply_table_column_policies(
             self._table,
             _EXPERIMENT_TABLE_POLICIES,
@@ -330,6 +346,68 @@ class ExperimentsView(QWidget):
 # ----------------------------------------------------------------------
 # Panels + helpers
 # ----------------------------------------------------------------------
+
+
+class _StrategyEvidencePanel(QFrame):
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("Panel")
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        self.setAccessibleName("Strategy evidence")
+        self.setAccessibleDescription("Summarizes current evidence for each stimulus strategy.")
+        self._title = QLabel("Strategy evidence", self)
+        self._title.setObjectName("PanelTitle")
+        self._subtitle = QLabel(
+            "Current evidence from recent rewards, stimulus confirmation, and learning history.",
+            self,
+        )
+        self._subtitle.setObjectName("PanelSubtitle")
+        self._subtitle.setWordWrap(True)
+        self._grid = ResponsiveMetricGrid(
+            breakpoints=_EXPERIMENT_BREAKPOINTS,
+            columns=MetricGridColumns(wide=3, medium=2, narrow=1),
+            horizontal_spacing=10,
+            vertical_spacing=10,
+            parent=self,
+        )
+        self._cards: list[MetricCard] = []
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 12, 16, 16)
+        layout.setSpacing(8)
+        layout.addWidget(self._title)
+        layout.addWidget(self._subtitle)
+        layout.addWidget(self._grid)
+
+    def set_rows(self, rows: list[StrategyEvidenceDisplay]) -> None:
+        self._ensure_card_count(len(rows))
+        visible_cards: list[MetricCard] = []
+        for index, row in enumerate(rows):
+            card = self._cards[index]
+            card.setVisible(True)
+            card.set_title(row.arm_id)
+            card.set_primary_text(row.label)
+            card.set_secondary_text(
+                f"{row.outcome}\nConfirmation text: {row.greeting_text}\n{row.evidence}"
+            )
+            card.set_status(row.status, "active" if row.is_active else None)
+            visible_cards.append(card)
+        for card in self._cards[len(rows) :]:
+            card.setVisible(False)
+        self._grid.set_widgets(visible_cards)
+        if not rows:
+            self._subtitle.setText("Strategy evidence appears after arms are loaded.")
+            return
+        self._subtitle.setText(
+            "Current evidence from recent rewards, stimulus confirmation, and learning history."
+        )
+
+    def apply_responsive_width(self, width: int) -> ResponsiveWidthBand:
+        return self._grid.apply_width(width)
+
+    def _ensure_card_count(self, count: int) -> None:
+        while len(self._cards) < count:
+            self._cards.append(MetricCard("Strategy", self))
 
 
 class _ManagePanel(QFrame):
@@ -354,26 +432,54 @@ class _ManagePanel(QFrame):
         self._title = QLabel("Manage", self)
         self._title.setObjectName("PanelTitle")
         self._hint = QLabel(
-            "Create or seed the current experiment, add greeting options, double-click a "
-            "Greeting cell to rename it, or uncheck Enabled to disable an option. "
-            "Learning-history columns are read-only.",
+            "Create or seed the current experiment, add stimulus strategies, double-click "
+            "or press F2/Enter on Confirmation text to rename it, or uncheck Enabled "
+            "to disable an option. Learning-history columns are read-only.",
             self,
         )
         self._hint.setObjectName("PanelSubtitle")
         self._hint.setWordWrap(True)
 
+        self._create_experiment_id_label = QLabel("Experiment ID", self)
+        self._create_experiment_id_label.setObjectName("MetricCardSecondary")
         self._create_experiment_id = QLineEdit(self)
         self._create_experiment_id.setObjectName("CreateExperimentIdInput")
         self._create_experiment_id.setPlaceholderText("experiment id")
+        self._create_experiment_id.setAccessibleName("Experiment ID")
+        self._create_experiment_id.setAccessibleDescription("Stable identifier for the experiment.")
+        self._create_experiment_id_label.setBuddy(self._create_experiment_id)
+
+        self._create_label_label = QLabel("Display label", self)
+        self._create_label_label.setObjectName("MetricCardSecondary")
         self._create_label = QLineEdit(self)
         self._create_label.setObjectName("CreateExperimentLabelInput")
         self._create_label.setPlaceholderText("label")
+        self._create_label.setAccessibleName("Display label")
+        self._create_label.setAccessibleDescription("Operator-facing experiment label.")
+        self._create_label_label.setBuddy(self._create_label)
+
+        self._create_arm_id_label = QLabel("Initial strategy ID", self)
+        self._create_arm_id_label.setObjectName("MetricCardSecondary")
         self._create_arm_id = QLineEdit(self)
         self._create_arm_id.setObjectName("CreateInitialArmInput")
-        self._create_arm_id.setPlaceholderText("initial arm id")
+        self._create_arm_id.setPlaceholderText("initial strategy id")
+        self._create_arm_id.setAccessibleName("Initial strategy ID")
+        self._create_arm_id.setAccessibleDescription(
+            "Stable identifier for the first stimulus strategy."
+        )
+        self._create_arm_id_label.setBuddy(self._create_arm_id)
+
+        self._create_greeting_label = QLabel("Initial confirmation text", self)
+        self._create_greeting_label.setObjectName("MetricCardSecondary")
         self._create_greeting = QLineEdit(self)
         self._create_greeting.setObjectName("CreateInitialGreetingInput")
-        self._create_greeting.setPlaceholderText("initial greeting")
+        self._create_greeting.setPlaceholderText("initial confirmation text")
+        self._create_greeting.setAccessibleName("Initial confirmation text")
+        self._create_greeting.setAccessibleDescription(
+            "Text used to confirm that the host reacted to the initial stimulus strategy."
+        )
+        self._create_greeting_label.setBuddy(self._create_greeting)
+
         self._create_button = QPushButton("Create experiment", self)
         self._create_button.setObjectName("CreateExperimentButton")
 
@@ -382,13 +488,29 @@ class _ManagePanel(QFrame):
         self._create_row.setHorizontalSpacing(8)
         self._create_row.setVerticalSpacing(8)
 
+        self._add_arm_id_label = QLabel("New strategy ID", self)
+        self._add_arm_id_label.setObjectName("MetricCardSecondary")
         self._add_arm_id = QLineEdit(self)
         self._add_arm_id.setObjectName("AddArmIdInput")
-        self._add_arm_id.setPlaceholderText("new arm id")
+        self._add_arm_id.setPlaceholderText("new strategy id")
+        self._add_arm_id.setAccessibleName("New strategy ID")
+        self._add_arm_id.setAccessibleDescription(
+            "Stable identifier for the new stimulus strategy."
+        )
+        self._add_arm_id_label.setBuddy(self._add_arm_id)
+
+        self._add_greeting_label = QLabel("Confirmation text", self)
+        self._add_greeting_label.setObjectName("MetricCardSecondary")
         self._add_greeting = QLineEdit(self)
         self._add_greeting.setObjectName("AddArmGreetingInput")
-        self._add_greeting.setPlaceholderText("greeting text")
-        self._add_button = QPushButton("Add arm", self)
+        self._add_greeting.setPlaceholderText("confirmation text")
+        self._add_greeting.setAccessibleName("Confirmation text")
+        self._add_greeting.setAccessibleDescription(
+            "Text used to confirm that the host reacted to this stimulus strategy."
+        )
+        self._add_greeting_label.setBuddy(self._add_greeting)
+
+        self._add_button = QPushButton("Add strategy", self)
         self._add_button.setObjectName("AddArmButton")
 
         self._add_row = QGridLayout()
@@ -433,9 +555,9 @@ class _ManagePanel(QFrame):
         self._add_arm_id.setEnabled(self._has_detail)
         self._add_greeting.setEnabled(self._has_detail)
         self._add_button.setToolTip(
-            "Add a Beta(1,1) arm to the loaded experiment."
+            "Add a new strategy with neutral starting history."
             if self._has_detail
-            else "Load or create an experiment before adding arms."
+            else "Load or create an experiment before adding strategies."
         )
         self._sync_enabled()
 
@@ -450,36 +572,54 @@ class _ManagePanel(QFrame):
             self._add_row.takeAt(0)
 
         if band is ResponsiveWidthBand.WIDE:
-            self._create_row.addWidget(self._create_experiment_id, 0, 0)
-            self._create_row.addWidget(self._create_label, 0, 1)
-            self._create_row.addWidget(self._create_arm_id, 0, 2)
-            self._create_row.addWidget(self._create_greeting, 0, 3)
-            self._create_row.addWidget(self._create_button, 0, 4)
-            self._add_row.addWidget(self._add_arm_id, 0, 0)
-            self._add_row.addWidget(self._add_greeting, 0, 1, 1, 3)
-            self._add_row.addWidget(self._add_button, 0, 4)
+            self._create_row.addWidget(self._create_experiment_id_label, 0, 0)
+            self._create_row.addWidget(self._create_label_label, 0, 1)
+            self._create_row.addWidget(self._create_arm_id_label, 0, 2)
+            self._create_row.addWidget(self._create_greeting_label, 0, 3)
+            self._create_row.addWidget(self._create_experiment_id, 1, 0)
+            self._create_row.addWidget(self._create_label, 1, 1)
+            self._create_row.addWidget(self._create_arm_id, 1, 2)
+            self._create_row.addWidget(self._create_greeting, 1, 3)
+            self._create_row.addWidget(self._create_button, 1, 4)
+            self._add_row.addWidget(self._add_arm_id_label, 0, 0)
+            self._add_row.addWidget(self._add_greeting_label, 0, 1, 1, 3)
+            self._add_row.addWidget(self._add_arm_id, 1, 0)
+            self._add_row.addWidget(self._add_greeting, 1, 1, 1, 3)
+            self._add_row.addWidget(self._add_button, 1, 4)
             create_stretches = (1, 1, 1, 2, 0)
             add_stretches = (1, 2, 0, 0, 0)
         elif band is ResponsiveWidthBand.MEDIUM:
-            self._create_row.addWidget(self._create_experiment_id, 0, 0)
-            self._create_row.addWidget(self._create_label, 0, 1)
-            self._create_row.addWidget(self._create_arm_id, 1, 0)
-            self._create_row.addWidget(self._create_greeting, 1, 1)
-            self._create_row.addWidget(self._create_button, 2, 0, 1, 2)
-            self._add_row.addWidget(self._add_arm_id, 0, 0)
-            self._add_row.addWidget(self._add_greeting, 0, 1)
-            self._add_row.addWidget(self._add_button, 1, 0, 1, 2)
+            self._create_row.addWidget(self._create_experiment_id_label, 0, 0)
+            self._create_row.addWidget(self._create_label_label, 0, 1)
+            self._create_row.addWidget(self._create_experiment_id, 1, 0)
+            self._create_row.addWidget(self._create_label, 1, 1)
+            self._create_row.addWidget(self._create_arm_id_label, 2, 0)
+            self._create_row.addWidget(self._create_greeting_label, 2, 1)
+            self._create_row.addWidget(self._create_arm_id, 3, 0)
+            self._create_row.addWidget(self._create_greeting, 3, 1)
+            self._create_row.addWidget(self._create_button, 4, 0, 1, 2)
+            self._add_row.addWidget(self._add_arm_id_label, 0, 0)
+            self._add_row.addWidget(self._add_greeting_label, 0, 1)
+            self._add_row.addWidget(self._add_arm_id, 1, 0)
+            self._add_row.addWidget(self._add_greeting, 1, 1)
+            self._add_row.addWidget(self._add_button, 2, 0, 1, 2)
             create_stretches = (1, 1, 0, 0, 0)
             add_stretches = (1, 2, 0, 0, 0)
         else:
-            self._create_row.addWidget(self._create_experiment_id, 0, 0)
-            self._create_row.addWidget(self._create_label, 1, 0)
-            self._create_row.addWidget(self._create_arm_id, 2, 0)
-            self._create_row.addWidget(self._create_greeting, 3, 0)
-            self._create_row.addWidget(self._create_button, 4, 0)
-            self._add_row.addWidget(self._add_arm_id, 0, 0)
-            self._add_row.addWidget(self._add_greeting, 1, 0)
-            self._add_row.addWidget(self._add_button, 2, 0)
+            self._create_row.addWidget(self._create_experiment_id_label, 0, 0)
+            self._create_row.addWidget(self._create_experiment_id, 1, 0)
+            self._create_row.addWidget(self._create_label_label, 2, 0)
+            self._create_row.addWidget(self._create_label, 3, 0)
+            self._create_row.addWidget(self._create_arm_id_label, 4, 0)
+            self._create_row.addWidget(self._create_arm_id, 5, 0)
+            self._create_row.addWidget(self._create_greeting_label, 6, 0)
+            self._create_row.addWidget(self._create_greeting, 7, 0)
+            self._create_row.addWidget(self._create_button, 8, 0)
+            self._add_row.addWidget(self._add_arm_id_label, 0, 0)
+            self._add_row.addWidget(self._add_arm_id, 1, 0)
+            self._add_row.addWidget(self._add_greeting_label, 2, 0)
+            self._add_row.addWidget(self._add_greeting, 3, 0)
+            self._add_row.addWidget(self._add_button, 4, 0)
             create_stretches = (1, 0, 0, 0, 0)
             add_stretches = (1, 0, 0, 0, 0)
 

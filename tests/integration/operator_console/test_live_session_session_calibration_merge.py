@@ -113,7 +113,7 @@ def test_header_composes_calibration_status_with_session_lifecycle_controls() ->
     assert str(session.session_id) in panel._session_label.text()  # type: ignore[attr-defined]
     assert "active" in panel._session_meta_label.text()  # type: ignore[attr-defined]
     assert panel._calibration_pill.kind() == UiStatusKind.PROGRESS  # type: ignore[attr-defined]
-    assert panel._calibration_pill.text() == "Preparing smile baseline · 12/45 face frames"  # type: ignore[attr-defined]
+    assert panel._calibration_pill.text() == "Preparing response baseline · 12/45 face frames"  # type: ignore[attr-defined]
     assert panel._start_button.text() == "Start new session"  # type: ignore[attr-defined]
     assert panel._start_button.isEnabled() is True  # type: ignore[attr-defined]
     assert panel._end_button.isHidden() is False  # type: ignore[attr-defined]

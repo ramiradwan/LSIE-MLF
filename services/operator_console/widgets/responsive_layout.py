@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 
 from PySide6.QtGui import QResizeEvent
-from PySide6.QtWidgets import QGridLayout, QHeaderView, QTableView, QWidget
+from PySide6.QtWidgets import QGridLayout, QHeaderView, QSizePolicy, QTableView, QWidget
 
 
 class ResponsiveWidthBand(StrEnum):
@@ -119,7 +119,12 @@ class ResponsiveMetricGrid(QWidget):
 
         for index, widget in enumerate(self._widgets):
             row, column = divmod(index, columns)
+            widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
             self._layout.addWidget(widget, row, column)
+
+        for row in range((len(self._widgets) + columns - 1) // columns):
+            self._layout.setRowStretch(row, 0)
+        self._layout.setRowStretch((len(self._widgets) + columns - 1) // columns, 1)
 
         for column in range(self._columns.max_columns()):
             self._layout.setColumnStretch(column, 1 if column < columns else 0)

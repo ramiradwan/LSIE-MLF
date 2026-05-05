@@ -203,11 +203,10 @@ def test_live_session_view_encounter_selection_updates_detail_pane() -> None:
     # which drives the detail pane's reward-explanation text.
     vm.select_encounter(encounter.encounter_id)
     detail_text = view._detail_panel._explanation.text()  # type: ignore[attr-defined]
-    # The explanation mentions the smile signal and greeting-match inputs.
     # The exact formatting is the formatter's business; integration-level
     # we only assert the key concepts show up in the rendered string.
-    assert "smile" in detail_text.lower()
-    assert "match" in detail_text.lower()
+    assert "response signal" in detail_text.lower()
+    assert "stimulus confirmation" in detail_text.lower()
     # And the reward card reads a numeric value (the §7B gated reward).
     assert view._detail_panel._reward_card._primary.text() != "—"  # type: ignore[attr-defined]
     # The detail pane keeps the original six reward/physiology cards and adds

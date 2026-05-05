@@ -37,6 +37,8 @@ class EmptyStateWidget(QWidget):
 
     def set_title(self, title: str) -> None:
         self._title.setText(title)
+        self.setAccessibleName(title)
 
     def set_message(self, message: str) -> None:
         self._message.setText(message)
+        self.setAccessibleDescription(message)

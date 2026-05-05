@@ -165,16 +165,19 @@ def _assert_downstream_semantic_grounded(
 
     The fake transcriber is intentionally narrow: it asserts that Module D wraps
     the replay PCM as a 16 kHz WAV, then returns the literal fixture greeting.
-    The fake semantic evaluator accepts only a normalized literal match against
-    ``expected_greeting_text`` so the assertion remains grounded in the script's
-    expected greeting, not a generic always-true shim.
+    The fake semantic evaluator accepts only the fixture greeting after the same
+    preprocessing Module D applies before semantic evaluation.
     """
     try:
+        from packages.ml_core.preprocessing import TextPreprocessor
         from services.worker.tasks import inference as inference_mod
     except ModuleNotFoundError as exc:
         pytest.skip(f"downstream semantic check requires worker task dependencies: {exc}")
 
     normalized_expected = _normalize_text(expected_greeting_text)
+    normalized_semantic_input = _normalize_text(
+        TextPreprocessor().preprocess(expected_greeting_text)
+    )
 
     class LiteralTranscriptionEngine:
         def transcribe(self, audio_path: str, language: str | None = None) -> str:
@@ -189,7 +192,7 @@ def _assert_downstream_semantic_grounded(
     class LiteralSemanticEvaluator:
         def evaluate(self, expected_greeting: str, actual_utterance: str) -> dict[str, Any]:
             assert _normalize_text(expected_greeting) == normalized_expected
-            assert _normalize_text(actual_utterance) == normalized_expected
+            assert _normalize_text(actual_utterance) == normalized_semantic_input
             return {
                 "reasoning": "cross_encoder_high_match",
                 "is_match": True,

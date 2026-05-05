@@ -54,6 +54,7 @@ from services.operator_console.formatters import (
     format_health_state,
     format_reward,
     format_semantic_gate,
+    format_session_id_compact,
     format_timestamp,
     physiology_labels,
     reward_detail_labels,
@@ -208,7 +209,7 @@ class OverviewView(QWidget):
             self._active_session_id = None
             self._active_session_card.set_primary_text("No active session")
             self._active_session_card.set_secondary_text(
-                "Nothing is running. Start a session from the capture stack."
+                "Nothing is running. Start a session when the phone is ready."
             )
             self._active_session_card.set_status(UiStatusKind.NEUTRAL, "idle")
             # Disable the click affordance when nothing to navigate to.
@@ -216,12 +217,14 @@ class OverviewView(QWidget):
             return
         self._active_session_id = session.session_id
         self._active_session_card.set_clickable(True)
-        self._active_session_card.set_primary_text(str(session.session_id))
-        arm_part = session.active_arm if session.active_arm else "no active arm"
+        full_session_id = str(session.session_id)
+        self._active_session_card.set_primary_text(format_session_id_compact(session.session_id))
+        strategy_part = session.active_arm if session.active_arm else "no active strategy"
         greeting_part = truncate_expected_greeting(session.expected_greeting, limit=42)
         duration_part = format_duration(session.duration_s)
         self._active_session_card.set_secondary_text(
-            f"arm {arm_part} · greeting “{greeting_part}” · {duration_part}"
+            f"id {full_session_id} · strategy {strategy_part} · "
+            f"confirmation text “{greeting_part}” · {duration_part}"
         )
         status_kind = (
             UiStatusKind.ERROR if session.status == _ACTIVE_CONFLICT_STATUS else UiStatusKind.OK
@@ -236,10 +239,9 @@ class OverviewView(QWidget):
             return
         label = summary.label or summary.experiment_id
         self._experiment_card.set_primary_text(label)
-        arm_id = summary.active_arm_id or "—"
         reward = format_reward(summary.latest_reward)
         self._experiment_card.set_secondary_text(
-            f"active arm {arm_id} · {summary.arm_count} arm(s) · latest reward {reward}"
+            f"{summary.arm_count} strategy option(s) · latest reward {reward}"
         )
         self._experiment_card.set_status(UiStatusKind.INFO, "sampling")
 

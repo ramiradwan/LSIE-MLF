@@ -67,6 +67,9 @@ from packages.schemas.operator_console import (
 from services.operator_console.formatters import (
     AcousticDetailDisplay,
     AcousticMetricCardDisplay,
+    CauseEffectDisplay,
+    LiveTelemetryDisplay,
+    ReadinessDisplay,
     SemanticAttributionDiagnosticsDisplay,
     acoustic_section_labels,
     format_reward,
@@ -177,7 +180,7 @@ class LiveSessionView(QWidget):
 
         self._header = SectionHeader(
             "Live Session",
-            "Connect the phone, prepare live analysis, then wait for the first result.",
+            "Connect the phone, send a stimulus, then watch the observed response.",
             self,
         )
         self._session_panel = _SessionHeaderPanel(self)
@@ -191,8 +194,11 @@ class LiveSessionView(QWidget):
         )
 
         self._setup_overlay = _TtvSetupOverlay(self)
+        self._readiness_panel = _ReadinessPanel(self)
+        self._telemetry_panel = _LiveTelemetryPanel(self)
         self._phone_preview = _PhonePreviewPanel(self)
-        self._smile_card = MetricCard("Smile Intensity", self)
+        self._smile_card = MetricCard("Response Signal", self)
+        self._cause_effect_panel = _CauseEffectPanel(self)
         self._live_analytics_notice = AlertBanner(self)
         self._timeline_model = _LiveSessionTimelineModel(self)
         self._timeline = EventTimelineWidget(self)
@@ -219,9 +225,10 @@ class LiveSessionView(QWidget):
         )
         self._dashboard_grid.set_widgets(
             [
+                self._readiness_panel,
+                self._telemetry_panel,
                 self._phone_preview,
                 self._smile_card,
-                self._timeline,
             ]
         )
 
@@ -241,6 +248,8 @@ class LiveSessionView(QWidget):
         body.addWidget(self._setup_overlay)
         body.addWidget(self._live_analytics_notice)
         body.addWidget(self._dashboard_grid, 2)
+        body.addWidget(self._cause_effect_panel)
+        body.addWidget(self._timeline)
         body.addLayout(trust_layout, 3)
 
         self._scroll = QScrollArea(self)
@@ -355,7 +364,10 @@ class LiveSessionView(QWidget):
         self._set_phone_preview_status(setup_display)
         live_analytics_notice = self._vm.live_analytics_notice()
         self._set_live_analytics_notice(live_analytics_notice)
+        self._readiness_panel.set_display(self._vm.readiness_display())
+        self._telemetry_panel.set_display(self._vm.live_telemetry_display())
         self._set_smile_card(self._vm.current_smile_intensity_percent(), live_analytics_notice)
+        self._cause_effect_panel.set_display(self._vm.cause_effect_display())
         self._timeline_model.set_rows(self._vm.smile_timeline_points())
         self._timeline.scroll_to_latest()
 
@@ -392,8 +404,11 @@ class LiveSessionView(QWidget):
 
     def _set_dashboard_muted(self, enabled: bool) -> None:
         widgets = (
+            self._readiness_panel,
+            self._telemetry_panel,
             self._phone_preview,
             self._smile_card,
+            self._cause_effect_panel,
             self._timeline,
             self._trust_label,
             self._table,
@@ -413,7 +428,7 @@ class LiveSessionView(QWidget):
             return
         if display.dashboard_mode == "ready":
             self._phone_preview.set_status(
-                "Healthy. Smile Intensity updates after the first result is ready."
+                "Healthy. Derived response signals update after the first result is ready."
             )
             return
         self._phone_preview.set_status(
@@ -448,6 +463,7 @@ class LiveSessionView(QWidget):
         self._timeline.apply_responsive_width(width)
         self._detail_panel.apply_responsive_width(width)
         self._phone_preview.set_compact(band is ResponsiveWidthBand.NARROW)
+        self._cause_effect_panel.apply_responsive_width(width)
 
     def _set_smile_card(self, value: int | None, live_analytics_notice: str | None) -> None:
         if value is None:
@@ -459,7 +475,9 @@ class LiveSessionView(QWidget):
             self._smile_card.set_status(UiStatusKind.NEUTRAL, None)
             return
         self._smile_card.set_primary_text(f"{value}%")
-        self._smile_card.set_secondary_text("Strongest smile signal from the latest usable window")
+        self._smile_card.set_secondary_text(
+            "Strongest observed response signal from the latest usable window"
+        )
         self._smile_card.set_status(UiStatusKind.OK, "ready")
 
     def _sync_countdown_timer(self) -> None:
@@ -666,11 +684,161 @@ class _TtvSetupOverlay(QFrame):
         self._detail.setVisible(display.detail is not None)
 
 
+class _ReadinessPanel(QFrame):
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("Panel")
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        self.setAccessibleName("Live Session next step")
+        self.setAccessibleDescription("Shows whether the operator can send the next stimulus.")
+        self._title = QLabel("Next step", self)
+        self._title.setObjectName("PanelTitle")
+        self._status = StatusPill(self)
+        self._primary = QLabel("", self)
+        self._primary.setObjectName("MetricCardPrimary")
+        self._primary.setWordWrap(True)
+        self._detail = QLabel("", self)
+        self._detail.setObjectName("MetricCardSecondary")
+        self._detail.setWordWrap(True)
+
+        top = QHBoxLayout()
+        top.setContentsMargins(0, 0, 0, 0)
+        top.setSpacing(12)
+        top.addWidget(self._title)
+        top.addStretch(1)
+        top.addWidget(self._status)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 12, 16, 16)
+        layout.setSpacing(8)
+        layout.addLayout(top)
+        layout.addWidget(self._primary)
+        layout.addWidget(self._detail)
+
+    def set_display(self, display: ReadinessDisplay) -> None:
+        self._title.setText(display.title)
+        self._status.set_kind(display.status)
+        self._status.set_text(display.status.value)
+        self._primary.setText(display.primary)
+        self._detail.setText(display.detail)
+
+
+class _LiveTelemetryPanel(QFrame):
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("Panel")
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        self.setAccessibleName("Live response ticker")
+        self.setAccessibleDescription("Shows current response measurement status.")
+        self._title = QLabel("Live response ticker", self)
+        self._title.setObjectName("PanelTitle")
+        self._status = StatusPill(self)
+        self._headline = QLabel("", self)
+        self._headline.setObjectName("MetricCardPrimary")
+        self._headline.setWordWrap(True)
+        self._signal = QLabel("", self)
+        self._signal.setObjectName("MetricCardPrimary")
+        self._detail = QLabel("", self)
+        self._detail.setObjectName("MetricCardSecondary")
+        self._detail.setWordWrap(True)
+
+        top = QHBoxLayout()
+        top.setContentsMargins(0, 0, 0, 0)
+        top.setSpacing(12)
+        top.addWidget(self._title)
+        top.addStretch(1)
+        top.addWidget(self._status)
+
+        signal_row = QHBoxLayout()
+        signal_row.setContentsMargins(0, 0, 0, 0)
+        signal_row.setSpacing(12)
+        signal_row.addWidget(self._headline, 1)
+        signal_row.addWidget(self._signal)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 12, 16, 16)
+        layout.setSpacing(8)
+        layout.addLayout(top)
+        layout.addLayout(signal_row)
+        layout.addWidget(self._detail)
+
+    def set_display(self, display: LiveTelemetryDisplay) -> None:
+        self._status.set_kind(display.status)
+        self._status.set_text(display.status.value)
+        self._headline.setText(display.headline)
+        self._signal.setText(display.response_signal)
+        self._detail.setText(display.detail)
+
+
+class _CauseEffectPanel(QFrame):
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("Panel")
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        self.setAccessibleName("Observed response")
+        self.setAccessibleDescription("Summarizes the result of the latest stimulus window.")
+        self._title = QLabel("Observed response", self)
+        self._title.setObjectName("PanelTitle")
+        self._status = StatusPill(self)
+        self._headline = QLabel("", self)
+        self._headline.setObjectName("MetricCardPrimary")
+        self._headline.setWordWrap(True)
+        self._detail = QLabel("", self)
+        self._detail.setObjectName("MetricCardSecondary")
+        self._detail.setWordWrap(True)
+        self._response_card = MetricCard("Response signal", self)
+        self._voice_card = MetricCard("Voice response", self)
+        self._technical_card = MetricCard("Why it counted", self)
+        self._grid = ResponsiveMetricGrid(
+            breakpoints=_LIVE_SESSION_BREAKPOINTS,
+            columns=MetricGridColumns(wide=3, medium=2, narrow=1),
+            horizontal_spacing=10,
+            vertical_spacing=10,
+            parent=self,
+        )
+        self._grid.set_widgets([self._response_card, self._voice_card, self._technical_card])
+
+        top = QHBoxLayout()
+        top.setContentsMargins(0, 0, 0, 0)
+        top.setSpacing(12)
+        top.addWidget(self._title)
+        top.addStretch(1)
+        top.addWidget(self._status)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 12, 16, 16)
+        layout.setSpacing(8)
+        layout.addLayout(top)
+        layout.addWidget(self._headline)
+        layout.addWidget(self._detail)
+        layout.addWidget(self._grid)
+
+    def set_display(self, display: CauseEffectDisplay) -> None:
+        self._status.set_kind(display.status)
+        self._status.set_text(display.status.value)
+        self._headline.setText(display.headline)
+        self._detail.setText(display.detail)
+        self._response_card.set_primary_text(display.response_summary)
+        self._response_card.set_secondary_text("derived from the response window")
+        self._response_card.set_status(display.status, None)
+        self._voice_card.set_primary_text(display.voice_summary)
+        self._voice_card.set_secondary_text("derived from stable voice coverage when available")
+        self._voice_card.set_status(UiStatusKind.INFO, None)
+        self._technical_card.set_primary_text(display.technical_summary)
+        self._technical_card.set_secondary_text("details remain available below")
+        self._technical_card.set_status(UiStatusKind.NEUTRAL, None)
+
+    def apply_responsive_width(self, width: int) -> ResponsiveWidthBand:
+        return self._grid.apply_width(width)
+
+
 class _PhonePreviewPanel(QFrame):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("Panel")
         self.setFrameShape(QFrame.Shape.NoFrame)
+        self.setAccessibleName("Live visual status")
+        self.setAccessibleDescription("Confirms that only derived visual telemetry is shown.")
         self._title = QLabel("Live visual status", self)
         self._title.setObjectName("PanelTitle")
         self._placeholder = QLabel("Derived visual telemetry", self)
@@ -728,6 +896,10 @@ class _StartSessionDialog(QDialog):
         self.setObjectName("StartSessionDialog")
         self.setModal(True)
         self.setWindowTitle("Start new session")
+        self.setAccessibleName("Start new session")
+        self.setAccessibleDescription(
+            "Choose the experiment to use for the connected-phone capture."
+        )
         self._validator = validator
         self._disabled_reason = disabled_reason
         self._validated_experiment_id: str | None = None
@@ -737,10 +909,18 @@ class _StartSessionDialog(QDialog):
         self._source_summary = QLabel(source_summary, self)
         self._source_summary.setObjectName("MetricCardPrimary")
         self._source_summary.setWordWrap(True)
+        self._source_summary.setAccessibleName("Session source")
+        self._source_summary.setAccessibleDescription(source_summary)
 
         self._experiment_label = QLabel("Experiment", self)
         self._experiment_picker = QComboBox(self)
         self._experiment_picker.setObjectName("StartSessionExperimentPicker")
+        self._experiment_picker.setAccessibleName("Experiment")
+        self._experiment_picker.setAccessibleDescription(
+            "Select the experiment that provides the stimulus strategies for this session."
+        )
+        self._experiment_picker.setToolTip("Choose which experiment to run for this session.")
+        self._experiment_label.setBuddy(self._experiment_picker)
         for summary in summaries:
             label = summary.label or summary.experiment_id
             self._experiment_picker.addItem(label, summary.experiment_id)
@@ -752,6 +932,8 @@ class _StartSessionDialog(QDialog):
         self._validation_label = QLabel(disabled_reason or "", self)
         self._validation_label.setObjectName("MetricCardSecondary")
         self._validation_label.setWordWrap(True)
+        self._validation_label.setAccessibleName("Start-session status")
+        self._validation_label.setAccessibleDescription(disabled_reason or "Ready to start.")
 
         self._buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Cancel, self)
         self._start_button = self._buttons.addButton(
@@ -759,6 +941,11 @@ class _StartSessionDialog(QDialog):
             QDialogButtonBox.ButtonRole.AcceptRole,
         )
         self._start_button.setObjectName("StartSessionSubmitButton")
+        self._start_button.setAccessibleName("Start session")
+        self._start_button.setAccessibleDescription(
+            "Starts a new capture session with the selected experiment."
+        )
+        self._start_button.setToolTip("Start a new capture session with this experiment.")
 
         self._buttons.rejected.connect(self.reject)
         self._start_button.clicked.connect(self._on_submit_clicked)
@@ -793,13 +980,16 @@ class _StartSessionDialog(QDialog):
             experiment_id = self._validator(str(self._experiment_picker.currentData() or ""))
         except ValueError as exc:
             self._validated_experiment_id = None
-            self._validation_label.setText(self._disabled_reason or str(exc))
+            message = self._disabled_reason or str(exc)
+            self._validation_label.setText(message)
+            self._validation_label.setAccessibleDescription(message)
             self._validation_label.setVisible(True)
             self._start_button.setEnabled(False)
             return
 
         self._validated_experiment_id = experiment_id
         self._validation_label.setText("")
+        self._validation_label.setAccessibleDescription("Ready to start.")
         self._validation_label.setVisible(False)
         self._start_button.setEnabled(True)
 
@@ -826,6 +1016,8 @@ class _SessionHeaderPanel(QFrame):
         super().__init__(parent)
         self.setObjectName("Panel")
         self.setFrameShape(QFrame.Shape.NoFrame)
+        self.setAccessibleName("Session controls")
+        self.setAccessibleDescription("Shows the active session and start/end controls.")
 
         self._title = QLabel("Session", self)
         self._title.setObjectName("PanelTitle")
@@ -837,8 +1029,16 @@ class _SessionHeaderPanel(QFrame):
         self._session_meta_label.setWordWrap(True)
         self._start_button = QPushButton("Start new session", self)
         self._start_button.setObjectName("SessionStartButton")
+        self._start_button.setAccessibleName("Start new session")
+        self._start_button.setAccessibleDescription(
+            "Open the start-session dialog for the connected capture source."
+        )
+        self._start_button.setToolTip("Start a new session from the connected phone.")
         self._end_button = QPushButton("End session", self)
         self._end_button.setObjectName("SessionEndButton")
+        self._end_button.setAccessibleName("End session")
+        self._end_button.setAccessibleDescription("End the currently active capture session.")
+        self._end_button.setToolTip("End the current session.")
         self._end_button.setVisible(False)
 
         self._calibration_pill = StatusPill(self)
@@ -885,14 +1085,17 @@ class _SessionHeaderPanel(QFrame):
         del active_arm, expected_greeting
         if session is None:
             self._session_label.setText("No session selected")
+            self._session_label.setAccessibleDescription("No session is selected.")
             self._session_meta_label.setText("")
             self._session_meta_label.setVisible(False)
             self._end_button.setVisible(False)
         else:
-            self._session_label.setText(f"Session {session.session_id}")
-            self._session_meta_label.setText(
-                f"Started {format_timestamp(session.started_at_utc)} · {session.status}"
-            )
+            session_text = f"Session {session.session_id}"
+            meta_text = f"Started {format_timestamp(session.started_at_utc)} · {session.status}"
+            self._session_label.setText(session_text)
+            self._session_label.setAccessibleDescription(session_text)
+            self._session_meta_label.setText(meta_text)
+            self._session_meta_label.setAccessibleDescription(meta_text)
             self._session_meta_label.setVisible(True)
             self._end_button.setVisible(session.ended_at_utc is None)
 
@@ -1008,7 +1211,7 @@ class _EncounterDetailPanel(QFrame):
         self._transcription_text.setObjectName("MetricCardSecondary")
         self._transcription_text.setWordWrap(True)
 
-        self._semantic_title = QLabel("Greeting match and follow-up signals", self)
+        self._semantic_title = QLabel("Stimulus confirmation and follow-up signals", self)
         self._semantic_title.setObjectName("PanelTitle")
         self._semantic_empty = QLabel("", self)
         self._semantic_empty.setObjectName("MetricCardSecondary")
@@ -1028,11 +1231,11 @@ class _EncounterDetailPanel(QFrame):
         semantic_pill_row.addWidget(self._semantic_match_pill)
         semantic_pill_row.addStretch(1)
 
-        self._confidence_card = MetricCard("Greeting-check confidence", self)
+        self._confidence_card = MetricCard("Confirmation confidence", self)
         self._attribution_finality_pill = StatusPill(self)
         self._soft_reward_card = MetricCard("Possible follow-up reward", self)
-        self._au12_lifts_card = MetricCard("Smile lift after greeting", self)
-        self._peak_latency_card = MetricCard("Time to strongest smile", self)
+        self._au12_lifts_card = MetricCard("Response lift after stimulus", self)
+        self._peak_latency_card = MetricCard("Time to strongest response", self)
         self._synchrony_card = MetricCard("Movement together", self)
         self._outcome_link_lag_card = MetricCard("Time to follow-up outcome", self)
 
@@ -1118,7 +1321,7 @@ class _EncounterDetailPanel(QFrame):
         )
         self._p90_card.set_primary_text(format_reward(encounter.p90_intensity))
         self._p90_card.set_secondary_text(
-            f"greeting-check confidence {format_semantic_confidence(encounter.semantic_confidence)}"
+            f"confirmation confidence {format_semantic_confidence(encounter.semantic_confidence)}"
         )
         self._p90_card.set_status(UiStatusKind.INFO, None)
 
@@ -1146,11 +1349,11 @@ class _EncounterDetailPanel(QFrame):
             self._frames_card.set_secondary_text("no usable face frames — reward not computed")
             self._frames_card.set_status(UiStatusKind.WARN, None)
         else:
-            self._frames_card.set_secondary_text("first 4.5 seconds after greeting")
+            self._frames_card.set_secondary_text("first 4.5 seconds after stimulus")
             self._frames_card.set_status(UiStatusKind.NEUTRAL, None)
 
         self._baseline_card.set_primary_text(format_reward(encounter.au12_baseline_pre))
-        self._baseline_card.set_secondary_text("smile level before the greeting")
+        self._baseline_card.set_secondary_text("response-signal level before the stimulus")
         self._baseline_card.set_status(UiStatusKind.NEUTRAL, None)
 
         if encounter.physiology_attached:
@@ -1173,9 +1376,7 @@ class _EncounterDetailPanel(QFrame):
 
     def _set_transcription(self, transcription: str | None) -> None:
         text = transcription.strip() if transcription is not None else ""
-        self._transcription_text.setText(
-            text or "No speech-to-text text was captured for this window."
-        )
+        self._transcription_text.setText(text or "No spoken response was captured in this window.")
 
     def _set_acoustic(self, detail: AcousticDetailDisplay) -> None:
         self._acoustic_title.setText(detail.section_title)
@@ -1229,7 +1430,7 @@ class _EncounterDetailPanel(QFrame):
         )
 
         self._confidence_card.set_primary_text(detail.probability_confidence)
-        self._confidence_card.set_secondary_text("how sure the greeting checker was")
+        self._confidence_card.set_secondary_text("how sure the stimulus confirmation was")
         self._confidence_card.set_status(method_status, None)
 
         self._soft_reward_card.set_primary_text(detail.soft_reward_candidate)
@@ -1237,11 +1438,15 @@ class _EncounterDetailPanel(QFrame):
         self._soft_reward_card.set_status(UiStatusKind.INFO, None)
 
         self._au12_lifts_card.set_primary_text(detail.au12_lift_metrics)
-        self._au12_lifts_card.set_secondary_text("smile change compared with before the greeting")
+        self._au12_lifts_card.set_secondary_text(
+            "response change compared with before the stimulus"
+        )
         self._au12_lifts_card.set_status(UiStatusKind.INFO, None)
 
         self._peak_latency_card.set_primary_text(detail.au12_peak_latency)
-        self._peak_latency_card.set_secondary_text("how long after the greeting the smile peaked")
+        self._peak_latency_card.set_secondary_text(
+            "how long after the stimulus the response peaked"
+        )
         self._peak_latency_card.set_status(UiStatusKind.INFO, None)
 
         self._synchrony_card.set_primary_text(detail.synchrony_metrics)
@@ -1249,7 +1454,7 @@ class _EncounterDetailPanel(QFrame):
         self._synchrony_card.set_status(UiStatusKind.INFO, None)
 
         self._outcome_link_lag_card.set_primary_text(detail.outcome_link_lag)
-        self._outcome_link_lag_card.set_secondary_text("time from greeting event to outcome")
+        self._outcome_link_lag_card.set_secondary_text("time from stimulus event to outcome")
         self._outcome_link_lag_card.set_status(UiStatusKind.INFO, None)
 
         self._confidence_card.setVisible(detail.has_semantic)

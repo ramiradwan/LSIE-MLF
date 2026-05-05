@@ -60,8 +60,14 @@ from packages.schemas.operator_console import (
 )
 from services.operator_console.formatters import (
     AcousticDetailDisplay,
+    CauseEffectDisplay,
+    LiveTelemetryDisplay,
+    ReadinessDisplay,
     SemanticAttributionDiagnosticsDisplay,
     build_acoustic_detail_display,
+    build_cause_effect_display,
+    build_live_telemetry_display,
+    build_readiness_display,
     build_reward_explanation,
     format_calibration_status,
     format_stimulus_progress_message,
@@ -111,7 +117,7 @@ _VIDEO_CAPTURE_HEALTH_KEYS = frozenset({"video_capture", "scrcpy_video"})
 _LIVE_ANALYTICS_HEALTH_KEYS = frozenset({"live_analytics_producer"})
 _LIVE_ANALYTICS_NOTICE = (
     "Waiting for the first result. Keep the face visible and wait for the "
-    "post-message analysis window to finish before sending another test message."
+    "response measurement window to finish before sending another stimulus."
 )
 
 SessionStartSubmitter = Callable[[SessionCreateRequest], OneShotSignals]
@@ -274,7 +280,7 @@ class LiveSessionViewModel(ViewModelBase):
         if self._ttv_state == WAITING_FOR_FACE:
             return "Open a stream or video with a clearly visible face on your phone."
         if self._ttv_state == READY:
-            return "Live analysis is ready. Send one test message."
+            return "Live analysis is ready. Send one stimulus."
         return "Connect the Android phone with USB debugging allowed."
 
     def ttv_setup_display(self) -> TtvSetupDisplay:
@@ -292,7 +298,7 @@ class LiveSessionViewModel(ViewModelBase):
                 state=self._ttv_state,
                 step_label="Step 3 of 3",
                 title="Healthy",
-                message="Send one test message and wait for the first result.",
+                message="Send one stimulus and wait for the observed response.",
                 dashboard_mode="ready",
                 detail=self._face_tracking_detail(),
             )
@@ -338,7 +344,7 @@ class LiveSessionViewModel(ViewModelBase):
             points.append(
                 SmileTimelinePoint(
                     timestamp_utc=encounter.segment_timestamp_utc,
-                    label="Smile Intensity (P90 AU12)",
+                    label="Response signal (P90 AU12)",
                     intensity_percent=_smile_intensity_percent(encounter.p90_intensity),
                     marker=None,
                 )
@@ -397,6 +403,43 @@ class LiveSessionViewModel(ViewModelBase):
         if kind is UiStatusKind.NEUTRAL or kind is UiStatusKind.OK:
             return None
         return _LIVE_ANALYTICS_NOTICE
+
+    def readiness_display(self, now_utc: datetime | None = None) -> ReadinessDisplay:
+        """Preformatted operator readiness payload for the primary session surface."""
+
+        return build_readiness_display(
+            ready_for_submit=self.operator_ready_for_submit(),
+            calibration_status=self.calibration_status(),
+            capture_detail=self.capture_status_detail(),
+            progress_message=self.stimulus_progress_message(now_utc),
+        )
+
+    def live_telemetry_display(self, now_utc: datetime | None = None) -> LiveTelemetryDisplay:
+        """Preformatted ticker payload for derived live-session telemetry."""
+
+        ctx = self._store.stimulus_ui_context()
+        return build_live_telemetry_display(
+            stimulus_state=ctx.state,
+            progress_message=self.stimulus_progress_message(now_utc),
+            response_signal_percent=self.current_smile_intensity_percent(),
+            live_status=self.live_analytics_status(),
+        )
+
+    def cause_effect_display_for_encounter(
+        self,
+        encounter: EncounterSummary | None,
+    ) -> CauseEffectDisplay:
+        """Operator-first cause/effect display for exactly one encounter."""
+
+        return build_cause_effect_display(encounter)
+
+    def cause_effect_display(self) -> CauseEffectDisplay:
+        """Cause/effect display for selected or latest terminal encounter."""
+
+        encounter = self.selected_encounter()
+        if encounter is None:
+            encounter = _latest_completed_encounter(self._current_session_encounters())
+        return self.cause_effect_display_for_encounter(encounter)
 
     def experiment_summaries(self) -> list[ExperimentSummary]:
         return self._store.experiment_summaries()
@@ -889,8 +932,8 @@ class LiveSessionViewModel(ViewModelBase):
         self._timeline_markers.append(
             SmileTimelinePoint(
                 timestamp_utc=timestamp,
-                label="Test message requested",
-                marker="Test message requested",
+                label="Stimulus requested",
+                marker="Stimulus requested",
             )
         )
 

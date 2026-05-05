@@ -242,8 +242,8 @@ def test_overview_vm_formats_latest_encounter_semantic_attribution_diagnostics()
     )
 
     display = vm.latest_encounter_semantic_attribution_diagnostics()
-    assert display.semantic_method == "local greeting checker · ce-v1"
-    assert display.bounded_reason_code == "Greeting clearly did not match"
+    assert display.semantic_method == "local stimulus confirmation checker · ce-v1"
+    assert display.bounded_reason_code == "Stimulus was not confirmed"
     assert display.attribution_finality == "offline final"
 
 
@@ -343,7 +343,7 @@ def test_live_session_vm_ttv_state_waits_for_face_until_calibration_ready() -> N
     assert display.step_label == "Step 2 of 3"
     assert display.dashboard_mode == "calibrating"
     assert display.title == "Preparing live analysis"
-    assert display.detail == "Preparing smile baseline · 12/45 face frames"
+    assert display.detail == "Preparing response baseline · 12/45 face frames"
 
     store.set_live_session(
         _session(
@@ -358,7 +358,7 @@ def test_live_session_vm_ttv_state_waits_for_face_until_calibration_ready() -> N
     assert display.step_label == "Step 3 of 3"
     assert display.dashboard_mode == "ready"
     assert display.title == "Healthy"
-    assert display.message == "Send one test message and wait for the first result."
+    assert display.message == "Send one stimulus and wait for the observed response."
     assert emissions == ["WAITING_FOR_FACE", "READY"]
 
 
@@ -390,11 +390,11 @@ def test_live_session_vm_smile_timeline_points_include_rolling_window_and_marker
 
     points = vm.smile_timeline_points()
     assert [point.label for point in points] == [
-        "Smile Intensity (P90 AU12)",
-        "Test message requested",
+        "Response signal (P90 AU12)",
+        "Stimulus requested",
     ]
     assert points[0].intensity_percent == 2
-    assert points[1].marker == "Test message requested"
+    assert points[1].marker == "Stimulus requested"
     assert vm.current_smile_intensity_percent() == 2
 
 
@@ -493,7 +493,7 @@ def test_live_session_vm_surfaces_calibration_status_from_live_session() -> None
     assert vm.is_calibrating() is True
     assert vm.operator_ready_for_submit() is False
     assert kind is UiStatusKind.PROGRESS
-    assert text == "Preparing smile baseline · 12/45 face frames"
+    assert text == "Preparing response baseline · 12/45 face frames"
 
 
 def test_live_session_vm_ready_at_threshold_preserves_authoritative_calibrating_flag() -> None:
@@ -577,7 +577,7 @@ def test_live_session_vm_exposes_no_producer_notice_without_blocking_ready() -> 
     notice = vm.live_analytics_notice()
     assert notice is not None
     assert "Waiting for the first result" in notice
-    assert "before sending another test message" in notice
+    assert "before sending another stimulus" in notice
 
     store.set_encounters([_encounter("e1", session_id=session_id)])
     assert vm.has_live_encounter_analytics() is True
@@ -594,16 +594,20 @@ def test_live_session_vm_reward_explanation_for_gate_closed() -> None:
                 "e1",
                 state=EncounterState.COMPLETED,
                 semantic_gate=0,
-                semantic_confidence=0.81,
+                semantic_confidence=0.11,
                 p90=0.6,
                 gated_reward=0.0,
                 frames=150,
+            ).model_copy(
+                update={"semantic_evaluation": SemanticEvaluationSummary(confidence_score=0.72)}
             )
         ]
     )
     vm.select_encounter("e1")
     text = vm.reward_explanation()
-    assert "Greeting did not match" in text
+    assert "Stimulus was not confirmed" in text
+    assert "72% confidence" in text
+    assert "11% confidence" not in text
     assert "reward was held back" in text
 
 
@@ -661,10 +665,10 @@ def test_live_session_vm_semantic_attribution_diagnostics_ride_encounters_cache(
     vm.select_encounter("e1")
 
     display = vm.semantic_attribution_diagnostics()
-    assert display.semantic_method == "backup greeting checker · gray-v1"
-    assert display.bounded_reason_code == "Backup checker found a match"
+    assert display.semantic_method == "backup stimulus confirmation checker · gray-v1"
+    assert display.bounded_reason_code == "Backup checker confirmed the stimulus"
     assert display.soft_reward_candidate == "possible follow-up reward 0.220"
-    assert display.au12_lift_metrics == "strong smile lift 0.400"
+    assert display.au12_lift_metrics == "strong response lift 0.400"
 
 
 def test_live_session_vm_set_stimulus_submitting_emits_key() -> None:
@@ -956,9 +960,10 @@ def test_live_session_vm_selects_completed_stimulus_readback_row() -> None:
         ]
     )
 
-    assert vm.selected_encounter() is not None
-    assert vm.selected_encounter().encounter_id == "new-result"
-    assert vm.selected_encounter().transcription == "hello creator"
+    selected = vm.selected_encounter()
+    assert selected is not None
+    assert selected.encounter_id == "new-result"
+    assert selected.transcription == "hello creator"
 
 
 def test_live_session_vm_clears_measuring_stimulus_when_session_ends() -> None:
@@ -1005,12 +1010,12 @@ def test_live_session_vm_progress_message_uses_accepted_message_when_available()
     store.set_stimulus_ui_context(
         StimulusUiContext(
             state=StimulusActionState.ACCEPTED,
-            message="Test message accepted. The response measurement is starting now.",
+            message="Stimulus accepted. The response measurement is starting now.",
         )
     )
 
     assert vm.stimulus_progress_message(_NOW) == (
-        "Test message accepted. The response measurement is starting now."
+        "Stimulus accepted. The response measurement is starting now."
     )
 
 

@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QScrollArea,
     QVBoxLayout,
     QWidget,
 )
@@ -38,6 +39,7 @@ from packages.schemas.operator_console import (
     UiStatusKind,
 )
 from services.operator_console.formatters import (
+    CoModulationDisplay,
     format_comodulation_index,
     format_freshness,
     format_percentage,
@@ -74,12 +76,12 @@ class PhysiologyView(QWidget):
         self._empty_state = EmptyStateWidget(self)
         self._empty_state.set_title("No physiology snapshot")
         self._empty_state.set_message(
-            "Physiology data will appear once an active session is "
-            "publishing snapshots via the Orchestrator."
+            "Physiology data will appear once an active session reports heart-data snapshots."
         )
 
         self._streamer_panel = _RolePanel("Streamer", self)
         self._operator_panel = _RolePanel("Operator", self)
+        self._co_modulation_summary_panel = _CoModulationSummaryPanel(self)
         self._comodulation_panel = _CoModulationPanel(self)
 
         self._roles_grid = ResponsiveMetricGrid(parent=self)
@@ -88,6 +90,7 @@ class PhysiologyView(QWidget):
         body = QVBoxLayout()
         body.setContentsMargins(0, 0, 0, 0)
         body.setSpacing(14)
+        body.addWidget(self._co_modulation_summary_panel)
         body.addWidget(self._roles_grid)
         body.addWidget(self._comodulation_panel)
         body.addStretch(1)
@@ -95,13 +98,20 @@ class PhysiologyView(QWidget):
         self._body_container = QWidget(self)
         self._body_container.setLayout(body)
 
+        self._scroll = QScrollArea(self)
+        self._scroll.setObjectName("PhysiologyScrollArea")
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._scroll.setWidget(self._body_container)
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 24, 24, 24)
         layout.setSpacing(14)
         layout.addWidget(self._header)
         layout.addWidget(self._error_banner)
         layout.addWidget(self._empty_state)
-        layout.addWidget(self._body_container, 1)
+        layout.addWidget(self._scroll, 1)
         layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
         self._vm.changed.connect(self._refresh)
@@ -127,11 +137,12 @@ class PhysiologyView(QWidget):
         snapshot = self._vm.snapshot()
         if snapshot is None:
             self._empty_state.setVisible(True)
-            self._body_container.setVisible(False)
+            self._scroll.setVisible(False)
             return
         self._empty_state.setVisible(False)
-        self._body_container.setVisible(True)
+        self._scroll.setVisible(True)
 
+        self._co_modulation_summary_panel.set_display(self._vm.co_modulation_display())
         self._streamer_panel.set_snapshot(self._vm.streamer_snapshot())
         self._operator_panel.set_snapshot(self._vm.operator_snapshot())
         self._comodulation_panel.set_summary(
@@ -153,6 +164,55 @@ class PhysiologyView(QWidget):
 # ----------------------------------------------------------------------
 # Panels
 # ----------------------------------------------------------------------
+
+
+class _CoModulationSummaryPanel(QFrame):
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("Panel")
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        self.setAccessibleName("Co-Modulation Index")
+        self.setAccessibleDescription(
+            "Explains the derived co-modulation signal in plain language."
+        )
+
+        self._title = QLabel("Co-Modulation Index", self)
+        self._title.setObjectName("PanelTitle")
+        self._subtitle = QLabel(
+            "Vibe Sync: paired heart-data trends from the current session.",
+            self,
+        )
+        self._subtitle.setObjectName("PanelSubtitle")
+        self._subtitle.setWordWrap(True)
+        self._status = StatusPill(self)
+        self._primary_card = MetricCard("Sync score", self)
+        self._explanation = QLabel("", self)
+        self._explanation.setObjectName("MetricCardSecondary")
+        self._explanation.setWordWrap(True)
+
+        top = QHBoxLayout()
+        top.setContentsMargins(0, 0, 0, 0)
+        top.setSpacing(12)
+        top.addWidget(self._title)
+        top.addStretch(1)
+        top.addWidget(self._status)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 12, 16, 16)
+        layout.setSpacing(8)
+        layout.addLayout(top)
+        layout.addWidget(self._subtitle)
+        layout.addWidget(self._primary_card)
+        layout.addWidget(self._explanation)
+
+    def set_display(self, display: CoModulationDisplay) -> None:
+        self._title.setText(display.title)
+        self._status.set_kind(display.status)
+        self._status.set_text(display.status.value)
+        self._primary_card.set_primary_text(display.primary)
+        self._primary_card.set_secondary_text(display.secondary)
+        self._primary_card.set_status(display.status, None)
+        self._explanation.setText(display.detail)
 
 
 class _RolePanel(QFrame):

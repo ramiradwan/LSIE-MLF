@@ -129,12 +129,11 @@ QFrame#MetricCard {{
 QLabel#MetricCardTitle {{
     color: {p.text_muted};
     font-size: 12px;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
+    font-weight: 600;
 }}
 QLabel#MetricCardPrimary {{
     color: {p.text_primary};
-    font-size: 18px;
+    font-size: 16px;
     font-weight: 600;
 }}
 QLabel#MetricCardSecondary {{

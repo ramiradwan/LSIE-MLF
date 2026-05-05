@@ -121,18 +121,25 @@ def test_overview_view_populates_all_cards_from_snapshot() -> None:
     session = _session()
     store.set_overview(_snap_with_session(session))
 
-    assert str(session.session_id) in view._active_session_card._primary.text()  # type: ignore[attr-defined]
-    assert "greeting_v1" in view._active_session_card._secondary.text()  # type: ignore[attr-defined]
+    active_primary = view._active_session_card._primary.text()  # type: ignore[attr-defined]
+    assert str(session.session_id) not in active_primary
+    assert active_primary.startswith(str(session.session_id)[:8])
+    assert active_primary.endswith(str(session.session_id)[-4:])
+    active_secondary = view._active_session_card._secondary.text()  # type: ignore[attr-defined]
+    assert str(session.session_id) in active_secondary
+    assert "strategy greeting_v1" in active_secondary
+    assert "confirmation text" in active_secondary
+    assert "active strategy" not in view._experiment_card._secondary.text()  # type: ignore[attr-defined]
     assert "greeting line v1" in view._experiment_card._primary.text()  # type: ignore[attr-defined]
     assert "ok" in view._health_card._primary.text()  # type: ignore[attr-defined]
     # Physiology card reads live when heart variability is present.
     assert view._physiology_card._primary.text() == "Live heart data"  # type: ignore[attr-defined]
-    # Latest encounter card surfaces the reward plus compact greeting/follow-up summary.
+    # Latest encounter card surfaces the reward plus compact confirmation/follow-up summary.
     latest_secondary = view._latest_encounter_card._secondary.text()  # type: ignore[attr-defined]
     assert "reward" in view._latest_encounter_card._primary.text()  # type: ignore[attr-defined]
-    assert "Greeting matched? yes" in latest_secondary
-    assert "greeting match" in latest_secondary
-    assert "match confidence 91%" in latest_secondary
+    assert "Stimulus confirmed? yes" in latest_secondary
+    assert "stimulus confirmation" in latest_secondary
+    assert "confirmation confidence 91%" in latest_secondary
     assert "follow-up signals online provisional" in latest_secondary
 
 

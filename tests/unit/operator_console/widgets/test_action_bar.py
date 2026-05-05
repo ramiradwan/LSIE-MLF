@@ -39,6 +39,19 @@ def test_button_disabled_without_session() -> None:
     assert bar._submit_button.isEnabled() is False  # type: ignore[attr-defined]
 
 
+def test_action_bar_primary_controls_have_accessible_names() -> None:
+    bar = ActionBar()
+    assert bar._note_input.accessibleName() == "Operator note"  # type: ignore[attr-defined]
+    assert bar._submit_button.accessibleName() == "Send stimulus"  # type: ignore[attr-defined]
+
+
+def test_focus_note_input_moves_keyboard_focus() -> None:
+    bar = ActionBar()
+    bar.show()
+    bar.focus_note_input()
+    assert bar.focusWidget() is bar._note_input  # type: ignore[attr-defined]
+
+
 def test_set_session_context_enables_button() -> None:
     bar = ActionBar()
     bar.set_session_context(
@@ -103,7 +116,7 @@ def test_accepted_measuring_completed_progression() -> None:
     for state, expected_label in [
         (StimulusActionState.ACCEPTED, "Accepted"),
         (StimulusActionState.MEASURING, "Measuring…"),
-        (StimulusActionState.COMPLETED, "Send Test Message"),
+        (StimulusActionState.COMPLETED, "Send Stimulus"),
     ]:
         bar.set_action_state(StimulusUiContext(state=state))
         assert bar._submit_button.text() == expected_label  # type: ignore[attr-defined]

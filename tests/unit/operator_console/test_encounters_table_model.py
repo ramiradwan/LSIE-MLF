@@ -86,7 +86,7 @@ def test_display_semantic_gate_reads_closed_when_zero() -> None:
     model = EncountersTableModel()
     model.set_rows([_make_encounter("e1", semantic_gate=0)])
     idx = model.index(0, 3)  # Semantic gate
-    assert "closed" in model.data(idx, Qt.ItemDataRole.DisplayRole)
+    assert "held back" in model.data(idx, Qt.ItemDataRole.DisplayRole)
 
 
 def test_display_frames_in_window_zero_is_rendered_as_zero() -> None:

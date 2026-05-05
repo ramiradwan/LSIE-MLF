@@ -49,14 +49,14 @@ class SessionsView(QWidget):
 
         self._header = SectionHeader(
             "Sessions",
-            "Recent sessions — click a row to open it in Live Session.",
+            "Recent sessions — double-click or press Enter to open one in Live Session.",
             self,
         )
         self._error_banner = AlertBanner(self)
         self._empty_state = EmptyStateWidget(self)
         self._empty_state.set_title("No sessions yet")
         self._empty_state.set_message(
-            "Sessions will appear here as they are created by the capture stack."
+            "Sessions will appear here after they are started from Live Session."
         )
 
         self._table = self._build_table()
@@ -114,9 +114,14 @@ class SessionsView(QWidget):
         selection_model = table.selectionModel()
         if selection_model is not None:
             selection_model.selectionChanged.connect(self._on_table_selection_changed)
-        # A double-click is the explicit "open this session" gesture —
-        # single-click selects, double-click commits to the VM + shell.
+        table.setAccessibleName("Sessions table")
+        table.setAccessibleDescription(
+            "Select a session, then double-click or press Enter to open it in Live Session."
+        )
+        table.setToolTip("Double-click or press Enter to open the selected session.")
+        # A double-click or activation is the explicit "open this session" gesture.
         table.doubleClicked.connect(self._on_table_double_clicked)
+        table.activated.connect(self._on_table_double_clicked)
         return table
 
     # ------------------------------------------------------------------

@@ -179,17 +179,23 @@ class HealthView(QWidget):
         )
         self._repair_button = QPushButton("Repair install", self)
         self._repair_button.setObjectName("RepairInstallButton")
+        self._repair_button.setAccessibleName("Repair install")
+        self._repair_button.setAccessibleDescription(
+            "Rebuilds the local runtime without touching desktop.sqlite."
+        )
         self._repair_button.setToolTip("Rebuild the local runtime without touching desktop.sqlite.")
         self._repair_button.setEnabled(False)
         self._repair_button.clicked.connect(self._on_repair_clicked)
         self._repair_status = QLabel("", self)
         self._repair_status.setObjectName("PanelSubtitle")
+        self._repair_status.setAccessibleName("Repair status")
+        self._repair_status.setAccessibleDescription("No repair requested.")
         self._repair_status.setVisible(False)
         self._error_banner = AlertBanner(self)
         self._empty_state = EmptyStateWidget(self)
         self._empty_state.set_title("No health snapshot")
         self._empty_state.set_message(
-            "Health data will appear once the desktop process graph reports its first rollup."
+            "Health data will appear once the app reports its first readiness update."
         )
 
         self._overall_card = MetricCard("Overall", self)
@@ -306,6 +312,11 @@ class HealthView(QWidget):
     def _build_subsystem_table(self) -> QTableView:
         table = QTableView(self)
         table.setObjectName("HealthSubsystemTable")
+        table.setAccessibleName("Readiness details table")
+        table.setAccessibleDescription(
+            "Subsystem readiness details with recovery mode, status, and next operator action."
+        )
+        table.setToolTip("Subsystem readiness details and next operator actions.")
         table.setModel(self._vm.health_model())
         table.setAlternatingRowColors(True)
         table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
@@ -406,6 +417,7 @@ class HealthView(QWidget):
 
     def _on_repair_started(self) -> None:
         self._repair_status.setText("Repair requested")
+        self._repair_status.setAccessibleDescription("Repair requested")
         self._repair_status.setVisible(True)
 
     @Slot(QModelIndex, int, int)

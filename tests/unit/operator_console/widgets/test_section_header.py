@@ -13,12 +13,14 @@ def test_title_only_hides_subtitle() -> None:
     header = SectionHeader("Overview")
     assert header._title.text() == "Overview"  # type: ignore[attr-defined]
     assert header._subtitle.isHidden() is True  # type: ignore[attr-defined]
+    assert header.accessibleName() == "Overview"
 
 
 def test_with_subtitle_shows_subtitle() -> None:
     header = SectionHeader("Overview", "adaptive experiment snapshot")
     assert header._subtitle.isHidden() is False  # type: ignore[attr-defined]
     assert header._subtitle.text() == "adaptive experiment snapshot"  # type: ignore[attr-defined]
+    assert header.accessibleDescription() == "adaptive experiment snapshot"
 
 
 def test_setters_mutate_title_and_subtitle() -> None:
