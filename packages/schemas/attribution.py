@@ -15,10 +15,16 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from packages.schemas.evaluation import SemanticMethod, SemanticReasonCode
+from packages.schemas.evaluation import (
+    ResponseReasonCode,
+    ResponseRegistrationStatus,
+    SemanticMethod,
+    SemanticReasonCode,
+    StimulusModality,
+)
 
 AttributionFinality = Literal["online_provisional", "offline_final"]
-AttributionEventType = Literal["greeting_interaction"]
+AttributionEventType = Literal["greeting_interaction", "stimulus_interaction"]
 OutcomeEventType = Literal["creator_follow"]
 BanditSelectionMethod = Literal["thompson_sampling"]
 
@@ -89,6 +95,10 @@ class BanditDecisionSnapshot(AttributionBaseModel):
     expected_greeting: str
     decision_context_hash: str = Field(..., pattern="^[0-9a-f]{64}$")
     random_seed: int = Field(..., ge=0, le=18446744073709551615)
+    stimulus_modality: StimulusModality | None = None
+    expected_stimulus_rule: str | None = None
+    expected_response_rule: str | None = None
+    stimulus_payload: dict[str, object] | None = None
 
     @field_validator("candidate_arm_ids")
     @classmethod
@@ -138,6 +148,12 @@ class AttributionEvent(AttributionBaseModel):
     finality: AttributionFinality = Field(..., description=_FINALITY_DESCRIPTION)
     schema_version: str = Field(..., description=_SCHEMA_VERSION_DESCRIPTION)
     created_at: datetime = Field(..., description=_CREATED_AT_DESCRIPTION)
+    stimulus_id: UUID | None = None
+    stimulus_modality: StimulusModality | None = None
+    matched_response_time_utc: datetime | None = None
+    response_registration_status: ResponseRegistrationStatus | None = None
+    response_reason_code: ResponseReasonCode | None = None
+    expected_response_rule_text_hash: str | None = Field(default=None, pattern="^[0-9a-f]{64}$")
 
     @field_validator("evidence_flags")
     @classmethod

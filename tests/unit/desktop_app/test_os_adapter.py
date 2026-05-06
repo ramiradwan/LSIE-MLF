@@ -144,8 +144,9 @@ def test_secure_delete_file_zeroes_before_unlink(tmp_path: Path) -> None:
     target = tmp_path / "video_stream.mkv"
     target.write_bytes(b"secret raw media")
     writes: list[bytes] = []
-    original_open = Path.open
-    original_unlink = Path.unlink
+    path_type = type(target)
+    original_open = path_type.open
+    original_unlink = path_type.unlink
 
     def recording_open(
         path: Path,
@@ -169,8 +170,9 @@ def test_secure_delete_file_zeroes_before_unlink(tmp_path: Path) -> None:
         return file_obj
 
     with (
-        patch.object(Path, "open", recording_open),
-        patch.object(Path, "unlink", lambda path: original_unlink(path)),
+        patch("services.desktop_app.os_adapter.shutil.which", return_value=None),
+        patch.object(path_type, "open", recording_open),
+        patch.object(path_type, "unlink", lambda path: original_unlink(path)),
     ):
         assert os_adapter.secure_delete_file(target, attempts=1) is True
 
@@ -183,7 +185,8 @@ def test_secure_delete_file_retries_locked_unlink(tmp_path: Path) -> None:
     target = tmp_path / "video_stream.mkv"
     target.write_bytes(b"video")
     calls = 0
-    original_unlink = Path.unlink
+    path_type = type(target)
+    original_unlink = path_type.unlink
 
     def flaky_unlink(path: Path) -> None:
         nonlocal calls
@@ -193,7 +196,8 @@ def test_secure_delete_file_retries_locked_unlink(tmp_path: Path) -> None:
         original_unlink(path)
 
     with (
-        patch.object(Path, "unlink", flaky_unlink),
+        patch("services.desktop_app.os_adapter.shutil.which", return_value=None),
+        patch.object(path_type, "unlink", flaky_unlink),
         patch("services.desktop_app.os_adapter.time.sleep") as sleep,
     ):
         assert os_adapter.secure_delete_file(target, attempts=2, retry_delay_s=0.01) is True

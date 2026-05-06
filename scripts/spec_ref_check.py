@@ -236,6 +236,7 @@ class _IndexEntry:
 
 _ROOT_KEY_TO_SECTION: dict[str, str] = {
     "document_control": "0",
+    "conformance_gates": "0.5",
     "system_philosophy": "1",
     "data_flow_pipeline": "2",
     "codebase_architecture": "3",
@@ -259,7 +260,6 @@ _SUBSECTION_CONVENTIONS: dict[str, list[tuple[str, str]]] = {
         ("normative_terms", "0.2"),
         ("canonical_terms", "0.3"),
         ("version_history", "0.4"),
-        ("amendments", "0.5"),
     ],
     "codebase_architecture": [
         ("directory_hierarchy", "3.1"),

@@ -313,8 +313,6 @@ def _resolve_json_ref(root_schema: dict[str, Any], ref: str) -> dict[str, Any] |
 def extract_json_schemas(content: dict[str, Any]) -> dict[str, dict[str, Any]]:
     """Pull JSON Schema objects out of supported content.json layouts."""
     contracts = content.get("interface_contracts") or {}
-    if not isinstance(contracts, dict):
-        return {}
 
     schemas: dict[str, dict[str, Any]] = {}
 
@@ -349,34 +347,42 @@ def extract_json_schemas(content: dict[str, Any]) -> dict[str, dict[str, Any]]:
                 if "$defs" not in existing_nested and isinstance(shared_defs, dict):
                     schemas[nested_key] = {**existing_nested, "$defs": shared_defs}
 
-    direct = contracts.get("schemas")
-    if isinstance(direct, dict):
-        for key, schema in direct.items():
-            if isinstance(schema, dict):
-                register_schema(key, schema, schema)
-
-    nested = contracts.get("schema_definition")
-    if isinstance(nested, dict):
-        inner = nested.get("schemas")
-        if isinstance(inner, dict):
-            for key, schema in inner.items():
+    if isinstance(contracts, dict):
+        direct = contracts.get("schemas")
+        if isinstance(direct, dict):
+            for key, schema in direct.items():
                 if isinstance(schema, dict):
                     register_schema(key, schema, schema)
 
-    for block in contracts.values():
-        if not isinstance(block, dict) or block.get("language") != "json":
-            continue
-        source = block.get("source")
-        if not isinstance(source, str):
-            continue
-        try:
-            schema = json.loads(source)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(schema, dict):
-            title_value = schema.get("title")
-            title = title_value if isinstance(title_value, str) else "schema"
-            register_schema(title, schema, schema)
+        nested = contracts.get("schema_definition")
+        if isinstance(nested, dict):
+            inner = nested.get("schemas")
+            if isinstance(inner, dict):
+                for key, schema in inner.items():
+                    if isinstance(schema, dict):
+                        register_schema(key, schema, schema)
+
+    def register_schema_blocks(value: Any) -> None:
+        if isinstance(value, dict):
+            if value.get("language") == "json":
+                source = value.get("source")
+                if isinstance(source, str):
+                    try:
+                        schema = json.loads(source)
+                    except json.JSONDecodeError:
+                        schema = None
+                    if isinstance(schema, dict):
+                        title_value = schema.get("title")
+                        title = title_value if isinstance(title_value, str) else "schema"
+                        register_schema(title, schema, schema)
+            for child in value.values():
+                register_schema_blocks(child)
+            return
+        if isinstance(value, list):
+            for child in value:
+                register_schema_blocks(child)
+
+    register_schema_blocks(content)
 
     return schemas
 
@@ -561,7 +567,10 @@ def compare_entity(
             )
 
         requiredness = {
-            source_name: source_required_overrides.get(source_name, {}).get(field_name, spec.required)
+            source_name: source_required_overrides.get(source_name, {}).get(
+                field_name,
+                spec.required,
+            )
             for source_name, spec in present_in.items()
             if source_required_overrides.get(source_name, {}).get(field_name, spec.required)
             is not None

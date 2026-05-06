@@ -2,7 +2,7 @@
   "schema_version": 1,
   "registry_ref": "§11 Variable Extraction Matrix",
   "audit_item": "§13.13 Variable traceability",
-  "row_count_expected": 60,
+  "row_count_expected": 77,
   "variables": [
     {
       "variable": "Encoded Video Stream",
@@ -112,7 +112,7 @@
     {
       "variable": "3D Facial Landmarks",
       "producer_module": "C",
-      "section": "§11.3.6",
+      "section": "§11.3.3",
       "evidence": [
         {
           "path": "services/worker/pipeline/orchestrator.py",
@@ -128,7 +128,7 @@
     {
       "variable": "AU12 Intensity Score",
       "producer_module": "C",
-      "section": "§11.3.7",
+      "section": "§11.3.4",
       "evidence": [
         {
           "path": "packages/schemas/inference_handoff.py",
@@ -144,346 +144,6 @@
           "patterns": [
             "_au12_series.append",
             "intensity"
-          ],
-          "surface": "public_output"
-        }
-      ]
-    },
-    {
-      "variable": "stimulus_time",
-      "producer_module": "C",
-      "section": "§11.3.3",
-      "evidence": [
-        {
-          "path": "packages/schemas/inference_handoff.py",
-          "patterns": [
-            "stimulus_time",
-            "alias=\"_stimulus_time\""
-          ],
-          "surface": "schema"
-        },
-        {
-          "path": "services/worker/pipeline/orchestrator.py",
-          "patterns": [
-            "\"_stimulus_time\": self._stimulus_time"
-          ],
-          "surface": "public_output"
-        }
-      ]
-    },
-    {
-      "variable": "RMSSD (Streamer)",
-      "producer_module": "C",
-      "section": "§11.3.8",
-      "evidence": [
-        {
-          "path": "packages/schemas/physiology.py",
-          "patterns": [
-            "rmssd_ms",
-            "streamer"
-          ],
-          "surface": "schema"
-        },
-        {
-          "path": "services/worker/pipeline/orchestrator.py",
-          "patterns": [
-            "\"streamer\": self._derive_physio_snapshot",
-            "rmssd_ms"
-          ],
-          "surface": "public_output"
-        }
-      ]
-    },
-    {
-      "variable": "RMSSD (Operator)",
-      "producer_module": "C",
-      "section": "§11.3.9",
-      "evidence": [
-        {
-          "path": "packages/schemas/physiology.py",
-          "patterns": [
-            "rmssd_ms",
-            "operator"
-          ],
-          "surface": "schema"
-        },
-        {
-          "path": "services/worker/pipeline/orchestrator.py",
-          "patterns": [
-            "\"operator\": self._derive_physio_snapshot",
-            "rmssd_ms"
-          ],
-          "surface": "public_output"
-        }
-      ]
-    },
-    {
-      "variable": "Heart Rate (Streamer/Operator)",
-      "producer_module": "C",
-      "section": "§11.3.10",
-      "evidence": [
-        {
-          "path": "packages/schemas/physiology.py",
-          "patterns": [
-            "heart_rate_bpm",
-            "streamer",
-            "operator"
-          ],
-          "surface": "schema"
-        },
-        {
-          "path": "services/worker/pipeline/orchestrator.py",
-          "patterns": [
-            "heart_rate_bpm",
-            "heart_rate_values"
-          ],
-          "surface": "public_output"
-        }
-      ]
-    },
-    {
-      "variable": "Physiological Validity Ratio",
-      "producer_module": "C",
-      "section": "§11.3.11",
-      "evidence": [
-        {
-          "path": "packages/schemas/physiology.py",
-          "patterns": [
-            "validity_ratio",
-            "ge=0.0",
-            "le=1.0"
-          ],
-          "surface": "schema"
-        },
-        {
-          "path": "services/worker/pipeline/orchestrator.py",
-          "patterns": [
-            "validity_ratio = valid_total",
-            "\"validity_ratio\": validity_ratio"
-          ],
-          "surface": "public_output"
-        }
-      ]
-    },
-    {
-      "variable": "Physiological Validity Flag",
-      "producer_module": "C",
-      "section": "§11.3.12",
-      "evidence": [
-        {
-          "path": "packages/schemas/physiology.py",
-          "patterns": [
-            "is_valid"
-          ],
-          "surface": "schema"
-        },
-        {
-          "path": "services/worker/pipeline/orchestrator.py",
-          "patterns": [
-            "is_valid = validity_ratio",
-            "\"is_valid\": is_valid"
-          ],
-          "surface": "public_output"
-        }
-      ]
-    },
-    {
-      "variable": "Physiological Source Kind",
-      "producer_module": "C",
-      "section": "§11.3.13",
-      "evidence": [
-        {
-          "path": "packages/schemas/physiology.py",
-          "patterns": [
-            "source_kind",
-            "Literal[\"ibi\", \"session\"]"
-          ],
-          "surface": "schema"
-        },
-        {
-          "path": "services/worker/pipeline/orchestrator.py",
-          "patterns": [
-            "\"source_kind\": source_kind"
-          ],
-          "surface": "public_output"
-        }
-      ]
-    },
-    {
-      "variable": "Physiological Derivation Method",
-      "producer_module": "C",
-      "section": "§11.3.14",
-      "evidence": [
-        {
-          "path": "packages/schemas/physiology.py",
-          "patterns": [
-            "derivation_method",
-            "provider",
-            "server"
-          ],
-          "surface": "schema"
-        },
-        {
-          "path": "services/worker/pipeline/orchestrator.py",
-          "patterns": [
-            "\"derivation_method\": derivation_method"
-          ],
-          "surface": "public_output"
-        }
-      ]
-    },
-    {
-      "variable": "Physiological Window Length",
-      "producer_module": "C",
-      "section": "§11.3.15",
-      "evidence": [
-        {
-          "path": "packages/schemas/physiology.py",
-          "patterns": [
-            "window_s",
-            "gt=0"
-          ],
-          "surface": "schema"
-        },
-        {
-          "path": "services/worker/pipeline/orchestrator.py",
-          "patterns": [
-            "\"window_s\": PHYSIO_DERIVE_WINDOW_S"
-          ],
-          "surface": "public_output"
-        }
-      ]
-    },
-    {
-      "variable": "Physiological Freshness",
-      "producer_module": "C",
-      "section": "§11.3.16",
-      "evidence": [
-        {
-          "path": "packages/schemas/physiology.py",
-          "patterns": [
-            "freshness_s",
-            "ge=0.0"
-          ],
-          "surface": "schema"
-        },
-        {
-          "path": "services/worker/pipeline/orchestrator.py",
-          "patterns": [
-            "freshness_s",
-            "PHYSIO_STALENESS_THRESHOLD_S"
-          ],
-          "surface": "public_output"
-        }
-      ]
-    },
-    {
-      "variable": "Physiological Staleness Flag",
-      "producer_module": "C",
-      "section": "§11.3.17",
-      "evidence": [
-        {
-          "path": "packages/schemas/physiology.py",
-          "patterns": [
-            "is_stale"
-          ],
-          "surface": "schema"
-        },
-        {
-          "path": "services/worker/pipeline/orchestrator.py",
-          "patterns": [
-            "\"is_stale\": freshness_s > PHYSIO_STALENESS_THRESHOLD_S"
-          ],
-          "surface": "public_output"
-        }
-      ]
-    },
-    {
-      "variable": "Segment ID",
-      "producer_module": "C",
-      "section": "§11.3.4",
-      "evidence": [
-        {
-          "path": "packages/schemas/inference_handoff.py",
-          "patterns": [
-            "segment_id",
-            "^[0-9a-f]{64}$"
-          ],
-          "surface": "schema"
-        },
-        {
-          "path": "services/worker/pipeline/orchestrator.py",
-          "patterns": [
-            "def _stable_segment_id",
-            "hashlib.sha256"
-          ],
-          "surface": "public_output"
-        }
-      ]
-    },
-    {
-      "variable": "Bandit Decision Snapshot",
-      "producer_module": "C",
-      "section": "§11.3.5",
-      "evidence": [
-        {
-          "path": "packages/schemas/inference_handoff.py",
-          "patterns": [
-            "BanditDecisionSnapshot",
-            "alias=\"_bandit_decision_snapshot\""
-          ],
-          "surface": "schema"
-        },
-        {
-          "path": "services/worker/pipeline/orchestrator.py",
-          "patterns": [
-            "_bandit_decision_snapshot",
-            "_capture_bandit_decision_snapshot"
-          ],
-          "surface": "public_output"
-        }
-      ]
-    },
-    {
-      "variable": "ASR Transcription",
-      "producer_module": "D",
-      "section": "§11.4.4",
-      "evidence": [
-        {
-          "path": "services/worker/tasks/inference.py",
-          "patterns": [
-            "\"transcription\": transcription"
-          ],
-          "surface": "public_output"
-        },
-        {
-          "path": "services/cloud_api/db/sql/01-schema.sql",
-          "patterns": [
-            "CREATE TABLE IF NOT EXISTS transcripts",
-            "text            TEXT NOT NULL"
-          ],
-          "surface": "persistence"
-        }
-      ]
-    },
-    {
-      "variable": "Semantic Match",
-      "producer_module": "D",
-      "section": "§11.4.5",
-      "evidence": [
-        {
-          "path": "packages/schemas/evaluation.py",
-          "patterns": [
-            "SemanticEvaluationResult",
-            "is_match",
-            "confidence_score"
-          ],
-          "surface": "schema"
-        },
-        {
-          "path": "services/worker/tasks/inference.py",
-          "patterns": [
-            "\"semantic\": semantic"
           ],
           "surface": "public_output"
         }
@@ -560,6 +220,509 @@
         }
       ],
       "note": "Legacy scalar variable is traceable through the current canonical §7D windowed field set."
+    },
+    {
+      "variable": "ASR Transcription",
+      "producer_module": "D",
+      "section": "§11.4.4",
+      "evidence": [
+        {
+          "path": "services/worker/tasks/inference.py",
+          "patterns": [
+            "\"transcription\": transcription"
+          ],
+          "surface": "public_output"
+        },
+        {
+          "path": "services/cloud_api/db/sql/01-schema.sql",
+          "patterns": [
+            "CREATE TABLE IF NOT EXISTS transcripts",
+            "text            TEXT NOT NULL"
+          ],
+          "surface": "persistence"
+        }
+      ]
+    },
+    {
+      "variable": "Delivery Validation Result",
+      "producer_module": "D",
+      "section": "§11.4.5",
+      "evidence": [
+        {
+          "path": "packages/schemas/evaluation.py",
+          "patterns": [
+            "SemanticEvaluationResult",
+            "is_match",
+            "confidence_score"
+          ],
+          "surface": "schema"
+        },
+        {
+          "path": "services/worker/tasks/inference.py",
+          "patterns": [
+            "\"semantic\": semantic"
+          ],
+          "surface": "public_output"
+        }
+      ]
+    },
+    {
+      "variable": "Evaluation Variance",
+      "producer_module": "E",
+      "section": "§11.5.1",
+      "evidence": [
+        {
+          "path": "services/api/services/operator_read_service.py",
+          "patterns": [
+            "Beta-distribution variance",
+            "evaluation_variance=variance"
+          ],
+          "surface": "public_output"
+        },
+        {
+          "path": "services/cloud_api/db/sql/01-schema.sql",
+          "patterns": [
+            "CREATE TABLE IF NOT EXISTS experiments",
+            "alpha_param",
+            "beta_param"
+          ],
+          "surface": "persistence"
+        }
+      ]
+    },
+    {
+      "variable": "External Context Metadata",
+      "producer_module": "F",
+      "section": "§11.6.1",
+      "evidence": [
+        {
+          "path": "services/worker/tasks/enrichment.py",
+          "patterns": [
+            "scrape_context",
+            "\"data\": {}",
+            "source_url"
+          ],
+          "surface": "public_output"
+        },
+        {
+          "path": "services/cloud_api/db/sql/01-schema.sql",
+          "patterns": [
+            "CREATE TABLE IF NOT EXISTS context",
+            "data            JSONB NOT NULL"
+          ],
+          "surface": "persistence"
+        }
+      ]
+    },
+    {
+      "variable": "gated_reward",
+      "producer_module": "E",
+      "section": "§11.5.2",
+      "evidence": [
+        {
+          "path": "services/worker/pipeline/reward.py",
+          "patterns": [
+            "gated_reward",
+            "RewardResult"
+          ],
+          "surface": "public_output"
+        },
+        {
+          "path": "services/cloud_api/db/sql/01-schema.sql",
+          "patterns": [
+            "gated_reward",
+            "encounter_log"
+          ],
+          "surface": "persistence"
+        }
+      ]
+    },
+    {
+      "variable": "p90_intensity",
+      "producer_module": "E",
+      "section": "§11.5.3",
+      "evidence": [
+        {
+          "path": "services/worker/pipeline/reward.py",
+          "patterns": [
+            "p90_intensity",
+            "compute_p90"
+          ],
+          "surface": "public_output"
+        },
+        {
+          "path": "services/cloud_api/db/sql/01-schema.sql",
+          "patterns": [
+            "p90_intensity",
+            "encounter_log"
+          ],
+          "surface": "persistence"
+        }
+      ]
+    },
+    {
+      "variable": "delivery_validation_gate",
+      "producer_module": "E",
+      "section": "§11.5.4",
+      "evidence": [
+        {
+          "path": "services/worker/pipeline/reward.py",
+          "patterns": [
+            "semantic_gate",
+            "gate: int"
+          ],
+          "surface": "public_output"
+        },
+        {
+          "path": "services/cloud_api/db/sql/01-schema.sql",
+          "patterns": [
+            "semantic_gate",
+            "encounter_log"
+          ],
+          "surface": "persistence"
+        }
+      ]
+    },
+    {
+      "variable": "n_frames_in_window",
+      "producer_module": "E",
+      "section": "§11.5.5",
+      "evidence": [
+        {
+          "path": "services/worker/pipeline/reward.py",
+          "patterns": [
+            "n_frames_in_window",
+            "len(window_obs)"
+          ],
+          "surface": "public_output"
+        },
+        {
+          "path": "services/cloud_api/db/sql/01-schema.sql",
+          "patterns": [
+            "n_frames_in_window",
+            "encounter_log"
+          ],
+          "surface": "persistence"
+        }
+      ]
+    },
+    {
+      "variable": "au12_baseline_pre",
+      "producer_module": "E",
+      "section": "§11.5.6",
+      "evidence": [
+        {
+          "path": "services/worker/pipeline/reward.py",
+          "patterns": [
+            "au12_baseline_pre",
+            "baseline_obs"
+          ],
+          "surface": "public_output"
+        },
+        {
+          "path": "services/cloud_api/db/sql/01-schema.sql",
+          "patterns": [
+            "au12_baseline_pre",
+            "encounter_log"
+          ],
+          "surface": "persistence"
+        }
+      ]
+    },
+    {
+      "variable": "stimulus_time",
+      "producer_module": "C",
+      "section": "§11.3.5",
+      "evidence": [
+        {
+          "path": "packages/schemas/inference_handoff.py",
+          "patterns": [
+            "stimulus_time",
+            "alias=\"_stimulus_time\""
+          ],
+          "surface": "schema"
+        },
+        {
+          "path": "services/worker/pipeline/orchestrator.py",
+          "patterns": [
+            "\"_stimulus_time\": self._stimulus_time"
+          ],
+          "surface": "public_output"
+        }
+      ]
+    },
+    {
+      "variable": "RMSSD (Streamer)",
+      "producer_module": "C",
+      "section": "§11.3.6",
+      "evidence": [
+        {
+          "path": "packages/schemas/physiology.py",
+          "patterns": [
+            "rmssd_ms",
+            "streamer"
+          ],
+          "surface": "schema"
+        },
+        {
+          "path": "services/worker/pipeline/orchestrator.py",
+          "patterns": [
+            "\"streamer\": self._derive_physio_snapshot",
+            "rmssd_ms"
+          ],
+          "surface": "public_output"
+        }
+      ]
+    },
+    {
+      "variable": "RMSSD (Operator)",
+      "producer_module": "C",
+      "section": "§11.3.7",
+      "evidence": [
+        {
+          "path": "packages/schemas/physiology.py",
+          "patterns": [
+            "rmssd_ms",
+            "operator"
+          ],
+          "surface": "schema"
+        },
+        {
+          "path": "services/worker/pipeline/orchestrator.py",
+          "patterns": [
+            "\"operator\": self._derive_physio_snapshot",
+            "rmssd_ms"
+          ],
+          "surface": "public_output"
+        }
+      ]
+    },
+    {
+      "variable": "Heart Rate (Streamer/Operator)",
+      "producer_module": "C",
+      "section": "§11.3.8",
+      "evidence": [
+        {
+          "path": "packages/schemas/physiology.py",
+          "patterns": [
+            "heart_rate_bpm",
+            "streamer",
+            "operator"
+          ],
+          "surface": "schema"
+        },
+        {
+          "path": "services/worker/pipeline/orchestrator.py",
+          "patterns": [
+            "heart_rate_bpm",
+            "heart_rate_values"
+          ],
+          "surface": "public_output"
+        }
+      ]
+    },
+    {
+      "variable": "Physiological Validity Ratio",
+      "producer_module": "C",
+      "section": "§11.3.9",
+      "evidence": [
+        {
+          "path": "packages/schemas/physiology.py",
+          "patterns": [
+            "validity_ratio",
+            "ge=0.0",
+            "le=1.0"
+          ],
+          "surface": "schema"
+        },
+        {
+          "path": "services/worker/pipeline/orchestrator.py",
+          "patterns": [
+            "validity_ratio = valid_total",
+            "\"validity_ratio\": validity_ratio"
+          ],
+          "surface": "public_output"
+        }
+      ]
+    },
+    {
+      "variable": "Physiological Validity Flag",
+      "producer_module": "C",
+      "section": "§11.3.10",
+      "evidence": [
+        {
+          "path": "packages/schemas/physiology.py",
+          "patterns": [
+            "is_valid"
+          ],
+          "surface": "schema"
+        },
+        {
+          "path": "services/worker/pipeline/orchestrator.py",
+          "patterns": [
+            "is_valid = validity_ratio",
+            "\"is_valid\": is_valid"
+          ],
+          "surface": "public_output"
+        }
+      ]
+    },
+    {
+      "variable": "Physiological Source Kind",
+      "producer_module": "C",
+      "section": "§11.3.11",
+      "evidence": [
+        {
+          "path": "packages/schemas/physiology.py",
+          "patterns": [
+            "source_kind",
+            "Literal[\"ibi\", \"session\"]"
+          ],
+          "surface": "schema"
+        },
+        {
+          "path": "services/worker/pipeline/orchestrator.py",
+          "patterns": [
+            "\"source_kind\": source_kind"
+          ],
+          "surface": "public_output"
+        }
+      ]
+    },
+    {
+      "variable": "Physiological Derivation Method",
+      "producer_module": "C",
+      "section": "§11.3.12",
+      "evidence": [
+        {
+          "path": "packages/schemas/physiology.py",
+          "patterns": [
+            "derivation_method",
+            "provider",
+            "server"
+          ],
+          "surface": "schema"
+        },
+        {
+          "path": "services/worker/pipeline/orchestrator.py",
+          "patterns": [
+            "\"derivation_method\": derivation_method"
+          ],
+          "surface": "public_output"
+        }
+      ]
+    },
+    {
+      "variable": "Physiological Window Length",
+      "producer_module": "C",
+      "section": "§11.3.13",
+      "evidence": [
+        {
+          "path": "packages/schemas/physiology.py",
+          "patterns": [
+            "window_s",
+            "gt=0"
+          ],
+          "surface": "schema"
+        },
+        {
+          "path": "services/worker/pipeline/orchestrator.py",
+          "patterns": [
+            "\"window_s\": PHYSIO_DERIVE_WINDOW_S"
+          ],
+          "surface": "public_output"
+        }
+      ]
+    },
+    {
+      "variable": "Physiological Freshness",
+      "producer_module": "C",
+      "section": "§11.3.14",
+      "evidence": [
+        {
+          "path": "packages/schemas/physiology.py",
+          "patterns": [
+            "freshness_s",
+            "ge=0.0"
+          ],
+          "surface": "schema"
+        },
+        {
+          "path": "services/worker/pipeline/orchestrator.py",
+          "patterns": [
+            "freshness_s",
+            "PHYSIO_STALENESS_THRESHOLD_S"
+          ],
+          "surface": "public_output"
+        }
+      ]
+    },
+    {
+      "variable": "Physiological Staleness Flag",
+      "producer_module": "C",
+      "section": "§11.3.15",
+      "evidence": [
+        {
+          "path": "packages/schemas/physiology.py",
+          "patterns": [
+            "is_stale"
+          ],
+          "surface": "schema"
+        },
+        {
+          "path": "services/worker/pipeline/orchestrator.py",
+          "patterns": [
+            "\"is_stale\": freshness_s > PHYSIO_STALENESS_THRESHOLD_S"
+          ],
+          "surface": "public_output"
+        }
+      ]
+    },
+    {
+      "variable": "Co-Modulation Index",
+      "producer_module": "E",
+      "section": "§11.5.7",
+      "evidence": [
+        {
+          "path": "services/worker/pipeline/analytics.py",
+          "patterns": [
+            "co_modulation_index",
+            "_INSERT_COMODULATION_SQL"
+          ],
+          "surface": "persistence"
+        },
+        {
+          "path": "services/cloud_api/db/sql/03-physiology.sql",
+          "patterns": [
+            "co_modulation_index",
+            "comodulation_log"
+          ],
+          "surface": "persistence"
+        }
+      ]
+    },
+    {
+      "variable": "Physiological Coverage Ratio",
+      "producer_module": "E",
+      "section": "§11.5.8",
+      "evidence": [
+        {
+          "path": "services/worker/pipeline/analytics.py",
+          "patterns": [
+            "coverage_ratio",
+            "comodulation_log"
+          ],
+          "surface": "persistence"
+        },
+        {
+          "path": "services/cloud_api/db/sql/03-physiology.sql",
+          "patterns": [
+            "coverage_ratio",
+            "comodulation_log"
+          ],
+          "surface": "persistence"
+        }
+      ]
     },
     {
       "variable": "F0 Validity (Measure Window)",
@@ -877,6 +1040,52 @@
       ]
     },
     {
+      "variable": "Segment ID",
+      "producer_module": "C",
+      "section": "§11.3.16",
+      "evidence": [
+        {
+          "path": "packages/schemas/inference_handoff.py",
+          "patterns": [
+            "segment_id",
+            "^[0-9a-f]{64}$"
+          ],
+          "surface": "schema"
+        },
+        {
+          "path": "services/worker/pipeline/orchestrator.py",
+          "patterns": [
+            "def _stable_segment_id",
+            "hashlib.sha256"
+          ],
+          "surface": "public_output"
+        }
+      ]
+    },
+    {
+      "variable": "Bandit Decision Snapshot",
+      "producer_module": "C",
+      "section": "§11.3.17",
+      "evidence": [
+        {
+          "path": "packages/schemas/inference_handoff.py",
+          "patterns": [
+            "BanditDecisionSnapshot",
+            "alias=\"_bandit_decision_snapshot\""
+          ],
+          "surface": "schema"
+        },
+        {
+          "path": "services/worker/pipeline/orchestrator.py",
+          "patterns": [
+            "_bandit_decision_snapshot",
+            "_capture_bandit_decision_snapshot"
+          ],
+          "surface": "public_output"
+        }
+      ]
+    },
+    {
       "variable": "semantic_p_match",
       "producer_module": "D",
       "section": "§11.4.21",
@@ -921,191 +1130,6 @@
             "_bounded_semantic_reason"
           ],
           "surface": "public_output"
-        }
-      ]
-    },
-    {
-      "variable": "Evaluation Variance",
-      "producer_module": "E",
-      "section": "§11.5.1",
-      "evidence": [
-        {
-          "path": "services/api/services/operator_read_service.py",
-          "patterns": [
-            "Beta-distribution variance",
-            "evaluation_variance=variance"
-          ],
-          "surface": "public_output"
-        },
-        {
-          "path": "services/cloud_api/db/sql/01-schema.sql",
-          "patterns": [
-            "CREATE TABLE IF NOT EXISTS experiments",
-            "alpha_param",
-            "beta_param"
-          ],
-          "surface": "persistence"
-        }
-      ]
-    },
-    {
-      "variable": "gated_reward",
-      "producer_module": "E",
-      "section": "§11.5.2",
-      "evidence": [
-        {
-          "path": "services/worker/pipeline/reward.py",
-          "patterns": [
-            "gated_reward",
-            "RewardResult"
-          ],
-          "surface": "public_output"
-        },
-        {
-          "path": "services/cloud_api/db/sql/01-schema.sql",
-          "patterns": [
-            "gated_reward",
-            "encounter_log"
-          ],
-          "surface": "persistence"
-        }
-      ]
-    },
-    {
-      "variable": "p90_intensity",
-      "producer_module": "E",
-      "section": "§11.5.3",
-      "evidence": [
-        {
-          "path": "services/worker/pipeline/reward.py",
-          "patterns": [
-            "p90_intensity",
-            "compute_p90"
-          ],
-          "surface": "public_output"
-        },
-        {
-          "path": "services/cloud_api/db/sql/01-schema.sql",
-          "patterns": [
-            "p90_intensity",
-            "encounter_log"
-          ],
-          "surface": "persistence"
-        }
-      ]
-    },
-    {
-      "variable": "semantic_gate",
-      "producer_module": "E",
-      "section": "§11.5.4",
-      "evidence": [
-        {
-          "path": "services/worker/pipeline/reward.py",
-          "patterns": [
-            "semantic_gate",
-            "gate: int"
-          ],
-          "surface": "public_output"
-        },
-        {
-          "path": "services/cloud_api/db/sql/01-schema.sql",
-          "patterns": [
-            "semantic_gate",
-            "encounter_log"
-          ],
-          "surface": "persistence"
-        }
-      ]
-    },
-    {
-      "variable": "n_frames_in_window",
-      "producer_module": "E",
-      "section": "§11.5.5",
-      "evidence": [
-        {
-          "path": "services/worker/pipeline/reward.py",
-          "patterns": [
-            "n_frames_in_window",
-            "len(window_obs)"
-          ],
-          "surface": "public_output"
-        },
-        {
-          "path": "services/cloud_api/db/sql/01-schema.sql",
-          "patterns": [
-            "n_frames_in_window",
-            "encounter_log"
-          ],
-          "surface": "persistence"
-        }
-      ]
-    },
-    {
-      "variable": "au12_baseline_pre",
-      "producer_module": "E",
-      "section": "§11.5.6",
-      "evidence": [
-        {
-          "path": "services/worker/pipeline/reward.py",
-          "patterns": [
-            "au12_baseline_pre",
-            "baseline_obs"
-          ],
-          "surface": "public_output"
-        },
-        {
-          "path": "services/cloud_api/db/sql/01-schema.sql",
-          "patterns": [
-            "au12_baseline_pre",
-            "encounter_log"
-          ],
-          "surface": "persistence"
-        }
-      ]
-    },
-    {
-      "variable": "Co-Modulation Index",
-      "producer_module": "E",
-      "section": "§11.5.7",
-      "evidence": [
-        {
-          "path": "services/worker/pipeline/analytics.py",
-          "patterns": [
-            "co_modulation_index",
-            "_INSERT_COMODULATION_SQL"
-          ],
-          "surface": "persistence"
-        },
-        {
-          "path": "services/cloud_api/db/sql/03-physiology.sql",
-          "patterns": [
-            "co_modulation_index",
-            "comodulation_log"
-          ],
-          "surface": "persistence"
-        }
-      ]
-    },
-    {
-      "variable": "Physiological Coverage Ratio",
-      "producer_module": "E",
-      "section": "§11.5.8",
-      "evidence": [
-        {
-          "path": "services/worker/pipeline/analytics.py",
-          "patterns": [
-            "coverage_ratio",
-            "comodulation_log"
-          ],
-          "surface": "persistence"
-        },
-        {
-          "path": "services/cloud_api/db/sql/03-physiology.sql",
-          "patterns": [
-            "coverage_ratio",
-            "comodulation_log"
-          ],
-          "surface": "persistence"
         }
       ]
     },
@@ -1297,26 +1321,271 @@
       ]
     },
     {
-      "variable": "External Context Metadata",
-      "producer_module": "F",
-      "section": "§11.6.1",
+      "variable": "SharedMemory Audio Segment Name",
+      "producer_module": "C",
+      "section": "§11.3.18",
       "evidence": [
         {
-          "path": "services/worker/tasks/enrichment.py",
+          "path": "services/desktop_app/ipc/shared_buffers.py",
           "patterns": [
-            "scrape_context",
-            "\"data\": {}",
-            "source_url"
+            "PcmBlockMetadata",
+            "name",
+            "SHM_PREFIX"
           ],
           "surface": "public_output"
+        }
+      ]
+    },
+    {
+      "variable": "SharedMemory Byte Length",
+      "producer_module": "C",
+      "section": "§11.3.19",
+      "evidence": [
+        {
+          "path": "services/desktop_app/ipc/shared_buffers.py",
+          "patterns": [
+            "PcmBlockMetadata",
+            "byte_length",
+            "len(audio)"
+          ],
+          "surface": "public_output"
+        }
+      ]
+    },
+    {
+      "variable": "SharedMemory Checksum",
+      "producer_module": "C",
+      "section": "§11.3.20",
+      "evidence": [
+        {
+          "path": "services/desktop_app/ipc/shared_buffers.py",
+          "patterns": [
+            "PcmBlockMetadata",
+            "sha256",
+            "hashlib.sha256(audio).hexdigest()"
+          ],
+          "surface": "public_output"
+        }
+      ]
+    },
+    {
+      "variable": "Bandit Random Seed",
+      "producer_module": "C",
+      "section": "§11.3.21",
+      "evidence": [
+        {
+          "path": "services/worker/pipeline/orchestrator.py",
+          "patterns": [
+            "random_seed",
+            "_bandit_random_seed",
+            "np.random.PCG64(random_seed)"
+          ],
+          "surface": "public_output"
+        }
+      ]
+    },
+    {
+      "variable": "Posterior Delta",
+      "producer_module": "E",
+      "section": "§11.5.17",
+      "evidence": [
+        {
+          "path": "packages/schemas/cloud.py",
+          "patterns": [
+            "class PosteriorDelta",
+            "delta_alpha",
+            "delta_beta"
+          ],
+          "surface": "schema"
         },
         {
-          "path": "services/cloud_api/db/sql/01-schema.sql",
+          "path": "services/desktop_app/processes/analytics_state_worker.py",
           "patterns": [
-            "CREATE TABLE IF NOT EXISTS context",
-            "data            JSONB NOT NULL"
+            "PosteriorDelta",
+            "delta_alpha=reward.gated_reward",
+            "delta_beta=1.0 - reward.gated_reward"
           ],
-          "surface": "persistence"
+          "surface": "public_output"
+        }
+      ]
+    },
+    {
+      "variable": "Cloud Event ID",
+      "producer_module": "F",
+      "section": "§11.6.2",
+      "evidence": [
+        {
+          "path": "packages/schemas/cloud.py",
+          "patterns": [
+            "class PosteriorDelta",
+            "event_id"
+          ],
+          "surface": "schema"
+        }
+      ]
+    },
+    {
+      "variable": "stimulus_id",
+      "producer_module": "C",
+      "section": "§11.3.22",
+      "evidence": [
+        {
+          "path": "packages/schemas/inference_handoff.py",
+          "patterns": [
+            "stimulus_id",
+            "alias=\"_stimulus_id\""
+          ],
+          "surface": "schema"
+        }
+      ]
+    },
+    {
+      "variable": "stimulus_modality",
+      "producer_module": "C",
+      "section": "§11.3.23",
+      "evidence": [
+        {
+          "path": "packages/schemas/inference_handoff.py",
+          "patterns": [
+            "StimulusModality",
+            "alias=\"_stimulus_modality\""
+          ],
+          "surface": "schema"
+        }
+      ]
+    },
+    {
+      "variable": "stimulus_payload",
+      "producer_module": "C",
+      "section": "§11.3.24",
+      "evidence": [
+        {
+          "path": "packages/schemas/inference_handoff.py",
+          "patterns": [
+            "stimulus_payload",
+            "alias=\"_stimulus_payload\""
+          ],
+          "surface": "schema"
+        }
+      ]
+    },
+    {
+      "variable": "expected_stimulus_rule",
+      "producer_module": "C",
+      "section": "§11.3.25",
+      "evidence": [
+        {
+          "path": "packages/schemas/inference_handoff.py",
+          "patterns": [
+            "expected_stimulus_rule",
+            "alias=\"_expected_stimulus_rule\""
+          ],
+          "surface": "schema"
+        }
+      ]
+    },
+    {
+      "variable": "expected_response_rule",
+      "producer_module": "C",
+      "section": "§11.3.26",
+      "evidence": [
+        {
+          "path": "packages/schemas/inference_handoff.py",
+          "patterns": [
+            "expected_response_rule",
+            "alias=\"_expected_response_rule\""
+          ],
+          "surface": "schema"
+        }
+      ]
+    },
+    {
+      "variable": "response_observation_horizon_s",
+      "producer_module": "C",
+      "section": "§11.3.27",
+      "evidence": [
+        {
+          "path": "packages/schemas/inference_handoff.py",
+          "patterns": [
+            "response_observation_horizon_s",
+            "alias=\"_response_observation_horizon_s\""
+          ],
+          "surface": "schema"
+        }
+      ]
+    },
+    {
+      "variable": "response_inference.is_match",
+      "producer_module": "D",
+      "section": "§11.4.23",
+      "evidence": [
+        {
+          "path": "packages/schemas/inference_handoff.py",
+          "patterns": [
+            "class ResponseInference",
+            "is_match"
+          ],
+          "surface": "schema"
+        }
+      ]
+    },
+    {
+      "variable": "response_inference.confidence_score",
+      "producer_module": "D",
+      "section": "§11.4.24",
+      "evidence": [
+        {
+          "path": "packages/schemas/inference_handoff.py",
+          "patterns": [
+            "class ResponseInference",
+            "confidence_score"
+          ],
+          "surface": "schema"
+        }
+      ]
+    },
+    {
+      "variable": "response_inference.registration_status",
+      "producer_module": "D",
+      "section": "§11.4.25",
+      "evidence": [
+        {
+          "path": "packages/schemas/inference_handoff.py",
+          "patterns": [
+            "class ResponseInference",
+            "registration_status"
+          ],
+          "surface": "schema"
+        }
+      ]
+    },
+    {
+      "variable": "response_inference.response_reason_code",
+      "producer_module": "D",
+      "section": "§11.4.26",
+      "evidence": [
+        {
+          "path": "packages/schemas/inference_handoff.py",
+          "patterns": [
+            "class ResponseInference",
+            "response_reason_code"
+          ],
+          "surface": "schema"
+        }
+      ]
+    },
+    {
+      "variable": "response_inference.matched_response_time",
+      "producer_module": "D",
+      "section": "§11.4.27",
+      "evidence": [
+        {
+          "path": "packages/schemas/inference_handoff.py",
+          "patterns": [
+            "class ResponseInference",
+            "matched_response_time"
+          ],
+          "surface": "schema"
         }
       ]
     }

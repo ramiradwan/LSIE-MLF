@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import os
+import subprocess
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -113,8 +115,27 @@ def test_control_publisher_serializes_to_live_and_segment_queues() -> None:
     assert segment_queue.items == [expected]
 
 
+def _imported_qt_roots(target_import: str) -> list[str]:
+    code = (
+        "import sys, json\n"
+        f"import {target_import}\n"
+        "found = sorted({k.split('.')[0] for k in sys.modules if k.split('.')[0] == 'PySide6'})\n"
+        "print(json.dumps(found))\n"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=60,
+    )
+    return list(json.loads(proc.stdout.strip()))
+
+
+# Qt-heavy test conftests import PySide6 during collection, so this canary
+# must use a clean interpreter instead of the shared pytest process.
 def test_importing_operator_api_runtime_does_not_import_pyside() -> None:
-    assert "PySide6" not in sys.modules
+    assert _imported_qt_roots("services.desktop_app.processes.operator_api_runtime") == []
 
 
 def test_start_operator_api_runtime_wires_api_and_stops(

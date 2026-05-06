@@ -28,33 +28,39 @@ def test_register_localdumps_exclusion_returns_false_on_posix() -> None:
 
 @pytest.mark.skipif(sys.platform != "win32", reason="HKCU registry write is Windows-only")
 def test_register_localdumps_exclusion_writes_subkey() -> None:
-    import winreg
+    winreg = vars(__import__("winreg"))
+    hkey_current_user = winreg["HKEY_CURRENT_USER"]
+    open_key = winreg["OpenKey"]
+    query_value_ex = winreg["QueryValueEx"]
+    delete_key = winreg["DeleteKey"]
 
     app_name = "lsie-mlf-test-fixture.exe"
     assert register_localdumps_exclusion(app_name) is True
 
     subkey = r"Software\Microsoft\Windows\Windows Error Reporting\LocalDumps\\" + app_name
     try:
-        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, subkey) as key:
-            dump_type, _ = winreg.QueryValueEx(key, "DumpType")
-            dump_count, _ = winreg.QueryValueEx(key, "DumpCount")
+        with open_key(hkey_current_user, subkey) as key:
+            dump_type, _ = query_value_ex(key, "DumpType")
+            dump_count, _ = query_value_ex(key, "DumpCount")
         assert dump_type == 0
         assert dump_count == 0
     finally:
         # Tidy up after ourselves so we don't pollute the user's registry.
         with contextlib.suppress(OSError):
-            winreg.DeleteKey(winreg.HKEY_CURRENT_USER, subkey)
+            delete_key(hkey_current_user, subkey)
 
 
 def test_install_crash_privacy_guards_does_not_raise() -> None:
     install_crash_privacy_guards("lsie-mlf-test-installer.exe")
     # POSIX silently returns; Windows succeeds. Either way, no exception.
     if sys.platform == "win32":
-        import winreg
+        winreg = vars(__import__("winreg"))
+        hkey_current_user = winreg["HKEY_CURRENT_USER"]
+        delete_key = winreg["DeleteKey"]
 
         subkey = (
             r"Software\Microsoft\Windows\Windows Error Reporting"
             r"\LocalDumps\\lsie-mlf-test-installer.exe"
         )
         with contextlib.suppress(OSError):
-            winreg.DeleteKey(winreg.HKEY_CURRENT_USER, subkey)
+            delete_key(hkey_current_user, subkey)

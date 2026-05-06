@@ -13,6 +13,15 @@ import pytest
 from services.desktop_launcher import health_check, manifest, preflight
 
 
+def _assert_subprocess_policy(kwargs: dict[str, object]) -> None:
+    if sys.platform == "win32":
+        creationflags = cast(int, kwargs["creationflags"])
+        assert creationflags & subprocess.CREATE_NO_WINDOW
+        assert creationflags & subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        assert "creationflags" not in kwargs
+
+
 def test_runtime_python_prefers_staged_venv(tmp_path: Path) -> None:
     if sys.platform == "win32":
         python_exe = tmp_path / ".venv" / "Scripts" / "python.exe"
@@ -29,7 +38,7 @@ def test_run_runtime_smoke_test_raises_on_failure(
     tmp_path: Path,
 ) -> None:
     def fake_run(*_args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
-        assert cast(int, kwargs["creationflags"]) == subprocess.CREATE_NO_WINDOW
+        _assert_subprocess_policy(kwargs)
         return subprocess.CompletedProcess(
             args=["python"],
             returncode=1,
@@ -48,7 +57,7 @@ def test_run_runtime_smoke_test_returns_output(
     tmp_path: Path,
 ) -> None:
     def fake_run(*_args: object, **kwargs: object) -> subprocess.CompletedProcess[str]:
-        assert cast(int, kwargs["creationflags"]) == subprocess.CREATE_NO_WINDOW
+        _assert_subprocess_policy(kwargs)
         return subprocess.CompletedProcess(
             args=["python"],
             returncode=0,
@@ -74,7 +83,7 @@ def test_launch_desktop_app_runs_preflight_before_handoff(
     python_exe.parent.mkdir(parents=True)
     python_exe.write_text("", encoding="utf-8")
     preflight_calls: list[str] = []
-    calls: list[tuple[list[str], Path, dict[str, str], int, object, object]] = []
+    calls: list[tuple[list[str], Path, dict[str, str], dict[str, object]]] = []
     app_root = tmp_path / "app"
     (app_root / "services" / "desktop_app").mkdir(parents=True)
     (app_root / "services" / "desktop_app" / "__main__.py").write_text("", encoding="utf-8")
@@ -86,9 +95,7 @@ def test_launch_desktop_app_runs_preflight_before_handoff(
                     cmd,
                     cast(Path, kwargs["cwd"]),
                     cast(dict[str, str], kwargs["env"]),
-                    cast(int, kwargs["creationflags"]),
-                    kwargs["stdout"],
-                    kwargs["stderr"],
+                    kwargs,
                 )
             )
 
@@ -102,16 +109,13 @@ def test_launch_desktop_app_runs_preflight_before_handoff(
     health_check.launch_desktop_app(tmp_path, app_root=app_root)
 
     assert preflight_calls == ["called"]
-    assert calls == [
-        (
-            [str(python_exe), "-m", "services.desktop_app"],
-            app_root,
-            {**os.environ, "PYTHONPATH": str(app_root)},
-            subprocess.CREATE_NO_WINDOW,
-            calls[0][4],
-            subprocess.STDOUT,
-        )
-    ]
+    cmd, cwd, env, kwargs = calls[0]
+    assert cmd == [str(python_exe), "-m", "services.desktop_app"]
+    assert cwd == app_root
+    assert env == {**os.environ, "PYTHONPATH": str(app_root)}
+    assert kwargs["stdout"] is not None
+    assert kwargs["stderr"] == subprocess.STDOUT
+    _assert_subprocess_policy(kwargs)
 
 
 def test_launch_desktop_app_uses_hydrated_runtime(
@@ -126,7 +130,7 @@ def test_launch_desktop_app_uses_hydrated_runtime(
     )
     python_exe.parent.mkdir(parents=True)
     python_exe.write_text("", encoding="utf-8")
-    calls: list[tuple[list[str], Path, str, int]] = []
+    calls: list[tuple[list[str], Path, str, dict[str, object]]] = []
     app_root = tmp_path / "app"
     (app_root / "services" / "desktop_app").mkdir(parents=True)
     (app_root / "services" / "desktop_app" / "__main__.py").write_text("", encoding="utf-8")
@@ -140,7 +144,7 @@ def test_launch_desktop_app_uses_hydrated_runtime(
                     cmd,
                     cast(Path, kwargs["cwd"]),
                     cast(dict[str, str], kwargs["env"])["PYTHONPATH"],
-                    cast(int, kwargs["creationflags"]),
+                    kwargs,
                 )
             )
 
@@ -148,14 +152,11 @@ def test_launch_desktop_app_uses_hydrated_runtime(
     monkeypatch.setattr(subprocess, "Popen", FakePopen)
 
     health_check.launch_desktop_app(tmp_path, app_root=app_root)
-    assert calls == [
-        (
-            [str(python_exe), "-m", "services.desktop_app"],
-            app_root,
-            f"{app_root}{os.pathsep}{existing_pythonpath}",
-            subprocess.CREATE_NO_WINDOW,
-        )
-    ]
+    cmd, cwd, pythonpath, kwargs = calls[0]
+    assert cmd == [str(python_exe), "-m", "services.desktop_app"]
+    assert cwd == app_root
+    assert pythonpath == f"{app_root}{os.pathsep}{existing_pythonpath}"
+    _assert_subprocess_policy(kwargs)
 
 
 def test_launch_desktop_app_rejects_invalid_app_root(

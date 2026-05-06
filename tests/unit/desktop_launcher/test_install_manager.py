@@ -7,7 +7,7 @@ import subprocess
 import sys
 import zipfile
 from pathlib import Path
-from typing import Self
+from typing import Self, cast
 
 import httpx
 import pytest
@@ -15,6 +15,15 @@ import pytest
 from services.desktop_app import os_adapter
 from services.desktop_launcher import health_check, install_manager, manifest, preflight
 from services.desktop_launcher.install_manager import DownloadAsset, LauncherPaths
+
+
+def _assert_subprocess_policy(kwargs: dict[str, object]) -> None:
+    if sys.platform == "win32":
+        creationflags = cast(int, kwargs["creationflags"])
+        assert creationflags & subprocess.CREATE_NO_WINDOW
+        assert creationflags & subprocess.CREATE_NEW_PROCESS_GROUP
+    else:
+        assert "creationflags" not in kwargs
 
 
 class _FakeStream:
@@ -129,7 +138,7 @@ def test_run_uv_sync_uses_ml_backend_extra(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    calls: list[tuple[list[str], Path, dict[str, str], int]] = []
+    calls: list[tuple[list[str], Path, dict[str, str], dict[str, object]]] = []
 
     class FakeStdout:
         def __iter__(self) -> Self:
@@ -152,10 +161,10 @@ def test_run_uv_sync_uses_ml_backend_extra(
         stdout: int,
         stderr: int,
         text: bool,
-        creationflags: int,
+        **kwargs: object,
     ) -> FakeProcess:
         del stdout, stderr, text
-        calls.append((cmd, cwd, env, creationflags))
+        calls.append((cmd, cwd, env, kwargs))
         return FakeProcess()
 
     monkeypatch.setattr(subprocess, "Popen", fake_popen)
@@ -167,13 +176,13 @@ def test_run_uv_sync_uses_ml_backend_extra(
         log=lambda _line: None,
     )
 
-    cmd, cwd, env, creationflags = calls[0]
+    cmd, cwd, env, kwargs = calls[0]
     assert cwd == tmp_path
     assert cmd[:5] == ["uv", "sync", "--frozen", "--extra", "ml_backend"]
     assert "--reinstall" not in cmd
     assert "--python" in cmd
     assert env["UV_PROJECT_ENVIRONMENT"] == str(tmp_path / "runtime.staging" / ".venv")
-    assert creationflags == subprocess.CREATE_NO_WINDOW
+    _assert_subprocess_policy(kwargs)
 
 
 def test_run_uv_sync_can_force_reinstall(
@@ -203,10 +212,10 @@ def test_run_uv_sync_can_force_reinstall(
         stdout: int,
         stderr: int,
         text: bool,
-        creationflags: int,
+        **kwargs: object,
     ) -> FakeProcess:
         del cwd, env, stdout, stderr, text
-        assert creationflags == subprocess.CREATE_NO_WINDOW
+        _assert_subprocess_policy(kwargs)
         calls.append(cmd)
         return FakeProcess()
 

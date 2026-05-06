@@ -21,17 +21,43 @@ CREATE TABLE IF NOT EXISTS attribution_event (
     event_id                    UUID PRIMARY KEY,
     session_id                  UUID NOT NULL REFERENCES sessions(session_id),
     segment_id                  TEXT NOT NULL CHECK (segment_id ~ '^[0-9a-f]{64}$'),
-    event_type                  TEXT NOT NULL CHECK (event_type IN ('greeting_interaction')),
+    event_type                  TEXT NOT NULL CHECK (event_type IN ('greeting_interaction', 'stimulus_interaction')),
     event_time_utc              TIMESTAMPTZ NOT NULL,
     stimulus_time_utc           TIMESTAMPTZ,
+    stimulus_id                 UUID,
+    stimulus_modality           TEXT CHECK (
+        stimulus_modality IS NULL OR stimulus_modality IN (
+            'spoken_greeting', 'written_comment', 'gift', 'follow',
+            'question', 'cta', 'product_pitch', 'discount_offer',
+            'profile_interaction', 'dm_follow_up', 'other'
+        )
+    ),
     selected_arm_id             TEXT NOT NULL,
     expected_rule_text_hash     TEXT NOT NULL CHECK (expected_rule_text_hash ~ '^[0-9a-f]{64}$'),
+    expected_response_rule_text_hash TEXT CHECK (
+        expected_response_rule_text_hash IS NULL OR expected_response_rule_text_hash ~ '^[0-9a-f]{64}$'
+    ),
     semantic_method             TEXT NOT NULL,
     semantic_method_version     TEXT NOT NULL,
     semantic_p_match            DOUBLE PRECISION CHECK (
         semantic_p_match IS NULL OR semantic_p_match BETWEEN 0.0 AND 1.0
     ),
     semantic_reason_code        TEXT,
+    matched_response_time_utc   TIMESTAMPTZ,
+    response_registration_status TEXT CHECK (
+        response_registration_status IS NULL OR response_registration_status IN (
+            'observable_response', 'no_observable_response', 'ambiguous_response',
+            'invalid_trigger', 'pending'
+        )
+    ),
+    response_reason_code        TEXT CHECK (
+        response_reason_code IS NULL OR response_reason_code IN (
+            'response_read_aloud', 'response_direct_answer', 'response_username_ack',
+            'response_semantic_ack', 'response_chat_reply',
+            'response_positive_affect_only', 'response_timeout',
+            'no_observable_response', 'ambiguous_response', 'invalid_trigger'
+        )
+    ),
     reward_path_version         TEXT NOT NULL,
     bandit_decision_snapshot    JSONB NOT NULL,
     evidence_flags              TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],

@@ -165,13 +165,46 @@ class TestJsonSchemaLoader:
                 }
             }
         }
+        nested_extracted_block = {
+            "interface_contracts": {
+                "section": {
+                    "children": [
+                        {
+                            "language": "json",
+                            "source": '{"title":"NestedSchema","type":"object"}',
+                        }
+                    ]
+                }
+            }
+        }
         assert set(extract_json_schemas(direct)) >= {"Foo", "Bar"}
         assert extract_json_schemas(nested)["Baz"] == {"type": "object"}
         assert extract_json_schemas(extracted_block) == {
             "PosteriorDelta": {"title": "PosteriorDelta", "type": "object"}
         }
+        assert extract_json_schemas(nested_extracted_block) == {
+            "NestedSchema": {"title": "NestedSchema", "type": "object"}
+        }
         assert extract_json_schemas({}) == {}
         assert extract_json_schemas({"interface_contracts": "not-a-dict"}) == {}
+
+    def test_extract_schemas_handles_full_content_fallback_scan(self) -> None:
+        content = {
+            "sections": [
+                {
+                    "blocks": [
+                        {
+                            "language": "json",
+                            "source": '{"title":"FallbackSchema","type":"object"}',
+                        }
+                    ]
+                }
+            ]
+        }
+
+        assert extract_json_schemas(content) == {
+            "FallbackSchema": {"title": "FallbackSchema", "type": "object"}
+        }
 
     def test_load_default_sources_prefers_active_content_index(self, tmp_path: Path) -> None:
         import json
@@ -666,7 +699,7 @@ class TestDefaultRegistry:
             )
 
     def test_default_registry_resolves_against_repo_sources(self) -> None:
-        pydantic_entities, json_schema_entities, sql_entities, _warnings = load_default_sources(
+        pydantic_entities, json_schema_entities, sql_entities, warnings = load_default_sources(
             DEFAULT_REGISTRY
         )
 
@@ -682,14 +715,17 @@ class TestDefaultRegistry:
             if mapping.sql_table is not None and mapping.sql_table not in sql_entities
         ]
 
+        diagnostics = "\n".join(warnings)
+        assert warnings == [], diagnostics
         assert missing_pydantic == []
         assert missing_json_schema == []
         assert missing_sql == []
 
     def test_default_registry_sources_are_currently_consistent(self) -> None:
-        pydantic_entities, json_schema_entities, sql_entities, _warnings = load_default_sources(
+        pydantic_entities, json_schema_entities, sql_entities, warnings = load_default_sources(
             DEFAULT_REGISTRY
         )
+        assert warnings == [], "\n".join(warnings)
 
         issues = check_consistency(
             DEFAULT_REGISTRY,

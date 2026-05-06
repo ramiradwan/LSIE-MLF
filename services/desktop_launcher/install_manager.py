@@ -344,7 +344,7 @@ def run_uv_sync(
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
-        creationflags=subprocess.CREATE_NO_WINDOW,
+        **os_adapter._apply_windows_child_process_policy({}),
     )
     assert process.stdout is not None
     for line in process.stdout:

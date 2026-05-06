@@ -49,9 +49,9 @@ def run_runtime_smoke_test(runtime_dir: Path, timeout_s: float = 120.0) -> str:
         text=True,
         timeout=timeout_s,
         check=False,
-        creationflags=subprocess.CREATE_NO_WINDOW,
+        **os_adapter._apply_windows_child_process_policy({}),
     )
-    output = (result.stdout + result.stderr).strip()
+    output = str(result.stdout + result.stderr).strip()
     if result.returncode != 0:
         raise RuntimeHealthCheckError(output or f"runtime smoke failed with {result.returncode}")
     return output
@@ -101,7 +101,7 @@ def launch_desktop_app(runtime_dir: Path, app_root: Path | None = None) -> subpr
             stdout=log_handle,
             stderr=subprocess.STDOUT,
             text=True,
-            creationflags=subprocess.CREATE_NO_WINDOW,
+            **os_adapter._apply_windows_child_process_policy({}),
         )
     except Exception:
         log_handle.close()
