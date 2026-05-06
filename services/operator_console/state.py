@@ -212,6 +212,9 @@ class OperatorStore(QObject):
     def set_experiment(self, detail: ExperimentDetail | None) -> None:
         if detail is not None:
             self.set_managed_experiment_id(detail.experiment_id)
+        self.set_experiment_readback(detail)
+
+    def set_experiment_readback(self, detail: ExperimentDetail | None) -> None:
         self._experiment = detail
         self.experiment_changed.emit(detail)
 

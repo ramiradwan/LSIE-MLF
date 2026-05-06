@@ -228,7 +228,7 @@ def _dependency_spec() -> dict[str, Any]:
                 },
                 {
                     "package": "fastapi",
-                    "version": "0.110.x",
+                    "version": "0.136.x",
                     "container_targets": ["api"],
                 },
                 {
@@ -351,7 +351,7 @@ def _write_dependency_fixture(repo_root: Path, numpy_line: str = "numpy==1.26.4"
 [project]
 dependencies = [
     \"{numpy_line}\",
-    \"fastapi==0.110.2\",
+    \"fastapi==0.136.0\",
     \"uvicorn==0.29.0\",
     \"pydantic>=2.0\",
     \"PySide6>=6.11\",
@@ -379,7 +379,7 @@ source = {{ virtual = \".\" }}
 [package.metadata]
 requires-dist = [
     {{ name = \"numpy\", specifier = \"=={numpy_line.split("==", 1)[1]}\" }},
-    {{ name = \"fastapi\", specifier = \"==0.110.2\" }},
+    {{ name = \"fastapi\", specifier = \"==0.136.0\" }},
     {{ name = \"uvicorn\", specifier = \"==0.29.0\" }},
     {{ name = \"pydantic\", specifier = \">=2.0\" }},
     {{ name = \"pyside6\", specifier = \">=6.11\" }},
@@ -642,7 +642,7 @@ class TestMechanicalVerifiers:
             "pyproject.toml",
             "uv.lock",
             "numpy==1.26.4",
-            "fastapi==0.110.2",
+            "fastapi==0.136.0",
             "PySide6>=6.11",
         )
 
@@ -693,7 +693,7 @@ class TestMechanicalVerifiers:
                 "pinned_packages": [
                     {
                         "package": "fastapi",
-                        "version": "0.110.x",
+                        "version": "0.136.x",
                         "container_targets": ["ui_api_shell"],
                     },
                     {
@@ -718,7 +718,7 @@ class TestMechanicalVerifiers:
             "§10.2/§13.12",
             "pyproject.toml",
             "uv.lock",
-            "fastapi==0.110.2",
+            "fastapi==0.136.0",
             "uvicorn==0.29.0",
             "pydantic>=2.0",
         )

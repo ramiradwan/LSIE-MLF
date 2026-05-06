@@ -43,10 +43,12 @@ from packages.schemas.operator_console import (
     ExperimentSummary,
     HealthSnapshot,
     HealthState,
+    OperatorEventEnvelope,
     OverviewSnapshot,
     SessionCreateRequest,
     SessionEndRequest,
     SessionLifecycleAccepted,
+    SessionPhysiologySnapshot,
     SessionSummary,
     StimulusAccepted,
     StimulusRequest,
@@ -56,6 +58,7 @@ from services.operator_console.config import OperatorConsoleConfig, load_config
 from services.operator_console.polling import (
     JOB_ALERTS,
     JOB_ENCOUNTERS,
+    JOB_EVENT_STREAM,
     JOB_EXPERIMENT,
     JOB_EXPERIMENT_SUMMARIES,
     JOB_HEALTH,
@@ -73,7 +76,13 @@ from services.operator_console.polling import (
 from services.operator_console.state import AppRoute, OperatorStore
 from services.operator_console.table_models.encounters_table_model import EncountersTableModel
 from services.operator_console.viewmodels.live_session_vm import LiveSessionViewModel
-from services.operator_console.workers import OneShotSignals, PollingWorker, run_one_shot
+from services.operator_console.workers import (
+    EventStreamHandle,
+    EventStreamWorker,
+    OneShotSignals,
+    PollingWorker,
+    run_one_shot,
+)
 
 pytestmark = pytest.mark.usefixtures("qt_app")
 
@@ -153,6 +162,7 @@ def harness(
     # Patch instance methods directly
     coord._start_job = fake_start  # type: ignore[method-assign]
     coord._stop_job = fake_stop  # type: ignore[method-assign]
+    coord._start_event_stream = lambda: None  # type: ignore[method-assign]
     coord.refresh_now = fake_refresh  # type: ignore[method-assign]
 
     yield rec
@@ -267,6 +277,267 @@ class TestRouteScoping:
 # ----------------------------------------------------------------------
 # Payload dispatch — _apply_payload routes DTOs to the store
 # ----------------------------------------------------------------------
+
+
+class TestEventStreamCoordination:
+    def test_event_dispatch_reuses_payload_path(
+        self, cfg: OperatorConsoleConfig, client: ApiClient
+    ) -> None:
+        store = OperatorStore()
+        coord = PollingCoordinator(cfg, client, store)
+        generated_at = _utc(2026, 5, 6, 12, 0)
+        overview = OverviewSnapshot(
+            generated_at_utc=generated_at,
+            health=HealthSnapshot(generated_at_utc=generated_at, overall_state=HealthState.OK),
+        )
+        envelope = OperatorEventEnvelope(
+            event_id="overview:1",
+            event_type="overview",
+            cursor="overview:1",
+            generated_at_utc=generated_at,
+            payload=overview,
+        )
+
+        coord._handle_event_stream_event(envelope)
+
+        assert store.overview() is overview
+        assert store.health() is overview.health
+        assert coord._last_event_id == "overview:1"
+
+    def test_stream_connected_pauses_unscoped_high_frequency_polling(
+        self, harness: _CoordinatorHarness
+    ) -> None:
+        coord = harness.coordinator
+        store = coord._store
+        store.set_route(AppRoute.LIVE_SESSION)
+        store.set_selected_session_id(uuid4())
+        coord.start()
+        harness.started.clear()
+        harness.stopped.clear()
+
+        coord._handle_event_stream_connected()
+
+        assert JOB_LIVE_SESSION not in harness.stopped
+        assert JOB_ENCOUNTERS not in harness.stopped
+        assert JOB_HEALTH in harness.stopped
+        assert JOB_ALERTS in harness.stopped
+        assert JOB_EXPERIMENT_SUMMARIES not in harness.stopped
+
+    def test_low_frequency_reconciliation_remains_active_while_stream_is_healthy(
+        self, harness: _CoordinatorHarness
+    ) -> None:
+        coord = harness.coordinator
+        store = coord._store
+        store.set_route(AppRoute.LIVE_SESSION)
+        store.set_selected_session_id(uuid4())
+        coord.start()
+        harness.stopped.clear()
+
+        coord._handle_event_stream_connected()
+
+        assert JOB_EXPERIMENT_SUMMARIES in coord._jobs
+        assert JOB_EXPERIMENT_SUMMARIES not in harness.stopped
+
+    def test_open_failure_does_not_mark_stream_connected_or_reset_backoff(
+        self, harness: _CoordinatorHarness
+    ) -> None:
+        coord = harness.coordinator
+        coord._sse_reconnect_ms = 4000
+        coord._handle_event_stream_error(
+            ApiError(message="open failed", endpoint=None, retryable=True)
+        )
+
+        assert coord._event_stream_connected is False
+        assert coord._sse_reconnect_ms == 4000
+
+    def test_stop_event_stream_calls_worker_stop_directly(
+        self, cfg: OperatorConsoleConfig, client: ApiClient
+    ) -> None:
+        coord = PollingCoordinator(cfg, client, OperatorStore())
+
+        worker = _StubWorker()
+        thread = _StubThread(running=False)
+        coord._event_stream = EventStreamHandle(worker, thread)  # type: ignore[arg-type]
+
+        coord._stop_event_stream()
+
+        assert worker.stop_calls == 1
+        assert coord._event_stream is None
+
+    def test_event_stream_worker_stop_closes_active_response(self) -> None:
+        class _Response:
+            def __init__(self) -> None:
+                self.closed = False
+
+            def close(self) -> None:
+                self.closed = True
+
+            def __iter__(self) -> Any:
+                return iter(())
+
+        class _Client:
+            def __init__(self) -> None:
+                self.response = _Response()
+
+            def stream_events(
+                self,
+                *,
+                last_event_id: str | None = None,
+                on_open: Callable[[object], None] | None = None,
+            ) -> Iterator[OperatorEventEnvelope]:
+                del last_event_id
+                if on_open is not None:
+                    on_open(self.response)
+                yield from ()
+
+        client = _Client()
+        worker = EventStreamWorker(client)  # type: ignore[arg-type]
+        worker._handle_open(client.response)  # type: ignore[attr-defined]
+
+        worker.stop()
+
+        assert client.response.closed is True
+
+    def test_live_session_empty_event_clears_current_session(
+        self, cfg: OperatorConsoleConfig, client: ApiClient
+    ) -> None:
+        store = OperatorStore()
+        stale = SessionSummary(
+            session_id=uuid4(),
+            status="active",
+            started_at_utc=_utc(2026, 5, 6, 12, 0),
+        )
+        store.set_live_session(stale)
+        coord = PollingCoordinator(cfg, client, store)
+
+        coord.apply_payload(JOB_LIVE_SESSION, [])
+
+        assert store.live_session() is None
+
+    def test_physiology_empty_event_clears_current_snapshot(
+        self, cfg: OperatorConsoleConfig, client: ApiClient
+    ) -> None:
+        store = OperatorStore()
+        physiology = SessionPhysiologySnapshot(
+            session_id=uuid4(),
+            generated_at_utc=_utc(2026, 5, 6, 12, 0),
+        )
+        store.set_physiology(physiology)
+        coord = PollingCoordinator(cfg, client, store)
+
+        coord.apply_payload(JOB_PHYSIOLOGY, [])
+
+        assert store.physiology() is None
+
+    def test_event_payload_ignores_non_selected_session_state(
+        self, cfg: OperatorConsoleConfig, client: ApiClient
+    ) -> None:
+        selected_session_id = uuid4()
+        active_session_id = uuid4()
+        store = OperatorStore()
+        store.set_selected_session_id(selected_session_id)
+        selected_session = SessionSummary(
+            session_id=selected_session_id,
+            status="ended",
+            started_at_utc=_utc(2026, 5, 6, 11, 0),
+        )
+        store.set_live_session(selected_session)
+        selected_physiology = SessionPhysiologySnapshot(
+            session_id=selected_session_id,
+            generated_at_utc=_utc(2026, 5, 6, 11, 0),
+        )
+        store.set_physiology(selected_physiology)
+        coord = PollingCoordinator(cfg, client, store)
+
+        coord.apply_event_payload(
+            JOB_LIVE_SESSION,
+            SessionSummary(
+                session_id=active_session_id,
+                status="active",
+                started_at_utc=_utc(2026, 5, 6, 12, 0),
+            ),
+        )
+        coord.apply_event_payload(
+            JOB_ENCOUNTERS,
+            [
+                EncounterSummary(
+                    encounter_id="active-encounter",
+                    session_id=active_session_id,
+                    segment_timestamp_utc=_utc(2026, 5, 6, 12, 1),
+                    state=EncounterState.COMPLETED,
+                )
+            ],
+        )
+        coord.apply_event_payload(
+            JOB_PHYSIOLOGY,
+            SessionPhysiologySnapshot(
+                session_id=active_session_id,
+                generated_at_utc=_utc(2026, 5, 6, 12, 0),
+            ),
+        )
+
+        assert store.live_session() is selected_session
+        assert store.encounters() == []
+        assert store.physiology() is selected_physiology
+
+    def test_event_experiment_does_not_change_managed_experiment(
+        self, cfg: OperatorConsoleConfig, client: ApiClient
+    ) -> None:
+        store = OperatorStore()
+        store.set_managed_experiment_id("operator-managed")
+        current = ExperimentDetail(experiment_id="operator-managed")
+        store.set_experiment_readback(current)
+        coord = PollingCoordinator(cfg, client, store)
+
+        coord.apply_event_payload(JOB_EXPERIMENT, ExperimentDetail(experiment_id="active-default"))
+
+        assert store.managed_experiment_id() == "operator-managed"
+        assert store.experiment() is current
+
+    def test_event_experiment_requires_explicit_managed_experiment(
+        self, cfg: OperatorConsoleConfig, client: ApiClient
+    ) -> None:
+        store = OperatorStore()
+        current = ExperimentDetail(experiment_id="default")
+        store.set_experiment_readback(current)
+        coord = PollingCoordinator(cfg, client, store)
+
+        coord.apply_event_payload(JOB_EXPERIMENT, ExperimentDetail(experiment_id="active-default"))
+
+        assert store.managed_experiment_id() is None
+        assert store.experiment() is current
+        assert store.error(JOB_EXPERIMENT) is None
+
+    def test_event_experiment_empty_payload_is_noop(
+        self, cfg: OperatorConsoleConfig, client: ApiClient
+    ) -> None:
+        store = OperatorStore()
+        store.set_managed_experiment_id("operator-managed")
+        current = ExperimentDetail(experiment_id="operator-managed")
+        store.set_experiment_readback(current)
+        coord = PollingCoordinator(cfg, client, store)
+
+        coord.apply_event_payload(JOB_EXPERIMENT, [])
+
+        assert store.managed_experiment_id() == "operator-managed"
+        assert store.experiment() is current
+        assert store.error(JOB_EXPERIMENT) is None
+
+    def test_polling_resumes_on_stream_failure(self, harness: _CoordinatorHarness) -> None:
+        coord = harness.coordinator
+        store = coord._store
+        store.set_route(AppRoute.OVERVIEW)
+        coord.start()
+        coord._handle_event_stream_connected()
+        harness.started.clear()
+
+        coord._handle_event_stream_error(
+            ApiError(message="stream broke", endpoint=None, retryable=True)
+        )
+
+        assert JOB_OVERVIEW in harness.started
+        assert JOB_ALERTS in harness.started
+        assert store.error(JOB_EVENT_STREAM) == "stream broke"
 
 
 class TestPayloadDispatch:
@@ -851,6 +1122,7 @@ class TestSessionLifecycleOneShot:
                 return [ExperimentSummary(experiment_id="greeting_line_v1", arm_count=1)]
 
         coord = PollingCoordinator(cfg, _Client(), store)  # type: ignore[arg-type]
+        coord._start_event_stream = lambda: None  # type: ignore[method-assign]
         vm.bind_session_lifecycle_actions(coord.request_session_start, coord.request_session_end)
         coord.start()
 
@@ -1143,8 +1415,11 @@ class _StubWorker:
     poke at via QMetaObject.invokeMethod (which is patched out)."""
 
     def __init__(self) -> None:
+        self.connected = _StubSignal()
+        self.event_ready = _StubSignal()
         self.data_ready = _StubSignal()
         self.error = _StubSignal()
+        self.stopped = _StubSignal()
         self.refresh_calls = 0
         self.stop_calls = 0
 
@@ -1269,6 +1544,7 @@ class TestNonBlockingTeardown:
 
         coord._stop_job = fake_stop  # type: ignore[method-assign]
         coord._start_job = fake_start  # type: ignore[method-assign]
+        coord._start_event_stream = lambda: None  # type: ignore[method-assign]
         coord.start()
         started.clear()
 
@@ -1288,6 +1564,61 @@ class TestNonBlockingTeardown:
             JOB_EXPERIMENT_SUMMARIES,
             JOB_HEALTH,
         }
+
+    def test_stop_event_stream_parks_running_thread_as_orphan(
+        self, cfg: OperatorConsoleConfig, client: ApiClient
+    ) -> None:
+        coord = PollingCoordinator(cfg, client, OperatorStore())
+        worker = _StubWorker()
+        thread = _StubThread(running=True)
+        handle = EventStreamHandle(worker, thread)  # type: ignore[arg-type]
+        coord._event_stream = handle
+
+        coord._stop_event_stream()
+
+        assert worker.stop_calls == 1
+        assert coord._event_stream is None
+        assert coord._orphan_event_streams == [handle]
+
+    def test_drain_orphan_event_streams_retains_connect_phase_thread(
+        self, cfg: OperatorConsoleConfig, client: ApiClient
+    ) -> None:
+        coord = PollingCoordinator(cfg, client, OperatorStore())
+        thread = _StubThread(running=True)
+        handle = EventStreamHandle(_StubWorker(), thread)  # type: ignore[arg-type]
+        coord._orphan_event_streams.append(handle)
+
+        coord._drain_orphan_event_streams()
+
+        assert thread.wait_calls
+        assert coord._orphan_event_streams == [handle]
+
+    def test_drain_orphan_event_streams_prunes_clean_exit(
+        self, cfg: OperatorConsoleConfig, client: ApiClient
+    ) -> None:
+        coord = PollingCoordinator(cfg, client, OperatorStore())
+        handle = EventStreamHandle(_StubWorker(), _StubThread(running=False))  # type: ignore[arg-type]
+        coord._orphan_event_streams.append(handle)
+
+        coord._drain_orphan_event_streams()
+
+        assert coord._orphan_event_streams == []
+
+    def test_final_stop_drains_event_stream_orphans(
+        self, cfg: OperatorConsoleConfig, client: ApiClient
+    ) -> None:
+        coord = PollingCoordinator(cfg, client, OperatorStore())
+        worker = _StubWorker()
+        thread = _StubThread(running=True)
+        coord._event_stream = EventStreamHandle(worker, thread)  # type: ignore[arg-type]
+        coord._started = True
+        coord._drain_orphan_jobs = lambda: None  # type: ignore[method-assign]
+
+        coord.stop()
+
+        assert worker.stop_calls == 1
+        assert thread.wait_calls
+        assert len(coord._orphan_event_streams) == 1
 
     def test_drain_orphan_jobs_retains_stuck_threads_without_terminating(
         self, cfg: OperatorConsoleConfig, client: ApiClient

@@ -48,7 +48,7 @@ LSIE-MLF defines four standardized failure categories; each module implements de
 
 ## Dependency pins (§10.2)
 
-Legacy/server §10.2 pins remain: faster-whisper==1.2.1, mediapipe==0.10.x, parselmouth==0.4.4, spacy==3.7.x, psycopg2-binary==2.9.x, pandas==2.2.x, celery==5.4.x, redis==5.x, fastapi==0.110.x, uvicorn==0.29.x, pydantic==2.x, numpy==1.26.x, pycryptodome>=3.20.0, patchright==1.58.2, TikTokLive==5.0.x. The v4 desktop runtime dependency surface is the checked-in `pyproject.toml` / `uv.lock`; launching `python -m services.desktop_app` does not require Redis.
+Legacy/server §10.2 pins remain: faster-whisper==1.2.1, mediapipe==0.10.x, parselmouth==0.4.4, spacy==3.7.x, psycopg2-binary==2.9.x, pandas==2.2.x, celery==5.4.x, redis==5.x, fastapi==0.136.x, uvicorn==0.29.x, pydantic==2.x, numpy==1.26.x, pycryptodome>=3.20.0, patchright==1.58.2, TikTokLive==5.0.x. The v4 desktop runtime dependency surface is the checked-in `pyproject.toml` / `uv.lock`; launching `python -m services.desktop_app` does not require Redis.
 
 ## Runtime topology (§9)
 

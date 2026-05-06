@@ -35,6 +35,8 @@ from collections.abc import Callable
 from PySide6.QtCore import (
     QObject,
     QRunnable,
+    Qt,
+    QThread,
     QThreadPool,
     QTimer,
     Signal,
@@ -42,6 +44,7 @@ from PySide6.QtCore import (
 )
 
 from services.operator_console.api_client import ApiError
+from services.operator_console.event_client import EventStreamResponse, OperatorEventClient
 
 
 class PollingWorker(QObject):
@@ -145,6 +148,97 @@ class PollingWorker(QObject):
                 self.data_ready.emit(self._job_name, payload)
         finally:
             self._fetch_in_progress = False
+
+
+class EventStreamWorker(QObject):
+    connected = Signal()
+    event_ready = Signal(object)
+    error = Signal(object)
+    stopped = Signal()
+
+    def __init__(
+        self,
+        client: OperatorEventClient,
+        *,
+        initial_last_event_id: str | None = None,
+        parent: QObject | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._client = client
+        self._last_event_id = initial_last_event_id
+        self._stopped = False
+        self._response: EventStreamResponse | None = None
+
+    @property
+    def last_event_id(self) -> str | None:
+        return self._last_event_id
+
+    @Slot()
+    def run(self) -> None:
+        if self._stopped:
+            self.stopped.emit()
+            return
+        try:
+            stream = self._client.stream_events(
+                last_event_id=self._last_event_id,
+                on_open=self._handle_open,
+            )
+            for envelope in stream:
+                if self._stopped:
+                    break
+                self._last_event_id = envelope.event_id
+                self.event_ready.emit(envelope)
+        except ApiError as exc:
+            if not self._stopped:
+                self.error.emit(exc)
+        except Exception as exc:
+            if not self._stopped:
+                self.error.emit(
+                    ApiError(
+                        message=f"unexpected event stream error: {exc}",
+                        endpoint=None,
+                        retryable=True,
+                    )
+                )
+        finally:
+            self._response = None
+            self.stopped.emit()
+
+    def _handle_open(self, response: EventStreamResponse) -> None:
+        if self._stopped:
+            response.close()
+            return
+        self._response = response
+        self.connected.emit()
+
+    @Slot()
+    def stop(self) -> None:
+        self._stopped = True
+        response = self._response
+        if response is not None:
+            response.close()
+
+
+class EventStreamHandle:
+    def __init__(self, worker: EventStreamWorker, thread: QThread) -> None:
+        self.worker = worker
+        self.thread = thread
+
+
+def start_event_stream_worker(
+    client: OperatorEventClient,
+    *,
+    initial_last_event_id: str | None = None,
+) -> EventStreamHandle:
+    thread = QThread()
+    worker = EventStreamWorker(client, initial_last_event_id=initial_last_event_id)
+    worker.moveToThread(thread)
+    worker.stopped.connect(worker.deleteLater)
+    worker.stopped.connect(thread.quit, Qt.ConnectionType.DirectConnection)
+    thread.finished.connect(thread.deleteLater)
+    thread.started.connect(worker.run)
+    thread.start()
+    return EventStreamHandle(worker, thread)
 
 
 class OneShotSignals(QObject):

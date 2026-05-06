@@ -75,6 +75,98 @@ def test_fetch_recent_sessions_empty_db(tmp_path: Path) -> None:
         assert q.fetch_recent_sessions(cur, limit=10) == []
 
 
+def test_fetch_sessions_marker_tracks_session_changes(tmp_path: Path) -> None:
+    db = tmp_path / "desktop.sqlite"
+    writer = SqliteWriter(db)
+    try:
+        _seed_session(writer, SESSION_A, stream_url="x", started_at="2026-04-01 12:00:00")
+        writer.flush()
+    finally:
+        writer.close()
+
+    reader = SqliteReader(db)
+    with _cursor(reader) as cur:
+        marker = q.fetch_sessions_marker(cur)
+    assert marker["row_count"] == 1
+    assert marker["max_started_at"] == "2026-04-01 12:00:00"
+    assert marker["max_ended_at"] is None
+
+
+def test_fetch_sessions_marker_tracks_live_state_and_latest_encounter_changes(
+    tmp_path: Path,
+) -> None:
+    db = tmp_path / "desktop.sqlite"
+    writer = SqliteWriter(db)
+    try:
+        _seed_session(writer, SESSION_A, stream_url="x", started_at="2026-04-01 12:00:00")
+        writer.flush()
+    finally:
+        writer.close()
+
+    reader = SqliteReader(db)
+    with _cursor(reader) as cur:
+        initial_marker = q.fetch_sessions_marker(cur)
+
+    conn = sqlite3.connect(str(db), isolation_level=None)
+    try:
+        conn.execute(
+            "INSERT INTO live_session_state "
+            "(session_id, active_arm, expected_greeting, is_calibrating, "
+            "calibration_frames_accumulated, calibration_frames_required, face_present, "
+            "status, updated_at_utc) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                str(SESSION_A),
+                "warm_welcome",
+                "Say hello to the creator",
+                1,
+                3,
+                10,
+                1,
+                "calibrating",
+                "2026-04-01 12:00:05",
+            ),
+        )
+    finally:
+        conn.close()
+
+    with _cursor(reader) as cur:
+        live_marker = q.fetch_sessions_marker(cur)
+    assert live_marker != initial_marker
+    assert live_marker["max_live_updated_at"] == "2026-04-01 12:00:05"
+    assert live_marker["max_active_arm"] == "warm_welcome"
+    assert live_marker["max_expected_greeting"] == "Say hello to the creator"
+    assert live_marker["max_calibration_frames_accumulated"] == 3
+
+    conn = sqlite3.connect(str(db), isolation_level=None)
+    try:
+        conn.execute(
+            "INSERT INTO encounter_log "
+            "(session_id, segment_id, experiment_id, arm, timestamp_utc, gated_reward, "
+            "p90_intensity, semantic_gate, n_frames_in_window) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                str(SESSION_A),
+                "m" * 64,
+                "greeting_line_v1",
+                "playful_wave",
+                "2026-04-01 12:01:00",
+                0.42,
+                0.6,
+                1,
+                30,
+            ),
+        )
+    finally:
+        conn.close()
+
+    with _cursor(reader) as cur:
+        encounter_marker = q.fetch_sessions_marker(cur)
+    assert encounter_marker != live_marker
+    assert encounter_marker["max_last_segment_completed_at_utc"] == "2026-04-01 12:01:00"
+    assert encounter_marker["max_latest_reward"] == pytest.approx(0.42)
+    assert encounter_marker["max_latest_semantic_gate"] == 1
+
+
 def test_fetch_recent_sessions_orders_newest_first(tmp_path: Path) -> None:
     db = tmp_path / "desktop.sqlite"
     writer = SqliteWriter(db)
@@ -199,6 +291,41 @@ def test_fetch_session_encounters_empty(tmp_path: Path) -> None:
     reader = SqliteReader(db)
     with _cursor(reader) as cur:
         assert q.fetch_session_encounters(cur, SESSION_A, limit=10, before_utc=None) == []
+
+
+def test_fetch_encounters_marker_can_scope_to_session(tmp_path: Path) -> None:
+    db = tmp_path / "desktop.sqlite"
+    writer = SqliteWriter(db)
+    try:
+        _seed_session(writer, SESSION_A, stream_url="a", started_at="2026-04-01 12:00:00")
+        _seed_session(writer, SESSION_B, stream_url="b", started_at="2026-04-01 12:00:00")
+        for session_id, segment, ts in (
+            (SESSION_A, "a" * 64, "2026-04-01 12:00:30"),
+            (SESSION_B, "b" * 64, "2026-04-01 12:01:30"),
+        ):
+            writer.enqueue(
+                "encounter_log",
+                {
+                    "session_id": str(session_id),
+                    "segment_id": segment,
+                    "experiment_id": "greeting_line_v1",
+                    "arm": "warm_welcome",
+                    "timestamp_utc": ts,
+                    "gated_reward": 0.0,
+                    "p90_intensity": 0.0,
+                    "semantic_gate": 0,
+                    "n_frames_in_window": 0,
+                },
+            )
+        writer.flush()
+    finally:
+        writer.close()
+
+    reader = SqliteReader(db)
+    with _cursor(reader) as cur:
+        marker = q.fetch_encounters_marker(cur, session_id=SESSION_A)
+    assert marker["row_count"] == 1
+    assert marker["max_timestamp_utc"] == "2026-04-01 12:00:30"
 
 
 def test_fetch_session_encounters_returns_reward_explanation(tmp_path: Path) -> None:
@@ -462,6 +589,20 @@ def test_fetch_latest_comodulation_row_picks_newest(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 # Health heuristics
 # ---------------------------------------------------------------------------
+
+
+def test_fetch_health_and_overview_markers_are_stable_empty_dicts(tmp_path: Path) -> None:
+    db = _bootstrap(tmp_path)
+    reader = SqliteReader(db)
+    with _cursor(reader) as cur:
+        health = q.fetch_health_marker(cur)
+        overview = q.fetch_overview_marker(cur)
+        alerts = q.fetch_alerts_marker(cur)
+    assert health["process_count"] == 0
+    assert health["capture_status_count"] == 0
+    assert health["active_session_count"] == 0
+    assert overview["active_session_count"] == 0
+    assert alerts["stale_physiology_count"] == 0
 
 
 def test_fetch_subsystem_pulse_empty_returns_nulls(tmp_path: Path) -> None:

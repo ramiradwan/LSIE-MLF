@@ -37,6 +37,8 @@ from packages.schemas.operator_console import (
     HealthSubsystemStatus,
     LatestEncounterSummary,
     ObservationalAcousticSummary,
+    OperatorEventEnvelope,
+    OperatorStateBootstrap,
     OverviewSnapshot,
     PhysiologyCurrentSnapshot,
     SemanticEvaluationSummary,
@@ -142,6 +144,48 @@ class TestUtcTimestampEnforcement:
                 received_at_utc=datetime(2026, 1, 1, 12, 0, tzinfo=UTC),
                 stimulus_time_utc=naive,
             )
+
+
+# ----------------------------------------------------------------------
+# SSE state DTOs
+# ----------------------------------------------------------------------
+
+
+class TestOperatorStateEvents:
+    def test_event_envelope_accepts_existing_payload_dto(self) -> None:
+        payload = OverviewSnapshot(generated_at_utc=_utc())
+        envelope = OperatorEventEnvelope(
+            event_id="overview:1",
+            event_type="overview",
+            cursor="overview:1",
+            generated_at_utc=_utc(),
+            payload=payload,
+        )
+        assert envelope.payload == payload
+
+    def test_event_envelope_rejects_unknown_event_type(self) -> None:
+        with pytest.raises(ValidationError):
+            OperatorEventEnvelope.model_validate(
+                {
+                    "event_id": "bad:1",
+                    "event_type": "unknown",
+                    "cursor": "bad:1",
+                    "generated_at_utc": _utc(),
+                    "payload": [],
+                }
+            )
+
+    def test_bootstrap_reuses_existing_payload_types(self) -> None:
+        health = HealthSnapshot(generated_at_utc=_utc(), overall_state=HealthState.OK)
+        overview = OverviewSnapshot(generated_at_utc=_utc(), health=health)
+        bootstrap = OperatorStateBootstrap(
+            generated_at_utc=_utc(),
+            overview=overview,
+            health=health,
+        )
+        assert bootstrap.overview is overview
+        assert bootstrap.health is health
+        assert bootstrap.sessions == []
 
 
 # ----------------------------------------------------------------------

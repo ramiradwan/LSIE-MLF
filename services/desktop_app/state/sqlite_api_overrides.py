@@ -10,8 +10,9 @@ from typing import Protocol
 from fastapi import FastAPI
 
 from services.api.routes.experiments import get_admin_service
-from services.api.routes.operator import get_action_service, get_read_service
+from services.api.routes.operator import get_action_service, get_event_service, get_read_service
 from services.api.routes.sessions import get_session_lifecycle_service
+from services.api.services.operator_event_service import OperatorEventService
 from services.desktop_app.ipc.control_messages import LiveSessionControlMessage
 from services.desktop_app.state.sqlite_experiment_admin_service import (
     SqliteExperimentAdminService,
@@ -42,6 +43,10 @@ class DesktopApiServices:
     ) -> None:
         self.reader = SqliteReader(db_path)
         self.read_service = SqliteOperatorReadService(self.reader)
+        self.event_service = OperatorEventService(
+            read_service=self.read_service,
+            marker_provider=self.read_service.operator_event_markers,
+        )
         self.action_service = SqliteOperatorActionService(
             db_path,
             control_publisher=control_publisher,
@@ -68,6 +73,9 @@ def configure_sqlite_api_overrides(
     def _action_service_dependency() -> SqliteOperatorActionService:
         return services.action_service
 
+    def _event_service_dependency() -> OperatorEventService:
+        return services.event_service
+
     def _session_lifecycle_service_dependency() -> SqliteSessionLifecycleService:
         return services.session_lifecycle_service
 
@@ -76,6 +84,7 @@ def configure_sqlite_api_overrides(
 
     api_app.dependency_overrides[get_read_service] = _read_service_dependency
     api_app.dependency_overrides[get_action_service] = _action_service_dependency
+    api_app.dependency_overrides[get_event_service] = _event_service_dependency
     api_app.dependency_overrides[get_session_lifecycle_service] = (
         _session_lifecycle_service_dependency
     )

@@ -35,8 +35,11 @@ from __future__ import annotations
 
 import sqlite3
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, TypeAlias
 from uuid import UUID
+
+OperatorMarkerValue: TypeAlias = str | int | float | None
+OperatorChangeMarker: TypeAlias = dict[str, OperatorMarkerValue]
 
 _CANONICAL_OBSERVATIONAL_ACOUSTIC_COLUMNS: tuple[str, ...] = (
     "f0_valid_measure",
@@ -658,6 +661,224 @@ LIMIT :limit
 
 
 # ---------------------------------------------------------------------------
+# Change markers
+# ---------------------------------------------------------------------------
+
+_MARKER_SESSIONS_SQL: str = (
+    _LATEST_ENCOUNTER_PER_SESSION_CTE
+    + """
+SELECT
+    COUNT(*) AS row_count,
+    MAX(s.started_at) AS max_started_at,
+    MAX(s.ended_at) AS max_ended_at,
+    MAX(live.updated_at_utc) AS max_live_updated_at,
+    MAX(le.timestamp_utc) AS max_last_segment_completed_at_utc,
+    MAX(le.gated_reward) AS max_latest_reward,
+    MIN(le.gated_reward) AS min_latest_reward,
+    MAX(le.semantic_gate) AS max_latest_semantic_gate,
+    MIN(le.semantic_gate) AS min_latest_semantic_gate,
+    MAX(COALESCE(live.active_arm, le.arm)) AS max_active_arm,
+    MAX(live.expected_greeting) AS max_expected_greeting,
+    MAX(live.is_calibrating) AS max_is_calibrating,
+    MIN(live.is_calibrating) AS min_is_calibrating,
+    MAX(live.calibration_frames_accumulated) AS max_calibration_frames_accumulated,
+    MIN(live.calibration_frames_accumulated) AS min_calibration_frames_accumulated,
+    MAX(live.calibration_frames_required) AS max_calibration_frames_required,
+    MIN(live.calibration_frames_required) AS min_calibration_frames_required,
+    (
+        SELECT COUNT(*)
+        FROM sessions active
+        WHERE active.ended_at IS NULL
+    ) AS active_session_count
+FROM sessions s
+LEFT JOIN latest_enc le ON le.session_id = s.session_id AND le.rn = 1
+LEFT JOIN live_session_state live ON live.session_id = s.session_id
+"""
+)
+
+_MARKER_LIVE_SESSION_SQL: str = """
+SELECT
+    COUNT(*) AS active_session_count,
+    MAX(s.started_at) AS max_active_started_at,
+    MAX(live.updated_at_utc) AS max_live_updated_at,
+    MAX(e.timestamp_utc) AS max_encounter_at
+FROM sessions s
+LEFT JOIN live_session_state live ON live.session_id = s.session_id
+LEFT JOIN encounter_log e ON e.session_id = s.session_id
+WHERE s.ended_at IS NULL
+"""
+
+_MARKER_ENCOUNTERS_SQL: str = """
+SELECT
+    COUNT(*) AS row_count,
+    MAX(timestamp_utc) AS max_timestamp_utc,
+    MAX(created_at) AS max_created_at,
+    MAX(id) AS max_id
+FROM encounter_log
+WHERE (:session_id IS NULL OR session_id = :session_id)
+"""
+
+_MARKER_EXPERIMENTS_SQL: str = """
+SELECT
+    COUNT(*) AS row_count,
+    MAX(updated_at) AS max_updated_at,
+    MAX(id) AS max_id
+FROM experiments
+"""
+
+_MARKER_EXPERIMENT_SQL: str = """
+SELECT
+    COUNT(*) AS row_count,
+    MAX(updated_at) AS max_updated_at,
+    MAX(id) AS max_id
+FROM experiments
+WHERE experiment_id = :experiment_id
+"""
+
+_MARKER_PHYSIOLOGY_SQL: str = """
+SELECT
+    (
+        SELECT COUNT(*)
+        FROM physiology_log p
+        WHERE (:session_id IS NULL OR p.session_id = :session_id)
+    ) AS physiology_count,
+    (
+        SELECT MAX(p.created_at)
+        FROM physiology_log p
+        WHERE (:session_id IS NULL OR p.session_id = :session_id)
+    ) AS max_physiology_created_at,
+    (
+        SELECT MAX(p.id)
+        FROM physiology_log p
+        WHERE (:session_id IS NULL OR p.session_id = :session_id)
+    ) AS max_physiology_id,
+    (
+        SELECT COUNT(*)
+        FROM comodulation_log c
+        WHERE (:session_id IS NULL OR c.session_id = :session_id)
+    ) AS comodulation_count,
+    (
+        SELECT MAX(c.created_at)
+        FROM comodulation_log c
+        WHERE (:session_id IS NULL OR c.session_id = :session_id)
+    ) AS max_comodulation_created_at,
+    (
+        SELECT MAX(c.id)
+        FROM comodulation_log c
+        WHERE (:session_id IS NULL OR c.session_id = :session_id)
+    ) AS max_comodulation_id
+"""
+
+_MARKER_HEALTH_SQL: str = """
+SELECT
+    (
+        SELECT MAX(last_heartbeat_utc)
+        FROM process_heartbeat
+    ) AS max_process_heartbeat_utc,
+    (
+        SELECT COUNT(*)
+        FROM process_heartbeat
+    ) AS process_count,
+    (
+        SELECT MAX(updated_at_utc)
+        FROM capture_status
+    ) AS max_capture_status_updated_at,
+    (
+        SELECT COUNT(*)
+        FROM capture_status
+    ) AS capture_status_count,
+    (
+        SELECT MAX(updated_at_utc)
+        FROM live_session_state
+    ) AS max_live_updated_at,
+    (
+        SELECT COUNT(*)
+        FROM sessions
+        WHERE ended_at IS NULL
+    ) AS active_session_count,
+    (
+        SELECT MAX(timestamp_utc)
+        FROM encounter_log
+    ) AS max_encounter_at
+"""
+
+_MARKER_ALERTS_SQL: str = """
+SELECT
+    (
+        SELECT COUNT(*)
+        FROM physiology_log p
+        WHERE p.is_stale = 1 AND p.created_at >= datetime('now', '-1 hour')
+    ) AS stale_physiology_count,
+    (
+        SELECT MAX(p.created_at)
+        FROM physiology_log p
+        WHERE p.is_stale = 1 AND p.created_at >= datetime('now', '-1 hour')
+    ) AS max_stale_physiology_created_at,
+    (
+        SELECT COUNT(*)
+        FROM sessions s
+        WHERE s.ended_at IS NOT NULL AND s.ended_at >= datetime('now', '-1 hour')
+    ) AS ended_session_count,
+    (
+        SELECT MAX(s.ended_at)
+        FROM sessions s
+        WHERE s.ended_at IS NOT NULL AND s.ended_at >= datetime('now', '-1 hour')
+    ) AS max_ended_at,
+    (
+        SELECT MAX(updated_at_utc)
+        FROM capture_status
+        WHERE state IN ('degraded', 'recovering', 'error')
+    ) AS max_alerting_capture_updated_at
+"""
+
+_MARKER_OVERVIEW_SQL: str = """
+SELECT
+    (
+        SELECT COUNT(*)
+        FROM sessions
+        WHERE ended_at IS NULL
+    ) AS active_session_count,
+    (
+        SELECT MAX(started_at)
+        FROM sessions
+        WHERE ended_at IS NULL
+    ) AS max_active_started_at,
+    (
+        SELECT MAX(ended_at)
+        FROM sessions
+    ) AS max_ended_at,
+    (
+        SELECT MAX(timestamp_utc)
+        FROM encounter_log
+    ) AS max_encounter_at,
+    (
+        SELECT MAX(created_at)
+        FROM physiology_log
+    ) AS max_physiology_created_at,
+    (
+        SELECT MAX(created_at)
+        FROM comodulation_log
+    ) AS max_comodulation_created_at,
+    (
+        SELECT MAX(updated_at)
+        FROM experiments
+    ) AS max_experiment_updated_at,
+    (
+        SELECT MAX(last_heartbeat_utc)
+        FROM process_heartbeat
+    ) AS max_process_heartbeat_utc,
+    (
+        SELECT MAX(updated_at_utc)
+        FROM capture_status
+    ) AS max_capture_status_updated_at,
+    (
+        SELECT MAX(updated_at_utc)
+        FROM live_session_state
+    ) AS max_live_updated_at
+"""
+
+
+# ---------------------------------------------------------------------------
 # Row helpers
 # ---------------------------------------------------------------------------
 
@@ -679,6 +900,17 @@ def _rows_to_dicts(cursor: sqlite3.Cursor) -> list[dict[str, Any]]:
     return [dict(zip(columns, row, strict=True)) for row in cursor.fetchall()]
 
 
+def _marker(cursor: sqlite3.Cursor) -> OperatorChangeMarker:
+    row = _row_to_dict(cursor)
+    return {} if row is None else {key: _marker_value(value) for key, value in row.items()}
+
+
+def _marker_value(value: object) -> OperatorMarkerValue:
+    if isinstance(value, str | int | float) or value is None:
+        return value
+    return str(value)
+
+
 def _isoformat_utc(value: datetime | None) -> str | None:
     """Serialize a datetime for SQLite parameter binding, dropping tz suffix.
 
@@ -697,6 +929,55 @@ def _isoformat_utc(value: datetime | None) -> str | None:
 # ---------------------------------------------------------------------------
 # Public fetchers — same names + return shapes as the Postgres repo.
 # ---------------------------------------------------------------------------
+
+
+def fetch_sessions_marker(cursor: sqlite3.Cursor) -> OperatorChangeMarker:
+    cursor.execute(_MARKER_SESSIONS_SQL)
+    return _marker(cursor)
+
+
+def fetch_live_session_marker(cursor: sqlite3.Cursor) -> OperatorChangeMarker:
+    cursor.execute(_MARKER_LIVE_SESSION_SQL)
+    return _marker(cursor)
+
+
+def fetch_encounters_marker(
+    cursor: sqlite3.Cursor, *, session_id: UUID | None = None
+) -> OperatorChangeMarker:
+    cursor.execute(_MARKER_ENCOUNTERS_SQL, {"session_id": str(session_id) if session_id else None})
+    return _marker(cursor)
+
+
+def fetch_experiments_marker(cursor: sqlite3.Cursor) -> OperatorChangeMarker:
+    cursor.execute(_MARKER_EXPERIMENTS_SQL)
+    return _marker(cursor)
+
+
+def fetch_experiment_marker(cursor: sqlite3.Cursor, *, experiment_id: str) -> OperatorChangeMarker:
+    cursor.execute(_MARKER_EXPERIMENT_SQL, {"experiment_id": experiment_id})
+    return _marker(cursor)
+
+
+def fetch_physiology_marker(
+    cursor: sqlite3.Cursor, *, session_id: UUID | None = None
+) -> OperatorChangeMarker:
+    cursor.execute(_MARKER_PHYSIOLOGY_SQL, {"session_id": str(session_id) if session_id else None})
+    return _marker(cursor)
+
+
+def fetch_health_marker(cursor: sqlite3.Cursor) -> OperatorChangeMarker:
+    cursor.execute(_MARKER_HEALTH_SQL)
+    return _marker(cursor)
+
+
+def fetch_alerts_marker(cursor: sqlite3.Cursor) -> OperatorChangeMarker:
+    cursor.execute(_MARKER_ALERTS_SQL)
+    return _marker(cursor)
+
+
+def fetch_overview_marker(cursor: sqlite3.Cursor) -> OperatorChangeMarker:
+    cursor.execute(_MARKER_OVERVIEW_SQL)
+    return _marker(cursor)
 
 
 def fetch_recent_sessions(cursor: sqlite3.Cursor, *, limit: int) -> list[dict[str, Any]]:
@@ -793,16 +1074,27 @@ def fetch_recently_ended_sessions(
 
 
 __all__ = [
+    "OperatorChangeMarker",
+    "OperatorMarkerValue",
     "fetch_active_arm_for_experiment",
     "fetch_active_session",
+    "fetch_alerts_marker",
+    "fetch_encounters_marker",
     "fetch_experiment_arms",
+    "fetch_experiment_marker",
+    "fetch_experiments_marker",
+    "fetch_health_marker",
     "fetch_latest_comodulation_row",
     "fetch_latest_encounter",
     "fetch_latest_physiology_rows",
+    "fetch_live_session_marker",
+    "fetch_overview_marker",
+    "fetch_physiology_marker",
     "fetch_recent_sessions",
     "fetch_recent_stale_physiology",
     "fetch_recently_ended_sessions",
     "fetch_session_by_id",
     "fetch_session_encounters",
+    "fetch_sessions_marker",
     "fetch_subsystem_pulse",
 ]

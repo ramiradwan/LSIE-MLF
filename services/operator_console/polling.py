@@ -41,7 +41,7 @@ from time import monotonic
 from typing import Any
 from uuid import UUID, uuid4
 
-from PySide6.QtCore import QMetaObject, QObject, Qt, QThread, Signal, Slot
+from PySide6.QtCore import QMetaObject, QObject, Qt, QThread, QTimer, Signal, Slot
 
 from packages.schemas.experiments import (
     ExperimentAdminResponse,
@@ -58,6 +58,7 @@ from packages.schemas.operator_console import (
     ExperimentDetail,
     ExperimentSummary,
     HealthSnapshot,
+    OperatorEventEnvelope,
     OverviewSnapshot,
     SessionCreateRequest,
     SessionEndRequest,
@@ -69,11 +70,14 @@ from packages.schemas.operator_console import (
 from services.desktop_launcher.repair import repair_runtime
 from services.operator_console.api_client import ApiClient, ApiError
 from services.operator_console.config import OperatorConsoleConfig
+from services.operator_console.event_client import OperatorEventClient
 from services.operator_console.state import AppRoute, OperatorStore
 from services.operator_console.workers import (
+    EventStreamHandle,
     OneShotSignals,
     PollingWorker,
     run_one_shot,
+    start_event_stream_worker,
 )
 
 # ----------------------------------------------------------------------
@@ -94,6 +98,17 @@ JOB_STIMULUS = "stimulus"
 JOB_SESSION_START = "session_start"
 JOB_SESSION_END = "session_end"
 JOB_REPAIR_INSTALL = "repair_install"
+JOB_EVENT_STREAM = "event_stream"
+
+_HIGH_FREQUENCY_SSE_JOBS = frozenset(
+    {
+        JOB_OVERVIEW,
+        JOB_HEALTH,
+        JOB_ALERTS,
+    }
+)
+SSE_RECONNECT_BASE_MS = 500
+SSE_RECONNECT_MAX_MS = 8000
 
 
 @dataclass(frozen=True)
@@ -139,10 +154,16 @@ class PollingCoordinator(QObject):
         client: ApiClient,
         store: OperatorStore,
         parent: QObject | None = None,
+        event_client: OperatorEventClient | None = None,
     ) -> None:
         super().__init__(parent)
         self._config = config
         self._client = client
+        self._event_client = (
+            event_client
+            if event_client is not None
+            else OperatorEventClient(config.api_base_url, config.api_timeout_seconds)
+        )
         self._store = store
         self._specs: dict[str, PollJobSpec] = self._register_jobs()
         self._jobs: dict[str, _JobHandle] = {}
@@ -155,6 +176,14 @@ class PollingCoordinator(QObject):
         self._inflight_session_lifecycle: dict[str, OneShotSignals] = {}
         self._inflight_experiment_mutations: dict[str, OneShotSignals] = {}
         self._inflight_repairs: dict[str, OneShotSignals] = {}
+        self._event_stream: EventStreamHandle | None = None
+        self._orphan_event_streams: list[EventStreamHandle] = []
+        self._event_stream_connected = False
+        self._last_event_id: str | None = None
+        self._sse_reconnect_ms = SSE_RECONNECT_BASE_MS
+        self._sse_reconnect_timer = QTimer(self)
+        self._sse_reconnect_timer.setSingleShot(True)
+        self._sse_reconnect_timer.timeout.connect(self._start_event_stream)
         self._started = False
 
         # Wire store-driven job lifecycle
@@ -171,6 +200,7 @@ class PollingCoordinator(QObject):
             return
         self._started = True
         self._sync_jobs_for_current_state()
+        self._start_event_stream()
 
     def stop(self) -> None:
         """Stop every job and join its thread. Safe to call from
@@ -184,8 +214,11 @@ class PollingCoordinator(QObject):
         if not self._started:
             return
         self._started = False
+        self._sse_reconnect_timer.stop()
+        self._stop_event_stream()
         for name in list(self._jobs):
             self._stop_job(name)
+        self._drain_orphan_event_streams()
         self._drain_orphan_jobs()
 
     # ------------------------------------------------------------------
@@ -213,6 +246,118 @@ class PollingCoordinator(QObject):
             if handle.spec.session_scoped:
                 self._stop_job(name)
         self._sync_jobs_for_current_state()
+
+    # ------------------------------------------------------------------
+    # Event stream lifecycle
+    # ------------------------------------------------------------------
+
+    @Slot()
+    def _start_event_stream(self) -> None:
+        if not self._started or self._event_stream is not None:
+            return
+        handle = start_event_stream_worker(
+            self._event_client,
+            initial_last_event_id=self._last_event_id,
+        )
+        handle.worker.connected.connect(self._handle_event_stream_connected)
+        handle.worker.event_ready.connect(self._handle_event_stream_event)
+        handle.worker.error.connect(self._handle_event_stream_error)
+        handle.worker.stopped.connect(self._handle_event_stream_stopped)
+        handle.thread.finished.connect(
+            lambda stream_handle=handle: self._prune_event_stream_orphan(stream_handle)
+        )
+        self._event_stream = handle
+
+    def _stop_event_stream(self) -> None:
+        handle = self._event_stream
+        if handle is None:
+            return
+        self._disconnect_event_stream_signals(handle)
+        handle.worker.stop()
+        self._event_stream = None
+        self._event_stream_connected = False
+        if handle.thread.isRunning():
+            self._orphan_event_streams.append(handle)
+
+    @Slot()
+    def _handle_event_stream_connected(self) -> None:
+        self._event_stream_connected = True
+        self._sse_reconnect_ms = SSE_RECONNECT_BASE_MS
+        self._store.clear_error(JOB_EVENT_STREAM)
+        self._sync_jobs_for_current_state()
+
+    @Slot(object)
+    def _handle_event_stream_event(self, envelope: object) -> None:
+        if not isinstance(envelope, OperatorEventEnvelope):
+            self._handle_event_stream_error(
+                ApiError(
+                    message="unexpected event stream payload shape",
+                    endpoint=None,
+                    retryable=True,
+                )
+            )
+            return
+        self._last_event_id = envelope.event_id
+        self.apply_event_payload(envelope.event_type, envelope.payload)
+
+    @Slot(object)
+    def _handle_event_stream_error(self, error: object) -> None:
+        message = str(error) if not isinstance(error, ApiError) else error.message
+        self._store.set_error(JOB_EVENT_STREAM, message)
+        self.job_failed.emit(JOB_EVENT_STREAM, message)
+        self._event_stream_connected = False
+        self._sync_jobs_for_current_state()
+
+    @Slot()
+    def _handle_event_stream_stopped(self) -> None:
+        handle = self._event_stream
+        if handle is not None:
+            self._disconnect_event_stream_signals(handle)
+        self._event_stream = None
+        was_connected = self._event_stream_connected
+        self._event_stream_connected = False
+        if self._started:
+            self._sync_jobs_for_current_state()
+            self._schedule_event_stream_reconnect(reset=was_connected)
+        elif handle is not None and handle.thread.isRunning():
+            handle.thread.quit()
+
+    def _schedule_event_stream_reconnect(self, *, reset: bool = False) -> None:
+        if reset:
+            self._sse_reconnect_ms = SSE_RECONNECT_BASE_MS
+        delay_ms = self._sse_reconnect_ms
+        self._sse_reconnect_ms = min(self._sse_reconnect_ms * 2, SSE_RECONNECT_MAX_MS)
+        self._sse_reconnect_timer.start(delay_ms)
+
+    def _disconnect_event_stream_signals(self, handle: EventStreamHandle) -> None:
+        for signal, slot in (
+            (handle.worker.connected, self._handle_event_stream_connected),
+            (handle.worker.event_ready, self._handle_event_stream_event),
+            (handle.worker.error, self._handle_event_stream_error),
+            (handle.worker.stopped, self._handle_event_stream_stopped),
+        ):
+            with suppress(RuntimeError, TypeError):
+                signal.disconnect(slot)
+
+    def _prune_event_stream_orphan(self, handle: EventStreamHandle) -> None:
+        self._orphan_event_streams = [h for h in self._orphan_event_streams if h is not handle]
+
+    def _prune_completed_event_stream_orphans(self) -> None:
+        self._orphan_event_streams = [
+            handle for handle in self._orphan_event_streams if handle.thread.isRunning()
+        ]
+
+    def _drain_orphan_event_streams(self) -> None:
+        self._prune_completed_event_stream_orphans()
+        graceful_deadline = monotonic() + 0.5
+        remaining_orphans: list[EventStreamHandle] = []
+        for handle in self._orphan_event_streams:
+            remaining_ms = int(max(0.0, graceful_deadline - monotonic()) * 1000)
+            if remaining_ms > 0:
+                handle.thread.wait(remaining_ms)
+            if handle.thread.isRunning():
+                remaining_orphans.append(handle)
+        self._orphan_event_streams = remaining_orphans
 
     # ------------------------------------------------------------------
     # On-demand refresh
@@ -546,6 +691,8 @@ class PollingCoordinator(QObject):
         for name, spec in self._specs.items():
             if not _route_matches(spec.route_scoped, current_route):
                 continue
+            if self._event_stream_connected and name in _HIGH_FREQUENCY_SSE_JOBS:
+                continue
             if spec.session_scoped and selected is None:
                 continue
             want.add(name)
@@ -650,8 +797,7 @@ class PollingCoordinator(QObject):
     def _handle_job_data(self, job_name: str, payload: object) -> None:
         # Any data arrival clears the error scope for this job; the
         # next fetch attempt re-populates it if the failure persists.
-        self._store.clear_error(job_name)
-        self._apply_payload(job_name, payload)
+        self.apply_payload(job_name, payload)
 
     @Slot(str, object)
     def _handle_job_error(self, job_name: str, error: object) -> None:
@@ -668,6 +814,16 @@ class PollingCoordinator(QObject):
     # Payload dispatch: route each job's DTO to the right store setter.
     # ------------------------------------------------------------------
 
+    def apply_payload(self, job_name: str, payload: object) -> None:
+        self._store.clear_error(job_name)
+        self._apply_payload(job_name, payload)
+
+    def apply_event_payload(self, job_name: str, payload: object) -> None:
+        if not self._event_payload_matches_current_scope(job_name, payload):
+            return
+        self._store.clear_error(job_name)
+        self._apply_event_payload(job_name, payload)
+
     def _apply_payload(self, job_name: str, payload: object) -> None:
         if job_name == JOB_OVERVIEW and isinstance(payload, OverviewSnapshot):
             self._store.set_overview(payload)
@@ -682,16 +838,22 @@ class PollingCoordinator(QObject):
                 self._store.set_alerts(list(payload.alerts))
         elif job_name == JOB_SESSIONS and isinstance(payload, list):
             self._store.set_sessions(_as_list(payload, SessionSummary))
-        elif job_name == JOB_LIVE_SESSION and isinstance(payload, SessionSummary):
-            self._store.set_live_session(payload)
+        elif job_name == JOB_LIVE_SESSION:
+            if isinstance(payload, SessionSummary):
+                self._store.set_live_session(payload)
+            elif payload == []:
+                self._store.set_live_session(None)
         elif job_name == JOB_ENCOUNTERS and isinstance(payload, list):
             self._store.set_encounters(_as_list(payload, EncounterSummary))
         elif job_name == JOB_EXPERIMENT_SUMMARIES and isinstance(payload, list):
             self._store.set_experiment_summaries(_as_list(payload, ExperimentSummary))
         elif job_name == JOB_EXPERIMENT and isinstance(payload, ExperimentDetail):
             self._store.set_experiment(payload)
-        elif job_name == JOB_PHYSIOLOGY and isinstance(payload, SessionPhysiologySnapshot):
-            self._store.set_physiology(payload)
+        elif job_name == JOB_PHYSIOLOGY:
+            if isinstance(payload, SessionPhysiologySnapshot):
+                self._store.set_physiology(payload)
+            elif payload == []:
+                self._store.set_physiology(None)
         elif job_name == JOB_HEALTH and isinstance(payload, HealthSnapshot):
             self._store.set_health(payload)
         elif job_name == JOB_ALERTS and isinstance(payload, list):
@@ -700,6 +862,43 @@ class PollingCoordinator(QObject):
             # Shape mismatch is a bug, not a recoverable error. Surface
             # it via the same error scope so tests see it.
             self._store.set_error(job_name, f"unexpected payload shape for {job_name}")
+
+    def _apply_event_payload(self, job_name: str, payload: object) -> None:
+        if job_name == JOB_OVERVIEW and isinstance(payload, OverviewSnapshot):
+            self._store.set_overview(payload)
+            if payload.health is not None:
+                self._store.set_health(payload.health)
+            if payload.alerts:
+                self._store.set_alerts(list(payload.alerts))
+        elif job_name == JOB_EXPERIMENT:
+            if isinstance(payload, ExperimentDetail):
+                self._store.set_experiment_readback(payload)
+        else:
+            self._apply_payload(job_name, payload)
+
+    def _event_payload_matches_current_scope(self, job_name: str, payload: object) -> bool:
+        selected = self._store.selected_session_id()
+        if job_name == JOB_LIVE_SESSION:
+            if isinstance(payload, SessionSummary):
+                return selected is not None and payload.session_id == selected
+            return selected is None and payload == []
+        if job_name == JOB_ENCOUNTERS and isinstance(payload, list):
+            encounters = _as_list(payload, EncounterSummary)
+            if not encounters:
+                return selected is None
+            return selected is not None and all(row.session_id == selected for row in encounters)
+        if job_name == JOB_PHYSIOLOGY:
+            if isinstance(payload, SessionPhysiologySnapshot):
+                return selected is not None and payload.session_id == selected
+            return selected is None and payload == []
+        if job_name == JOB_EXPERIMENT:
+            if payload == []:
+                return True
+            if isinstance(payload, ExperimentDetail):
+                managed = self._store.managed_experiment_id()
+                return managed is not None and payload.experiment_id == managed
+            return False
+        return True
 
     # ------------------------------------------------------------------
     # Fetch-callable factories (one per job). Each captures client +

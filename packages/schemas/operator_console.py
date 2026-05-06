@@ -15,7 +15,7 @@ from __future__ import annotations
 import math
 from datetime import datetime
 from enum import StrEnum
-from typing import Literal
+from typing import Literal, TypeAlias
 from uuid import UUID
 
 from pydantic import AnyUrl, ConfigDict, Field, TypeAdapter, field_validator
@@ -600,6 +600,66 @@ class OverviewSnapshot(OperatorConsoleModel):
     physiology: SessionPhysiologySnapshot | None = None
     health: HealthSnapshot | None = None
     alerts: list[AlertEvent] = Field(default_factory=list)
+
+    @field_validator("generated_at_utc")
+    @classmethod
+    def _utc_only(cls, value: datetime) -> datetime:
+        validated = _require_utc(value)
+        assert validated is not None
+        return validated
+
+
+OperatorEventType: TypeAlias = Literal[
+    "overview",
+    "sessions",
+    "live_session",
+    "encounters",
+    "experiment_summaries",
+    "experiment",
+    "physiology",
+    "health",
+    "alerts",
+]
+
+OperatorEventPayload: TypeAlias = (
+    OverviewSnapshot
+    | list[SessionSummary]
+    | SessionSummary
+    | list[EncounterSummary]
+    | list[ExperimentSummary]
+    | ExperimentDetail
+    | SessionPhysiologySnapshot
+    | HealthSnapshot
+    | list[AlertEvent]
+)
+
+
+class OperatorStateBootstrap(OperatorConsoleModel):
+    generated_at_utc: datetime
+    overview: OverviewSnapshot
+    sessions: list[SessionSummary] = Field(default_factory=list)
+    live_session: SessionSummary | None = None
+    encounters: list[EncounterSummary] = Field(default_factory=list)
+    experiment_summaries: list[ExperimentSummary] = Field(default_factory=list)
+    experiment: ExperimentDetail | None = None
+    physiology: SessionPhysiologySnapshot | None = None
+    health: HealthSnapshot
+    alerts: list[AlertEvent] = Field(default_factory=list)
+
+    @field_validator("generated_at_utc")
+    @classmethod
+    def _utc_only(cls, value: datetime) -> datetime:
+        validated = _require_utc(value)
+        assert validated is not None
+        return validated
+
+
+class OperatorEventEnvelope(OperatorConsoleModel):
+    event_id: str = Field(..., min_length=1)
+    event_type: OperatorEventType
+    cursor: str = Field(..., min_length=1)
+    generated_at_utc: datetime
+    payload: OperatorEventPayload
 
     @field_validator("generated_at_utc")
     @classmethod

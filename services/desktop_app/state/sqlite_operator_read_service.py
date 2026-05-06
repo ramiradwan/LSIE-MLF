@@ -29,6 +29,7 @@ from typing import Any
 from packages.schemas.operator_console import (
     HealthState,
     HealthSubsystemStatus,
+    OperatorEventType,
     SessionSummary,
 )
 from services.api.services.operator_read_service import OperatorReadService
@@ -63,6 +64,44 @@ class SqliteOperatorReadService(OperatorReadService):
             queries=sqlite_operator_queries,
         )
         self._reader = reader
+
+    def operator_event_markers(
+        self,
+    ) -> dict[OperatorEventType, sqlite_operator_queries.OperatorChangeMarker]:
+        with self._reader.connection() as conn:
+            cur = conn.cursor()
+            try:
+                active = sqlite_operator_queries.fetch_active_session(cur)
+                session_id = None
+                experiment_id = None
+                if active is not None:
+                    session = self._build_session_summary(active)
+                    session_id = session.session_id
+                    experiment_id = session.experiment_id
+                markers: dict[OperatorEventType, sqlite_operator_queries.OperatorChangeMarker] = {
+                    "overview": sqlite_operator_queries.fetch_overview_marker(cur),
+                    "sessions": sqlite_operator_queries.fetch_sessions_marker(cur),
+                    "live_session": sqlite_operator_queries.fetch_live_session_marker(cur),
+                    "encounters": sqlite_operator_queries.fetch_encounters_marker(
+                        cur, session_id=session_id
+                    ),
+                    "experiment_summaries": sqlite_operator_queries.fetch_experiments_marker(cur),
+                    "physiology": sqlite_operator_queries.fetch_physiology_marker(
+                        cur, session_id=session_id
+                    ),
+                    "health": sqlite_operator_queries.fetch_health_marker(cur),
+                    "alerts": sqlite_operator_queries.fetch_alerts_marker(cur),
+                }
+                if experiment_id is None:
+                    markers["experiment"] = {}
+                else:
+                    markers["experiment"] = sqlite_operator_queries.fetch_experiment_marker(
+                        cur,
+                        experiment_id=experiment_id,
+                    )
+                return markers
+            finally:
+                cur.close()
 
     def _build_session_summary(
         self,
