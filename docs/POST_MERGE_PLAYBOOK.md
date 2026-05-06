@@ -73,13 +73,13 @@ The playbook is operator-facing: each chore should be runnable from a clean chec
 
 ### 7. Performance Baseline Refresh
 
-**Purpose.** Re-establish the latency and throughput numbers that the spec's 30 ms ML latency target and Module D segment cadence depend on. Merges that touch `orchestrator.py`, `inference.py`, `analytics.py`, `transcription.py`, `face_mesh.py`, or any IPC path can shift the baseline silently.
+**Purpose.** Re-establish deterministic v4 desktop latency numbers for Module C dispatch, shared-memory IPC handoff, `gpu_ml_worker` analytics publication, and `analytics_state_worker` SQLite persistence. Merges that touch `services/desktop_app/processes/module_c_orchestrator.py`, `services/desktop_app/processes/gpu_ml_worker.py`, `services/desktop_app/processes/analytics_state_worker.py`, `services/desktop_app/ipc/`, or Operator Console read paths can shift the baseline silently.
 
-**Inputs.** The standard 30 s segment benchmark, the Whisper INT8 inference timer in `services/worker/tasks/inference.py`, the AU12 per-frame timer, and the orchestrator's segment-assembly wall-clock log line. If physiology persistence was touched, also the Co-Modulation Index window-compute timer.
+**Inputs.** Run `uv run python scripts/run_fixture_benchmark.py <fixture_path> --segments 3` against the checked-in deterministic capture fixture or an explicitly generated deterministic fixture. The benchmark is fixture-driven and does not use live Android, ADB, scrcpy, retained worker paths, brokers, or cloud services.
 
-**Outputs.** A small markdown row appended to `docs/artifacts/performance_baseline.md` (create if absent) with date, commit SHA, segment-assembly p50/p95, ML inference p50/p95, AU12 per-frame p50, and any physiology-window compute time. Regressions >20% versus the previous row are flagged for investigation before the cycle is closed.
+**Outputs.** A small markdown row appended to `docs/artifacts/performance_baseline.md` with date, commit SHA, scenario, segment count, dispatch p50/p95, ML publish p50/p95, analytics-state p50/p95, visual AU12 tick p50, and end-to-end p95. Regressions >20% versus the previous `v4-fixture:@` row are flagged for investigation before the cycle is closed.
 
-**Success.** New baseline row recorded and within tolerance of the previous row, OR a regression is filed as an ADO work item with reproduction steps. **Failure.** No baseline run executed, or a regression silently accepted.
+**Success.** New v4 baseline row recorded and within tolerance of the previous row, OR a regression is filed as an ADO work item with reproduction steps. **Failure.** No baseline run executed, or a regression silently accepted.
 
 ### 8. §13 Audit Checklist Execution
 

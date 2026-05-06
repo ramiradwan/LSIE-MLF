@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import importlib
 import sys
+from types import ModuleType
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -55,13 +56,18 @@ def _get_scrape_context() -> Any:
     """Import scrape_context with mocked celery decorator."""
     mock_app = MagicMock()
     mock_app.task.return_value = lambda f: f
+    celery_mod = ModuleType("celery")
+    celery_mod.Task = object  # type: ignore[attr-defined]
+    celery_app_mod = ModuleType("services.worker.celery_app")
+    celery_app_mod.celery_app = mock_app  # type: ignore[attr-defined]
 
-    # Import the module directly to bypass Python 3.13's string resolution
-    import services.worker.celery_app
-
-    # Use patch.object instead of a string path
-    with patch.object(services.worker.celery_app, "celery_app", mock_app):
-        # Force reimport with mocked celery
+    with patch.dict(
+        sys.modules,
+        {
+            "celery": celery_mod,
+            "services.worker.celery_app": celery_app_mod,
+        },
+    ):
         mod_name = "services.worker.tasks.enrichment"
         if mod_name in sys.modules:
             del sys.modules[mod_name]
