@@ -242,7 +242,7 @@ Keep README-level guidance brief and put detailed governance, retention, and sec
 
 LSIE-MLF is implemented against the single signed specification PDF committed as `docs/tech-spec-v*.pdf`.
 
-This README is intentionally operational. It explains how the repository is organized, how to run it locally, and where to make changes. Detailed contracts, mathematical formulas, failure handling, and version history belong in the specification and amendment log.
+This README is intentionally operational. It explains how the repository is organized, how to run it locally, and where to make changes. Detailed contracts, mathematical formulas, failure handling, and version history belong in the signed specification payload.
 
 If this README and the specification differ, the specification is authoritative.
 

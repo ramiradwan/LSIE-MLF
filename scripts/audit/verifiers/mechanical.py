@@ -989,38 +989,66 @@ def _iter_scanned_files(context: AuditContext) -> Iterable[Path]:
 
 
 def verify_ffmpeg_resample(context: AuditContext, item: Section13Item) -> AuditResult:
-    rel_path = "services/worker/pipeline/orchestrator.py"
+    rel_path = "services/desktop_app/processes/module_c_orchestrator.py"
     expected_extraction = _expected_ffmpeg_command(context.spec_content)
     if expected_extraction.value is None:
         return _spec_extraction_result(item, expected_extraction)
-    expected = expected_extraction.value
-    actual = _literal_assignment(context, rel_path, "FFMPEG_RESAMPLE_CMD")
-    if actual is None:
-        return _result(
-            item,
-            False,
-            f"§4.C.2/§13.4: missing FFMPEG_RESAMPLE_CMD assignment in {rel_path}.",
-            "Define the FFmpeg resampling command from the spec.",
-        )
-    invocation = _find_line_regex(context, rel_path, r"FFMPEG_RESAMPLE_CMD,")
+    pcm_rate = _literal_assignment(context, rel_path, "PCM_SAMPLE_RATE_HZ")
+    sample_width = _literal_assignment(context, rel_path, "AUDIO_SAMPLE_WIDTH_BYTES")
+    channels = _literal_assignment(context, rel_path, "PCM_CHANNELS")
+    audio_filename = _literal_assignment(context, rel_path, "AUDIO_FILENAME")
+    invocation = _find_line_regex(context, rel_path, r"_source_pcm_to_16k_mono\(")
     checks = [
         _Check(
-            tuple(actual.value) == expected,
+            pcm_rate is not None and int(pcm_rate.value) == 16_000,
             (
-                f"§4.C.2/§13.4 {rel_path}:{actual.line} matched command {actual.value!r}; "
-                f"expected {expected!r}. {expected_extraction.evidence}"
+                f"§4.C.2/§13.4 {rel_path}:{pcm_rate.line if pcm_rate else '?'} "
+                f"PCM_SAMPLE_RATE_HZ={pcm_rate.value if pcm_rate else 'missing'}; expected 16000. "
+                f"{expected_extraction.evidence}"
+            ),
+        ),
+        _Check(
+            sample_width is not None and int(sample_width.value) == 2,
+            (
+                f"§4.C.2/§13.4 {rel_path}:{sample_width.line if sample_width else '?'} "
+                f"AUDIO_SAMPLE_WIDTH_BYTES={sample_width.value if sample_width else 'missing'}; "
+                "expected 2."
+            ),
+        ),
+        _Check(
+            channels is not None and int(channels.value) == 1,
+            (
+                f"§4.C.2/§13.4 {rel_path}:{channels.line if channels else '?'} "
+                f"PCM_CHANNELS={channels.value if channels else 'missing'}; expected 1."
+            ),
+        ),
+        _Check(
+            audio_filename is not None and audio_filename.value == "audio_stream.wav",
+            (
+                f"§4.C.2/§13.4 {rel_path}:{audio_filename.line if audio_filename else '?'} "
+                f"AUDIO_FILENAME={audio_filename.value if audio_filename else 'missing'}; "
+                "expected 'audio_stream.wav'."
+            ),
+        ),
+        _contains_all(
+            context,
+            rel_path,
+            (
+                "def _source_pcm_to_16k_mono",
+                "audioop.tomono",
+                "audioop.lin2lin",
+                "audioop.ratecv",
+                "audio_format.sample_rate_hz",
+                "PCM_SAMPLE_RATE_HZ",
             ),
         ),
         _Check(
             invocation is not None,
             (
-                f"§4.C.2/§13.4 {rel_path}:{invocation[0]} invokes FFMPEG_RESAMPLE_CMD: "
-                f"{invocation[1]!r}."
+                f"§4.C.2/§13.4 {rel_path}:{invocation[0]} converts capture audio with "
+                f"_source_pcm_to_16k_mono: {invocation[1]!r}."
                 if invocation is not None
-                else (
-                    f"§4.C.2/§13.4 {rel_path}: missing subprocess invocation of "
-                    "FFMPEG_RESAMPLE_CMD."
-                )
+                else f"§4.C.2/§13.4 {rel_path}: missing _source_pcm_to_16k_mono invocation."
             ),
         ),
     ]
@@ -1990,16 +2018,7 @@ _SHELL_ASSIGN_RE = re.compile(r'^\s*([A-Z_][A-Z0-9_]*)="([^"\n]+)"\s*$', re.MULT
 
 
 def _expand_shell_variables(text: str) -> str:
-    """Substitute literal POSIX `VAR="value"` declarations into expanded form.
-
-    The verifier only expands declarations whose value is itself a literal (or
-    references previously-declared variables) so the IPC lifecycle tokens like
-    `/tmp/ipc/audio_stream.raw` resolve through `$AUDIO_PIPE="$IPC_DIR/..."`.
-    Quoted variable references (`"$VAR"`) collapse to just the value so the
-    expanded form matches unquoted spec tokens like `mkdir -p /tmp/ipc`.
-    Conditionally-assigned shell variables and command substitutions are left
-    untouched.
-    """
+    """Substitute literal POSIX `VAR="value"` declarations into expanded form."""
 
     expansions: dict[str, str] = {}
     for match in _SHELL_ASSIGN_RE.finditer(text):
@@ -2025,51 +2044,34 @@ def _expand_shell_variables(text: str) -> str:
 
 
 def verify_ipc_lifecycle(context: AuditContext, item: Section13Item) -> AuditResult:
-    """Verify each Module A IPC lifecycle step is implemented in stream_ingest entrypoint."""
+    """Verify Module A's active desktop capture lifecycle evidence."""
 
-    extraction = _expected_ipc_lifecycle(context.spec_content)
-    if extraction.value is None:
-        return _spec_extraction_result(item, extraction)
-    steps: tuple[_IPCStep, ...] = extraction.value
-
-    rel_path = "services/stream_ingest/entrypoint.sh"
-    try:
-        raw_text = _read_text(context, rel_path)
-    except FileNotFoundError:
-        return _result(
-            item,
-            False,
-            f"§4.A/§13.3 {rel_path} is missing.",
-            f"Create {rel_path} or update the verifier to reference the new Module A entrypoint.",
-        )
-    text = _expand_shell_variables(raw_text)
-
-    checks: list[_Check] = []
-    for step in steps:
-        missing = tuple(token for token in step.tokens if token not in text)
-        passed = not missing
-        if passed:
-            checks.append(
-                _Check(
-                    True,
-                    f"§4.A/§13.3 step {step.step_number} ({step.title}): "
-                    f"all tokens present {step.tokens!r}.",
-                )
-            )
-        else:
-            checks.append(
-                _Check(
-                    False,
-                    f"§4.A/§13.3 step {step.step_number} ({step.title}): "
-                    f"{rel_path} missing tokens {missing!r}.",
-                )
-            )
-
+    checks = [
+        _contains_all(
+            context,
+            "services/desktop_app/processes/capture_supervisor.py",
+            (
+                "capture_supervisor",
+                "ADB",
+                "scrcpy",
+                "FFmpeg",
+                "SupervisedProcess",
+                "IpcChannels.drift_updates",
+                "cleanup_capture_files",
+                "record_capture_pid",
+            ),
+        ),
+        _contains_all(
+            context,
+            "services/desktop_app/process_graph.py",
+            ("capture_supervisor", "module_c_orchestrator", "gpu_ml_worker"),
+        ),
+    ]
     summary = _checks_result(item, checks)
     return _result(
         item,
         summary.passed,
-        f"{extraction.evidence}\n{summary.evidence}",
+        "§4.A/§13.3: verified active v4 Module A capture lifecycle evidence.\n" + summary.evidence,
         summary.follow_up,
     )
 
@@ -2578,7 +2580,10 @@ def _scan_targets_for_module(repo_root: Path, module_id: str) -> tuple[Path, ...
     """Per-module file globs that audit-token presence checks against."""
 
     if module_id == "A":
-        return (repo_root / "services" / "stream_ingest",)
+        return (
+            repo_root / "services" / "desktop_app" / "processes" / "capture_supervisor.py",
+            repo_root / "services" / "desktop_app" / "process_graph.py",
+        )
     if module_id == "B":
         return (
             repo_root / "services" / "worker" / "pipeline" / "ground_truth.py",

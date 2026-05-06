@@ -1,14 +1,10 @@
-"""
-Orchestrator Entrypoint — §4.C Module C
+"""Retained server/cloud Module C orchestrator entrypoint.
 
-Starts the Orchestrator.run() asyncio loop for the Orchestrator Container.
-The Orchestrator Container reads from IPC Pipes, processes video frames for
-AU12, assembles 30-second segments, and dispatches process_segment.delay()
-tasks through the Message Broker to the ML Worker.
-
-This module is the CMD target for the Orchestrator Container service in
-docker-compose.yml:
-    command: ["python3.11", "-m", "services.worker.run_orchestrator"]
+Starts the Orchestrator.run() asyncio loop for the retained server/cloud
+orchestrator process. This path reads retained IPC Pipe media, processes video
+frames for AU12, assembles 30-second segments, and dispatches
+process_segment.delay() tasks through the retained Message Broker to the ML
+Worker. The v4 desktop runtime launches ``services.desktop_app`` instead.
 
 Environment variables:
     STREAM_URL — TikTok stream URL (optional, default "")
@@ -69,10 +65,7 @@ def main() -> None:
             start_redis_listener,
         )
 
-        # Auto-trigger for E2E testing (controlled by AUTO_STIMULUS_DELAY_S env var)
         auto_timer = setup_auto_trigger(orchestrator)
-
-        # Message Broker listener for production operator stimulus triggers.
         _redis_thread = start_redis_listener(orchestrator)
     except Exception:
         logger.warning("Stimulus trigger setup failed", exc_info=True)

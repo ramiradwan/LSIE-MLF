@@ -1,6 +1,6 @@
 # LSIE-MLF
 
-Real-time multimodal inference engine. All code decisions governed by the spec: @docs/SPEC_REFERENCE.md
+Real-time multimodal inference engine. All code decisions are governed by the single signed spec PDF at `docs/tech-spec-v*.pdf`; use `scripts/spec_ref_check.py` to extract, index, resolve, and validate its embedded content payload.
 
 Build order and phase dependencies: @IMPLEMENTATION_PLAN.md
 
@@ -68,6 +68,6 @@ uv run python scripts/run_audit.py --strict
 # Canonical terminology audit — must return 0 results
 # Run the canonical-name grep recipe in .claude/commands/audit.md exactly:
 # use its grep -rnE pattern against services/ packages/ scripts/ and do not filter comments or docstrings.
-# Spec-reference validation when touching docs/content.json or §-refs
+# Spec-reference validation when regenerating ignored docs/content.json or touching §-refs/spec payload
 python scripts/spec_ref_check.py --validate
 ```

@@ -10,7 +10,7 @@ description: Run scripts/check_schema_consistency.py and interpret its output wh
 The codebase carries three contract-bearing schema sources that can drift independently:
 
 1. **Pydantic models** in `packages/schemas/` — runtime payload validation (`InferenceHandoffPayload`, `PhysiologicalSnapshot`, `SemanticEvaluationResult`, etc.).
-2. **JSON Schema blocks** under `interface_contracts` in `docs/content.json` — the extracted spec contract surface loaded from the committed `docs/tech-spec-v*.pdf`.
+2. **JSON Schema blocks** under `interface_contracts` in the signed spec content payload — loaded from the committed `docs/tech-spec-v*.pdf` and optionally inspected via generated `docs/content.json`.
 3. **Cloud PostgreSQL tables** from `services.cloud_api.db.schema` — the cloud persistence surface for contract-bearing records.
 
 A field rename in one source without the others causes silent drift. The script normalizes every source onto a common `{name, canonical_type, nullable}` representation and reports any divergence.
@@ -22,8 +22,8 @@ Local SQLite state in `services/desktop_app/state/sqlite_schema.py` is intention
 Run the script:
 
 - Before committing any change under `packages/schemas/`.
-- Before merging a PR that touches Pydantic schemas or `docs/content.json`.
-- After regenerating `docs/content.json` from the signed PDF (`python scripts/spec_ref_check.py --extract > docs/content.json`).
+- Before merging a PR that touches Pydantic schemas or the signed spec payload.
+- After regenerating ignored `docs/content.json` from the signed PDF for local inspection (`python scripts/spec_ref_check.py --extract > docs/content.json`).
 - As Standing Post-Merge Chore #3 in the playbook (Schema-Code Consistency Verification).
 - As CI gate step in `scripts/check.sh` (already wired — non-zero exit fails the local check suite).
 
@@ -62,8 +62,8 @@ For each finding, decide which source is correct and align the other to match:
 
 | Finding pattern | Most likely root cause | Fix location |
 |---|---|---|
-| Field present in `pydantic` only | New Pydantic field added without a JSON Schema mirror in the spec | Add the field to the matching block under `interface_contracts.schemas` in `docs/content.json` (and the spec PDF that produced it) |
-| Field present in `json_schema` only | Spec defined a field that was never implemented | Either implement the Pydantic field or remove the JSON Schema property via spec amendment |
+| Field present in `pydantic` only | New Pydantic field added without a JSON Schema mirror in the spec | Add the field to the matching block under `interface_contracts.schemas` in the signed spec payload, then regenerate the PDF/payload output |
+| Field present in `json_schema` only | Spec defined a field that was never implemented | Either implement the Pydantic field or update the signed spec payload to remove the JSON Schema property |
 | `type_mismatch: pydantic=integer, json_schema=number` | Pydantic field is `int` but JSON Schema declares `number` | Decide which is intended; fix in the source that's wrong |
 | `type_mismatch` involving `unknown` | The script's type normalizer didn't recognize a Pydantic annotation or an unsupported JSON Schema type/format combo | Either fix the source to use a known type, or extend `_normalize_pydantic_annotation` / `JSON_SCHEMA_TYPE_MAP` if the type is genuinely common |
 | `nullability_mismatch: pydantic=required, json_schema=nullable` | JSON Schema's `required` array dropped the field; Pydantic still requires it | Add the field name to the JSON Schema `required` list OR change Pydantic to `field: T \| None = None` — the choice depends on whether `None` is semantically valid |
@@ -94,6 +94,6 @@ Both source identifiers must be non-`None` — the registry sanity test in `test
 - Script: `scripts/check_schema_consistency.py`
 - Tests: `tests/unit/scripts/test_schema_consistency.py`
 - CI gate: `scripts/check.sh`
-- Source-of-truth schemas: `packages/schemas/`, `docs/content.json`
-- Spec contract: `docs/SPEC_REFERENCE.md` §6 (Interface Contracts)
+- Source-of-truth schemas: `packages/schemas/`, signed spec content payload
+- Spec contract: signed spec §6 Interface Contracts via `scripts/spec_ref_check.py --resolve 6`
 - Post-merge chore: see `post-merge-playbook` skill, Standing Chore #3

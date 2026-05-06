@@ -1,25 +1,8 @@
-"""
-Video Capture — §4.D.2 / Gap G-03 Remediation
+"""Retained server/cloud video IPC decoder.
 
-In-memory H.264 → numpy.ndarray bridge via PyAV for feeding
-MediaPipe FaceMesh from the video IPC Pipe.
-
-The Capture Container writes H.264 video in MKV streaming container
-to /tmp/ipc/video_stream.mkv (an IPC Pipe). This module opens
-that pipe via PyAV's libavformat bindings and decodes frames directly
-into memory-view objects cast to numpy arrays — zero disk I/O.
-
-§5.2 — Transient Data tier: raw video frames exist only in volatile
-memory during active processing. No persistence.
-
-Architecture notes (from Stage 2 Deployment Research):
-  - PyAV bypasses subprocess overhead by binding directly to FFmpeg's
-    C libraries (libavformat, libavcodec)
-  - MKV is a streaming container (no seek required), safe for IPC Pipes
-  - Decoded frames are BGR24 numpy arrays ready for cv2.cvtColor → RGB
-    as required by MediaPipe FaceMesh (§4.D.2)
-  - Frame jitter must be minimized to prevent IOD fluctuation in AU12
-    normalization (§7A.3) and Thompson Sampling posterior corruption
+In-memory H.264 → numpy.ndarray bridge via PyAV for feeding MediaPipe FaceMesh
+from the retained video IPC Pipe. Raw video frames exist only in volatile memory
+during active processing and are not persisted.
 """
 
 from __future__ import annotations
@@ -36,33 +19,14 @@ import numpy.typing as npt
 
 logger = logging.getLogger(__name__)
 
-# §4.A.1 — Video IPC Pipe path (shared Docker volume)
 VIDEO_PIPE_PATH: str = "/tmp/ipc/video_stream.mkv"
-
-# Maximum buffered frames — discard oldest if processing falls behind
-# §12 Queue overload: deque eviction prevents unbounded memory growth
 MAX_FRAME_BUFFER: int = 5
-
-# Retry delay when the video IPC Pipe is not yet available
 VIDEO_PIPE_RETRY_DELAY: float = 2.0
 VIDEO_PIPE_MAX_RETRIES: int = 30
 
 
 class VideoCapture:
-    """
-    §4.D.2 / Gap G-03 — In-memory video frame capture via PyAV.
-
-    Opens the video IPC Pipe (MKV container over mkfifo pipe) and
-    decodes H.264 frames into numpy arrays for MediaPipe FaceMesh.
-
-    Runs a background thread to continuously decode frames into a
-    bounded deque. The orchestrator's segment assembly loop calls
-    get_latest_frame() synchronously to retrieve the most recent
-    decoded frame for AU12 processing.
-
-    Thread safety: deque with maxlen handles producer/consumer without
-    explicit locking (CPython GIL + atomic append/pop).
-    """
+    """In-memory retained video frame capture via PyAV."""
 
     def __init__(self, pipe_path: str = VIDEO_PIPE_PATH) -> None:
         self._pipe_path = pipe_path
@@ -72,12 +36,7 @@ class VideoCapture:
         self._running: bool = False
 
     def start(self) -> None:
-        """
-        Start the background video decode thread.
-
-        The thread opens the video IPC Pipe via PyAV and continuously
-        decodes H.264 frames into the bounded frame buffer.
-        """
+        """Start the background retained video decode thread."""
         if self._running:
             return
 
@@ -91,16 +50,7 @@ class VideoCapture:
         logger.info("Video capture thread started (pipe: %s)", self._pipe_path)
 
     def _open_container(self) -> Any:
-        """
-        Open the video IPC Pipe via PyAV.
-
-        Retries if the pipe is not yet available (Capture Container
-        may start after the Worker). §12 Hardware loss — poll with
-        retry before giving up.
-
-        Returns:
-            PyAV container object, or None on failure.
-        """
+        """Open the retained video stream via PyAV."""
         import av
 
         for attempt in range(VIDEO_PIPE_MAX_RETRIES):

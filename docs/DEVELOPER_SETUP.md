@@ -45,9 +45,7 @@ end users. Add `--group dev` for pytest, mypy, and ruff.
 
 ## 3. GPU / compute-capability matrix
 
-The current contract lives in `docs/SPEC_REFERENCE.md`, which points to
-runtime topology (§9), system requirements (§10.1), pinned packages (§10.2),
-and the signed desktop pivot content extracted in `docs/content.json`.
+The current contract lives in the single signed `docs/tech-spec-v*.pdf` file. Use `scripts/spec_ref_check.py` to resolve runtime topology (§9), system requirements (§10.1), pinned packages (§10.2), and the embedded content payload.
 The developer-facing rules are:
 
 | Compute capability | Tier | Speech device | Cross-encoder | Required developer declaration |
@@ -154,8 +152,8 @@ local validation prerequisite.
 
 ## 7. References
 
-- **Current spec reference:** `docs/SPEC_REFERENCE.md`
-- **Spec amendments registry:** `docs/SPEC_AMENDMENTS.md`
+- **Signed spec:** `docs/tech-spec-v*.pdf`
+- **Spec reference tooling:** `scripts/spec_ref_check.py`
 - **Historical pivot handoff:** `docs/artifacts/v4_pivot_handoff_2026-05-01.md`
 - **Historical implementation plan:** `docs/artifacts/LSIE-MLF_v4_0_Implementation_Plans.md`
 - **Project rules:** `CLAUDE.md`

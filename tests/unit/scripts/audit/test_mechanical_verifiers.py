@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -37,7 +37,7 @@ _FFMPEG_CMD = (
     "-ac",
     "1",
     "-i",
-    "/tmp/ipc/audio_stream.raw",
+    "pipe:0",
     "-ar",
     "16000",
     "-f",
@@ -270,13 +270,40 @@ def _reason_spec() -> dict[str, Any]:
     }
 
 
-def _write_ffmpeg_fixture(repo_root: Path, command: Sequence[str]) -> None:
+def _write_ffmpeg_fixture(
+    repo_root: Path,
+    *,
+    pcm_sample_rate_hz: int = 16_000,
+    audio_filename: str = "audio_stream.wav",
+    include_ratecv: bool = True,
+) -> None:
+    ratecv_line = (
+        "    converted, _ = audioop.ratecv(\n"
+        "        mono, AUDIO_SAMPLE_WIDTH_BYTES, PCM_CHANNELS, audio_format.sample_rate_hz,\n"
+        "        PCM_SAMPLE_RATE_HZ, None\n"
+        "    )\n"
+        if include_ratecv
+        else "    converted = mono\n"
+    )
     _write(
         repo_root,
-        "services/worker/pipeline/orchestrator.py",
-        f"FFMPEG_RESAMPLE_CMD = {list(command)!r}\n\n"
-        "def spawn(subprocess):\n"
-        "    return subprocess.Popen(FFMPEG_RESAMPLE_CMD, stdout=-1)\n",
+        "services/desktop_app/processes/module_c_orchestrator.py",
+        "from __future__ import annotations\n\n"
+        "import audioop\n\n"
+        f"PCM_SAMPLE_RATE_HZ = {pcm_sample_rate_hz}\n"
+        "AUDIO_SAMPLE_WIDTH_BYTES = 2\n"
+        "PCM_CHANNELS = 1\n"
+        f"AUDIO_FILENAME = {audio_filename!r}\n\n"
+        "def _source_pcm_to_16k_mono(raw, audio_format):\n"
+        "    mono = audioop.tomono(raw, audio_format.sample_width_bytes, 0.5, 0.5)\n"
+        "    mono = audioop.lin2lin(\n"
+        "        mono, audio_format.sample_width_bytes, AUDIO_SAMPLE_WIDTH_BYTES\n"
+        "    )\n"
+        f"{ratecv_line}"
+        "    return bytes(converted)\n\n"
+        "def run_once(raw_source, audio_format):\n"
+        "    pcm_16k = _source_pcm_to_16k_mono(raw_source, audio_format)\n"
+        "    return pcm_16k\n",
     )
 
 
@@ -470,7 +497,7 @@ class TestMechanicalVerifiers:
         cases = []
 
         ffmpeg_root = tmp_path / "ffmpeg_missing_spec"
-        _write_ffmpeg_fixture(ffmpeg_root, _FFMPEG_CMD)
+        _write_ffmpeg_fixture(ffmpeg_root)
         cases.append((verify_ffmpeg_resample, ffmpeg_root, "13.4", "§4.C.2/§13.4"))
 
         au12_root = tmp_path / "au12_missing_spec"
@@ -519,30 +546,31 @@ class TestMechanicalVerifiers:
 
     def test_verify_ffmpeg_resample_pass_and_mismatch(self, tmp_path: Path) -> None:
         pass_root = tmp_path / "pass"
-        _write_ffmpeg_fixture(pass_root, _FFMPEG_CMD)
+        _write_ffmpeg_fixture(pass_root)
 
         pass_result = verify_ffmpeg_resample(_context(pass_root, _ffmpeg_spec()), _item("13.4"))
 
         _assert_pass_evidence(
             pass_result,
             "§4.C.2/§13.4",
-            "services/worker/pipeline/orchestrator.py:1",
-            "pipe:1",
-            "invokes FFMPEG_RESAMPLE_CMD",
+            "services/desktop_app/processes/module_c_orchestrator.py",
+            "PCM_SAMPLE_RATE_HZ=16000",
+            "AUDIO_FILENAME=audio_stream.wav",
+            "audioop.ratecv",
+            "_source_pcm_to_16k_mono",
         )
 
         fail_root = tmp_path / "fail"
-        mismatched_command = list(_FFMPEG_CMD)
-        mismatched_command[4] = "44100"
-        _write_ffmpeg_fixture(fail_root, mismatched_command)
+        _write_ffmpeg_fixture(fail_root, pcm_sample_rate_hz=44_100, include_ratecv=False)
 
         fail_result = verify_ffmpeg_resample(_context(fail_root, _ffmpeg_spec()), _item("13.4"))
 
         _assert_fail_evidence(
             fail_result,
             "§4.C.2/§13.4",
-            "44100",
-            "expected ('ffmpeg', '-f', 's16le', '-ar', '48000'",
+            "PCM_SAMPLE_RATE_HZ=44100",
+            "expected 16000",
+            "audioop.ratecv",
         )
 
     def test_verify_au12_geometry_pass_and_epsilon_mismatch(self, tmp_path: Path) -> None:
@@ -952,84 +980,48 @@ class TestMechanicalVerifiers:
 
     # ---- §13.3 — IPC lifecycle ----------------------------------------------
 
-    def test_verify_ipc_lifecycle_pass_and_missing_token(self, tmp_path: Path) -> None:
-        spec = {
-            "core_modules": {
-                "modules": [
-                    {
-                        "module_id": "A",
-                        "ipc_lifecycle_steps": [
-                            {
-                                "step_number": 1,
-                                "title": "Init",
-                                "description": (
-                                    "<func>setup_pipes()</func> creates "
-                                    "<path>/tmp/ipc/audio_stream.raw</path>."
-                                ),
-                            },
-                            {
-                                "step_number": 2,
-                                "title": "Wait",
-                                "description": (
-                                    "<func>wait_for_device()</func> polls <cmd>adb devices</cmd>."
-                                ),
-                            },
-                        ],
-                    }
-                ]
-            }
-        }
+    def test_verify_ipc_lifecycle_pass_and_missing_capture_supervisor_token(
+        self, tmp_path: Path
+    ) -> None:
         good = tmp_path / "good"
         _write(
             good,
-            "services/stream_ingest/entrypoint.sh",
-            "#!/usr/bin/env bash\n"
-            'AUDIO_PIPE="/tmp/ipc/audio_stream.raw"\n'
-            'setup_pipes() { mkfifo "$AUDIO_PIPE"; }\n'
-            "wait_for_device() { adb devices; }\n",
+            "services/desktop_app/processes/capture_supervisor.py",
+            "capture_supervisor ADB scrcpy FFmpeg SupervisedProcess\n"
+            "IpcChannels.drift_updates cleanup_capture_files record_capture_pid\n",
         )
-        result = verify_ipc_lifecycle(_context(good, spec), _item("13.3"))
+        _write(
+            good,
+            "services/desktop_app/process_graph.py",
+            "capture_supervisor module_c_orchestrator gpu_ml_worker\n",
+        )
+        result = verify_ipc_lifecycle(_context(good, {}), _item("13.3"))
         _assert_pass_evidence(
             result,
-            "§4.A/§13.3: extracted 2 IPC lifecycle steps",
-            "step 1 (Init): all tokens present",
-            "step 2 (Wait): all tokens present",
+            "verified active v4 Module A capture lifecycle evidence",
+            "capture_supervisor.py contains",
+            "process_graph.py contains",
         )
 
         bad = tmp_path / "bad"
         _write(
             bad,
-            "services/stream_ingest/entrypoint.sh",
-            "#!/usr/bin/env bash\nsetup_pipes() { :; }\nwait_for_device() { :; }\n",
+            "services/desktop_app/processes/capture_supervisor.py",
+            "capture_supervisor ADB scrcpy FFmpeg SupervisedProcess\n",
         )
-        result_fail = verify_ipc_lifecycle(_context(bad, spec), _item("13.3"))
+        _write(
+            bad,
+            "services/desktop_app/process_graph.py",
+            "capture_supervisor module_c_orchestrator gpu_ml_worker\n",
+        )
+        result_fail = verify_ipc_lifecycle(_context(bad, {}), _item("13.3"))
         _assert_fail_evidence(
             result_fail,
-            "step 1 (Init): services/stream_ingest/entrypoint.sh missing tokens",
-            "/tmp/ipc/audio_stream.raw",
+            "capture_supervisor.py missing",
+            "IpcChannels.drift_updates",
+            "cleanup_capture_files",
+            "record_capture_pid",
         )
-
-    def test_verify_ipc_lifecycle_missing_entrypoint_fails_closed(self, tmp_path: Path) -> None:
-        spec = {
-            "core_modules": {
-                "modules": [
-                    {
-                        "module_id": "A",
-                        "ipc_lifecycle_steps": [
-                            {
-                                "step_number": 1,
-                                "title": "Init",
-                                "description": "<path>/tmp/x</path>",
-                            }
-                        ],
-                    }
-                ]
-            }
-        }
-        empty = tmp_path / "no_entrypoint"
-        empty.mkdir()
-        result = verify_ipc_lifecycle(_context(empty, spec), _item("13.3"))
-        _assert_fail_evidence(result, "services/stream_ingest/entrypoint.sh is missing")
 
     # ---- §13.5 — Drift correction -------------------------------------------
 
@@ -1196,8 +1188,8 @@ class TestMechanicalVerifiers:
                     {
                         "module_id": "A",
                         "contract": {
-                            "outputs": "<path>/tmp/ipc/audio_stream.raw</path>",
-                            "failure_modes": "<func>wait_for_device()</func>",
+                            "outputs": "<cmd>capture_supervisor</cmd> emits CaptureStatus.",
+                            "failure_modes": "<cmd>ADB</cmd> loss polls under supervision.",
                         },
                     },
                     {
@@ -1213,8 +1205,13 @@ class TestMechanicalVerifiers:
         good = tmp_path / "good"
         _write(
             good,
-            "services/stream_ingest/entrypoint.sh",
-            'AUDIO_PIPE="/tmp/ipc/audio_stream.raw"\nwait_for_device() { :; }\n',
+            "services/desktop_app/processes/capture_supervisor.py",
+            "capture_supervisor ADB\n",
+        )
+        _write(
+            good,
+            "services/desktop_app/process_graph.py",
+            "capture_supervisor\n",
         )
         _write(
             good,
@@ -1229,17 +1226,21 @@ class TestMechanicalVerifiers:
         _assert_pass_evidence(
             result,
             "§4/§13.10: extracted",
-            "module A contract.outputs <path>/tmp/ipc/audio_stream.raw</path>: present",
-            "module A contract.failure_modes <func>wait_for_device()</func>: present",
+            "module A contract.outputs <cmd>capture_supervisor</cmd>: present",
+            "module A contract.failure_modes <cmd>ADB</cmd>: present",
             "module C contract.outputs <class>InferenceHandoffPayload</class>: present",
         )
 
         bad = tmp_path / "bad"
-        # entrypoint.sh missing the audio path.
         _write(
             bad,
-            "services/stream_ingest/entrypoint.sh",
-            "wait_for_device() { :; }\n",
+            "services/desktop_app/processes/capture_supervisor.py",
+            "ADB\n",
+        )
+        _write(
+            bad,
+            "services/desktop_app/process_graph.py",
+            "module_c_orchestrator\n",
         )
         _write(
             bad,
@@ -1252,7 +1253,7 @@ class TestMechanicalVerifiers:
         result_fail = verify_module_contracts(_context(bad, spec), _item("13.10"))
         _assert_fail_evidence(
             result_fail,
-            "module A contract.outputs <path>/tmp/ipc/audio_stream.raw</path>: MISSING",
+            "module A contract.outputs <cmd>capture_supervisor</cmd>: MISSING",
         )
 
     def test_verify_module_contracts_documents_x_max_carve_out(self, tmp_path: Path) -> None:

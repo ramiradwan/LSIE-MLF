@@ -26,7 +26,7 @@ This file inventories code that is **implemented in the repository but not wired
 | Field | Value |
 |---|---|
 | **Files** | `services/worker/pipeline/reward.py` (current AU12-only `compute_reward()` signature would need an RMSSD parameter), `services/worker/pipeline/orchestrator.py` (assemble_segment already injects `_physiological_context` into the payload — the data is available downstream), `services/worker/tasks/inference.py` (the persist dispatch already forwards `_physiological_context`), `packages/schemas/physiology.py` (`PhysiologicalSnapshot.rmssd_ms` is the input field) |
-| **Gating dependency** | A future amendment to spec §7B (Thompson Sampling) explicitly permitting RMSSD to enter the gated reward computation. The current §7B reward formula is `r_t = P90_AU12 × G_semantic` and contains no physiology term. SPEC-AMEND-007 added the *transport* of physiological context through Modules C/D/E and the *persistence* of co-modulation analytics, but explicitly stopped short of modifying the reward path. |
+| **Gating dependency** | A future signed spec/content update to §7B (Thompson Sampling) explicitly permitting RMSSD to enter the gated reward computation. The current §7B reward formula is `r_t = P90_AU12 × G_semantic` and contains no physiology term. The signed spec permits the *transport* of physiological context through Modules C/D/E and the *persistence* of co-modulation analytics, but explicitly stops short of modifying the reward path. |
 | **Deferred since** | 2026-04-16 (physiology merge, PR 91 commit `60be7ec`) |
 | **Justification** | The full physiological data path now reaches the persistence layer (`physiology_log`, `comodulation_log`) and the per-segment `_physiological_context` dict is present in the InferenceHandoffPayload at the point where `reward.compute_reward()` is called. Adding RMSSD as a multiplicative or additive term to the gated reward would change the Thompson Sampling posterior update semantics for every prior arm in the `experiments` table — a change that must be governed by a written spec amendment so that the review agent treats it as accepted rather than a violation. Until that amendment exists, `compute_reward()` must remain AU12 + semantic-gate only. |
 
@@ -78,7 +78,7 @@ The following were considered during the deferral scan and rejected as **not** d
 - **Semantic shadow mode** — §8 / §13.27 define a parallel scorer that records candidate outputs without changing live `is_match`, `confidence_score`, reward, or Thompson Sampling updates. The in-process `SemanticEvaluator` shadow sidecar is wired for observational evaluation; no external service, persistence, or promotion workflow is treated as dormant integration here.
 - **PySide6 Debug Studio** (`scripts/debug_studio.py`) — intentionally launched manually by operators per §4.E.1. Operator tooling, not deferred integration. Supersedes the retired Streamlit operator tooling surface (`services/worker/dashboard.py`, deleted 2026-04-17).
 - **Operator CLI** (`scripts/lsie_cli.py`) — same reasoning as Debug Studio.
-- **`SPEC-AMEND-001` / `SPEC-AMEND-002` references in production code** — these are *accepted* amendments documented in `docs/SPEC_AMENDMENTS.md`. Not pending; not deferred.
+- **Historical hardware/runtime references in production code** — these are accepted historical requirements folded into the governing signed spec context. Not pending; not deferred.
 
 ## Search methodology
 

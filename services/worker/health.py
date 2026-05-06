@@ -1,11 +1,11 @@
-"""Lightweight worker-local health endpoint for internal subsystem probes.
+"""Lightweight retained-worker health endpoint for internal subsystem probes.
 
-The API-side operator health aggregate reaches this endpoint through Docker
-service discovery (``http://worker:8081/healthz``). It is intentionally
-read-only at request time: the handler reports the last bounded readiness
-signal written by the worker process after its actual ``TranscriptionEngine``
-has initialized a Whisper model, without touching Redis, Celery inspection,
-the Persistent Store, or operator-host resources.
+The API-side operator health aggregate reaches this endpoint in retained
+server/cloud deployments. It is intentionally read-only at request time: the
+handler reports the last bounded readiness signal written by the worker process
+after its actual ``TranscriptionEngine`` has initialized a Whisper model,
+without touching Redis, Celery inspection, the Persistent Store, or
+operator-host resources.
 """
 
 from __future__ import annotations

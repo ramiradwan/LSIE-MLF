@@ -143,12 +143,7 @@ class AudioResampler:
         return self._process is not None and self._process.poll() is None
 
     def start(self) -> None:
-        """
-        Launch FFmpeg resampling subprocess.
-
-        §4.C.2 — Exact command from spec: ffmpeg -f s16le -ar 48000 -ac 1
-        -i /tmp/ipc/audio_stream.raw -ar 16000 -f s16le -ac 1 pipe:1
-        """
+        """Launch the retained FFmpeg resampling subprocess."""
         if self.is_running:
             return
 

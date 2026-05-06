@@ -17,7 +17,6 @@ from services.desktop_app.processes.capture_supervisor import (
 )
 
 CAPTURE_SUPERVISOR_PATH = Path("services/desktop_app/processes/capture_supervisor.py")
-RETIRED_ENTRYPOINT_PATH = Path("services/stream_ingest/entrypoint.sh")
 
 
 def _layout(tmp_path: Path) -> CaptureLayout:
@@ -26,10 +25,6 @@ def _layout(tmp_path: Path) -> CaptureLayout:
         audio_path=tmp_path / "audio_stream.wav",
         video_path=tmp_path / "video_stream.mkv",
     )
-
-
-def test_retired_stream_ingest_entrypoint_is_not_restored() -> None:
-    assert not RETIRED_ENTRYPOINT_PATH.exists()
 
 
 def test_capture_supervisor_is_current_module_a_surface() -> None:
