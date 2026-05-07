@@ -77,6 +77,14 @@ class ResponsiveMetricGrid(QWidget):
         self._layout.setContentsMargins(0, 0, 0, 0)
         self._layout.setHorizontalSpacing(horizontal_spacing)
         self._layout.setVerticalSpacing(vertical_spacing)
+        # Vertical `Minimum` so a parent QVBoxLayout cannot squash the
+        # grid below the row's natural sizeHint when the page has too
+        # much content. Without this, MetricCards inside the grid
+        # compress to ~84px and overflow their wordWrap secondary text.
+        self.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Minimum,
+        )
 
     def set_widgets(self, widgets: Sequence[QWidget]) -> None:
         self._widgets = list(widgets)
@@ -119,7 +127,15 @@ class ResponsiveMetricGrid(QWidget):
 
         for index, widget in enumerate(self._widgets):
             row, column = divmod(index, columns)
-            widget.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+            # Width fills the column; the child widget's vertical policy
+            # is preserved so cards that report a wrapped `heightForWidth`
+            # can grow taller than the row's natural sizeHint instead of
+            # being pinned to `minimumHeight`.
+            current_policy = widget.sizePolicy()
+            widget.setSizePolicy(
+                QSizePolicy.Policy.Expanding,
+                current_policy.verticalPolicy(),
+            )
             self._layout.addWidget(widget, row, column)
 
         for row in range((len(self._widgets) + columns - 1) // columns):

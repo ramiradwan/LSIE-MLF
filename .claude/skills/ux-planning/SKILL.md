@@ -30,3 +30,11 @@ This skill plans UI work before implementation. It does not write the view direc
 
 ## Handoff
 After validation, use the UX plan to create a `ui_implementation` work item based on `automation/work-items/templates/ui_implementation.yaml`.
+
+## Visual verification expectation
+The implementer is required to render the actual widgets via
+`uv run python scripts/render_console_screens.py` and read the PNGs in
+`/tmp/console-screens/` before declaring the plan delivered. Plans that
+hinge on a visual claim (alignment, colour, hover state, responsive
+band, etc.) should call out the screenshot evidence the implementer
+needs to produce.

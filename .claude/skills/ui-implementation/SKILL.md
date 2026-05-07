@@ -28,3 +28,9 @@ Use this skill after a UX plan already exists and validates.
 - `python scripts/audit/verifiers/design_system.py --paths services/operator_console`
 - target unit tests under `tests/unit/operator_console/`
 - any UX-plan schema tests affected by the change
+- **screenshot pass via `uv run python scripts/render_console_screens.py`**;
+  read the PNGs in `/tmp/console-screens/` (or `$LSIE_SCREENSHOT_DIR`)
+  to confirm the rendered widget matches the UX plan at narrow,
+  medium, and wide widths. Unit tests do not catch QSS-vs-CSS
+  divergence, font fallbacks, layout cutoff, hover states, or
+  background bleed-through.

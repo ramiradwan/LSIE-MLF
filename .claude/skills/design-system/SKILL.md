@@ -32,6 +32,24 @@ Use this skill whenever work touches:
 3. If it does not, update the manifest and human docs before or alongside the code.
 4. Run `python scripts/audit/verifiers/design_system.py --paths services/operator_console` before finishing.
 
+## Visual verification (required for any UX/UI change)
+Unit tests check object names and string content; they do not catch
+QSS-vs-CSS divergence, font fallbacks, layout cutoff, hover states,
+or background bleed-through. Whenever you change UI/UX-facing code,
+render the actual widgets and look at the result:
+
+```
+uv run python scripts/render_console_screens.py
+# screens land in /tmp/console-screens/<route>-<width>.png
+# Read the PNGs back via the Read tool to verify the running app
+# matches the design-system reference at every responsive width.
+```
+
+The harness boots a real `MainWindow` + `OperatorStore` against
+realistic DTOs, sets `QT_QPA_PLATFORM=offscreen`, and grabs every
+route at 720 / 1024 / 1440. Treat a green test suite without a
+matching screenshot pass as incomplete verification.
+
 ## Reference files
 - `references/components.md`
 - `references/tokens.md`

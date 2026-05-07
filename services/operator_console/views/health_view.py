@@ -483,6 +483,8 @@ class _ProbeMatrix(QFrame):
     timeline.
     """
 
+    _HEADERS: tuple[str, ...] = ("Subsystem", "State", "Latency", "Last 60 probes")
+
     def __init__(self, vm: HealthViewModel, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._vm = vm
@@ -499,29 +501,111 @@ class _ProbeMatrix(QFrame):
         self._header_labels: list[QLabel] = []
         self._probes: list[HealthSubsystemProbe] = []
         self._width_band = ResponsiveWidthBand.WIDE
-        self._empty_label = QLabel("No bounded probes reported", self)
-        self._empty_label.setObjectName("PanelSubtitle")
-        self._render_headers()
-        self._show_empty()
+        self._empty_label: QLabel | None = None
+        self._rebuild()
 
     def set_probes(self, probes: list[HealthSubsystemProbe]) -> None:
-        self._probes = list(probes)
-        self._render_rows()
+        new_probes = list(probes)
+        # Refresh in place when the probe identity + state hasn't changed —
+        # only the rolling sparkline cells are new every poll. Rebuilding
+        # the entire grid every poll tore down hover state and queued
+        # deleteLater() faster than the event loop could drain, which
+        # surfaced as a flicker of small floating widgets on the Health
+        # page during normal hover.
+        if self._can_refresh_in_place(new_probes):
+            self._probes = new_probes
+            self._refresh_in_place()
+            return
+        self._probes = new_probes
+        self._rebuild()
 
     def set_width_band(self, band: ResponsiveWidthBand) -> None:
         if band is self._width_band:
             return
         self._width_band = band
-        self._render_rows()
+        self._rebuild()
 
-    def _render_rows(self) -> None:
-        self._clear_rows()
-        if not self._probes:
-            self._show_empty()
-            return
-        self._empty_label.setVisible(False)
+    def _can_refresh_in_place(self, new_probes: list[HealthSubsystemProbe]) -> bool:
+        if len(new_probes) != len(self._probes):
+            return False
+        if len(new_probes) != len(self._sparklines):
+            return False
+        for old, new in zip(self._probes, new_probes, strict=True):
+            if old.subsystem_key != new.subsystem_key:
+                return False
+            if old.state is not new.state:
+                return False
+            if old.latency_ms != new.latency_ms:
+                return False
+        return True
+
+    def _refresh_in_place(self) -> None:
+        """Update sparkline cells without tearing the grid down.
+
+        Probe identities + state are unchanged, so we only push the
+        latest rolling history into each sparkline. Headers, pills,
+        and labels keep their hover state and don't churn through
+        `deleteLater()`.
+        """
+
+        for probe, sparkline in zip(self._probes, self._sparklines, strict=True):
+            history = list(self._vm.probe_history(probe.subsystem_key))
+            sparkline.set_cells(history)
+
+    def _rebuild(self) -> None:
+        """Repopulate the grid from `self._probes` end-to-end.
+
+        Every widget owned by the matrix is removed and re-created.
+        Surgically swapping rows produced phantom column widths from
+        leftover layout state — easier and safer to lay it out fresh
+        each time (≤4 rows + headers, so the cost is negligible).
+        """
+
+        # Detach every existing widget from the grid and queue it for
+        # deletion. The grid itself stays so we don't have to wrestle
+        # `QWidget.setLayout` with a previously-installed layout.
+        while self._grid.count() > 0:
+            item = self._grid.takeAt(0)
+            if item is None:
+                continue
+            widget = item.widget()
+            if widget is not None:
+                widget.setParent(None)
+                widget.deleteLater()
+        # Reset column stretch caches that QGridLayout would otherwise
+        # remember from the prior population.
+        for column in range(len(self._HEADERS) + 1):
+            self._grid.setColumnStretch(column, 0)
+            self._grid.setColumnMinimumWidth(column, 0)
+        self._header_labels.clear()
+        self._state_pills.clear()
+        self._latency_labels.clear()
+        self._name_labels.clear()
+        self._sparklines.clear()
+        self._empty_label = None
+
         compact = self._width_band is ResponsiveWidthBand.NARROW
-        for row_index, probe in enumerate(self._probes, start=1):
+
+        # Headers are always added so legacy callers/tests can introspect
+        # `_header_labels`; we hide them in compact mode so they don't
+        # take up visual space when the row layout collapses.
+        for column, title in enumerate(self._HEADERS):
+            label = QLabel(title, self)
+            label.setObjectName("PanelSubtitle")
+            self._grid.addWidget(label, 0, column)
+            label.setVisible(not compact)
+            self._header_labels.append(label)
+        if not compact:
+            self._grid.setColumnStretch(3, 1)  # sparkline column absorbs slack
+
+        if not self._probes:
+            empty = QLabel("No bounded probes reported", self)
+            empty.setObjectName("PanelSubtitle")
+            self._grid.addWidget(empty, 1, 0, 1, len(self._HEADERS))
+            self._empty_label = empty
+            return
+
+        for index, probe in enumerate(self._probes):
             detail = build_health_probe_detail(probe)
             name = QLabel(probe.label or probe.subsystem_key, self)
             name.setObjectName("MetricCardSecondary")
@@ -554,46 +638,22 @@ class _ProbeMatrix(QFrame):
             self._sparklines.append(sparkline)
 
             if compact:
-                self._grid.addWidget(name, row_index, 0, 1, 2)
-                self._grid.addWidget(pill, row_index, 2)
-                self._grid.addWidget(latency, row_index, 3)
-                self._grid.addWidget(sparkline, row_index + 1, 0, 1, 4)
+                # Compact: name spans 2 cols on the first sub-row, pill +
+                # latency on the right; sparkline on its own sub-row
+                # underneath. Two grid rows per probe (offset by 1 for
+                # the always-present header row) so a sparkline never
+                # collides with the next probe's name.
+                base = 1 + index * 2
+                self._grid.addWidget(name, base, 0, 1, 2)
+                self._grid.addWidget(pill, base, 2)
+                self._grid.addWidget(latency, base, 3)
+                self._grid.addWidget(sparkline, base + 1, 0, 1, 4)
             else:
-                self._grid.addWidget(name, row_index, 0)
-                self._grid.addWidget(pill, row_index, 1)
-                self._grid.addWidget(latency, row_index, 2)
-                self._grid.addWidget(sparkline, row_index, 3)
-        self._apply_header_visibility(compact)
-
-    def _render_headers(self) -> None:
-        for column, title in enumerate(("Subsystem", "State", "Latency", "Last 60 probes")):
-            label = QLabel(title, self)
-            label.setObjectName("PanelSubtitle")
-            self._grid.addWidget(label, 0, column)
-            self._header_labels.append(label)
-
-    def _apply_header_visibility(self, compact: bool) -> None:
-        for label in self._header_labels:
-            label.setVisible(not compact)
-
-    def _show_empty(self) -> None:
-        self._apply_header_visibility(self._width_band is ResponsiveWidthBand.NARROW)
-        self._empty_label.setVisible(True)
-        span = 4 if self._width_band is ResponsiveWidthBand.NARROW else 4
-        self._grid.addWidget(self._empty_label, 1, 0, 1, span)
-
-    def _clear_rows(self) -> None:
-        self._name_labels.clear()
-        self._state_pills.clear()
-        self._latency_labels.clear()
-        self._sparklines.clear()
-        while self._grid.count() > len(self._header_labels):
-            item = self._grid.takeAt(len(self._header_labels))
-            widget = item.widget() if item is not None else None
-            if widget is self._empty_label:
-                widget.setVisible(False)
-            elif widget is not None:
-                widget.deleteLater()
+                row = index + 1  # row 0 is the header row
+                self._grid.addWidget(name, row, 0)
+                self._grid.addWidget(pill, row, 1)
+                self._grid.addWidget(latency, row, 2)
+                self._grid.addWidget(sparkline, row, 3)
 
 
 class _TablePanel(QFrame):

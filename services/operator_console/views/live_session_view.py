@@ -972,15 +972,20 @@ class _ReadinessStrip(QFrame):
         video: tuple[UiStatusKind, str],
         calibration: tuple[UiStatusKind, str],
     ) -> None:
-        for pill, status in (
-            (self._adb_pill, adb),
-            (self._ml_pill, ml),
-            (self._audio_pill, audio),
-            (self._video_pill, video),
-            (self._submit_pill, calibration),
+        # Strip pills carry the dot colour as the primary signal; the
+        # text is a short label, not the full status sentence (which the
+        # bigger panels still own). Full status reads via tooltip so
+        # operators can drill in without re-reading every pill.
+        for pill, status, short_label in (
+            (self._adb_pill, adb, "phone"),
+            (self._ml_pill, ml, "ml"),
+            (self._audio_pill, audio, "audio"),
+            (self._video_pill, video, "video"),
+            (self._submit_pill, calibration, "submit"),
         ):
             pill.set_kind(status[0])
-            pill.set_text(status[1])
+            pill.set_text(short_label)
+            pill.setToolTip(status[1])
         worst = _worst_severity(adb[0], ml[0], audio[0], video[0], calibration[0])
         self.setProperty("severity", worst)
         self.style().unpolish(self)

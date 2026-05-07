@@ -6,9 +6,11 @@ of the 60 cells is colored by `UiStatusKind`, the same vocabulary the
 rest of the console uses, so recovering reads distinct from degraded
 reads distinct from error.
 
-Hovering a cell shows the timestamp and state via tooltip, sourced
-from the buffer that the Health viewmodel already polls; this widget
-itself owns no state.
+Hovering the widget shows a static `setToolTip` summary built from the
+most recent cell. Per-cell tooltips via `QToolTip.showText` were tried
+and removed: with `setMouseTracking(True)` they pop a fresh floating
+window on every mouse-move event, which read as a flickering box
+loop on the Health page during normal hover.
 
 Spec references:
   §4.E.1         — Health operator surface
@@ -21,9 +23,9 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 
-from PySide6.QtCore import QPoint, QRect, Qt
-from PySide6.QtGui import QColor, QMouseEvent, QPainter, QPaintEvent
-from PySide6.QtWidgets import QSizePolicy, QToolTip, QWidget
+from PySide6.QtCore import QRect, Qt
+from PySide6.QtGui import QColor, QPainter, QPaintEvent
+from PySide6.QtWidgets import QSizePolicy, QWidget
 
 from packages.schemas.operator_console import HealthProbeState, UiStatusKind
 from services.operator_console.design_system.tokens import PALETTE
@@ -74,10 +76,13 @@ class ProbeSparkline(QWidget):
         self._cells: list[ProbeSparklineCell] = []
         self._empty_color = QColor(PALETTE.surface_raised)
         self.setFixedHeight(_CELL_HEIGHT)
+        # Track a target width but allow the widget to shrink when the
+        # parent panel is narrow; a 480px hard floor blew out the column
+        # widths on the Health probe matrix at 1024px.
         target_width = self._capacity * (_CELL_WIDTH + _CELL_SPACING)
-        self.setMinimumWidth(target_width)
-        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Fixed)
-        self.setMouseTracking(True)
+        self.setMinimumWidth(120)
+        self.setMaximumWidth(target_width)
+        self.setSizePolicy(QSizePolicy.Policy.MinimumExpanding, QSizePolicy.Policy.Fixed)
         self.setAccessibleName("Probe history sparkline")
         self.setAccessibleDescription(
             f"Last {self._capacity} probe samples for this subsystem; one cell per probe."
@@ -96,8 +101,9 @@ class ProbeSparkline(QWidget):
         del event
         painter = QPainter(self)
         painter.setPen(Qt.PenStyle.NoPen)
+        cell_width, cell_spacing = self._effective_cell_metrics()
         for index in range(self._capacity):
-            rect = self._cell_rect(index)
+            rect = self._cell_rect(index, cell_width, cell_spacing)
             cell_index = index - (self._capacity - len(self._cells))
             if 0 <= cell_index < len(self._cells):
                 cell = self._cells[cell_index]
@@ -106,32 +112,30 @@ class ProbeSparkline(QWidget):
                 painter.setBrush(self._empty_color)
             painter.drawRect(rect)
 
-    def mouseMoveEvent(self, event: QMouseEvent) -> None:  # noqa: N802 — Qt override
-        cell = self._cell_at(event.position().toPoint())
-        if cell is None:
-            QToolTip.hideText()
-            super().mouseMoveEvent(event)
-            return
-        ts_text = cell.timestamp_utc.isoformat() if cell.timestamp_utc is not None else "—"
-        state_text = cell.probe_state.value if cell.probe_state is not None else cell.state.value
-        QToolTip.showText(
-            event.globalPosition().toPoint(),
-            f"{state_text} · {ts_text}",
-            self,
-        )
-        super().mouseMoveEvent(event)
+    def _effective_cell_metrics(self) -> tuple[int, int]:
+        """Shrink cell width/spacing when the widget is narrower than ideal.
+
+        Cells stay readable down to a 2px minimum width, and spacing
+        scales linearly. The result is the natural metrics on a wide
+        panel and a compressed-but-visible view on a narrow one.
+        """
+
+        available = max(self.width(), 1)
+        natural = self._capacity * (_CELL_WIDTH + _CELL_SPACING)
+        if available >= natural:
+            return _CELL_WIDTH, _CELL_SPACING
+        ratio = available / natural
+        cell_width = max(2, int(_CELL_WIDTH * ratio))
+        cell_spacing = max(0, int(_CELL_SPACING * ratio))
+        return cell_width, cell_spacing
 
     # ---- internals -----------------------------------------------------
 
-    def _cell_rect(self, index: int) -> QRect:
-        x = index * (_CELL_WIDTH + _CELL_SPACING)
-        return QRect(x, 0, _CELL_WIDTH, _CELL_HEIGHT)
-
-    def _cell_at(self, position: QPoint) -> ProbeSparklineCell | None:
-        if position.y() < 0 or position.y() > _CELL_HEIGHT:
-            return None
-        index = position.x() // (_CELL_WIDTH + _CELL_SPACING)
-        cell_index = index - (self._capacity - len(self._cells))
-        if 0 <= cell_index < len(self._cells):
-            return self._cells[cell_index]
-        return None
+    def _cell_rect(
+        self,
+        index: int,
+        cell_width: int = _CELL_WIDTH,
+        cell_spacing: int = _CELL_SPACING,
+    ) -> QRect:
+        x = index * (cell_width + cell_spacing)
+        return QRect(x, 0, cell_width, _CELL_HEIGHT)

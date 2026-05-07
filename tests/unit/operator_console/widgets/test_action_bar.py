@@ -61,8 +61,12 @@ def test_set_session_context_enables_button() -> None:
         expected_greeting="hei rakas",
     )
     assert bar._submit_button.isEnabled() is True  # type: ignore[attr-defined]
+    # Wide mode renders the abbreviated UUID — full UUIDs wrapped the
+    # ActionBar onto two rows on 1024–1366 displays, which is the most
+    # common operator screen, so we abbreviate consistently.
+    expected_compact = f"{str(session_id)[:8]}…{str(session_id)[-4:]}"
     assert bar._session_label.text() == (  # type: ignore[attr-defined]
-        f"Session {session_id} — stimulus strategy: greeting_v1"
+        f"Session {expected_compact} — stimulus strategy: greeting_v1"
     )
     assert bar._greeting_label.text() == "Expected response: “hei rakas”"  # type: ignore[attr-defined]
 

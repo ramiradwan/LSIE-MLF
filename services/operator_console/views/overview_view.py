@@ -165,7 +165,13 @@ class OverviewView(QWidget):
 
         self._attention_list = _AttentionList(self)
 
-        body = QVBoxLayout()
+        # Body wraps in a scroll area so the three bands and the
+        # attention list keep their natural heights when the page is
+        # narrower than the total content needs. Without scroll, the
+        # outer QVBoxLayout would squash MetricCards below their
+        # wrap-aware minimumHeight at <900px viewports.
+        self._body_container = QWidget(self)
+        body = QVBoxLayout(self._body_container)
         body.setContentsMargins(0, 0, 0, 0)
         body.setSpacing(10)
         body.addWidget(self._now_header)
@@ -174,14 +180,22 @@ class OverviewView(QWidget):
         body.addWidget(self._trust_grid)
         body.addWidget(self._attention_header)
         body.addWidget(self._attention_grid)
-        body.addWidget(self._attention_list, 1)
+        body.addWidget(self._attention_list)
+        body.addStretch(1)
+
+        self._scroll = QScrollArea(self)
+        self._scroll.setObjectName("OverviewScrollArea")
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._scroll.setWidget(self._body_container)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 24, 24, 24)
         layout.setSpacing(14)
         layout.addWidget(self._header)
         layout.addWidget(self._error_banner)
-        layout.addLayout(body, 1)
+        layout.addWidget(self._scroll, 1)
         layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
         # Cache the session id so the click handler does not re-read the

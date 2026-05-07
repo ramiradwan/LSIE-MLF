@@ -375,11 +375,16 @@ class ActionBar(QWidget):
     # ---- internals -----------------------------------------------------
 
     def _session_header_text(self, wide_text: str) -> str:
-        if not self._compact_mode or self._session_id is None:
+        # Both wide and compact modes render the abbreviated UUID — a
+        # full UUID in the wide layout wrapped the bar onto two rows on
+        # 1024–1366 displays, which is the most common operator screen.
+        if self._session_id is None:
             return wide_text
         strategy_part = self._active_arm if self._active_arm else "no active strategy"
         compact_session = format_session_id_compact(self._session_id)
-        return f"Session {compact_session} · stimulus strategy {strategy_part}"
+        if self._compact_mode:
+            return f"Session {compact_session} · stimulus strategy {strategy_part}"
+        return f"Session {compact_session} — stimulus strategy: {strategy_part}"
 
     def _rebuild_layout(self) -> None:
         self._clear_layout(self._content_layout)
