@@ -71,6 +71,7 @@ class PhysiologyView(QWidget):
             "Physiology",
             "Heart data freshness and whether streamer/operator recovery moved together.",
             self,
+            level="page",
         )
         self._error_banner = AlertBanner(self)
         self._empty_state = EmptyStateWidget(self)
@@ -79,6 +80,11 @@ class PhysiologyView(QWidget):
             "Physiology data will appear once an active session reports heart-data snapshots."
         )
 
+        # §4.C.4 freshness is the single most decision-relevant signal on
+        # the page — promote it to a full-width row above the per-role
+        # cards so the operator answers "should I trust the rest of this
+        # page?" before reading anything else.
+        self._freshness_card = MetricCard("Physiology freshness", self)
         self._streamer_panel = _RolePanel("Streamer", self)
         self._operator_panel = _RolePanel("Operator", self)
         self._co_modulation_summary_panel = _CoModulationSummaryPanel(self)
@@ -90,6 +96,7 @@ class PhysiologyView(QWidget):
         body = QVBoxLayout()
         body.setContentsMargins(0, 0, 0, 0)
         body.setSpacing(14)
+        body.addWidget(self._freshness_card)
         body.addWidget(self._co_modulation_summary_panel)
         body.addWidget(self._roles_grid)
         body.addWidget(self._comodulation_panel)
@@ -142,12 +149,47 @@ class PhysiologyView(QWidget):
         self._empty_state.setVisible(False)
         self._scroll.setVisible(True)
 
+        self._set_freshness_card(snapshot)
         self._co_modulation_summary_panel.set_display(self._vm.co_modulation_display())
         self._streamer_panel.set_snapshot(self._vm.streamer_snapshot())
         self._operator_panel.set_snapshot(self._vm.operator_snapshot())
         self._comodulation_panel.set_summary(
             self._vm.comodulation(),
             explanation=self._vm.comodulation_explanation(),
+        )
+
+    def _set_freshness_card(self, snapshot: object) -> None:
+        roles: list[tuple[str, PhysiologyCurrentSnapshot | None]] = []
+        for label_text in ("streamer", "operator"):
+            attr = getattr(snapshot, label_text, None)
+            if attr is None or isinstance(attr, PhysiologyCurrentSnapshot):
+                roles.append((label_text, attr))
+        present = [
+            (label_text, snap)
+            for label_text, snap in roles
+            if snap is not None and snap.rmssd_ms is not None
+        ]
+        any_stale = any(snap.is_stale is True for _, snap in present)
+        if not present:
+            self._freshness_card.set_primary_text("No fresh heart data yet")
+            self._freshness_card.set_secondary_text(
+                "Heart data trust signals appear after the first usable snapshot lands."
+            )
+            self._freshness_card.set_status(UiStatusKind.NEUTRAL, "absent")
+            return
+        parts: list[str] = []
+        for label_text, snap in present:
+            assert snap is not None
+            parts.append(
+                f"{label_text} {format_freshness(snap.freshness_s, is_stale=snap.is_stale)}"
+            )
+        self._freshness_card.set_primary_text(
+            "stale data — rest of this page may be out of date" if any_stale else "fresh"
+        )
+        self._freshness_card.set_secondary_text(" · ".join(parts))
+        self._freshness_card.set_status(
+            UiStatusKind.WARN if any_stale else UiStatusKind.OK,
+            "stale" if any_stale else "fresh",
         )
 
     # ------------------------------------------------------------------
@@ -365,6 +407,15 @@ class _CoModulationPanel(QFrame):
         self._subtitle.setObjectName("PanelSubtitle")
         self._subtitle.setWordWrap(True)
 
+        self._null_valid_pill = QLabel("valid · null", self)
+        self._null_valid_pill.setObjectName("NullValidPill")
+        self._null_valid_pill.setVisible(False)
+        self._null_valid_pill.setAccessibleName("Co-modulation null-valid")
+        self._null_valid_pill.setAccessibleDescription(
+            "Sync result is intentionally null for this window — a valid §7C outcome, "
+            "not a failure."
+        )
+
         self._index_card = MetricCard("Index", self)
         self._observations_card = MetricCard("Observations", self)
         self._coverage_card = MetricCard("Coverage", self)
@@ -384,10 +435,17 @@ class _CoModulationPanel(QFrame):
         self._explanation.setObjectName("MetricCardSecondary")
         self._explanation.setWordWrap(True)
 
+        title_row = QHBoxLayout()
+        title_row.setContentsMargins(0, 0, 0, 0)
+        title_row.setSpacing(10)
+        title_row.addWidget(self._title)
+        title_row.addWidget(self._null_valid_pill)
+        title_row.addStretch(1)
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 12, 16, 16)
         layout.setSpacing(8)
-        layout.addWidget(self._title)
+        layout.addLayout(title_row)
         layout.addWidget(self._subtitle)
         layout.addWidget(self._metrics_grid)
         layout.addWidget(self._explanation)
@@ -401,17 +459,24 @@ class _CoModulationPanel(QFrame):
         if summary is None:
             self._apply_absent(explanation)
             return
-        self._index_card.set_primary_text(format_comodulation_index(summary))
         if summary.co_modulation_index is None:
-            # §7C null-valid: info pill (not warn/error).
+            # §7C null-valid is a real outcome, not a missing value. Show
+            # an inline "valid · null" pill in the accent colour and put
+            # the reason as primary-weight text — operators must not read
+            # this as a subsystem failure.
+            reason = summary.null_reason or "insufficient aligned non-stale pairs"
+            self._index_card.set_primary_text(reason)
+            self._index_card.set_secondary_text(
+                "Sync result is intentionally null for this window."
+            )
             self._index_card.set_status(
                 UiStatusKind.INFO,
                 physiology_labels().comodulation_null_status,
             )
-            self._index_card.set_secondary_text(
-                summary.null_reason or "insufficient aligned non-stale pairs"
-            )
+            self._null_valid_pill.setVisible(True)
         else:
+            self._null_valid_pill.setVisible(False)
+            self._index_card.set_primary_text(format_comodulation_index(summary))
             self._index_card.set_status(UiStatusKind.OK, "ready")
             self._index_card.set_secondary_text("+ means moving together; - means moving apart")
 
@@ -434,6 +499,7 @@ class _CoModulationPanel(QFrame):
         self._explanation.setText(explanation)
 
     def _apply_absent(self, explanation: str) -> None:
+        self._null_valid_pill.setVisible(False)
         for card in (
             self._index_card,
             self._observations_card,

@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QMessageBox,
     QPushButton,
     QScrollArea,
     QTableView,
@@ -57,6 +58,10 @@ from services.operator_console.widgets.alert_banner import AlertBanner
 from services.operator_console.widgets.empty_state import EmptyStateWidget
 from services.operator_console.widgets.event_timeline import EventTimelineWidget
 from services.operator_console.widgets.metric_card import MetricCard
+from services.operator_console.widgets.probe_sparkline import (
+    ProbeSparkline,
+    ProbeSparklineCell,
+)
 from services.operator_console.widgets.responsive_layout import (
     MetricGridColumns,
     ResponsiveBreakpoints,
@@ -83,7 +88,7 @@ _PROBE_STATUS: dict[HealthProbeState, UiStatusKind] = {
     HealthProbeState.OK: UiStatusKind.OK,
     HealthProbeState.ERROR: UiStatusKind.ERROR,
     HealthProbeState.TIMEOUT: UiStatusKind.ERROR,
-    HealthProbeState.NOT_CONFIGURED: UiStatusKind.NEUTRAL,
+    HealthProbeState.NOT_CONFIGURED: UiStatusKind.MUTED,
     HealthProbeState.UNKNOWN: UiStatusKind.NEUTRAL,
 }
 
@@ -176,6 +181,7 @@ class HealthView(QWidget):
             "Health",
             "Readiness summary with the next action for anything that needs attention.",
             self,
+            level="page",
         )
         self._repair_button = QPushButton("Repair install", self)
         self._repair_button.setObjectName("RepairInstallButton")
@@ -217,7 +223,7 @@ class HealthView(QWidget):
             ]
         )
 
-        self._probe_matrix = _ProbeMatrix(self)
+        self._probe_matrix = _ProbeMatrix(self._vm, self)
         self._subsystem_table = self._build_subsystem_table()
         self._alerts_timeline = EventTimelineWidget(self)
         self._alerts_timeline.set_model(self._vm.alerts_model())
@@ -338,6 +344,13 @@ class HealthView(QWidget):
     def _refresh(self) -> None:
         snapshot = self._vm.snapshot()
         self._repair_button.setEnabled(self._vm.repair_available())
+        if self._vm.repair_in_progress():
+            self._repair_button.setText("Installing…")
+        else:
+            self._repair_button.setText("Repair install")
+            installing = self._repair_status.text() == "Installing runtime…"
+            if self._repair_status.isVisible() and installing:
+                self._repair_status.setText("Repair completed")
         if snapshot is None:
             self._empty_state.setVisible(True)
             self._scroll.setVisible(False)
@@ -413,13 +426,35 @@ class HealthView(QWidget):
             self._error_banner.set_alert(None, None)
 
     def _on_repair_clicked(self) -> None:
+        # Repair install rebuilds the runtime; treat it as deliberate
+        # rather than as a one-tap action by confirming the consequence
+        # before letting the VM dispatch.
+        confirmation = QMessageBox(self)
+        confirmation.setIcon(QMessageBox.Icon.Warning)
+        confirmation.setWindowTitle("Repair install")
+        confirmation.setText("Rebuild the local runtime?")
+        confirmation.setInformativeText(
+            "This will reinstall the local runtime without touching desktop.sqlite. "
+            "The active session keeps running but readiness will dip while the "
+            "subsystem comes back up. Continue?"
+        )
+        confirmation.setStandardButtons(
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel
+        )
+        confirmation.setDefaultButton(QMessageBox.StandardButton.Cancel)
+        if confirmation.exec() != QMessageBox.StandardButton.Yes:
+            return
         if not self._vm.request_repair():
             return
 
     def _on_repair_started(self) -> None:
-        self._repair_status.setText("Repair requested")
-        self._repair_status.setAccessibleDescription("Repair requested")
+        self._repair_status.setText("Installing runtime…")
+        self._repair_status.setAccessibleDescription(
+            "Repair install in progress; subsystem rows will reflect recovery state."
+        )
         self._repair_status.setVisible(True)
+        self._repair_button.setEnabled(False)
+        self._repair_button.setText("Installing…")
 
     @Slot(QModelIndex, int, int)
     def _on_alerts_rows_inserted(
@@ -440,10 +475,17 @@ class HealthView(QWidget):
 
 
 class _ProbeMatrix(QFrame):
-    """Bounded subsystem probes with width-aware presentation."""
+    """Row-per-subsystem probe matrix with a 60-cell history sparkline.
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    Each row pairs the current pill + latency with a sparkline of the
+    last 60 probe samples for that subsystem, so flapping reads as a
+    visible pattern without bouncing between the matrix and the alert
+    timeline.
+    """
+
+    def __init__(self, vm: HealthViewModel, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        self._vm = vm
         self.setObjectName("HealthProbeMatrix")
         self.setFrameShape(QFrame.Shape.NoFrame)
         self._grid = QGridLayout(self)
@@ -453,6 +495,7 @@ class _ProbeMatrix(QFrame):
         self._state_pills: list[StatusPill] = []
         self._latency_labels: list[QLabel] = []
         self._name_labels: list[QLabel] = []
+        self._sparklines: list[ProbeSparkline] = []
         self._header_labels: list[QLabel] = []
         self._probes: list[HealthSubsystemProbe] = []
         self._width_band = ResponsiveWidthBand.WIDE
@@ -494,22 +537,36 @@ class _ProbeMatrix(QFrame):
             latency.setObjectName("MetricCardSecondary")
             latency.setToolTip(detail)
 
+            sparkline = ProbeSparkline(
+                capacity=self._vm.probe_history_capacity(),
+                parent=self,
+            )
+            history: list[ProbeSparklineCell] = list(self._vm.probe_history(probe.subsystem_key))
+            sparkline.set_cells(history)
+            sparkline.setToolTip(
+                f"Last {self._vm.probe_history_capacity()} probe samples for "
+                f"{probe.label or probe.subsystem_key}."
+            )
+
             self._name_labels.append(name)
             self._state_pills.append(pill)
             self._latency_labels.append(latency)
+            self._sparklines.append(sparkline)
 
             if compact:
                 self._grid.addWidget(name, row_index, 0, 1, 2)
                 self._grid.addWidget(pill, row_index, 2)
                 self._grid.addWidget(latency, row_index, 3)
+                self._grid.addWidget(sparkline, row_index + 1, 0, 1, 4)
             else:
                 self._grid.addWidget(name, row_index, 0)
                 self._grid.addWidget(pill, row_index, 1)
                 self._grid.addWidget(latency, row_index, 2)
+                self._grid.addWidget(sparkline, row_index, 3)
         self._apply_header_visibility(compact)
 
     def _render_headers(self) -> None:
-        for column, title in enumerate(("Subsystem", "State", "Latency")):
+        for column, title in enumerate(("Subsystem", "State", "Latency", "Last 60 probes")):
             label = QLabel(title, self)
             label.setObjectName("PanelSubtitle")
             self._grid.addWidget(label, 0, column)
@@ -522,13 +579,14 @@ class _ProbeMatrix(QFrame):
     def _show_empty(self) -> None:
         self._apply_header_visibility(self._width_band is ResponsiveWidthBand.NARROW)
         self._empty_label.setVisible(True)
-        span = 4 if self._width_band is ResponsiveWidthBand.NARROW else 3
+        span = 4 if self._width_band is ResponsiveWidthBand.NARROW else 4
         self._grid.addWidget(self._empty_label, 1, 0, 1, span)
 
     def _clear_rows(self) -> None:
         self._name_labels.clear()
         self._state_pills.clear()
         self._latency_labels.clear()
+        self._sparklines.clear()
         while self._grid.count() > len(self._header_labels):
             item = self._grid.takeAt(len(self._header_labels))
             widget = item.widget() if item is not None else None

@@ -198,9 +198,13 @@ def test_live_session_view_ttv_waiting_for_face_shows_muted_dashboard_overlay() 
     assert view._phone_preview.isEnabled() is False  # type: ignore[attr-defined]
     assert "visible face" in view._setup_overlay._message.text()  # type: ignore[attr-defined]
     assert "12/45 face frames" in view._setup_overlay._detail.text()  # type: ignore[attr-defined]
+    # UX-12 — primary line affirms the live capture; the no-raw-frames
+    # disclaimer becomes the secondary caveat.
     preview_status = view._phone_preview._status.text()  # type: ignore[attr-defined]
-    assert "Raw phone frames are not shown" in preview_status
+    preview_caveat = view._phone_preview._caveat.text()  # type: ignore[attr-defined]
+    assert "Capture active" in preview_status
     assert "12/45 face frames" in preview_status
+    assert "Raw phone frames are not shown" in preview_caveat
 
 
 def test_live_session_view_ttv_ready_shows_dashboard_and_smile_timeline() -> None:
@@ -223,7 +227,8 @@ def test_live_session_view_ttv_ready_shows_dashboard_and_smile_timeline() -> Non
     assert view._body_container.isHidden() is False  # type: ignore[attr-defined]
     assert view._setup_overlay.isHidden() is True  # type: ignore[attr-defined]
     assert view._phone_preview.isEnabled() is True  # type: ignore[attr-defined]
-    assert "Healthy" in view._phone_preview._status.text()  # type: ignore[attr-defined]
+    # UX-12: ready state primary now affirms the live capture.
+    assert "Capture active" in view._phone_preview._status.text()  # type: ignore[attr-defined]
     assert "Preview placeholder" not in view._phone_preview._placeholder.text()  # type: ignore[attr-defined]
     assert view._live_analytics_notice.isHidden() is True  # type: ignore[attr-defined]
     assert view._smile_card._primary.text() == "64%"  # type: ignore[attr-defined]

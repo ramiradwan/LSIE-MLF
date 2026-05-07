@@ -8,6 +8,10 @@ The card is deliberately layout-only: it takes plain strings and a
 `UiStatusKind`; the viewmodel/view layer is responsible for translating
 DTOs into those strings (see `formatters.py`).
 
+Clickable cards expose a trailing chevron in the title row so the
+affordance is visible without depending on cursor hover, and the QSS
+hover/focus rules tint the border in the accent color.
+
 Spec references:
   §4.E.1         — operator-facing overview page
   §7B            — reward-explanation card on the Live Session surface
@@ -17,9 +21,10 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QKeyEvent, QMouseEvent
-from PySide6.QtWidgets import QFrame, QLabel, QSizePolicy, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
 
 from packages.schemas.operator_console import UiStatusKind
+from services.operator_console.design_system.qss_builder import repolish
 from services.operator_console.widgets.status_pill import StatusPill
 
 
@@ -35,6 +40,7 @@ class MetricCard(QFrame):
     def __init__(self, title: str, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("MetricCard")
+        self.setProperty("clickable", "false")
         # Panel styling lives in `theme.STYLESHEET`; we only set the
         # object name so the stylesheet can target us.
         self.setFrameShape(QFrame.Shape.NoFrame)
@@ -42,11 +48,22 @@ class MetricCard(QFrame):
         self.setMinimumHeight(132)
 
         self._clickable = False
+        self._click_destination: str | None = None
 
         self._title = QLabel(title, self)
         self._title.setObjectName("MetricCardTitle")
         self._title.setWordWrap(True)
         self._title.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+        self._chevron = QLabel("›", self)
+        self._chevron.setObjectName("MetricCardChevron")
+        self._chevron.setVisible(False)
+
+        title_row = QHBoxLayout()
+        title_row.setContentsMargins(0, 0, 0, 0)
+        title_row.setSpacing(0)
+        title_row.addWidget(self._title, 1)
+        title_row.addWidget(self._chevron, 0, Qt.AlignmentFlag.AlignRight)
+
         self._primary = QLabel("—", self)
         self._primary.setObjectName("MetricCardPrimary")
         self._primary.setWordWrap(True)
@@ -62,7 +79,7 @@ class MetricCard(QFrame):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 14, 16, 14)
         layout.setSpacing(6)
-        layout.addWidget(self._title)
+        layout.addLayout(title_row)
         layout.addWidget(self._primary)
         layout.addWidget(self._secondary)
         layout.addWidget(self._status)
@@ -99,14 +116,23 @@ class MetricCard(QFrame):
             self._status.setVisible(True)
         self._sync_accessibility()
 
-    def set_clickable(self, clickable: bool) -> None:
+    def set_clickable(
+        self,
+        clickable: bool,
+        *,
+        destination: str | None = None,
+    ) -> None:
         self._clickable = clickable
+        self._click_destination = destination if clickable else None
+        self.setProperty("clickable", "true" if clickable else "false")
+        self._chevron.setVisible(clickable)
         if clickable:
             self.setCursor(Qt.CursorShape.PointingHandCursor)
             self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         else:
             self.unsetCursor()
             self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        repolish(self)
         self._sync_accessibility()
 
     def _sync_accessibility(self) -> None:
@@ -118,7 +144,10 @@ class MetricCard(QFrame):
         description_parts = [part for part in (primary, secondary, status) if part]
         self.setAccessibleDescription(". ".join(description_parts))
         if self._clickable:
-            self.setToolTip(f"Open {title}")
+            if self._click_destination is not None:
+                self.setToolTip(f"Open in {self._click_destination}")
+            else:
+                self.setToolTip(f"Open {title}")
         else:
             self.setToolTip("")
 

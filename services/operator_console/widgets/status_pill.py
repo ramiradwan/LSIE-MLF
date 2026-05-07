@@ -33,6 +33,7 @@ _KIND_COLORS: dict[UiStatusKind, str] = {
     UiStatusKind.ERROR: PALETTE.status_bad,
     UiStatusKind.NEUTRAL: PALETTE.text_muted,
     UiStatusKind.PROGRESS: PALETTE.accent,
+    UiStatusKind.MUTED: PALETTE.text_muted,
 }
 
 

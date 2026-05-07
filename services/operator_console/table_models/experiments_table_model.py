@@ -40,6 +40,7 @@ from services.operator_console.formatters import format_percentage, format_rewar
 _EM_DASH = "—"
 _ENABLED_COL = 2
 _GREETING_COL = 1
+_POSTERIOR_ALPHA_COL = 3
 
 
 class ExperimentsTableModel(QAbstractTableModel):
@@ -154,6 +155,13 @@ class ExperimentsTableModel(QAbstractTableModel):
                 return "Uncheck to disable this arm. Disabled arms cannot be re-enabled here."
             if col == _ENABLED_COL:
                 return "Arm disabled; re-enable is not supported by the operator flow."
+            if col == _POSTERIOR_ALPHA_COL:
+                return (
+                    f"posterior α {format_reward(row.posterior_alpha)} · "
+                    f"posterior β {format_reward(row.posterior_beta)}"
+                )
+        if role == Qt.ItemDataRole.UserRole and col == _POSTERIOR_ALPHA_COL:
+            return (row.posterior_alpha, row.posterior_beta)
         return None
 
     def setData(  # noqa: N802 — Qt override

@@ -33,6 +33,11 @@ class UiStatusKind(StrEnum):
 
     Maps subsystem/encounter/stimulus state into a small set of palette
     buckets. Widgets read the enum; the palette lookup is theme-side.
+
+    `MUTED` is reserved for explicitly unconfigured surfaces — the
+    operator should read it as "the system isn't expected to report
+    here", visually distinct from `NEUTRAL` ("nothing to say yet") and
+    from `WARN`/`ERROR` ("something is wrong").
     """
 
     OK = "ok"
@@ -41,6 +46,7 @@ class UiStatusKind(StrEnum):
     ERROR = "error"
     NEUTRAL = "neutral"
     PROGRESS = "progress"
+    MUTED = "muted"
 
 
 class AlertSeverity(StrEnum):

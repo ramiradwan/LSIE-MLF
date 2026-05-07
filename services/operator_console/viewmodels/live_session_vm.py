@@ -69,6 +69,7 @@ from services.operator_console.formatters import (
     build_live_telemetry_display,
     build_readiness_display,
     build_reward_explanation,
+    format_action_bar_gating_reason,
     format_calibration_status,
     format_stimulus_progress_message,
     operator_ready_for_submit,
@@ -713,6 +714,27 @@ class LiveSessionViewModel(ViewModelBase):
             accepted_message=ctx.message,
             ready_for_submit=self.operator_ready_for_submit(),
             countdown_seconds=self.measurement_window_remaining_s(current_time),
+        )
+
+    def stimulus_gating_reason(self) -> str | None:
+        """Operator-facing reason the ActionBar submit is currently disabled.
+
+        Returns ``None`` when the bar is not gated. The VM owns the gating
+        rules already (no session, calibration not complete, lifecycle in
+        flight); this surface composes them into one sentence for the
+        ActionBar message line so the disabled state is never silent.
+        """
+
+        ctx = self._store.stimulus_ui_context()
+        has_session = self._store.selected_session_id() is not None
+        calibration_text: str | None = None
+        if has_session and not self.operator_ready_for_submit():
+            calibration_text = self.calibration_status()[1]
+        return format_action_bar_gating_reason(
+            state=ctx.state,
+            has_session=has_session,
+            operator_ready_for_submit=self.operator_ready_for_submit(),
+            calibration_status_text=calibration_text,
         )
 
     # ------------------------------------------------------------------

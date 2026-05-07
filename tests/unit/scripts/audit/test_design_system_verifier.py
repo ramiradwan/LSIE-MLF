@@ -40,7 +40,7 @@ def _build_repo_fixture(repo_root: Path) -> Path:
                 "compounds": [],
                 "selectors": [
                     {"object_name": "ContentSurface", "kind": "surface"},
-                    {"object_name": "SidebarNav", "kind": "shell"}
+                    {"object_name": "SidebarNav", "kind": "shell"},
                 ],
             },
             indent=2,
@@ -63,10 +63,10 @@ def _build_repo_fixture(repo_root: Path) -> Path:
         repo_root / "services" / "operator_console" / "design_system" / "qss_builder.py",
         (
             'STYLESHEET = """\n'
-            'QWidget#ContentSurface {}\n'
-            'QFrame#SidebarNav {}\n'
-            'QLabel#SidebarTitle {}\n'
-            'QLabel#SidebarSubtitle {}\n'
+            "QWidget#ContentSurface {}\n"
+            "QFrame#SidebarNav {}\n"
+            "QLabel#SidebarTitle {}\n"
+            "QLabel#SidebarSubtitle {}\n"
             '"""\n'
         ),
     )
@@ -102,7 +102,7 @@ def test_collect_design_system_issues_reports_inline_qss_hex_api_import_and_unre
         repo_root / "services" / "operator_console" / "app.py",
         "from __future__ import annotations\n\n"
         "def install() -> None:\n"
-        "    widget.setStyleSheet(\"color: red;\")\n",
+        '    widget.setStyleSheet("color: red;")\n',
     )
     _write(
         repo_root / "services" / "operator_console" / "views" / "example_view.py",
@@ -114,9 +114,9 @@ def test_collect_design_system_issues_reports_inline_qss_hex_api_import_and_unre
         repo_root / "services" / "operator_console" / "design_system" / "qss_builder.py",
         (
             'STYLESHEET = """\n'
-            'QWidget#ContentSurface {}\n'
-            'QLabel#SidebarTitle {}\n'
-            'QLabel#UnregisteredThing {}\n'
+            "QWidget#ContentSurface {}\n"
+            "QLabel#SidebarTitle {}\n"
+            "QLabel#UnregisteredThing {}\n"
             '"""\n'
         ),
     )

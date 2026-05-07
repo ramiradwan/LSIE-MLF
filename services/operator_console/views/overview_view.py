@@ -116,6 +116,7 @@ class OverviewView(QWidget):
             "Overview",
             "What is running now, what needs attention, and why the latest result counted.",
             self,
+            level="page",
         )
         self._error_banner = AlertBanner(self)
 
@@ -123,7 +124,7 @@ class OverviewView(QWidget):
         # Clicking the active-session card is the single navigation
         # shortcut on this page — takes the operator into Live Session
         # with the same session already selected.
-        self._active_session_card.set_clickable(True)
+        self._active_session_card.set_clickable(True, destination="Live Session")
         self._active_session_card.clicked.connect(self._on_active_session_clicked)
 
         self._experiment_card = MetricCard("Experiment", self)
@@ -132,24 +133,47 @@ class OverviewView(QWidget):
         self._latest_encounter_card = MetricCard("Latest Encounter", self)
         self._attention_card = MetricCard("Attention", self)
 
-        self._cards_grid = ResponsiveMetricGrid(parent=self)
-        self._cards_grid.set_widgets(
-            [
-                self._active_session_card,
-                self._experiment_card,
-                self._physiology_card,
-                self._health_card,
-                self._latest_encounter_card,
-                self._attention_card,
-            ]
+        # Three operator jobs, three bands. Each pair of cards lives under
+        # its own SectionHeader so the operator scans for "what's
+        # running" / "do I trust the last result" / "what needs me"
+        # without reading every card.
+        self._now_header = SectionHeader(
+            "Now",
+            "What is currently running.",
+            self,
+            level="sub",
         )
+        self._trust_header = SectionHeader(
+            "Trust",
+            "Whether the latest result and physiology can be relied on.",
+            self,
+            level="sub",
+        )
+        self._attention_header = SectionHeader(
+            "Needs attention",
+            "Subsystems and alerts the operator should triage.",
+            self,
+            level="sub",
+        )
+
+        self._now_grid = ResponsiveMetricGrid(parent=self)
+        self._now_grid.set_widgets([self._active_session_card, self._experiment_card])
+        self._trust_grid = ResponsiveMetricGrid(parent=self)
+        self._trust_grid.set_widgets([self._latest_encounter_card, self._physiology_card])
+        self._attention_grid = ResponsiveMetricGrid(parent=self)
+        self._attention_grid.set_widgets([self._health_card, self._attention_card])
 
         self._attention_list = _AttentionList(self)
 
         body = QVBoxLayout()
         body.setContentsMargins(0, 0, 0, 0)
-        body.setSpacing(14)
-        body.addWidget(self._cards_grid)
+        body.setSpacing(10)
+        body.addWidget(self._now_header)
+        body.addWidget(self._now_grid)
+        body.addWidget(self._trust_header)
+        body.addWidget(self._trust_grid)
+        body.addWidget(self._attention_header)
+        body.addWidget(self._attention_grid)
         body.addWidget(self._attention_list, 1)
 
         layout = QVBoxLayout(self)
@@ -215,7 +239,7 @@ class OverviewView(QWidget):
             self._active_session_card.set_clickable(False)
             return
         self._active_session_id = session.session_id
-        self._active_session_card.set_clickable(True)
+        self._active_session_card.set_clickable(True, destination="Live Session")
         self._active_session_card.set_primary_text(format_session_id_compact(session.session_id))
         self._active_session_card.set_secondary_text(format_active_session_readback(session))
         status_kind = (

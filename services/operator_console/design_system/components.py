@@ -22,10 +22,12 @@ COMPONENT_SPECS: tuple[ComponentSpec, ...] = (
             "MetricCardTitle",
             "MetricCardPrimary",
             "MetricCardSecondary",
+            "MetricCardChevron",
         ),
         description=(
             "Summary card with title, primary value, optional secondary copy, "
-            "and optional status pill."
+            "optional status pill, and an optional chevron affordance when "
+            "the card is clickable."
         ),
     ),
     ComponentSpec(
@@ -63,15 +65,19 @@ COMPONENT_SPECS: tuple[ComponentSpec, ...] = (
         name="SectionHeader",
         kind="primitive",
         object_names=("SectionHeader", "SectionHeaderTitle", "SectionHeaderSubtitle"),
-        description="Page or section title block with optional subtitle.",
+        description=(
+            "Page or section title block with optional subtitle. The title "
+            "carries a `level` property (page/panel/sub) so the same widget "
+            "renders at the page heading size, the panel heading size, or the "
+            "muted sub-grouping size."
+        ),
     ),
     ComponentSpec(
         name="ResponsiveMetricGrid",
         kind="layout",
         object_names=(),
         description=(
-            "Width-band-aware card grid that reflows between narrow, medium, "
-            "and wide layouts."
+            "Width-band-aware card grid that reflows between narrow, medium, and wide layouts."
         ),
     ),
     ComponentSpec(
@@ -85,8 +91,15 @@ COMPONENT_SPECS: tuple[ComponentSpec, ...] = (
             "ActionBarSubmit",
             "ActionBarCountdown",
             "ActionBarMessage",
+            "ActionBarNoteToggle",
+            "ActionBarProgress",
         ),
-        description="Persistent shell-level stimulus rail mounted below stacked content.",
+        description=(
+            "Persistent shell-level stimulus rail mounted below stacked "
+            "content. Includes the optional countdown progress strip pinned "
+            "to the bottom edge and the compact-mode note toggle that "
+            "expands the operator note inline."
+        ),
     ),
 )
 

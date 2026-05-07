@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
     QAbstractItemView,
     QFrame,
     QGridLayout,
+    QHBoxLayout,
     QHeaderView,
     QLabel,
     QLineEdit,
@@ -53,6 +54,7 @@ from services.operator_console.viewmodels.experiments_vm import ExperimentsViewM
 from services.operator_console.widgets.alert_banner import AlertBanner
 from services.operator_console.widgets.empty_state import EmptyStateWidget
 from services.operator_console.widgets.metric_card import MetricCard
+from services.operator_console.widgets.posterior_bar_delegate import PosteriorBarDelegate
 from services.operator_console.widgets.responsive_layout import (
     MetricGridColumns,
     ResponsiveBreakpoints,
@@ -62,6 +64,7 @@ from services.operator_console.widgets.responsive_layout import (
     apply_table_column_policies,
 )
 from services.operator_console.widgets.section_header import SectionHeader
+from services.operator_console.widgets.slide_over import SlideOver
 
 _EXPERIMENT_BREAKPOINTS = ResponsiveBreakpoints(medium_min_width=760, wide_min_width=1040)
 
@@ -131,7 +134,14 @@ class ExperimentsView(QWidget):
             "Experiments",
             "Compare stimulus strategies and see which one is currently being tried.",
             self,
+            level="page",
         )
+        self._manage_button = QPushButton("Manage", self)
+        self._manage_button.setObjectName("ExperimentsManageButton")
+        self._manage_button.setAccessibleName("Manage experiment")
+        self._manage_button.setAccessibleDescription("Open the experiment management slide-over.")
+        self._manage_button.setToolTip("Open the experiment management panel.")
+        self._manage_button.clicked.connect(self._on_manage_button_clicked)
         self._error_banner = AlertBanner(self)
         self._empty_state = EmptyStateWidget(self)
         self._empty_state.set_title("No experiment yet")
@@ -179,12 +189,21 @@ class ExperimentsView(QWidget):
         self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self._scroll.setWidget(self._body_container)
 
+        # Slide-over wraps the management panel so the page reads as
+        # pure readback by default. Edit affordance opens deliberately.
+        self._slide_over = SlideOver("Manage experiment", self, body=self._manage_panel)
+
+        header_row = QHBoxLayout()
+        header_row.setContentsMargins(0, 0, 0, 0)
+        header_row.setSpacing(12)
+        header_row.addWidget(self._header, 1)
+        header_row.addWidget(self._manage_button)
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 24, 24, 24)
         layout.setSpacing(14)
-        layout.addWidget(self._header)
+        layout.addLayout(header_row)
         layout.addWidget(self._error_banner)
-        layout.addWidget(self._manage_panel)
         layout.addWidget(self._empty_state)
         layout.addWidget(self._scroll, 1)
         layout.setAlignment(Qt.AlignmentFlag.AlignTop)
@@ -233,6 +252,10 @@ class ExperimentsView(QWidget):
         horizontal = table.horizontalHeader()
         if horizontal is not None:
             horizontal.setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        # The α column paints as a posterior bar so cross-arm comparison
+        # is preattentive; raw α/β stay in the tooltip plus the β column.
+        self._posterior_delegate = PosteriorBarDelegate(table)
+        table.setItemDelegateForColumn(3, self._posterior_delegate)
         apply_table_column_policies(
             table,
             _EXPERIMENT_TABLE_POLICIES,
@@ -240,6 +263,9 @@ class ExperimentsView(QWidget):
             default_resize_mode=QHeaderView.ResizeMode.Stretch,
         )
         return table
+
+    def _on_manage_button_clicked(self) -> None:
+        self._slide_over.open()
 
     # ------------------------------------------------------------------
     # Render

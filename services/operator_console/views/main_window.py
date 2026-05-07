@@ -406,6 +406,11 @@ class MainWindow(QMainWindow):
         else:
             self._action_bar.set_countdown_remaining(None)
         self._action_bar.set_last_message(self._live_session_vm.stimulus_progress_message())
+        # UX-20: a disabled submit must explain *why*. The VM composes
+        # the gating reason; the bar makes it visible on the message
+        # line and tints the message warm so the operator does not click
+        # into nothing.
+        self._action_bar.set_gating_reason(self._live_session_vm.stimulus_gating_reason())
 
     # ------------------------------------------------------------------
     # Stimulus submit path (§4.C)

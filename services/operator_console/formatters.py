@@ -35,6 +35,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Literal
 from uuid import UUID
 
 from packages.schemas.operator_console import (
@@ -227,13 +228,42 @@ class StrategyEvidenceDisplay:
 
 @dataclass(frozen=True)
 class CoModulationDisplay:
-    """Display contract for §7C co-modulation readbacks."""
+    """Display contract for §7C co-modulation readbacks.
+
+    `kind` distinguishes the three legitimate states so the view can pick
+    a presentation per outcome — a numeric index, a §7C null-valid pill
+    with the reason as primary text, or a fully absent placeholder.
+    """
 
     status: UiStatusKind
     title: str
     primary: str
     secondary: str
     detail: str
+    kind: Literal["numeric", "null_valid", "absent"] = "numeric"
+    null_reason: str | None = None
+
+
+@dataclass(frozen=True)
+class PhonePreviewStatusDisplay:
+    """Two-line phone preview readback — affirmative primary + caveat."""
+
+    primary: str
+    caveat: str
+
+
+@dataclass(frozen=True)
+class EncounterVerdictDisplay:
+    """Verdict-led encounter detail summary.
+
+    `headline` is the single-sentence answer to "did this count?" and
+    `reason` follows the same readback principle the rest of the console
+    uses — name the gating field rather than restate the verdict.
+    """
+
+    status: UiStatusKind
+    headline: str
+    reason: str
 
 
 # ----------------------------------------------------------------------
@@ -953,7 +983,13 @@ def format_comodulation_index(summary: CoModulationSummary | None) -> str:
 
 
 def build_co_modulation_display(summary: CoModulationSummary | None) -> CoModulationDisplay:
-    """§7C display that keeps null-valid states distinct."""
+    """§7C display that keeps null-valid states distinct.
+
+    The `kind` field tells the view which of three valid states the
+    summary is in: `absent` (no row at all yet), `null_valid` (§7C
+    explicitly returned no number for a real reason — a real outcome,
+    not a missing value), or `numeric` (a finite Pearson value).
+    """
 
     if summary is None:
         return CoModulationDisplay(
@@ -965,15 +1001,18 @@ def build_co_modulation_display(summary: CoModulationSummary | None) -> CoModula
                 "Sync appears after enough fresh streamer and operator physiology "
                 "observations align."
             ),
+            kind="absent",
         )
     if summary.co_modulation_index is None:
         reason = summary.null_reason or "not enough aligned observations yet"
         return CoModulationDisplay(
             status=UiStatusKind.INFO,
             title="Co-Modulation Index",
-            primary=_EM_DASH,
+            primary=reason,
             secondary="Sync data accumulating",
             detail=f"Waiting for enough fresh paired observations. Reason: {reason}.",
+            kind="null_valid",
+            null_reason=reason,
         )
     direction = "moving together" if summary.co_modulation_index >= 0 else "moving apart"
     return CoModulationDisplay(
@@ -985,6 +1024,7 @@ def build_co_modulation_display(summary: CoModulationSummary | None) -> CoModula
             f"Based on {summary.n_paired_observations} fresh paired observation(s) "
             f"with {format_percentage(summary.coverage_ratio, digits=0)} window coverage."
         ),
+        kind="numeric",
     )
 
 
@@ -1424,3 +1464,135 @@ def ui_status_for_health(row: HealthSubsystemStatus) -> UiStatusKind:
         HealthState.UNKNOWN: UiStatusKind.NEUTRAL,
     }
     return mapping[row.state]
+
+
+# ----------------------------------------------------------------------
+# Phone preview status (§4.E.1) — affirmative readback
+# ----------------------------------------------------------------------
+
+
+_PHONE_PREVIEW_CAVEAT = "Raw phone frames are not shown."
+
+
+def format_phone_preview_status(
+    *,
+    dashboard_mode: str,
+    detail: str | None = None,
+) -> PhonePreviewStatusDisplay:
+    """Affirm the live capture path before naming the no-frames caveat.
+
+    The operator reads the primary line first; the caveat exists for
+    correctness but should not lead. Using the same primary phrase
+    everywhere ("Capture active · …") keeps the surface confident
+    instead of disclaiming.
+    """
+
+    if dashboard_mode == "ready":
+        return PhonePreviewStatusDisplay(
+            primary=("Capture active · ADB tether · 30 fps · frames buffered for inference."),
+            caveat=_PHONE_PREVIEW_CAVEAT,
+        )
+    if dashboard_mode == "calibrating":
+        suffix = f" {detail.strip()}." if detail else ""
+        return PhonePreviewStatusDisplay(
+            primary=(
+                "Capture active · preparing live analysis from local capture stream." + suffix
+            ),
+            caveat=_PHONE_PREVIEW_CAVEAT,
+        )
+    return PhonePreviewStatusDisplay(
+        primary="Awaiting capture · connect the phone to start live analysis.",
+        caveat=_PHONE_PREVIEW_CAVEAT,
+    )
+
+
+# ----------------------------------------------------------------------
+# ActionBar gating reason (UX-20) — disabled state must explain why
+# ----------------------------------------------------------------------
+
+
+def format_action_bar_gating_reason(
+    *,
+    state: StimulusActionState,
+    has_session: bool,
+    operator_ready_for_submit: bool,
+    calibration_status_text: str | None = None,
+) -> str | None:
+    """Return the operator-facing reason the submit button is disabled.
+
+    Returns ``None`` when the bar is not gated. The phrasing tells the
+    operator both *why* the button is locked and what comes next, so a
+    silent disabled state never leaves them clicking into nothing.
+    """
+
+    if not has_session:
+        return "No session selected — start one to send a stimulus."
+    if state is StimulusActionState.SUBMITTING:
+        return "Sending the stimulus now — wait for the orchestrator to confirm."
+    if state is StimulusActionState.ACCEPTED:
+        return "Stimulus accepted — waiting for the response window to open."
+    if state is StimulusActionState.MEASURING:
+        return "Measuring active — wait for the response window to close."
+    if not operator_ready_for_submit:
+        if calibration_status_text:
+            return (
+                f"{calibration_status_text} — keep the host face visible until "
+                "the response baseline is ready."
+            )
+        return "Setup not ready — keep the host face visible until the response baseline is ready."
+    return None
+
+
+# ----------------------------------------------------------------------
+# Encounter verdict (§7B) — verdict-led detail pane summary
+# ----------------------------------------------------------------------
+
+
+def build_encounter_verdict(encounter: EncounterSummary | None) -> EncounterVerdictDisplay:
+    """Lead with whether the encounter counted and why, in one sentence.
+
+    Operators ask "did this matter?" first; the underlying inputs follow
+    in a definition list. The reason names the gating field rather than
+    the number, so a zero or null reads as a real outcome.
+    """
+
+    if encounter is None:
+        return EncounterVerdictDisplay(
+            status=UiStatusKind.NEUTRAL,
+            headline="No encounter selected",
+            reason="Pick a row from the table to see why it counted.",
+        )
+    if encounter.n_frames_in_window == 0:
+        return EncounterVerdictDisplay(
+            status=UiStatusKind.WARN,
+            headline="Not counted · response window had no usable face frames",
+            reason=(
+                "No usable face frames were available in the response window, "
+                "so the reward could not be computed."
+            ),
+        )
+    if encounter.semantic_gate == 0:
+        confidence = format_semantic_confidence(semantic_confidence_for_encounter(encounter))
+        return EncounterVerdictDisplay(
+            status=UiStatusKind.INFO,
+            headline="Not counted · stimulus confirmation did not pass",
+            reason=(
+                f"Semantic gate held the reward back at {confidence} confidence. "
+                "Response signal was measured but not used."
+            ),
+        )
+    if encounter.semantic_gate == 1:
+        return EncounterVerdictDisplay(
+            status=UiStatusKind.OK,
+            headline="Counted · semantic gate confirmed",
+            reason=(
+                f"Reward {format_reward(encounter.gated_reward)} from "
+                f"response signal {format_reward(encounter.p90_intensity)} × "
+                "confirmed stimulus."
+            ),
+        )
+    return EncounterVerdictDisplay(
+        status=UiStatusKind.NEUTRAL,
+        headline=f"In progress · state {encounter.state.value}",
+        reason="Outcome not yet determined for this encounter.",
+    )

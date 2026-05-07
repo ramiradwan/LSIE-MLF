@@ -35,7 +35,8 @@ def test_set_alert_shows_banner_with_glyph_and_message() -> None:
     banner.set_alert(AlertSeverity.WARNING, "stale physiology")
     assert banner.isHidden() is False
     assert banner._message.text() == "stale physiology"  # type: ignore[attr-defined]
-    assert banner._glyph.text() == "⚠"  # type: ignore[attr-defined]
+    # Glyph is now a QSvgWidget; severity shows up via accessible name.
+    assert banner._glyph.accessibleName() == "warning"  # type: ignore[attr-defined]
 
 
 def test_severity_drives_object_name() -> None:

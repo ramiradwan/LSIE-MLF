@@ -67,6 +67,11 @@ QPushButton#NavButton:checked {{
     background: {p.surface_raised};
     border-left: 2px solid {p.accent};
 }}
+QPushButton#NavButton:focus {{
+    outline: none;
+    border-left: 2px solid {p.accent};
+    background: {p.surface_raised};
+}}
 
 QFrame#Panel {{
     background: {p.surface};
@@ -88,6 +93,7 @@ QLabel#PanelSubtitle {{
 
 QLabel#StatusBarLabel {{
     color: {p.text_muted};
+    font-feature-settings: \"tnum\" 1, \"lnum\" 1;
 }}
 
 QWidget#StatusPill {{
@@ -105,6 +111,14 @@ QFrame#MetricCard {{
     border: 1px solid {p.border};
     border-radius: 6px;
 }}
+QFrame#MetricCard[clickable=\"true\"]:hover {{
+    border-color: {p.accent};
+    background: {p.surface_raised};
+}}
+QFrame#MetricCard[clickable=\"true\"]:focus {{
+    outline: none;
+    border: 2px solid {p.accent};
+}}
 QLabel#MetricCardTitle {{
     color: {p.text_muted};
     font-size: 12px;
@@ -114,10 +128,21 @@ QLabel#MetricCardPrimary {{
     color: {p.text_primary};
     font-size: 16px;
     font-weight: 600;
+    font-feature-settings: \"tnum\" 1, \"lnum\" 1;
 }}
 QLabel#MetricCardSecondary {{
     color: {p.text_muted};
     font-size: 12px;
+    font-feature-settings: \"tnum\" 1, \"lnum\" 1;
+}}
+QLabel#MetricCardChevron {{
+    color: {p.text_muted};
+    font-size: 14px;
+    font-weight: 600;
+    padding: 0 0 0 6px;
+}}
+QFrame#MetricCard[clickable=\"true\"]:hover QLabel#MetricCardChevron {{
+    color: {p.accent};
 }}
 
 QWidget#SectionHeader {{
@@ -127,6 +152,19 @@ QLabel#SectionHeaderTitle {{
     font-size: 15px;
     font-weight: 600;
     color: {p.text_primary};
+}}
+QLabel#SectionHeaderTitle[level=\"page\"] {{
+    font-size: 18px;
+    font-weight: 600;
+}}
+QLabel#SectionHeaderTitle[level=\"panel\"] {{
+    font-size: 14px;
+    font-weight: 600;
+}}
+QLabel#SectionHeaderTitle[level=\"sub\"] {{
+    font-size: 12px;
+    font-weight: 500;
+    color: {p.text_muted};
 }}
 QLabel#SectionHeaderSubtitle {{
     color: {p.text_muted};
@@ -154,6 +192,7 @@ QLineEdit#ActionBarNote {{
 }}
 QLineEdit#ActionBarNote:focus {{
     border: 1px solid {p.accent};
+    outline: none;
 }}
 QPushButton#ActionBarSubmit {{
     background: {p.accent};
@@ -167,13 +206,56 @@ QPushButton#ActionBarSubmit:disabled {{
     background: {p.surface_raised};
     color: {p.text_muted};
 }}
+QPushButton#ActionBarSubmit:focus {{
+    outline: none;
+    border: 2px solid {p.accent};
+    padding: 6px 16px;
+}}
 QLabel#ActionBarCountdown {{
     color: {p.status_warn};
     font-family: \"Cascadia Mono\", \"Consolas\", \"Menlo\", \"DejaVu Sans Mono\", monospace;
+    font-feature-settings: \"tnum\" 1, \"lnum\" 1;
 }}
 QLabel#ActionBarMessage {{
     color: {p.text_muted};
     font-size: 12px;
+}}
+QLabel#ActionBarMessage[severity=\"blocked\"] {{
+    color: {p.status_warn};
+}}
+QPushButton#ActionBarNoteToggle {{
+    background: transparent;
+    border: 1px dashed {p.border};
+    border-radius: 4px;
+    padding: 4px 10px;
+    color: {p.text_muted};
+    font-size: 12px;
+}}
+QPushButton#ActionBarNoteToggle:hover {{
+    color: {p.text_primary};
+    border-color: {p.accent};
+}}
+QFrame#ActionBarProgress {{
+    background: transparent;
+    border: none;
+}}
+
+QFrame#LiveSessionReadinessStrip {{
+    background: {p.surface};
+    border: 1px solid {p.border};
+    border-radius: 4px;
+}}
+QFrame#LiveSessionReadinessStrip[severity=\"warn\"] {{
+    background: rgba(231, 179, 74, 0.12);
+    border-color: {p.status_warn};
+}}
+QFrame#LiveSessionReadinessStrip[severity=\"error\"] {{
+    background: rgba(226, 106, 106, 0.16);
+    border-color: {p.status_bad};
+}}
+QFrame#LiveSessionReadinessStrip[severity=\"recovering\"] {{
+    background: rgba(108, 195, 213, 0.10);
+    border-color: {p.status_recovering};
 }}
 
 QFrame#AlertBanner,
@@ -232,6 +314,11 @@ QTableView {{
     border: none;
     selection-background-color: {p.accent};
     selection-color: {p.text_primary};
+    font-feature-settings: \"tnum\" 1, \"lnum\" 1;
+}}
+QTableView:focus {{
+    outline: none;
+    border: 1px solid {p.accent};
 }}
 QHeaderView::section {{
     background: {p.surface_raised};
@@ -245,11 +332,79 @@ QTableView::item {{
     padding: 6px 10px;
 }}
 
+QLineEdit {{
+    background: {p.surface_raised};
+    border: 1px solid {p.border};
+    border-radius: 4px;
+    padding: 6px 10px;
+    color: {p.text_primary};
+    selection-background-color: {p.accent};
+}}
+QLineEdit:focus {{
+    border: 1px solid {p.accent};
+    outline: none;
+}}
+
+QPushButton:focus {{
+    outline: none;
+}}
+
+QLineEdit#SessionsFilterInput {{
+    background: {p.surface_raised};
+    border: 1px solid {p.border};
+    border-radius: 4px;
+    padding: 6px 10px;
+}}
+QLineEdit#SessionsFilterInput:focus {{
+    border: 1px solid {p.accent};
+}}
+
+QFrame#ExperimentsSlideOver {{
+    background: {p.surface};
+    border-left: 1px solid {p.border};
+}}
+QFrame#ExperimentsSlideOverScrim {{
+    background: rgba(0, 0, 0, 0.45);
+}}
+
+QFrame#ProbeSparkline {{
+    background: transparent;
+    border: none;
+}}
+
 QLabel#HealthRowOk {{ color: {p.status_ok}; font-weight: 600; }}
 QLabel#HealthRowWarn {{ color: {p.status_warn}; font-weight: 600; }}
 QLabel#HealthRowBad {{ color: {p.status_bad}; font-weight: 600; }}
 QLabel#HealthRowDegraded {{ color: {p.status_degraded}; font-weight: 600; }}
 QLabel#HealthRowRecovering {{ color: {p.status_recovering}; font-weight: 600; }}
+QLabel#HealthRowMuted {{ color: {p.text_muted}; font-weight: 600; }}
+
+QLabel#EncounterVerdictHeadline {{
+    color: {p.text_primary};
+    font-size: 16px;
+    font-weight: 600;
+}}
+QLabel#EncounterVerdictReason {{
+    color: {p.text_muted};
+    font-size: 13px;
+}}
+QLabel#EncounterInputsLabel {{
+    color: {p.text_muted};
+    font-family: \"Cascadia Mono\", \"Consolas\", \"Menlo\", \"DejaVu Sans Mono\", monospace;
+    font-size: 12px;
+    padding-left: 16px;
+    font-feature-settings: \"tnum\" 1, \"lnum\" 1;
+}}
+
+QLabel#NullValidPill {{
+    background: rgba(91, 141, 239, 0.18);
+    color: {p.accent};
+    border: 1px solid {p.accent};
+    border-radius: 999px;
+    padding: 1px 10px;
+    font-size: 11px;
+    font-weight: 600;
+}}
 """
 
 

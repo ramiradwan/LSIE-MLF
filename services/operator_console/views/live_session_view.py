@@ -33,6 +33,7 @@ from PySide6.QtCore import (
     QAbstractTableModel,
     QModelIndex,
     QPersistentModelIndex,
+    QSettings,
     Qt,
     QTimer,
     Signal,
@@ -44,12 +45,14 @@ from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
     QDialogButtonBox,
+    QFormLayout,
     QFrame,
     QHBoxLayout,
     QHeaderView,
     QLabel,
     QPushButton,
     QScrollArea,
+    QSplitter,
     QTableView,
     QVBoxLayout,
     QWidget,
@@ -68,10 +71,14 @@ from services.operator_console.formatters import (
     AcousticDetailDisplay,
     AcousticMetricCardDisplay,
     CauseEffectDisplay,
+    EncounterVerdictDisplay,
     LiveTelemetryDisplay,
+    PhonePreviewStatusDisplay,
     ReadinessDisplay,
     SemanticAttributionDiagnosticsDisplay,
     acoustic_section_labels,
+    build_encounter_verdict,
+    format_phone_preview_status,
     format_reward,
     format_semantic_confidence,
     format_semantic_gate,
@@ -101,6 +108,8 @@ _COUNTDOWN_TICK_MS: int = 1000
 _LIVE_SESSION_BREAKPOINTS = ResponsiveBreakpoints(medium_min_width=720, wide_min_width=1040)
 _NARROW_PHONE_PREVIEW_HEIGHT = 120
 _WIDE_PHONE_PREVIEW_HEIGHT = 220
+_SPLITTER_SETTINGS_KEY = "live_session/operate_inspect_splitter"
+_SPLITTER_DEFAULT_RATIO = (45, 55)
 
 _ENCOUNTER_TABLE_POLICIES: tuple[TableColumnPolicy, ...] = (
     TableColumnPolicy(
@@ -182,10 +191,10 @@ class LiveSessionView(QWidget):
             "Live Session",
             "Connect the phone, send a stimulus, then watch the observed response.",
             self,
+            level="page",
         )
         self._session_panel = _SessionHeaderPanel(self)
-        self._adb_pill = StatusPill(self)
-        self._ml_pill = StatusPill(self)
+        self._readiness_strip = _ReadinessStrip(self)
         self._error_banner = AlertBanner(self)
         self._empty_state = EmptyStateWidget(self)
         self._empty_state.set_title("No session selected")
@@ -211,13 +220,6 @@ class LiveSessionView(QWidget):
         self._table = self._build_table()
         self._detail_panel = _EncounterDetailPanel(self)
 
-        header_status = QHBoxLayout()
-        header_status.setContentsMargins(0, 0, 0, 0)
-        header_status.setSpacing(16)
-        header_status.addWidget(self._header, 1)
-        header_status.addWidget(self._adb_pill)
-        header_status.addWidget(self._ml_pill)
-
         self._dashboard_grid = ResponsiveMetricGrid(
             breakpoints=_LIVE_SESSION_BREAKPOINTS,
             columns=MetricGridColumns(wide=2, medium=2, narrow=1),
@@ -241,32 +243,63 @@ class LiveSessionView(QWidget):
         trust_layout.addWidget(self._table, 2)
         trust_layout.addWidget(self._detail_panel, 3)
 
-        self._body_container = QWidget(self)
-        body = QVBoxLayout(self._body_container)
-        body.setContentsMargins(0, 0, 0, 0)
-        body.setSpacing(14)
-        body.addWidget(self._setup_overlay)
-        body.addWidget(self._live_analytics_notice)
-        body.addWidget(self._dashboard_grid, 2)
-        body.addWidget(self._cause_effect_panel)
-        body.addWidget(self._timeline)
-        body.addLayout(trust_layout, 3)
+        # Operate region — always-visible, glued to the top during a stimulus.
+        self._operate_container = QWidget(self)
+        operate_layout = QVBoxLayout(self._operate_container)
+        operate_layout.setContentsMargins(0, 0, 0, 0)
+        operate_layout.setSpacing(14)
+        operate_layout.addWidget(self._setup_overlay)
+        operate_layout.addWidget(self._live_analytics_notice)
+        operate_layout.addWidget(self._dashboard_grid)
+        operate_layout.addWidget(self._cause_effect_panel)
+        operate_layout.addWidget(self._timeline)
+        operate_layout.addStretch(1)
 
-        self._scroll = QScrollArea(self)
-        self._scroll.setObjectName("LiveSessionScrollArea")
-        self._scroll.setWidgetResizable(True)
-        self._scroll.setFrameShape(QFrame.Shape.NoFrame)
-        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
-        self._scroll.setWidget(self._body_container)
+        # Inspect region — encounter table + drill-down detail. Lives in
+        # its own scroll region so history scrolling never pushes the
+        # live readback off the viewport.
+        self._inspect_container = QWidget(self)
+        inspect_layout = QVBoxLayout(self._inspect_container)
+        inspect_layout.setContentsMargins(0, 0, 0, 0)
+        inspect_layout.setSpacing(8)
+        inspect_layout.addLayout(trust_layout)
+
+        self._operate_scroll = QScrollArea(self)
+        self._operate_scroll.setObjectName("LiveSessionOperateScroll")
+        self._operate_scroll.setWidgetResizable(True)
+        self._operate_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._operate_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._operate_scroll.setWidget(self._operate_container)
+
+        self._inspect_scroll = QScrollArea(self)
+        self._inspect_scroll.setObjectName("LiveSessionInspectScroll")
+        self._inspect_scroll.setWidgetResizable(True)
+        self._inspect_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._inspect_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._inspect_scroll.setWidget(self._inspect_container)
+
+        # Wrap the two regions in a vertical splitter so the operator can
+        # decide how much of the page is live readback versus history;
+        # default ratio is 45/55 and the position is persisted via QSettings.
+        self._splitter = QSplitter(Qt.Orientation.Vertical, self)
+        self._splitter.setObjectName("LiveSessionSplitter")
+        self._splitter.setChildrenCollapsible(False)
+        self._splitter.addWidget(self._operate_scroll)
+        self._splitter.addWidget(self._inspect_scroll)
+        self._splitter.splitterMoved.connect(self._on_splitter_moved)
+        self._scroll = self._operate_scroll  # backward-compat for tests/visibility checks
+        self._body_container = self._operate_container
+        self._restore_splitter()
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 24, 24, 24)
         layout.setSpacing(14)
-        layout.addLayout(header_status)
+        layout.addWidget(self._header)
+        layout.addWidget(self._readiness_strip)
         layout.addWidget(self._error_banner)
         layout.addWidget(self._session_panel)
         layout.addWidget(self._empty_state)
-        layout.addWidget(self._scroll, 1)
+        layout.addWidget(self._splitter, 1)
         layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
         self._countdown_timer = QTimer(self)
@@ -348,17 +381,26 @@ class LiveSessionView(QWidget):
             start_in_progress=self._vm.session_start_in_progress(),
             end_in_progress=self._vm.session_end_in_progress(),
         )
-        self._set_status_pill(self._adb_pill, self._vm.adb_status())
-        self._set_status_pill(self._ml_pill, self._vm.ml_backend_status())
+        self._readiness_strip.set_statuses(
+            adb=self._vm.adb_status(),
+            ml=self._vm.ml_backend_status(),
+            audio=self._vm.audio_capture_status(),
+            video=self._vm.video_capture_status(),
+            calibration=self._vm.calibration_status(),
+        )
         setup_display = self._vm.ttv_setup_display()
         if setup_display.dashboard_mode == "gate":
             self._set_setup_gate(setup_display)
-            self._scroll.setVisible(False)
+            self._splitter.setVisible(False)
+            self._operate_scroll.setVisible(False)
+            self._inspect_scroll.setVisible(False)
             self._sync_countdown_timer()
             return
         self._empty_state.setVisible(False)
-        self._scroll.setVisible(True)
-        self._body_container.setVisible(True)
+        self._splitter.setVisible(True)
+        self._operate_scroll.setVisible(True)
+        self._inspect_scroll.setVisible(True)
+        self._operate_container.setVisible(True)
         self._set_setup_overlay(setup_display)
         self._set_dashboard_muted(setup_display.dashboard_mode == "calibrating")
         self._set_phone_preview_status(setup_display)
@@ -419,21 +461,14 @@ class LiveSessionView(QWidget):
         self._body_container.setObjectName("ContentSurfaceMuted" if enabled else "")
 
     def _set_phone_preview_status(self, display: TtvSetupDisplay) -> None:
-        if display.dashboard_mode == "calibrating":
-            detail = f" {display.detail}." if display.detail is not None else ""
-            self._phone_preview.set_status(
-                "Raw phone frames are not shown. Preparing live analysis from "
-                f"the local capture stream.{detail}"
-            )
-            return
-        if display.dashboard_mode == "ready":
-            self._phone_preview.set_status(
-                "Healthy. Derived response signals update after the first result is ready."
-            )
-            return
-        self._phone_preview.set_status(
-            "Raw phone frames are not shown. Connect the phone and wait for live analysis."
+        # UX-12: positive readback first, caveat secondary. The operator
+        # reads "what is" before "what isn't" so a healthy bar reads as a
+        # confidence cue, not a disclaimer.
+        status_display = format_phone_preview_status(
+            dashboard_mode=display.dashboard_mode,
+            detail=display.detail,
         )
+        self._phone_preview.set_status_display(status_display)
 
     def _set_status_pill(self, pill: StatusPill, value: object) -> None:
         if isinstance(value, tuple) and len(value) == 2 and isinstance(value[0], UiStatusKind):
@@ -448,6 +483,24 @@ class LiveSessionView(QWidget):
             self._live_analytics_notice.set_alert(None, None)
             return
         self._live_analytics_notice.set_alert(AlertSeverity.INFO, message)
+
+    def _on_splitter_moved(self, _pos: int, _index: int) -> None:
+        settings = QSettings("LSIE-MLF", "OperatorConsole")
+        settings.setValue(_SPLITTER_SETTINGS_KEY, self._splitter.saveState())
+
+    def _restore_splitter(self) -> None:
+        settings = QSettings("LSIE-MLF", "OperatorConsole")
+        saved = settings.value(_SPLITTER_SETTINGS_KEY)
+        if saved is not None:
+            try:
+                self._splitter.restoreState(saved)
+                return
+            except (TypeError, ValueError):
+                pass
+        # First run: anchor to 45/55 like the spec recommends.
+        operate, inspect = _SPLITTER_DEFAULT_RATIO
+        total = max(operate + inspect, 1)
+        self._splitter.setSizes([operate * 1000 // total, inspect * 1000 // total])
 
     def _apply_responsive_layout(self) -> None:
         viewport_width = self._scroll.viewport().width()
@@ -843,11 +896,14 @@ class _PhonePreviewPanel(QFrame):
         self._placeholder.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self._placeholder.setMinimumHeight(_WIDE_PHONE_PREVIEW_HEIGHT)
         self._status = QLabel(
-            "Raw phone frames are not shown. Waiting for capture and face tracking.",
+            "Awaiting capture · connect the phone to start live analysis.",
             self,
         )
-        self._status.setObjectName("MetricCardSecondary")
+        self._status.setObjectName("MetricCardPrimary")
         self._status.setWordWrap(True)
+        self._caveat = QLabel("Raw phone frames are not shown.", self)
+        self._caveat.setObjectName("MetricCardSecondary")
+        self._caveat.setWordWrap(True)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 12, 16, 16)
@@ -855,14 +911,106 @@ class _PhonePreviewPanel(QFrame):
         layout.addWidget(self._title)
         layout.addWidget(self._placeholder, 1)
         layout.addWidget(self._status)
+        layout.addWidget(self._caveat)
 
     def set_status(self, text: str) -> None:
         self._status.setText(text)
+
+    def set_status_display(self, display: PhonePreviewStatusDisplay) -> None:
+        self._status.setText(display.primary)
+        self._caveat.setText(display.caveat)
 
     def set_compact(self, enabled: bool) -> None:
         self._placeholder.setMinimumHeight(
             _NARROW_PHONE_PREVIEW_HEIGHT if enabled else _WIDE_PHONE_PREVIEW_HEIGHT
         )
+
+
+class _ReadinessStrip(QFrame):
+    """Thin strip above the page header summarising readiness signals.
+
+    Lifts ADB / ML / capture / safe-submit out of the title row so the
+    operator picks up the worst-case severity peripherally — when any
+    one signal flips off-OK the whole strip tints, no re-reading pills.
+    """
+
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("LiveSessionReadinessStrip")
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        self.setMinimumHeight(28)
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setAccessibleName("Readiness strip")
+        self.setAccessibleDescription(
+            "Compact readiness summary across phone tether, live analysis, "
+            "capture, and submit-safe."
+        )
+        self.setProperty("severity", "")
+
+        self._adb_pill = StatusPill(self)
+        self._ml_pill = StatusPill(self)
+        self._audio_pill = StatusPill(self)
+        self._video_pill = StatusPill(self)
+        self._submit_pill = StatusPill(self)
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(12, 4, 12, 4)
+        layout.setSpacing(18)
+        layout.addWidget(self._adb_pill)
+        layout.addWidget(self._ml_pill)
+        layout.addWidget(self._audio_pill)
+        layout.addWidget(self._video_pill)
+        layout.addStretch(1)
+        layout.addWidget(self._submit_pill)
+
+    def set_statuses(
+        self,
+        *,
+        adb: tuple[UiStatusKind, str],
+        ml: tuple[UiStatusKind, str],
+        audio: tuple[UiStatusKind, str],
+        video: tuple[UiStatusKind, str],
+        calibration: tuple[UiStatusKind, str],
+    ) -> None:
+        for pill, status in (
+            (self._adb_pill, adb),
+            (self._ml_pill, ml),
+            (self._audio_pill, audio),
+            (self._video_pill, video),
+            (self._submit_pill, calibration),
+        ):
+            pill.set_kind(status[0])
+            pill.set_text(status[1])
+        worst = _worst_severity(adb[0], ml[0], audio[0], video[0], calibration[0])
+        self.setProperty("severity", worst)
+        self.style().unpolish(self)
+        self.style().polish(self)
+
+
+_SEVERITY_RANK: dict[UiStatusKind, int] = {
+    UiStatusKind.ERROR: 4,
+    UiStatusKind.WARN: 3,
+    UiStatusKind.PROGRESS: 2,
+    UiStatusKind.INFO: 1,
+    UiStatusKind.NEUTRAL: 0,
+    UiStatusKind.MUTED: 0,
+    UiStatusKind.OK: 0,
+}
+
+_SEVERITY_PROP: dict[UiStatusKind, str] = {
+    UiStatusKind.ERROR: "error",
+    UiStatusKind.WARN: "warn",
+    UiStatusKind.PROGRESS: "recovering",
+    UiStatusKind.INFO: "",
+    UiStatusKind.NEUTRAL: "",
+    UiStatusKind.MUTED: "",
+    UiStatusKind.OK: "",
+}
+
+
+def _worst_severity(*kinds: UiStatusKind) -> str:
+    worst = max(kinds, key=lambda kind: _SEVERITY_RANK.get(kind, 0), default=UiStatusKind.OK)
+    return _SEVERITY_PROP.get(worst, "")
 
 
 def _timeline_value(row: object, name: str) -> object:
@@ -1126,6 +1274,37 @@ class _EncounterDetailPanel(QFrame):
         self._subtitle.setObjectName("PanelSubtitle")
         self._subtitle.setWordWrap(True)
 
+        # UX-11: Verdict line first — operators ask "did this matter?"
+        # before the math. Status pill + reason sentence; the existing
+        # reward grid stays below as the indented input definition list.
+        self._verdict_pill = StatusPill(self)
+        self._verdict_headline = QLabel("", self)
+        self._verdict_headline.setObjectName("EncounterVerdictHeadline")
+        self._verdict_headline.setWordWrap(True)
+        self._verdict_reason = QLabel("", self)
+        self._verdict_reason.setObjectName("EncounterVerdictReason")
+        self._verdict_reason.setWordWrap(True)
+        verdict_row = QHBoxLayout()
+        verdict_row.setContentsMargins(0, 0, 0, 0)
+        verdict_row.setSpacing(10)
+        verdict_row.addWidget(self._verdict_pill)
+        verdict_row.addWidget(self._verdict_headline, 1)
+        self._verdict_container = QWidget(self)
+        verdict_layout = QVBoxLayout(self._verdict_container)
+        verdict_layout.setContentsMargins(0, 0, 0, 4)
+        verdict_layout.setSpacing(2)
+        verdict_layout.addLayout(verdict_row)
+        verdict_layout.addWidget(self._verdict_reason)
+
+        # Inputs definition list — muted, monospace, indented. Provides
+        # the "show your work" view without competing with the verdict.
+        self._inputs_list = QWidget(self)
+        self._inputs_form = QFormLayout(self._inputs_list)
+        self._inputs_form.setContentsMargins(16, 4, 0, 8)
+        self._inputs_form.setSpacing(4)
+        self._inputs_form.setLabelAlignment(Qt.AlignmentFlag.AlignLeft)
+        self._inputs_list.setObjectName("EncounterInputsList")
+
         reward_labels = reward_detail_labels()
         self._p90_card = MetricCard(reward_labels.p90_title, self)
         self._gate_card = MetricCard(reward_labels.gate_title, self)
@@ -1268,6 +1447,8 @@ class _EncounterDetailPanel(QFrame):
         layout.setSpacing(8)
         layout.addWidget(self._title)
         layout.addWidget(self._subtitle)
+        layout.addWidget(self._verdict_container)
+        layout.addWidget(self._inputs_list)
         layout.addWidget(self._reward_grid)
         layout.addWidget(self._explanation)
         layout.addWidget(self._acoustic_title)
@@ -1293,6 +1474,9 @@ class _EncounterDetailPanel(QFrame):
         acoustic_detail: AcousticDetailDisplay,
         semantic_detail: SemanticAttributionDiagnosticsDisplay,
     ) -> None:
+        verdict = build_encounter_verdict(encounter)
+        self._set_verdict(verdict)
+        self._set_inputs_definition_list(encounter)
         if encounter is None:
             self._subtitle.setText("No encounter selected.")
             for card in (
@@ -1369,6 +1553,47 @@ class _EncounterDetailPanel(QFrame):
         self._set_transcription(encounter.transcription)
         self._set_acoustic(acoustic_detail)
         self._set_semantic_attribution(semantic_detail)
+
+    def _set_verdict(self, verdict: EncounterVerdictDisplay) -> None:
+        self._verdict_pill.set_kind(verdict.status)
+        self._verdict_pill.set_text(verdict.status.value)
+        self._verdict_headline.setText(verdict.headline)
+        self._verdict_reason.setText(verdict.reason)
+        self._verdict_pill.setAccessibleName(verdict.headline)
+        self._verdict_pill.setAccessibleDescription(verdict.reason)
+
+    def _set_inputs_definition_list(self, encounter: EncounterSummary | None) -> None:
+        # Clear and rebuild — operator inputs change every selection.
+        while self._inputs_form.count() > 0:
+            item = self._inputs_form.takeAt(0)
+            if item is None:
+                continue
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+        if encounter is None:
+            return
+        rows = (
+            ("p90 intensity", format_reward(encounter.p90_intensity)),
+            (
+                "semantic gate",
+                str(encounter.semantic_gate) if encounter.semantic_gate is not None else "—",
+            ),
+            (
+                "frames in window",
+                str(encounter.n_frames_in_window)
+                if encounter.n_frames_in_window is not None
+                else "—",
+            ),
+            ("au12 baseline pre", format_reward(encounter.au12_baseline_pre)),
+            ("gated reward", format_reward(encounter.gated_reward)),
+        )
+        for key, value in rows:
+            key_label = QLabel(key, self._inputs_list)
+            key_label.setObjectName("EncounterInputsLabel")
+            value_label = QLabel(value, self._inputs_list)
+            value_label.setObjectName("EncounterInputsLabel")
+            self._inputs_form.addRow(key_label, value_label)
 
     def _set_transcription(self, transcription: str | None) -> None:
         text = transcription.strip() if transcription is not None else ""

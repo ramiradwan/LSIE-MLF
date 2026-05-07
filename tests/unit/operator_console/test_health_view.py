@@ -93,7 +93,7 @@ def test_health_view_repair_button_tracks_action_binding() -> None:
     assert view._repair_button.isEnabled() is True
 
 
-def test_health_view_repair_click_invokes_bound_action() -> None:
+def test_health_view_repair_click_invokes_bound_action(monkeypatch: pytest.MonkeyPatch) -> None:
     view, vm, store = _view_with_vm()
     calls: list[str] = []
 
@@ -104,11 +104,20 @@ def test_health_view_repair_click_invokes_bound_action() -> None:
     vm.bind_repair_action(request_repair)
     store.set_health(_snapshot(HealthState.OK))
 
+    # UX-18: repair install now confirms via QMessageBox before dispatching;
+    # patch exec() to return Yes so the test exercises the bound action.
+    from PySide6.QtWidgets import QMessageBox
+
+    monkeypatch.setattr(QMessageBox, "exec", lambda self: QMessageBox.StandardButton.Yes)
+
     view._repair_button.click()
     assert calls == ["repair"]
     assert view._repair_status.isHidden() is False
-    assert view._repair_status.text() == "Repair requested"
-    assert view._repair_status.accessibleDescription() == "Repair requested"
+    # Status copy moved to a determinate progress label while the repair
+    # is in flight ("Installing runtime…") rather than the prior generic
+    # "Repair requested" — the action is heavier and reads as such.
+    assert view._repair_status.text() == "Installing runtime…"
+    assert "Repair install in progress" in view._repair_status.accessibleDescription()
 
 
 def test_health_view_renders_ok_snapshot() -> None:
@@ -120,7 +129,7 @@ def test_health_view_renders_ok_snapshot() -> None:
     assert view._error_card._primary.text() == "0"
 
 
-def test_health_view_probe_matrix_renders_not_configured_as_neutral() -> None:
+def test_health_view_probe_matrix_renders_not_configured_as_muted() -> None:
     view, store = _view()
     store.set_health(
         _snapshot(
@@ -139,7 +148,10 @@ def test_health_view_probe_matrix_renders_not_configured_as_neutral() -> None:
     )
     pill = view._probe_matrix._state_pills[0]
     latency = view._probe_matrix._latency_labels[0]
-    assert pill.kind() is UiStatusKind.NEUTRAL
+    # UX-05: NOT_CONFIGURED maps to the explicit MUTED bucket so it
+    # reads as "the system isn't expected to report here", visually
+    # distinct from NEUTRAL ("nothing to say yet").
+    assert pill.kind() is UiStatusKind.MUTED
     assert pill.text() == "not configured"
     assert latency.text() == "—"
 

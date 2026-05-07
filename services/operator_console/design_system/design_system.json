@@ -64,9 +64,10 @@
         "MetricCard",
         "MetricCardTitle",
         "MetricCardPrimary",
-        "MetricCardSecondary"
+        "MetricCardSecondary",
+        "MetricCardChevron"
       ],
-      "description": "Summary card with title, primary value, optional secondary explanation, and optional status pill."
+      "description": "Summary card with title, primary value, optional secondary explanation, optional status pill, and an optional chevron affordance when clickable."
     },
     {
       "name": "StatusPill",
@@ -112,7 +113,7 @@
         "SectionHeaderTitle",
         "SectionHeaderSubtitle"
       ],
-      "description": "Page and section heading block."
+      "description": "Page and section heading block. The title carries a `level` property (`page`, `panel`, `sub`) so the same widget renders at three sizes."
     },
     {
       "name": "ResponsiveMetricGrid",
@@ -130,9 +131,11 @@
         "ActionBarNote",
         "ActionBarSubmit",
         "ActionBarCountdown",
-        "ActionBarMessage"
+        "ActionBarMessage",
+        "ActionBarNoteToggle",
+        "ActionBarProgress"
       ],
-      "description": "Persistent shell-level stimulus rail."
+      "description": "Persistent shell-level stimulus rail. Includes the optional countdown progress strip pinned to the bottom edge and the compact-mode note toggle."
     }
   ],
   "selectors": [
@@ -149,6 +152,16 @@
     {"object_name": "HealthRowWarn", "kind": "status"},
     {"object_name": "HealthRowBad", "kind": "status"},
     {"object_name": "HealthRowDegraded", "kind": "status"},
-    {"object_name": "HealthRowRecovering", "kind": "status"}
+    {"object_name": "HealthRowRecovering", "kind": "status"},
+    {"object_name": "HealthRowMuted", "kind": "status"},
+    {"object_name": "LiveSessionReadinessStrip", "kind": "surface"},
+    {"object_name": "EncounterVerdictHeadline", "kind": "surface"},
+    {"object_name": "EncounterVerdictReason", "kind": "surface"},
+    {"object_name": "EncounterInputsLabel", "kind": "surface"},
+    {"object_name": "NullValidPill", "kind": "status"},
+    {"object_name": "SessionsFilterInput", "kind": "surface"},
+    {"object_name": "ExperimentsSlideOver", "kind": "surface"},
+    {"object_name": "ExperimentsSlideOverScrim", "kind": "surface"},
+    {"object_name": "ProbeSparkline", "kind": "surface"}
   ]
 }

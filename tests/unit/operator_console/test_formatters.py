@@ -782,7 +782,11 @@ class TestCoModulationDisplay:
                 null_reason="insufficient aligned non-stale pairs",
             )
         )
-        assert display.primary == "—"
+        # UX-16: null-valid is a real outcome — primary becomes the
+        # reason, not a muted dash, and `kind` carries the discriminator.
+        assert display.primary == "insufficient aligned non-stale pairs"
+        assert display.kind == "null_valid"
+        assert display.null_reason == "insufficient aligned non-stale pairs"
         assert display.secondary == "Sync data accumulating"
         assert display.status is UiStatusKind.INFO
         assert "insufficient aligned non-stale pairs" in display.detail
