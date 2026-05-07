@@ -28,14 +28,14 @@ def run(shutdown_event: mpsync.Event, channels: IpcChannels) -> None:
         build_store,
     )
     from services.operator_console.config import load_config
-    from services.operator_console.theme import build_stylesheet
+    from services.operator_console.design_system import install_application_stylesheet
 
     api_runtime = start_operator_api_runtime(channels)
 
     qt_app = QApplication([])
     qt_app.setApplicationName("LSIE-MLF Operator Console")
     qt_app.setOrganizationName("LSIE-MLF")
-    qt_app.setStyleSheet(build_stylesheet())
+    install_application_stylesheet(qt_app)
 
     config = load_config()
     store = build_store()

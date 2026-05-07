@@ -64,7 +64,6 @@ from services.operator_console.table_models.health_table_model import HealthTabl
 from services.operator_console.table_models.sessions_table_model import (
     SessionsTableModel,
 )
-from services.operator_console.theme import PALETTE
 from services.operator_console.viewmodels.experiments_vm import ExperimentsViewModel
 from services.operator_console.viewmodels.health_vm import HealthViewModel
 from services.operator_console.viewmodels.live_session_vm import LiveSessionViewModel
@@ -272,12 +271,9 @@ class MainWindow(QMainWindow):
         layout.setSpacing(4)
 
         title = QLabel("LSIE-MLF", sidebar)
-        title.setStyleSheet(
-            "font-size: 16px; font-weight: 700; "
-            f"color: {PALETTE.text_primary}; padding: 0 6px 4px 6px;"
-        )
+        title.setObjectName("SidebarTitle")
         subtitle = QLabel("Operator Console", sidebar)
-        subtitle.setStyleSheet(f"color: {PALETTE.text_muted}; padding: 0 6px 18px 6px;")
+        subtitle.setObjectName("SidebarSubtitle")
 
         layout.addWidget(title)
         layout.addWidget(subtitle)

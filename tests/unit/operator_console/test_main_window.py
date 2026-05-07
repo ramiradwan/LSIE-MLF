@@ -21,6 +21,7 @@ from uuid import UUID, uuid4
 
 import pytest
 from PySide6.QtGui import QCloseEvent
+from PySide6.QtWidgets import QLabel
 
 from packages.schemas.operator_console import (
     ArmSummary,
@@ -159,6 +160,13 @@ def test_sidebar_nav_buttons_expose_accessible_descriptions() -> None:
     assert live_button.toolTip() == live_button.accessibleDescription()
     assert health_button.accessibleName() == "Health"
     assert "readiness checks" in health_button.accessibleDescription()
+
+
+def test_sidebar_header_uses_registered_object_names() -> None:
+    window, _store, _coord = _make_window()
+
+    assert window.findChild(QLabel, "SidebarTitle") is not None
+    assert window.findChild(QLabel, "SidebarSubtitle") is not None
 
 
 def test_store_route_change_syncs_stack_and_sidebar() -> None:
