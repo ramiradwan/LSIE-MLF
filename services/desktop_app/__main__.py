@@ -64,12 +64,23 @@ def main(argv: Sequence[str] | None = None) -> int:
     graph = ProcessGraph(runtime_mode="operator_api" if args.operator_api else "operator_console")
 
     def _handle_signal(signum: int, _frame: FrameType | None) -> None:
-        logger.info("received signal %s — initiating cooperative shutdown", signum)
-        graph.request_shutdown()
+        # Signal-safe handler: only flip a flag. The wait loop drains
+        # the ``multiprocessing.Event.set`` calls on the main thread,
+        # which deadlock when invoked from a Windows signal handler
+        # after the first event has been signalled.
+        del signum
+        graph.signal_shutdown()
 
     signal.signal(signal.SIGINT, _handle_signal)
     if hasattr(signal, "SIGTERM"):
         signal.signal(signal.SIGTERM, _handle_signal)
+    # SIGBREAK is the only graceful signal a Windows parent process can
+    # deliver to a child launched with CREATE_NEW_PROCESS_GROUP. Without
+    # it, an external supervisor (e.g. the real-device benchmark) is
+    # forced into TerminateProcess, which skips ProcessGraph.stop_all
+    # and leaves the §5.2 transient-capture-artifact cleanup unrun.
+    if hasattr(signal, "SIGBREAK"):
+        signal.signal(signal.SIGBREAK, _handle_signal)
 
     graph.start_all()
     try:

@@ -438,8 +438,40 @@ def secure_delete_file(
             if attempt < max(1, attempts) - 1:
                 time.sleep(retry_delay_s)
 
-    logger.warning("capture file delete failed: %s (%s)", path, last_error)
+    logger.warning(
+        "capture file delete failed: %s (%s)%s",
+        path,
+        last_error,
+        _diagnose_file_holders(path),
+    )
     return False
+
+
+def _diagnose_file_holders(path: Path) -> str:
+    """Return a parenthesized hint about which processes still hold ``path`` open.
+
+    Best-effort diagnostic — used only on the final failed-delete log so
+    the operator/benchmark output names the actual blocker (Windows
+    Defender, Search Indexer, an undead scrcpy descendant, etc.) rather
+    than just `WinError 32`.
+    """
+    try:
+        import psutil
+    except ImportError:
+        return ""
+    target = str(path).lower()
+    holders: list[str] = []
+    for proc in psutil.process_iter(attrs=("pid", "name")):
+        try:
+            for handle in proc.open_files():
+                if str(handle.path).lower() == target:
+                    holders.append(f"{proc.info.get('name')}/pid={proc.info.get('pid')}")
+                    break
+        except (psutil.AccessDenied, psutil.NoSuchProcess):
+            continue
+    if not holders:
+        return ""
+    return f" — held by {', '.join(holders)}"
 
 
 class SupervisedProcess:

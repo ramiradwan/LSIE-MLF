@@ -26,6 +26,7 @@ from services.desktop_app.ipc.control_messages import (
     VisualAnalyticsStateMessage,
 )
 from services.desktop_app.processes.cloud_sync_worker import DEFAULT_CLIENT_ID
+from services.desktop_app.state.sqlite_schema import apply_writer_pragmas
 from services.worker.pipeline.reward import RewardResult, TimestampedAU12, compute_reward
 
 logger = logging.getLogger(__name__)
@@ -64,6 +65,15 @@ class LocalAnalyticsProcessor:
     def __init__(self, db_path: Path, *, client_id: str) -> None:
         self._db_path = db_path
         self._client_id = client_id
+        # One connection per processor: fresh sqlite3.connect on every call
+        # gets default synchronous=FULL and busy_timeout=0 — each COMMIT
+        # then double-fsyncs and the latency p95 floats up to ~13ms on
+        # Windows. Reusing the connection with the writer pragma bundle
+        # already applied keeps fsync semantics aligned with WAL+NORMAL
+        # like the rest of the desktop runtime.
+        self._conn = sqlite3.connect(str(db_path), isolation_level=None)
+        self._conn.row_factory = sqlite3.Row
+        apply_writer_pragmas(self._conn)
 
     def process(self, raw: object) -> PosteriorDelta | None:
         message = AnalyticsResultMessage.model_validate(raw)
@@ -99,23 +109,25 @@ class LocalAnalyticsProcessor:
                 decision_context_hash=handoff.bandit_decision_snapshot.decision_context_hash,
             )
 
-        with sqlite3.connect(str(self._db_path), isolation_level=None) as conn:
-            conn.row_factory = sqlite3.Row
-            applied = _apply_local_update(
-                conn,
-                message,
-                client_id=self._client_id,
-                applied_at_utc=applied_at_utc,
-                reward=reward,
-                delta=delta,
-            )
+        applied = _apply_local_update(
+            self._conn,
+            message,
+            client_id=self._client_id,
+            applied_at_utc=applied_at_utc,
+            reward=reward,
+            delta=delta,
+        )
         return delta if applied and delta is not None else None
 
     def process_visual_state(self, raw: object) -> None:
         message = VisualAnalyticsStateMessage.model_validate(raw)
-        with sqlite3.connect(str(self._db_path), isolation_level=None) as conn:
-            conn.row_factory = sqlite3.Row
-            _upsert_live_session_state(conn, message)
+        _upsert_live_session_state(self._conn, message)
+
+    def close(self) -> None:
+        try:
+            self._conn.close()
+        except Exception:  # noqa: BLE001
+            logger.debug("LocalAnalyticsProcessor close failed", exc_info=True)
 
 
 def run(shutdown_event: mpsync.Event, channels: IpcChannels) -> None:
@@ -152,6 +164,7 @@ def run(shutdown_event: mpsync.Event, channels: IpcChannels) -> None:
         outbox.close()
         heartbeat.stop()
         writer.close()
+        processor.close()
         logger.info("analytics_state_worker stopped")
 
 
@@ -192,7 +205,6 @@ def _apply_local_update(
     delta: PosteriorDelta | None,
 ) -> bool:
     handoff = message.handoff
-    conn.execute("PRAGMA foreign_keys=ON")
     conn.execute("BEGIN IMMEDIATE")
     try:
         if _analytics_identity_exists(conn, handoff.segment_id, client_id, handoff.active_arm):
@@ -253,7 +265,6 @@ def _upsert_live_session_state(
     conn: sqlite3.Connection,
     message: VisualAnalyticsStateMessage,
 ) -> None:
-    conn.execute("PRAGMA foreign_keys=ON")
     conn.execute(
         """
         INSERT INTO live_session_state (

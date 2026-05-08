@@ -86,9 +86,36 @@ def _launch(
     because crash-dialog state is per-process on Windows and does not
     propagate from the parent, then imports its target module.
     """
+    import contextlib
+    import signal as _signal
+
     from services.desktop_app.privacy.crash_dumps import install_crash_privacy_guards
 
     install_crash_privacy_guards()
+
+    # Windows broadcasts CTRL_BREAK_EVENT (SIGBREAK) and CTRL_C_EVENT
+    # (SIGINT) to every process in the parent's
+    # CREATE_NEW_PROCESS_GROUP. Python's default behaviour for those
+    # signals is to abort the child mid-instruction
+    # (STATUS_CONTROL_C_EXIT, exit code 0xC000013A), which (a) skips
+    # the run-loop ``finally`` blocks that own scrcpy/SQLite cleanup
+    # and (b) leaves capture artefacts retained until the next
+    # startup's recovery sweep — exactly the §5.2 transient-cleanup
+    # contract violation the privacy-baseline runs were designed to
+    # surface. Install a no-op handler so the child stays alive long
+    # enough to observe the parent's cooperative shutdown_event in its
+    # normal run-loop poll. Some children may restrict signal
+    # registration; the parent's cooperative shutdown_event still
+    # works, so a registration failure is non-fatal.
+    def _child_shutdown_noop(_signum: int, _frame: object) -> None:
+        return
+
+    for _signame in ("SIGBREAK", "SIGINT", "SIGTERM"):
+        _signo = getattr(_signal, _signame, None)
+        if _signo is not None:
+            with contextlib.suppress(OSError, ValueError):
+                _signal.signal(_signo, _child_shutdown_noop)
+
     mod = importlib.import_module(module_name)
     mod.run(shutdown_event=shutdown_event, channels=channels)
 
@@ -109,9 +136,11 @@ class ProcessGraph:
     shutdown_events: dict[str, mpsync.Event] = field(default_factory=dict)
     channels: IpcChannels | None = field(default=None)
     _shutdown_requested: bool = field(default=False, init=False)
+    _shutdown_signaled: bool = field(default=False, init=False)
 
     def start_all(self) -> None:
         self._shutdown_requested = False
+        self._shutdown_signaled = False
         _prepare_runtime_state()
         ctx = mp.get_context("spawn")
         if self.channels is None:
@@ -136,8 +165,20 @@ class ProcessGraph:
             self.shutdown_events[name] = evt
             logger.info("spawned %s pid=%s", name, proc.pid)
 
+    def signal_shutdown(self) -> None:
+        """Signal-safe: set a flag without touching multiprocessing primitives.
+
+        ``multiprocessing.Event.set`` acquires a Condition variable that
+        deadlocks when invoked from a Windows signal handler after the
+        first event has been signalled. The wait loop polls
+        ``_shutdown_signaled`` and calls :meth:`request_shutdown` from
+        the main thread, which is safe.
+        """
+        self._shutdown_signaled = True
+
     def request_shutdown(self) -> None:
         self._shutdown_requested = True
+        self._shutdown_signaled = True
         for evt in self.shutdown_events.values():
             evt.set()
 
@@ -166,9 +207,16 @@ class ProcessGraph:
                 survived,
             )
 
+        # Generous retry budget so transient holders (Windows Defender
+        # real-time scan of a freshly-closed recording, Search Indexer,
+        # scrcpy descendants finishing their unwind) have time to drop
+        # the file handle before we give up. The §5.2 24-hour Ephemeral
+        # Vault bound is honored by raising on retention, so the budget
+        # only governs how patient cleanup is, not whether it must
+        # eventually succeed.
         deleted, retained = cleanup_capture_files(
             resolve_capture_dir(),
-            attempts=12,
+            attempts=60,
             retry_delay_s=0.5,
         )
         if retained:
@@ -205,6 +253,13 @@ class ProcessGraph:
             if exited and not self._shutdown_requested:
                 name, exitcode = exited[0]
                 logger.info("%s exited with code %s; requesting graph shutdown", name, exitcode)
+                self.request_shutdown()
+
+            # The signal handler only flips ``_shutdown_signaled`` (it
+            # must not invoke ``Event.set`` itself; see
+            # :meth:`signal_shutdown`). Drain the multiprocessing
+            # primitives here on the main thread.
+            if self._shutdown_signaled and not self._shutdown_requested:
                 self.request_shutdown()
 
             if self._shutdown_requested and shutdown_started_at is None:

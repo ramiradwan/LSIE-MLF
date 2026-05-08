@@ -303,7 +303,7 @@ def test_cleanup_capture_artifacts_uses_shutdown_retry_policy(tmp_path: Path) ->
     ):
         ProcessGraph().cleanup_capture_artifacts()
 
-    assert calls == [(tmp_path, 12, 0.5)]
+    assert calls == [(tmp_path, 60, 0.5)]
 
 
 def test_cleanup_capture_artifacts_reaps_capture_processes_before_file_cleanup(
@@ -325,7 +325,7 @@ def test_cleanup_capture_artifacts_reaps_capture_processes_before_file_cleanup(
         retry_delay_s: float,
     ) -> tuple[list[Path], list[Path]]:
         assert capture_dir == tmp_path
-        assert attempts == 12
+        assert attempts == 60
         assert retry_delay_s == 0.5
         calls.append("cleanup")
         return [], []
