@@ -797,11 +797,16 @@ def _build_analytics_result(
     *,
     transcription_engine: Any | None = None,
 ) -> AnalyticsResultMessage | None:
+    timings: dict[str, float] = {}
+    pipeline_started = time.perf_counter()
+
+    handoff_start = time.perf_counter()
     handoff = _handoff_with_tracker_au12(
         msg.handoff,
         audio_data=audio,
         tracker=tracker,
     )
+    timings["handoff_au12"] = (time.perf_counter() - handoff_start) * 1000.0
     segment_id = str(handoff.get("segment_id", "unknown"))
     timestamp_utc = str(handoff["timestamp_utc"])
     stimulus_time = handoff.get("_stimulus_time")
@@ -810,12 +815,23 @@ def _build_analytics_result(
     try:
         from packages.ml_core.audio_pipe import pcm_to_wav_bytes
 
+        wav_start = time.perf_counter()
+        wav_bytes = pcm_to_wav_bytes(audio)
+        timings["pcm_to_wav"] = (time.perf_counter() - wav_start) * 1000.0
+
         engine = transcription_engine
         if engine is None:
             from packages.ml_core.transcription import TranscriptionEngine
 
+            engine_init_start = time.perf_counter()
             engine = TranscriptionEngine()
-        transcription = engine.transcribe(io.BytesIO(pcm_to_wav_bytes(audio)))
+            timings["transcription_engine_init"] = (
+                time.perf_counter() - engine_init_start
+            ) * 1000.0
+
+        transcribe_start = time.perf_counter()
+        transcription = engine.transcribe(io.BytesIO(wav_bytes))
+        timings["transcribe"] = (time.perf_counter() - transcribe_start) * 1000.0
     except Exception:
         logger.warning("Transcription failed for %s", segment_id, exc_info=True)
 
@@ -831,18 +847,26 @@ def _build_analytics_result(
                 audio_data=audio,
                 sample_rate=16000,
             )
-            acoustic_payload = (
-                _default_acoustic_payload()
-                if segment_start_time_s is None
-                else _serialize_acoustic_metrics(
-                    AcousticAnalyzer().analyze(
-                        audio,
-                        sample_rate=16000,
-                        stimulus_time_s=float(stimulus_time),
-                        segment_start_time_s=segment_start_time_s,
-                    )
+            if segment_start_time_s is None:
+                acoustic_payload = _default_acoustic_payload()
+            else:
+                acoustic_init_start = time.perf_counter()
+                analyzer = AcousticAnalyzer()
+                timings["acoustic_init"] = (
+                    time.perf_counter() - acoustic_init_start
+                ) * 1000.0
+
+                acoustic_run_start = time.perf_counter()
+                metrics = analyzer.analyze(
+                    audio,
+                    sample_rate=16000,
+                    stimulus_time_s=float(stimulus_time),
+                    segment_start_time_s=segment_start_time_s,
                 )
-            )
+                timings["acoustic_analyze"] = (
+                    time.perf_counter() - acoustic_run_start
+                ) * 1000.0
+                acoustic_payload = _serialize_acoustic_metrics(metrics)
         except Exception:
             logger.warning("Acoustic analysis failed for %s", segment_id, exc_info=True)
             acoustic_payload = _default_acoustic_payload()
@@ -863,12 +887,25 @@ def _build_analytics_result(
             from packages.ml_core.preprocessing import TextPreprocessor
             from packages.ml_core.semantic import SemanticEvaluator
 
+            preproc_start = time.perf_counter()
             preprocessed_text = TextPreprocessor().preprocess(transcription)
+            timings["text_preprocess"] = (time.perf_counter() - preproc_start) * 1000.0
+
+            evaluator_init_start = time.perf_counter()
             evaluator = SemanticEvaluator()
+            timings["semantic_evaluator_init"] = (
+                time.perf_counter() - evaluator_init_start
+            ) * 1000.0
+
+            evaluate_start = time.perf_counter()
             live_semantic = evaluator.evaluate(
                 str(handoff.get("_expected_greeting", "Hello, welcome to the stream!")),
                 preprocessed_text,
             )
+            timings["semantic_evaluate"] = (
+                time.perf_counter() - evaluate_start
+            ) * 1000.0
+
             semantic = _normalize_semantic_result(
                 live_semantic,
                 semantic_method=getattr(evaluator, "last_semantic_method", None),
@@ -888,6 +925,13 @@ def _build_analytics_result(
 
     if semantic is None:
         return None
+
+    timings["pipeline_total"] = (time.perf_counter() - pipeline_started) * 1000.0
+    breakdown = ", ".join(f"{name}={ms:.1f}ms" for name, ms in sorted(timings.items()))
+    # WARNING level so the per-segment breakdown reaches the parent's
+    # default child logger config; INFO would be filtered. The string is
+    # cheap and the cadence is bounded by the 30 s segment window.
+    logger.warning("gpu_ml_worker segment_id=%s timings: %s", segment_id, breakdown)
 
     return AnalyticsResultMessage.model_validate(
         {
