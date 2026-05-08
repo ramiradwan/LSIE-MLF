@@ -520,21 +520,68 @@ def _segment_audio_offset_bytes(
 
 def _stimulus_aligned_segment_start_utc(
     active: _ActiveSession,
-    *,
-    buffer_start_utc: datetime,
 ) -> datetime | None:
+    """The §4.C 30 s segment is always anchored at the §7B measurement window.
+
+    Returns the wall-clock UTC instant at which the desired segment
+    begins: ``stim_time + 5 s − 30 s`` = ``stim_time − 25 s``. The
+    segment ends at ``stim_time + 5 s``, exactly bracketing the §7B
+    measurement window. When the orchestrator's audio buffer does not
+    extend back 25 s before the stimulus (e.g. on the first stimulus
+    of a session, before the buffer has filled), the segment-build
+    path pre-pads the missing prefix with silence so the §4.C 30 s
+    contract still holds bit-for-bit while dispatch happens as soon
+    as ``stim + 5 s`` of post-stimulus audio is available.
+    """
     if active.stimulus_time_s is None:
         return None
-    desired_start_utc = datetime.fromtimestamp(
-        active.stimulus_time_s + STIMULUS_MEASUREMENT_WINDOW_END_OFFSET_S - SEGMENT_WINDOW_SECONDS,
+    return datetime.fromtimestamp(
+        active.stimulus_time_s
+        + STIMULUS_MEASUREMENT_WINDOW_END_OFFSET_S
+        - SEGMENT_WINDOW_SECONDS,
         tz=UTC,
     )
-    return max(desired_start_utc, buffer_start_utc)
 
 
 def _audio_duration_for_bytes(byte_count: int) -> timedelta:
     duration_s = byte_count / (PCM_SAMPLE_RATE_HZ * AUDIO_SAMPLE_WIDTH_BYTES * PCM_CHANNELS)
     return timedelta(seconds=duration_s)
+
+
+def _build_stimulus_segment_pcm(
+    audio_buffer: bytearray,
+    *,
+    buffer_start_utc: datetime,
+    desired_segment_start_utc: datetime,
+    desired_segment_end_offset_bytes: int,
+    segment_bytes: int,
+) -> bytes:
+    """Slice the buffer for a 30 s segment anchored at ``stim − 25 s``.
+
+    When the buffer covers the whole desired segment, returns the
+    matching slice. When the buffer started later than the desired
+    segment start (typically the first stimulus of a session, before
+    the buffer has filled), pre-pads the missing prefix with PCM
+    silence so the §4.C 30 s contract holds bit-for-bit. Frame
+    alignment may produce a single-frame drift; the result is clamped
+    to exactly ``segment_bytes`` either by trimming or by a tail pad.
+    """
+    if desired_segment_start_utc >= buffer_start_utc:
+        skip_bytes = _segment_audio_offset_bytes(
+            segment_start_utc=buffer_start_utc,
+            target_start_utc=desired_segment_start_utc,
+        )
+        return bytes(audio_buffer[skip_bytes : skip_bytes + segment_bytes])
+
+    silence_prepad_bytes = _segment_audio_offset_bytes(
+        segment_start_utc=desired_segment_start_utc,
+        target_start_utc=buffer_start_utc,
+    )
+    real_audio = bytes(audio_buffer[:desired_segment_end_offset_bytes])
+    pcm = (b"\x00" * silence_prepad_bytes) + real_audio
+    if len(pcm) >= segment_bytes:
+        return pcm[:segment_bytes]
+    return pcm + b"\x00" * (segment_bytes - len(pcm))
 
 
 def _trim_audio_buffer_to_latest_window(
@@ -641,23 +688,28 @@ def _run_segment_loop(
             )
         while active.stimulus_time_s is not None and segment_start_utc is not None:
             drift_offset_s = float(getattr(drift_state.drift_corrector, "drift_offset", 0.0))
-            stimulus_segment_start_utc = _stimulus_aligned_segment_start_utc(
-                active,
-                buffer_start_utc=segment_start_utc,
-            )
+            stimulus_segment_start_utc = _stimulus_aligned_segment_start_utc(active)
             if stimulus_segment_start_utc is not None:
-                stimulus_offset_bytes = _segment_audio_offset_bytes(
-                    segment_start_utc=segment_start_utc,
-                    target_start_utc=stimulus_segment_start_utc,
+                stimulus_segment_end_utc = stimulus_segment_start_utc + timedelta(
+                    seconds=SEGMENT_WINDOW_SECONDS
                 )
-                if len(audio_buffer) < stimulus_offset_bytes + segment_bytes:
+                buffer_end_offset_bytes = _segment_audio_offset_bytes(
+                    segment_start_utc=segment_start_utc,
+                    target_start_utc=stimulus_segment_end_utc,
+                )
+                if len(audio_buffer) < buffer_end_offset_bytes:
                     break
+                pcm = _build_stimulus_segment_pcm(
+                    audio_buffer,
+                    buffer_start_utc=segment_start_utc,
+                    desired_segment_start_utc=stimulus_segment_start_utc,
+                    desired_segment_end_offset_bytes=buffer_end_offset_bytes,
+                    segment_bytes=segment_bytes,
+                )
                 segment = _segment_from_active_session(
                     active,
                     segment_start_utc=stimulus_segment_start_utc,
-                    pcm_s16le_16khz_mono=bytes(
-                        audio_buffer[stimulus_offset_bytes : stimulus_offset_bytes + segment_bytes]
-                    ),
+                    pcm_s16le_16khz_mono=pcm,
                     drift_offset_s=drift_offset_s,
                     stimulus_time_s=active.stimulus_time_s,
                 )

@@ -7,7 +7,7 @@ import struct
 import threading
 import time
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -437,14 +437,77 @@ def test_stimulus_aligned_segment_start_ends_at_measurement_window_close() -> No
         expected_greeting="Say hello to the creator",
         stimulus_time_s=datetime(2026, 5, 2, 12, 0, 40, tzinfo=UTC).timestamp(),
     )
-    buffer_start = datetime(2026, 5, 2, 12, 0, 0, tzinfo=UTC)
 
-    start = module_c_orchestrator._stimulus_aligned_segment_start_utc(  # noqa: SLF001
-        active,
-        buffer_start_utc=buffer_start,
-    )
+    start = module_c_orchestrator._stimulus_aligned_segment_start_utc(active)  # noqa: SLF001
 
     assert start == datetime(2026, 5, 2, 12, 0, 15, tzinfo=UTC)
+
+
+def test_stimulus_aligned_segment_start_is_anchored_independent_of_buffer_start() -> None:
+    active = module_c_orchestrator._ActiveSession(  # noqa: SLF001
+        session_id=uuid.UUID("00000000-0000-4000-8000-000000000001"),
+        stream_url="test://stream",
+        experiment_id="greeting_line_v1",
+        experiment_row_id=1,
+        active_arm="warm_welcome",
+        expected_greeting="Say hello to the creator",
+        stimulus_time_s=datetime(2026, 5, 2, 12, 0, 8, tzinfo=UTC).timestamp(),
+    )
+
+    start = module_c_orchestrator._stimulus_aligned_segment_start_utc(active)  # noqa: SLF001
+
+    # Segment end = stim + 5 s = 12:00:13. Segment start = end − 30 s
+    # = 11:59:43, regardless of how much pre-stim audio the buffer
+    # actually has — the run loop pre-pads silence when needed.
+    assert start == datetime(2026, 5, 2, 11, 59, 43, tzinfo=UTC)
+
+
+def test_build_stimulus_segment_pcm_pre_pads_silence_when_buffer_short(
+    tmp_path: Path,  # noqa: ARG001
+) -> None:
+    segment_bytes = (
+        module_c_orchestrator.SEGMENT_WINDOW_SECONDS
+        * module_c_orchestrator.PCM_SAMPLE_RATE_HZ
+        * module_c_orchestrator.AUDIO_SAMPLE_WIDTH_BYTES
+        * module_c_orchestrator.PCM_CHANNELS
+    )
+    # Buffer holds 13 s of non-zero audio.
+    real_audio_seconds = 13
+    real_audio_bytes = (
+        real_audio_seconds
+        * module_c_orchestrator.PCM_SAMPLE_RATE_HZ
+        * module_c_orchestrator.AUDIO_SAMPLE_WIDTH_BYTES
+        * module_c_orchestrator.PCM_CHANNELS
+    )
+    audio_buffer = bytearray(b"\x7f\x01" * (real_audio_bytes // 2))
+    buffer_start = datetime(2026, 5, 2, 12, 0, 0, tzinfo=UTC)
+    # Stim at 12:00:08 → segment [11:59:43, 12:00:13]. Buffer covers
+    # [12:00:00, 12:00:13]; segment needs 17 s of silence pre-pad.
+    desired_segment_start = datetime(2026, 5, 2, 11, 59, 43, tzinfo=UTC)
+    desired_end_offset = module_c_orchestrator._segment_audio_offset_bytes(  # noqa: SLF001
+        segment_start_utc=buffer_start,
+        target_start_utc=desired_segment_start
+        + timedelta(seconds=module_c_orchestrator.SEGMENT_WINDOW_SECONDS),
+    )
+
+    pcm = module_c_orchestrator._build_stimulus_segment_pcm(  # noqa: SLF001
+        audio_buffer,
+        buffer_start_utc=buffer_start,
+        desired_segment_start_utc=desired_segment_start,
+        desired_segment_end_offset_bytes=desired_end_offset,
+        segment_bytes=segment_bytes,
+    )
+
+    assert len(pcm) == segment_bytes
+    silence_prefix_bytes = (
+        17
+        * module_c_orchestrator.PCM_SAMPLE_RATE_HZ
+        * module_c_orchestrator.AUDIO_SAMPLE_WIDTH_BYTES
+        * module_c_orchestrator.PCM_CHANNELS
+    )
+    assert pcm[:silence_prefix_bytes] == b"\x00" * silence_prefix_bytes
+    # The next byte after the silence pad is real audio.
+    assert pcm[silence_prefix_bytes : silence_prefix_bytes + 2] == b"\x7f\x01"
 
 
 def test_drain_drift_updates_applies_numeric_offsets() -> None:
