@@ -106,7 +106,7 @@ jobs:
           upload-release-assets: false
 
       - name: Generate build provenance attestation
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v4
         with:
           subject-path: dist\LSIE-MLF-windows-${{ github.ref_name }}.zip
 
