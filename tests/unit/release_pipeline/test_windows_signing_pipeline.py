@@ -54,6 +54,43 @@ def test_release_workflow_runs_on_tags_and_signs_release_artifact() -> None:
     assert "actions/upload-artifact@v4" in workflow
 
 
+def test_release_workflow_publishes_verifiable_release_assets() -> None:
+    workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
+
+    # Permissions required for Releases publication and SLSA build provenance.
+    assert "contents: write" in workflow
+    assert "id-token: write" in workflow
+    assert "attestations: write" in workflow
+
+    # Build determinism hint applied to every step in the job.
+    assert 'PYTHONHASHSEED: "0"' in workflow
+
+    # SHA-256 manifest accompanies the signed archive.
+    assert "Generate SHA256 checksum manifest" in workflow
+    assert "Get-FileHash" in workflow
+    assert "Algorithm SHA256" in workflow
+    assert "dist\\sha256sums.txt" in workflow
+
+    # Software Bill of Materials covering the resolved dependency tree.
+    assert "uses: anchore/sbom-action@v0" in workflow
+    assert "format: spdx-json" in workflow
+    assert "output-file: dist/LSIE-MLF-sbom.spdx.json" in workflow
+
+    # SLSA build provenance attestation for the signed archive.
+    assert "uses: actions/attest-build-provenance@v2" in workflow
+    assert "subject-path: dist\\LSIE-MLF-windows-${{ github.ref_name }}.zip" in workflow
+
+    # GitHub Release publication with auto-prerelease for SemVer pre-release tags.
+    assert "uses: softprops/action-gh-release@v2" in workflow
+    assert "if: startsWith(github.ref, 'refs/tags/')" in workflow
+    assert "dist/LSIE-MLF-windows-${{ github.ref_name }}.zip" in workflow
+    assert "dist/sha256sums.txt" in workflow
+    assert "dist/LSIE-MLF-sbom.spdx.json" in workflow
+    assert "prerelease: ${{ contains(github.ref_name, '-') }}" in workflow
+    assert "fail_on_unmatched_files: true" in workflow
+    assert "GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}" in workflow
+
+
 def test_gpu_replay_workflow_runs_gate0_on_self_hosted_turing_runner() -> None:
     workflow = GPU_REPLAY_WORKFLOW.read_text(encoding="utf-8")
 
