@@ -1,17 +1,6 @@
 name: Gate 0 GPU Replay Parity
 
 on:
-  pull_request:
-    branches: [main]
-    paths:
-      - ".github/workflows/gpu_replay_parity.yml"
-      - "packages/ml_core/**"
-      - "services/desktop_app/processes/gpu_ml_worker.py"
-      - "scripts/gate0_gpu_replay.py"
-      - "tests/fixtures/v4_gate0/**"
-      - "tests/fixtures/capture/baseline/**"
-      - "pyproject.toml"
-      - "uv.lock"
   push:
     branches: [main]
     paths:
@@ -24,21 +13,28 @@ on:
       - "pyproject.toml"
       - "uv.lock"
   workflow_dispatch:
+    inputs:
+      checkout_ref:
+        description: "Git ref or commit SHA to replay"
+        required: false
+        type: string
 
 permissions:
   contents: read
 
 concurrency:
-  group: gate0-gpu-replay-${{ github.ref }}
+  group: gate0-gpu-replay-${{ github.event.inputs.checkout_ref || github.ref }}
   cancel-in-progress: true
 
 jobs:
   gate0-gpu-replay:
     name: Gate 0 CUDA speech replay
-    runs-on: [self-hosted, linux, x64, gpu, turing]
+    runs-on: [self-hosted, linux, x64, gpu, turing, aca-gpu]
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.inputs.checkout_ref || github.sha }}
 
       - name: Install uv
         uses: astral-sh/setup-uv@v5
@@ -46,11 +42,36 @@ jobs:
           enable-cache: true
           cache-dependency-glob: "uv.lock"
 
-      - name: Set up Python 3.11
-        run: uv python install 3.11
+      - name: Verify Python 3.11 runtime
+        run: |
+          python3 --version
+          python3 - <<'PY'
+          import sys
+
+          if sys.version_info[:2] != (3, 11):
+              raise SystemExit(f"Gate 0 GPU replay requires Python 3.11.*, got {sys.version}")
+          PY
 
       - name: Verify production GPU inventory
         run: nvidia-smi --query-gpu=name,compute_cap --format=csv,noheader
+
+      - name: Verify Gate 0 CUDA runtime contract
+        run: |
+          if [ "${LSIE_DEV_FORCE_CPU_SPEECH:-}" = "1" ]; then
+            echo "LSIE_DEV_FORCE_CPU_SPEECH=1 is forbidden in Gate 0 GPU replay" >&2
+            exit 1
+          fi
+          PYTHONPATH="${GITHUB_WORKSPACE}" python3 - <<'PY'
+          from packages.ml_core.gpu_probe import query_gpu_inventory
+          from packages.ml_core.transcription import resolve_speech_device
+
+          inventory = query_gpu_inventory()
+          if not inventory:
+              raise SystemExit("Gate 0 GPU replay requires nvidia-smi-visible GPU inventory")
+          device = resolve_speech_device()
+          if device != "cuda":
+              raise SystemExit(f"Gate 0 expected speech device 'cuda', got {device!r}")
+          PY
 
       - name: Sync GPU replay environment
         run: uv sync --frozen --extra ml_backend --group dev

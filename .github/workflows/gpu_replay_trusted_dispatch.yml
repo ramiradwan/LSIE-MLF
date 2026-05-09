@@ -1,0 +1,72 @@
+name: Gate 0 GPU Replay Trusted Dispatch
+
+on:
+  pull_request_target:
+    branches: [main]
+    paths:
+      - ".github/workflows/gpu_replay_parity.yml"
+      - ".github/workflows/gpu_replay_trusted_dispatch.yml"
+      - "packages/ml_core/**"
+      - "services/desktop_app/processes/gpu_ml_worker.py"
+      - "scripts/gate0_gpu_replay.py"
+      - "tests/fixtures/v4_gate0/**"
+      - "tests/fixtures/capture/baseline/**"
+      - "pyproject.toml"
+      - "uv.lock"
+
+permissions:
+  actions: write
+  contents: read
+  pull-requests: read
+
+jobs:
+  dispatch:
+    name: Dispatch trusted GPU replay
+    runs-on: ubuntu-latest
+    steps:
+      - name: Dispatch trusted same-repo GPU replay
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const trustedAssociations = new Set(["OWNER", "MEMBER", "COLLABORATOR"]);
+            const pr = context.payload.pull_request;
+            const sameRepo = pr.head.repo.full_name === `${context.repo.owner}/${context.repo.repo}`;
+            const trusted = trustedAssociations.has(pr.author_association);
+
+            if (trusted && sameRepo) {
+              await github.rest.actions.createWorkflowDispatch({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                workflow_id: "gpu_replay_parity.yml",
+                ref: pr.base.ref,
+                inputs: {
+                  checkout_ref: pr.head.sha,
+                },
+              });
+
+              await core.summary
+                .addHeading("GPU replay dispatch")
+                .addRaw(
+                  `Dispatched \`gpu_replay_parity.yml\` for trusted same-repo PR #${pr.number} at \`${pr.head.sha}\`.`
+                )
+                .write();
+
+              return;
+            }
+
+            const reasons = [];
+            if (!trusted) {
+              reasons.push(`author association \`${pr.author_association}\` is not trusted`);
+            }
+            if (!sameRepo) {
+              reasons.push(`head repository \`${pr.head.repo.full_name}\` is not the base repository`);
+            }
+
+            await core.summary
+              .addHeading("GPU replay dispatch skipped")
+              .addRaw(
+                `Skipped automatic GPU replay dispatch for PR #${pr.number}: ${reasons.join(
+                  "; "
+                )}. Run \`gpu_replay_parity.yml\` manually if GPU coverage is needed.`
+              )
+              .write()

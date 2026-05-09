@@ -852,9 +852,7 @@ def _build_analytics_result(
             else:
                 acoustic_init_start = time.perf_counter()
                 analyzer = AcousticAnalyzer()
-                timings["acoustic_init"] = (
-                    time.perf_counter() - acoustic_init_start
-                ) * 1000.0
+                timings["acoustic_init"] = (time.perf_counter() - acoustic_init_start) * 1000.0
 
                 acoustic_run_start = time.perf_counter()
                 metrics = analyzer.analyze(
@@ -863,9 +861,7 @@ def _build_analytics_result(
                     stimulus_time_s=float(stimulus_time),
                     segment_start_time_s=segment_start_time_s,
                 )
-                timings["acoustic_analyze"] = (
-                    time.perf_counter() - acoustic_run_start
-                ) * 1000.0
+                timings["acoustic_analyze"] = (time.perf_counter() - acoustic_run_start) * 1000.0
                 acoustic_payload = _serialize_acoustic_metrics(metrics)
         except Exception:
             logger.warning("Acoustic analysis failed for %s", segment_id, exc_info=True)
@@ -902,9 +898,7 @@ def _build_analytics_result(
                 str(handoff.get("_expected_greeting", "Hello, welcome to the stream!")),
                 preprocessed_text,
             )
-            timings["semantic_evaluate"] = (
-                time.perf_counter() - evaluate_start
-            ) * 1000.0
+            timings["semantic_evaluate"] = (time.perf_counter() - evaluate_start) * 1000.0
 
             semantic = _normalize_semantic_result(
                 live_semantic,

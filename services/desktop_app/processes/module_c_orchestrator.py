@@ -536,9 +536,7 @@ def _stimulus_aligned_segment_start_utc(
     if active.stimulus_time_s is None:
         return None
     return datetime.fromtimestamp(
-        active.stimulus_time_s
-        + STIMULUS_MEASUREMENT_WINDOW_END_OFFSET_S
-        - SEGMENT_WINDOW_SECONDS,
+        active.stimulus_time_s + STIMULUS_MEASUREMENT_WINDOW_END_OFFSET_S - SEGMENT_WINDOW_SECONDS,
         tz=UTC,
     )
 

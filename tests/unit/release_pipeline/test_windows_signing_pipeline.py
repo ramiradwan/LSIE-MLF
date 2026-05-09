@@ -6,6 +6,7 @@ ROOT = Path(__file__).resolve().parents[3]
 SIGN_SCRIPT = ROOT / "build" / "sign_windows.ps1"
 RELEASE_WORKFLOW = ROOT / ".github" / "workflows" / "release.yml"
 GPU_REPLAY_WORKFLOW = ROOT / ".github" / "workflows" / "gpu_replay_parity.yml"
+GPU_TRUSTED_DISPATCH_WORKFLOW = ROOT / ".github" / "workflows" / "gpu_replay_trusted_dispatch.yml"
 MACOS_DEFERRED = ROOT / "build" / "MACOS_DEFERRED.md"
 
 
@@ -91,18 +92,43 @@ def test_release_workflow_publishes_verifiable_release_assets() -> None:
     assert "GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}" in workflow
 
 
-def test_gpu_replay_workflow_runs_gate0_on_self_hosted_turing_runner() -> None:
+def test_gpu_replay_workflow_runs_gate0_on_aca_turing_runner() -> None:
     workflow = GPU_REPLAY_WORKFLOW.read_text(encoding="utf-8")
 
     assert "name: Gate 0 GPU Replay Parity" in workflow
-    assert "runs-on: [self-hosted, linux, x64, gpu, turing]" in workflow
+    assert "pull_request:" not in workflow
+    assert "workflow_dispatch:" in workflow
+    assert "checkout_ref:" in workflow
+    assert "runs-on: [self-hosted, linux, x64, gpu, turing, aca-gpu]" in workflow
+    assert "ref: ${{ github.event.inputs.checkout_ref || github.sha }}" in workflow
+    assert "python3 --version" in workflow
+    assert "Gate 0 GPU replay requires Python 3.11.*" in workflow
     assert "nvidia-smi --query-gpu=name,compute_cap --format=csv,noheader" in workflow
+    assert "LSIE_DEV_FORCE_CPU_SPEECH=1 is forbidden in Gate 0 GPU replay" in workflow
+    assert "resolve_speech_device" in workflow
     assert "uv sync --frozen --extra ml_backend --group dev" in workflow
     assert "uv run python scripts/gate0_gpu_replay.py" in workflow
     assert "LSIE_GATE0_WHISPER_MODEL: large-v3" in workflow
     assert "actions/upload-artifact@v4" in workflow
     assert '"packages/ml_core/**"' in workflow
     assert '"tests/fixtures/capture/baseline/**"' in workflow
+
+
+def test_gpu_replay_trusted_dispatch_limits_pr_autoruns() -> None:
+    workflow = GPU_TRUSTED_DISPATCH_WORKFLOW.read_text(encoding="utf-8")
+
+    assert "name: Gate 0 GPU Replay Trusted Dispatch" in workflow
+    assert "pull_request_target:" in workflow
+    assert "runs-on: ubuntu-latest" in workflow
+    assert "actions: write" in workflow
+    assert "pull-requests: read" in workflow
+    assert "actions/github-script@v7" in workflow
+    assert 'workflow_id: "gpu_replay_parity.yml"' in workflow
+    assert "checkout_ref: pr.head.sha" in workflow
+    assert 'Set(["OWNER", "MEMBER", "COLLABORATOR"])' in workflow
+    assert "pr.head.repo.full_name" in workflow
+    assert "Run \\`gpu_replay_parity.yml\\` manually if GPU coverage is needed." in workflow
+    assert '".github/workflows/gpu_replay_trusted_dispatch.yml"' in workflow
 
 
 def test_macos_signing_is_documented_as_deferred() -> None:
