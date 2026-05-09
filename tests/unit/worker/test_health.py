@@ -14,6 +14,8 @@ _NOW = datetime(2026, 4, 17, 12, 0, tzinfo=UTC)
 
 def _use_readiness_marker(monkeypatch: Any, tmp_path: Path) -> Path:
     marker = tmp_path / "whisper-readiness.json"
+    monkeypatch.delenv("LSIE_DEV_FORCE_CPU_SPEECH", raising=False)
+    monkeypatch.setattr(health, "TranscriptionEngine", lambda: TranscriptionEngine(device="cuda"))
     monkeypatch.setattr(health, "_WHISPER_READINESS_PATH", marker)
     # CROSS-PLATFORM FIX: Prevent Windows/Mac from failing the Linux /proc/stat check
     monkeypatch.setattr(health, "_process_start_time", lambda pid: "mocked_test_start_time")
@@ -44,7 +46,7 @@ def test_worker_health_payload_reports_authoritative_model_ready(
     tmp_path: Path,
 ) -> None:
     _use_readiness_marker(monkeypatch, tmp_path)
-    engine = TranscriptionEngine()
+    engine = TranscriptionEngine(device="cuda")
     engine._model = object()
     health.record_whisper_model_ready(engine, clock=lambda: _NOW)
 
@@ -65,7 +67,7 @@ def test_worker_health_payload_reports_model_initialization_error(
     tmp_path: Path,
 ) -> None:
     _use_readiness_marker(monkeypatch, tmp_path)
-    engine = TranscriptionEngine()
+    engine = TranscriptionEngine(device="cuda")
     health.record_whisper_model_error(engine, RuntimeError("GPU OOM"), clock=lambda: _NOW)
 
     payload = health.build_worker_health_payload(clock=lambda: _NOW)
@@ -81,7 +83,7 @@ def test_worker_health_payload_rejects_stale_model_ready_marker(
     tmp_path: Path,
 ) -> None:
     _use_readiness_marker(monkeypatch, tmp_path)
-    engine = TranscriptionEngine()
+    engine = TranscriptionEngine(device="cuda")
     engine._model = object()
     health.record_whisper_model_ready(engine, clock=lambda: _NOW)
 

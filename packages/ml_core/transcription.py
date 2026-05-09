@@ -2,39 +2,100 @@
 faster-whisper transcription wrapper for Module D audio input (§4.D.1).
 
 The module lazy-loads the CTranslate2-backed Whisper model and transcribes
-16 kHz audio files to UTF-8 text from a caller-provided audio path. Runtime is
-constrained to CUDA with cuDNN 8 and INT8 compute for the target ML Worker
-topology (§9, §10.2); compute type is not operator-configurable.
+16 kHz audio to UTF-8 text. The :meth:`TranscriptionEngine.transcribe`
+method accepts either a filesystem path (legacy v3.4 callers) or a
+binary file-like object such as :class:`io.BytesIO` so the desktop
+runtime can feed bytes in memory and keep transient PCM off disk. The
+production runtime floor is CUDA 12.x with cuDNN 9 and
+``ctranslate2 >= 4.5.0`` on NVIDIA Turing (SM 7.5+) hardware (§10.1,
+§10.2, §12.4); compute type is fixed to INT8 and is not
+operator-configurable. ``LSIE_DEV_FORCE_CPU_SPEECH`` provides the Pascal
+developer override for hosts that cannot run the production GPU speech
+path.
 """
 
 from __future__ import annotations
 
-from typing import Any
+import logging
+import os
+from typing import IO, Any
+
+from packages.ml_core.gpu_probe import query_max_compute_capability
+
+logger = logging.getLogger(__name__)
+
+_TURING_COMPUTE_CAP: float = 7.5
+"""Production GPU floor for the v4.0 speech path (NVIDIA Turing)."""
+
+
+def resolve_speech_device() -> str:
+    """Pick the faster-whisper device per §10.1, §10.2, and §12.4.
+
+    Resolution order:
+
+    1. ``LSIE_DEV_FORCE_CPU_SPEECH=1`` → ``"cpu"`` (developer escape
+       hatch for Pascal hosts that cannot host the cuDNN 9 / CT2 4.5+
+       production GPU stack).
+    2. ``nvidia-smi`` reports a GPU with compute capability ≥ 7.5
+       → ``"cuda"``.
+    3. Otherwise → ``"cpu"`` (no NVIDIA GPU detected; CPU INT8 path).
+
+    The cross-encoder semantic scorer is unaffected; it stays on the
+    GPU because PyTorch alone (without CTranslate2 loaded in the same
+    process) does not trigger the cuDNN-version collision that drove
+    this resolver in the first place.
+
+    Returns the literal device string consumed by
+    :class:`faster_whisper.WhisperModel`.
+    """
+    if os.environ.get("LSIE_DEV_FORCE_CPU_SPEECH") == "1":
+        logger.info("LSIE_DEV_FORCE_CPU_SPEECH=1 — speech path routed to CPU")
+        return "cpu"
+    cap = query_max_compute_capability()
+    if cap is not None and cap >= _TURING_COMPUTE_CAP:
+        return "cuda"
+    if cap is not None:
+        logger.warning(
+            "speech path falling back to CPU: detected compute capability %.1f < %.1f",
+            cap,
+            _TURING_COMPUTE_CAP,
+        )
+    return "cpu"
 
 
 class TranscriptionEngine:
     """
     Transcribe 16 kHz audio segments with faster-whisper.
 
-    Accepts a model size and CUDA device identifier, lazy-loads the configured
+    Accepts a model size and device identifier, lazy-loads the configured
     Whisper model, and produces concatenated UTF-8 transcript text for a
     caller-provided audio path. It does not expose a compute_type override,
     perform semantic matching, or persist transcripts; INT8 is fixed for the
-    supported CUDA/cuDNN ML Worker runtime.
+    supported runtime.
     """
 
-    # SPEC-AMEND-001: compute_type is hardcoded to "int8" to enforce dp4a
-    # vectorization on Pascal (SM 6.1) hardware with cuDNN 8. FP16 is not
-    # available on GTX 1080 Ti; allowing overrides would cause silent fallback.
+    # §10.1 / §10.2 / §12.4 — compute_type is locked to "int8". On the production
+    # Turing (SM 7.5+) floor the INT8 path benefits from DP4A and the
+    # Turing/Ampere INT8 Tensor Cores. On the Pascal developer host
+    # exposed via LSIE_DEV_FORCE_CPU_SPEECH, INT8 is the right CPU
+    # default for faster-whisper too. Allowing operator overrides would
+    # silently fall back to FP16 on Pascal (which lacks the kernel) and
+    # mask a misconfiguration; pinning the compute type keeps the
+    # speech path's accuracy/latency contract reproducible across hosts.
     _COMPUTE_TYPE: str = "int8"
 
     def __init__(
         self,
         model_size: str = "large-v3",
-        device: str = "cuda",
+        device: str | None = None,
     ) -> None:
         self.model_size = model_size
-        self.device = device
+        # device=None defers to the signed-spec resolver so a Pascal
+        # developer host with LSIE_DEV_FORCE_CPU_SPEECH=1 routes to CPU
+        # automatically without the caller plumbing the env check.
+        # Explicit overrides ("cuda" / "cpu") still take precedence —
+        # tests and the WS5 cloud worker need the deterministic path.
+        self.device = device if device is not None else resolve_speech_device()
         self.compute_type = self._COMPUTE_TYPE
         self._model: Any = None  # Lazy-loaded WhisperModel
 
@@ -42,21 +103,31 @@ class TranscriptionEngine:
         """Load faster-whisper model into GPU memory. Aborts startup on failure (§4.D contract)."""
         from faster_whisper import WhisperModel
 
-        # §4.D.1 — INT8 quantization on CUDA with cuDNN 8 (SPEC-AMEND-001)
+        # §4.D.1 — INT8 quantization. CUDA path is cuDNN 9 / CT2 4.5+ on
+        # the Turing+ production floor; CPU path is the Pascal developer
+        # override routed by LSIE_DEV_FORCE_CPU_SPEECH under §10.1 / §12.4.
         self._model = WhisperModel(
             self.model_size,
             device=self.device,
             compute_type=self.compute_type,
         )
 
-    def transcribe(self, audio_path: str, language: str | None = None) -> str:
+    def transcribe(
+        self,
+        audio: str | IO[bytes],
+        language: str | None = None,
+    ) -> str:
         """
-        Transcribe a 16 kHz audio segment from a filesystem path.
+        Transcribe a 16 kHz audio segment from a path or in-memory stream.
 
         §4.D.1 — faster-whisper CTranslate2 inference backend.
 
         Args:
-            audio_path: Path to a PCM s16le 16 kHz audio file.
+            audio: Either a filesystem path to a 16 kHz audio file
+                (legacy v3.4 path) or a binary file-like object
+                (WS4 P3 pipe:0/pipe:1 desktop path).
+                ``faster_whisper.WhisperModel.transcribe`` accepts both
+                shapes natively.
             language: Optional language hint.
 
         Returns:
@@ -67,7 +138,7 @@ class TranscriptionEngine:
 
         # §4.D.1 — Transcribe with beam_size=5 default
         segments, _info = self._model.transcribe(
-            audio_path,
+            audio,
             language=language,
             beam_size=5,
             vad_filter=True,

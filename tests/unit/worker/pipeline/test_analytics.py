@@ -13,6 +13,7 @@ import csv
 import json
 import sys
 from pathlib import Path
+from types import ModuleType
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -298,8 +299,21 @@ class TestMetricsStore:
 
         mock_app = MagicMock()
         mock_app.task.return_value = lambda f: f
+        celery_mod = ModuleType("celery")
+        celery_mod.Task = object  # type: ignore[attr-defined]
+        celery_app_mod = ModuleType("services.worker.celery_app")
+        celery_app_mod.celery_app = mock_app  # type: ignore[attr-defined]
 
-        with patch("services.worker.celery_app.celery_app", mock_app):
+        with (
+            patch.dict(
+                sys.modules,
+                {
+                    "celery": celery_mod,
+                    "services.worker.celery_app": celery_app_mod,
+                },
+            ),
+            patch("services.worker.celery_app.celery_app", mock_app),
+        ):
             mod_name = "services.worker.tasks.inference"
             if mod_name in sys.modules:
                 del sys.modules[mod_name]
@@ -792,6 +806,8 @@ class TestMetricsStore:
                 "posterior_by_arm": {"arm-b": {"alpha": 1.0, "beta": 1.0}},
                 "sampled_theta_by_arm": {"arm-b": 0.5},
                 "expected_greeting": "hello welcome",
+                "decision_context_hash": "b" * 64,
+                "random_seed": 123,
             },
         }
         reward_result = RewardResult(

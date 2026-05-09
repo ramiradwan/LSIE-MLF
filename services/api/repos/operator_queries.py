@@ -521,6 +521,28 @@ def fetch_latest_encounter(cursor: Any, session_id: UUID) -> dict[str, Any] | No
     return _row_to_dict(cursor)
 
 
+def fetch_experiment_summaries(cursor: Any) -> list[dict[str, Any]]:
+    available_columns = _available_experiment_management_columns(cursor)
+    label_expr = (
+        "COALESCE(ex.label, ex.experiment_id)"
+        if "label" in available_columns
+        else "ex.experiment_id"
+    )
+    cursor.execute(
+        f"""
+        SELECT
+            ex.experiment_id,
+            {label_expr} AS label,
+            COUNT(*)::int AS arm_count,
+            MAX(ex.updated_at) AS last_updated_utc
+        FROM experiments ex
+        GROUP BY ex.experiment_id, {label_expr}
+        ORDER BY ex.experiment_id
+        """
+    )
+    return _rows_to_dicts(cursor)
+
+
 def fetch_experiment_arms(cursor: Any, experiment_id: str) -> list[dict[str, Any]]:
     available_columns = _available_experiment_management_columns(cursor)
     cursor.execute(_experiment_arms_sql(available_columns), {"experiment_id": experiment_id})

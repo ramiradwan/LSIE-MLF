@@ -8,7 +8,6 @@ from . import health as health
 from . import metrics as metrics
 from . import physiology as physiology
 from . import sessions as sessions
-from . import stimulus as stimulus
 
 __all__ = [
     "encounters",
@@ -17,5 +16,4 @@ __all__ = [
     "metrics",
     "physiology",
     "sessions",
-    "stimulus",
 ]

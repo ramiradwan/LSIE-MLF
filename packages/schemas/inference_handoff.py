@@ -18,6 +18,11 @@ from pydantic import UUID4, AnyUrl, BaseModel, ConfigDict, Field, field_validato
 from pydantic.json_schema import SkipJsonSchema
 
 from packages.schemas.attribution import BanditDecisionSnapshot
+from packages.schemas.evaluation import (
+    ResponseReasonCode,
+    ResponseRegistrationStatus,
+    StimulusModality,
+)
 from packages.schemas.physiology import PhysiologicalChunkEvent, PhysiologicalContext
 
 # §6 compatibility export: preserve the historical field name while carrying
@@ -53,6 +58,26 @@ class MediaSource(BaseModel):
         if any(d < 1 for d in v):
             raise ValueError("Resolution dimensions must be >= 1.")
         return v
+
+
+class ResponseInference(BaseModel):
+    """
+    Validate bounded observational subject-response inference output.
+
+    Accepts a response match flag, confidence, bounded registration status and
+    reason code, plus optional evidence timing metadata. It does not alter
+    delivery validation or reward-path semantics.
+    """
+
+    is_match: bool
+    confidence_score: float = Field(..., ge=0.0, le=1.0)
+    registration_status: ResponseRegistrationStatus
+    response_reason_code: ResponseReasonCode
+    response_type: str | None = None
+    matched_response_time: float | None = None
+    evidence_span_ref: str | None = None
+
+    model_config = ConfigDict(extra="forbid")
 
 
 class AU12Observation(BaseModel):
@@ -149,6 +174,17 @@ class InferenceHandoffPayload(BaseModel):
             "physiological data exists. Omit the key when no real role snapshot exists."
         ),
     )
+    stimulus_id: UUID4 | None = Field(default=None, alias="_stimulus_id")
+    stimulus_modality: StimulusModality | None = Field(default=None, alias="_stimulus_modality")
+    stimulus_payload: dict[str, Any] | None = Field(default=None, alias="_stimulus_payload")
+    expected_stimulus_rule: str | None = Field(default=None, alias="_expected_stimulus_rule")
+    expected_response_rule: str | None = Field(default=None, alias="_expected_response_rule")
+    response_observation_horizon_s: float | None = Field(
+        default=None,
+        alias="_response_observation_horizon_s",
+        ge=0.0,
+    )
+    response_inference: ResponseInference | None = None
 
     model_config = ConfigDict(
         extra="forbid",

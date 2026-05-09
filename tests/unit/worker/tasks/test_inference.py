@@ -12,7 +12,8 @@ from __future__ import annotations
 import importlib
 import sys
 from datetime import datetime
-from typing import Any
+from types import ModuleType
+from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
 
@@ -20,8 +21,22 @@ def _get_inference_module() -> Any:
     """Import inference module with mocked celery decorator."""
     mock_app = MagicMock()
     mock_app.task.return_value = lambda f: f
+    celery_dependency = cast(Any, ModuleType("celery"))
+    celery_dependency.Task = type("Task", (), {})
+    celery_app_module = cast(Any, ModuleType("services.worker.celery_app"))
+    celery_app_module.celery_app = mock_app
+    worker_pkg = importlib.import_module("services.worker")
 
-    with patch("services.worker.celery_app.celery_app", mock_app):
+    with (
+        patch.dict(
+            sys.modules,
+            {
+                "celery": celery_dependency,
+                "services.worker.celery_app": celery_app_module,
+            },
+        ),
+        patch.object(worker_pkg, "celery_app", celery_app_module, create=True),
+    ):
         mod_name = "services.worker.tasks.inference"
         if mod_name in sys.modules:
             del sys.modules[mod_name]
@@ -149,6 +164,7 @@ class TestProcessSegment:
             patch.object(mod, "persist_metrics", mock_persist),
             patch("packages.ml_core.transcription.TranscriptionEngine", return_value=mock_engine),
             patch("packages.ml_core.acoustic.AcousticAnalyzer") as mock_acoustic_cls,
+            patch("packages.ml_core.audio_pipe.pcm_to_wav_bytes", return_value=b"wav"),
             patch("subprocess.run"),
             patch("os.remove"),
             patch("tempfile.NamedTemporaryFile") as mock_tmpfile,
@@ -204,6 +220,7 @@ class TestProcessSegment:
             patch.object(mod, "persist_metrics", mock_persist),
             patch("packages.ml_core.transcription.TranscriptionEngine", return_value=mock_engine),
             patch("packages.ml_core.acoustic.AcousticAnalyzer", return_value=mock_acoustic),
+            patch("packages.ml_core.audio_pipe.pcm_to_wav_bytes", return_value=b"wav"),
             patch("subprocess.run"),
             patch("os.remove"),
             patch("tempfile.NamedTemporaryFile") as mock_tmpfile,
@@ -244,6 +261,7 @@ class TestProcessSegment:
             patch.object(mod, "persist_metrics", mock_persist),
             patch("packages.ml_core.transcription.TranscriptionEngine", return_value=mock_engine),
             patch("packages.ml_core.acoustic.AcousticAnalyzer", return_value=mock_acoustic),
+            patch("packages.ml_core.audio_pipe.pcm_to_wav_bytes", return_value=b"wav"),
             patch("subprocess.run"),
             patch("os.remove"),
             patch("tempfile.NamedTemporaryFile") as mock_tmpfile,
@@ -359,6 +377,7 @@ class TestProcessSegment:
                     "packages.ml_core.acoustic.AcousticAnalyzer",
                     return_value=mock_acoustic,
                 ),
+                patch("packages.ml_core.audio_pipe.pcm_to_wav_bytes", return_value=b"wav"),
                 patch("subprocess.run"),
                 patch("os.remove"),
                 patch("tempfile.NamedTemporaryFile") as mock_tmpfile,
@@ -407,6 +426,7 @@ class TestProcessSegment:
                 return_value=mock_preprocessor,
             ),
             patch("packages.ml_core.semantic.SemanticEvaluator", return_value=mock_semantic),
+            patch("packages.ml_core.audio_pipe.pcm_to_wav_bytes", return_value=b"wav"),
             patch("subprocess.run"),
             patch("os.remove"),
             patch("tempfile.NamedTemporaryFile") as mock_tmpfile,
@@ -458,6 +478,7 @@ class TestProcessSegment:
                 return_value=mock_preprocessor,
             ),
             patch("packages.ml_core.semantic.SemanticEvaluator", return_value=mock_semantic),
+            patch("packages.ml_core.audio_pipe.pcm_to_wav_bytes", return_value=b"wav"),
             patch("subprocess.run"),
             patch("os.remove"),
             patch("tempfile.NamedTemporaryFile") as mock_tmpfile,
@@ -590,6 +611,7 @@ class TestProcessSegment:
             patch.object(mod, "persist_metrics", mock_persist),
             patch("packages.ml_core.transcription.TranscriptionEngine", return_value=mock_engine),
             patch("packages.ml_core.acoustic.AcousticAnalyzer", return_value=mock_acoustic),
+            patch("packages.ml_core.audio_pipe.pcm_to_wav_bytes", return_value=b"wav"),
             patch("subprocess.run"),
             patch("os.remove"),
             patch("tempfile.NamedTemporaryFile") as mock_tmpfile,

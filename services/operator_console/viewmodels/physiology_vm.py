@@ -26,7 +26,11 @@ from packages.schemas.operator_console import (
     PhysiologyCurrentSnapshot,
     SessionPhysiologySnapshot,
 )
-from services.operator_console.formatters import build_physiology_explanation
+from services.operator_console.formatters import (
+    CoModulationDisplay,
+    build_co_modulation_display,
+    build_physiology_explanation,
+)
 from services.operator_console.state import OperatorStore
 from services.operator_console.viewmodels.base import ViewModelBase
 
@@ -70,8 +74,13 @@ class PhysiologyViewModel(ViewModelBase):
             return "No co-modulation window yet."
         if summary.co_modulation_index is None:
             reason = summary.null_reason or "insufficient aligned non-stale pairs"
-            return f"Co-Modulation Index: null — {reason}."
+            return f"Shared movement not ready yet — {reason}."
         return build_physiology_explanation(self._store.physiology())
+
+    def co_modulation_display(self) -> CoModulationDisplay:
+        """Summary for the derived Co-Modulation Index."""
+
+        return build_co_modulation_display(self.comodulation())
 
     # ------------------------------------------------------------------
     # Slots

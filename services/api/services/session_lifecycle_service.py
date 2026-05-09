@@ -116,7 +116,7 @@ def _default_redis_factory() -> RedisClientLike:
     import redis as redis_lib
 
     url = os.environ.get("REDIS_URL", "redis://redis:6379/0")
-    return redis_lib.from_url(url)  # type: ignore[no-any-return,no-untyped-call]
+    return redis_lib.from_url(url)  # type: ignore[no-any-return]
 
 
 def _row_to_dict(cursor: Any) -> dict[str, Any] | None:

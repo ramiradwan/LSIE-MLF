@@ -23,6 +23,10 @@ _IN_SCOPE_ROOTS: tuple[Path, ...] = (
     Path("services/api/services"),
     Path("services/api/repos"),
     Path("services/worker/pipeline"),
+    Path("services/cloud_api/routes"),
+    Path("services/cloud_api/services"),
+    Path("services/cloud_api/repos"),
+    Path("services/cloud_api/middleware"),
 )
 
 
@@ -73,7 +77,7 @@ def _result(
             f"{len(scan.insert_annotations)} persistence INSERT call(s) and "
             f"{len(scan.inbound_annotations)} inbound raw/transient boundary call(s)."
         )
-        concrete = [*scan.insert_annotations[:8], *scan.inbound_annotations[:8]]
+        concrete = [*scan.insert_annotations, *scan.inbound_annotations]
         if concrete:
             evidence += " Evidence: " + "; ".join(concrete)
         return AuditResult(
@@ -125,16 +129,22 @@ def _marker_from_call(node: ast.Call) -> _Marker:
 
     spec_ref: str | None = None
     for keyword in node.keywords:
-        if keyword.arg == "spec_ref" and isinstance(keyword.value, ast.Constant):
-            if isinstance(keyword.value.value, str):
-                spec_ref = keyword.value.value
+        if (
+            keyword.arg == "spec_ref"
+            and isinstance(keyword.value, ast.Constant)
+            and isinstance(keyword.value.value, str)
+        ):
+            spec_ref = keyword.value.value
     return _Marker(tier=tier, spec_ref=spec_ref, line=node.lineno)
 
 
 def _tier_name(node: ast.AST) -> str | None:
-    if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
-        if node.value.id == "DataTier":
-            return node.attr
+    if (
+        isinstance(node, ast.Attribute)
+        and isinstance(node.value, ast.Name)
+        and node.value.id == "DataTier"
+    ):
+        return node.attr
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
         candidate = node.value.rsplit(".", maxsplit=1)[-1]
         if candidate in _VALID_TIER_NAMES:
@@ -219,9 +229,12 @@ def _collect_return_markers(tree: ast.AST) -> dict[str, _Marker]:
 
         spec_ref: str | None = None
         for keyword in decorator.keywords:
-            if keyword.arg == "spec_ref" and isinstance(keyword.value, ast.Constant):
-                if isinstance(keyword.value.value, str):
-                    spec_ref = keyword.value.value
+            if (
+                keyword.arg == "spec_ref"
+                and isinstance(keyword.value, ast.Constant)
+                and isinstance(keyword.value.value, str)
+            ):
+                spec_ref = keyword.value.value
         return _Marker(tier=tier, spec_ref=spec_ref, line=decorator.lineno)
 
     def visit_returns(statement: ast.AST, returns: list[ast.Return]) -> None:
@@ -305,15 +318,15 @@ def _params_expr_from_execute_call(node: ast.Call) -> ast.AST | None:
     return None
 
 
-def _params_marker_from_expr(
+def _marker_from_expr(
     node: ast.AST | None,
     value_markers: Mapping[str, tuple[_Marker, int]],
     return_markers: Mapping[str, _Marker],
 ) -> tuple[_Marker | None, int | None]:
-    """Resolve normalization/tier evidence for execute params expressions."""
-
     if node is None:
         return None, None
+    if isinstance(node, ast.Await):
+        return _marker_from_expr(node.value, value_markers, return_markers)
     if _is_marker_call(node):
         assert isinstance(node, ast.Call)
         return _marker_from_call(node), node.lineno
@@ -323,7 +336,25 @@ def _params_marker_from_expr(
         call_name = _call_name(node.func)
         if call_name is not None and call_name in return_markers:
             return return_markers[call_name], node.lineno
+        for arg in node.args:
+            marker, line = _marker_from_expr(arg, value_markers, return_markers)
+            if marker is not None:
+                return marker, line
+        for keyword in node.keywords:
+            marker, line = _marker_from_expr(keyword.value, value_markers, return_markers)
+            if marker is not None:
+                return marker, line
     return None, getattr(node, "lineno", None)
+
+
+def _params_marker_from_expr(
+    node: ast.AST | None,
+    value_markers: Mapping[str, tuple[_Marker, int]],
+    return_markers: Mapping[str, _Marker],
+) -> tuple[_Marker | None, int | None]:
+    """Resolve normalization/tier evidence for execute params expressions."""
+
+    return _marker_from_expr(node, value_markers, return_markers)
 
 
 def _sql_from_execute_arg(
@@ -353,7 +384,11 @@ def _marker_valid(marker: _Marker | None, expected_tier: str) -> bool:
 
 
 def _is_execute_call(node: ast.AST) -> bool:
-    return isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "execute"
+    return (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "execute"
+    )
 
 
 def _contains_call(node: ast.AST, predicate: Callable[[ast.Call], bool]) -> bool:
@@ -484,6 +519,12 @@ def _scan_file(repo_root: Path, rel_path: Path) -> tuple[list[str], list[str], l
             inbound_node = value.args[0] if value.args else value
         if not _is_inbound_boundary_expression(inbound_node):
             continue
+        if inbound_marker is None:
+            inbound_marker, _ = _marker_from_expr(
+                inbound_node,
+                value_markers,
+                return_markers,
+            )
         if not _marker_valid(inbound_marker, "TRANSIENT"):
             findings.append(
                 _Finding(
@@ -498,7 +539,8 @@ def _scan_file(repo_root: Path, rel_path: Path) -> tuple[list[str], list[str], l
         else:
             assert inbound_marker is not None
             inbound_evidence.append(
-                f"{rel_path.as_posix()}:{node.lineno} inbound tier={inbound_marker.tier} {inbound_marker.spec_ref}"
+                f"{rel_path.as_posix()}:{node.lineno} "
+                f"inbound tier={inbound_marker.tier} {inbound_marker.spec_ref}"
             )
 
     return insert_evidence, inbound_evidence, findings
@@ -528,9 +570,17 @@ def scan_data_classification(repo_root: Path) -> DataClassificationScan:
         findings.extend(file_findings)
 
     if not insert_evidence:
-        findings.append(_Finding(".", 0, "no in-scope DataTier-annotated INSERT evidence found"))
+        findings.append(
+            _Finding(".", 0, "no in-scope DataTier-annotated INSERT evidence found")
+        )
     if not inbound_evidence:
-        findings.append(_Finding(".", 0, "no in-scope DataTier-annotated inbound boundary evidence found"))
+        findings.append(
+            _Finding(
+                ".",
+                0,
+                "no in-scope DataTier-annotated inbound boundary evidence found",
+            )
+        )
 
     return DataClassificationScan(
         insert_annotations=tuple(insert_evidence),
@@ -554,10 +604,14 @@ def register_data_classification_verifiers(
     *,
     registry: AuditRegistry | None = None,
     item_ids: Iterable[str] | None = None,
+    items: Sequence[Section13Item] | None = None,
 ) -> None:
-    """Register the §13.14 data-classification verifier."""
+    """Register the legacy §13.14 data-classification verifier."""
 
     requested = set(DATA_CLASSIFICATION_VERIFIERS) if item_ids is None else set(item_ids)
+    if items is not None:
+        current_privacy_ids = {item.item_id for item in items if item.title == "Privacy perimeter"}
+        requested -= current_privacy_ids
     target = registry if registry is not None else get_default_registry()
     for item_id, verifier in DATA_CLASSIFICATION_VERIFIERS.items():
         if item_id not in requested or target.has_verifier(item_id):

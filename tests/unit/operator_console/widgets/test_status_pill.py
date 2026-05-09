@@ -27,6 +27,8 @@ def test_set_text_and_kind() -> None:
     pill.set_kind(UiStatusKind.OK)
     assert pill.text() == "Live · 3 session(s)"
     assert pill.kind() is UiStatusKind.OK
+    assert pill.accessibleName() == "Live · 3 session(s)"
+    assert pill.accessibleDescription() == "Status: ok"
 
 
 def test_set_kind_is_idempotent() -> None:

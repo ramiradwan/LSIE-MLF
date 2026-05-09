@@ -25,9 +25,9 @@ from __future__ import annotations
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QFrame,
-    QGridLayout,
     QHBoxLayout,
     QLabel,
+    QScrollArea,
     QVBoxLayout,
     QWidget,
 )
@@ -39,15 +39,18 @@ from packages.schemas.operator_console import (
     UiStatusKind,
 )
 from services.operator_console.formatters import (
+    CoModulationDisplay,
     format_comodulation_index,
     format_freshness,
     format_percentage,
     format_timestamp,
+    physiology_labels,
 )
 from services.operator_console.viewmodels.physiology_vm import PhysiologyViewModel
 from services.operator_console.widgets.alert_banner import AlertBanner
 from services.operator_console.widgets.empty_state import EmptyStateWidget
 from services.operator_console.widgets.metric_card import MetricCard
+from services.operator_console.widgets.responsive_layout import ResponsiveMetricGrid
 from services.operator_console.widgets.section_header import SectionHeader
 from services.operator_console.widgets.status_pill import StatusPill
 
@@ -66,36 +69,48 @@ class PhysiologyView(QWidget):
 
         self._header = SectionHeader(
             "Physiology",
-            "Streamer / operator freshness and §7C Co-Modulation Index.",
+            "Heart data freshness and whether streamer/operator recovery moved together.",
             self,
+            level="page",
         )
         self._error_banner = AlertBanner(self)
         self._empty_state = EmptyStateWidget(self)
         self._empty_state.set_title("No physiology snapshot")
         self._empty_state.set_message(
-            "Physiology data will appear once an active session is "
-            "publishing snapshots via the Orchestrator."
+            "Physiology data will appear once an active session reports heart-data snapshots."
         )
 
+        # §4.C.4 freshness is the single most decision-relevant signal on
+        # the page — promote it to a full-width row above the per-role
+        # cards so the operator answers "should I trust the rest of this
+        # page?" before reading anything else.
+        self._freshness_card = MetricCard("Physiology freshness", self)
         self._streamer_panel = _RolePanel("Streamer", self)
         self._operator_panel = _RolePanel("Operator", self)
+        self._co_modulation_summary_panel = _CoModulationSummaryPanel(self)
         self._comodulation_panel = _CoModulationPanel(self)
 
-        roles_row = QHBoxLayout()
-        roles_row.setContentsMargins(0, 0, 0, 0)
-        roles_row.setSpacing(14)
-        roles_row.addWidget(self._streamer_panel, 1)
-        roles_row.addWidget(self._operator_panel, 1)
+        self._roles_grid = ResponsiveMetricGrid(parent=self)
+        self._roles_grid.set_widgets([self._streamer_panel, self._operator_panel])
 
         body = QVBoxLayout()
         body.setContentsMargins(0, 0, 0, 0)
         body.setSpacing(14)
-        body.addLayout(roles_row)
+        body.addWidget(self._freshness_card)
+        body.addWidget(self._co_modulation_summary_panel)
+        body.addWidget(self._roles_grid)
         body.addWidget(self._comodulation_panel)
         body.addStretch(1)
 
         self._body_container = QWidget(self)
         self._body_container.setLayout(body)
+
+        self._scroll = QScrollArea(self)
+        self._scroll.setObjectName("PhysiologyScrollArea")
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._scroll.setWidget(self._body_container)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 24, 24, 24)
@@ -103,7 +118,7 @@ class PhysiologyView(QWidget):
         layout.addWidget(self._header)
         layout.addWidget(self._error_banner)
         layout.addWidget(self._empty_state)
-        layout.addWidget(self._body_container, 1)
+        layout.addWidget(self._scroll, 1)
         layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
         self._vm.changed.connect(self._refresh)
@@ -129,16 +144,52 @@ class PhysiologyView(QWidget):
         snapshot = self._vm.snapshot()
         if snapshot is None:
             self._empty_state.setVisible(True)
-            self._body_container.setVisible(False)
+            self._scroll.setVisible(False)
             return
         self._empty_state.setVisible(False)
-        self._body_container.setVisible(True)
+        self._scroll.setVisible(True)
 
+        self._set_freshness_card(snapshot)
+        self._co_modulation_summary_panel.set_display(self._vm.co_modulation_display())
         self._streamer_panel.set_snapshot(self._vm.streamer_snapshot())
         self._operator_panel.set_snapshot(self._vm.operator_snapshot())
         self._comodulation_panel.set_summary(
             self._vm.comodulation(),
             explanation=self._vm.comodulation_explanation(),
+        )
+
+    def _set_freshness_card(self, snapshot: object) -> None:
+        roles: list[tuple[str, PhysiologyCurrentSnapshot | None]] = []
+        for label_text in ("streamer", "operator"):
+            attr = getattr(snapshot, label_text, None)
+            if attr is None or isinstance(attr, PhysiologyCurrentSnapshot):
+                roles.append((label_text, attr))
+        present = [
+            (label_text, snap)
+            for label_text, snap in roles
+            if snap is not None and snap.rmssd_ms is not None
+        ]
+        any_stale = any(snap.is_stale is True for _, snap in present)
+        if not present:
+            self._freshness_card.set_primary_text("No fresh heart data yet")
+            self._freshness_card.set_secondary_text(
+                "Heart data trust signals appear after the first usable snapshot lands."
+            )
+            self._freshness_card.set_status(UiStatusKind.NEUTRAL, "absent")
+            return
+        parts: list[str] = []
+        for label_text, snap in present:
+            assert snap is not None
+            parts.append(
+                f"{label_text} {format_freshness(snap.freshness_s, is_stale=snap.is_stale)}"
+            )
+        self._freshness_card.set_primary_text(
+            "stale data — rest of this page may be out of date" if any_stale else "fresh"
+        )
+        self._freshness_card.set_secondary_text(" · ".join(parts))
+        self._freshness_card.set_status(
+            UiStatusKind.WARN if any_stale else UiStatusKind.OK,
+            "stale" if any_stale else "fresh",
         )
 
     # ------------------------------------------------------------------
@@ -155,6 +206,55 @@ class PhysiologyView(QWidget):
 # ----------------------------------------------------------------------
 # Panels
 # ----------------------------------------------------------------------
+
+
+class _CoModulationSummaryPanel(QFrame):
+    def __init__(self, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("Panel")
+        self.setFrameShape(QFrame.Shape.NoFrame)
+        self.setAccessibleName("Co-Modulation Index")
+        self.setAccessibleDescription(
+            "Explains the derived co-modulation signal in plain language."
+        )
+
+        self._title = QLabel("Co-Modulation Index", self)
+        self._title.setObjectName("PanelTitle")
+        self._subtitle = QLabel(
+            "Paired heart-data trends from the current session.",
+            self,
+        )
+        self._subtitle.setObjectName("PanelSubtitle")
+        self._subtitle.setWordWrap(True)
+        self._status = StatusPill(self)
+        self._primary_card = MetricCard("Sync score", self)
+        self._explanation = QLabel("", self)
+        self._explanation.setObjectName("MetricCardSecondary")
+        self._explanation.setWordWrap(True)
+
+        top = QHBoxLayout()
+        top.setContentsMargins(0, 0, 0, 0)
+        top.setSpacing(12)
+        top.addWidget(self._title)
+        top.addStretch(1)
+        top.addWidget(self._status)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 12, 16, 16)
+        layout.setSpacing(8)
+        layout.addLayout(top)
+        layout.addWidget(self._subtitle)
+        layout.addWidget(self._primary_card)
+        layout.addWidget(self._explanation)
+
+    def set_display(self, display: CoModulationDisplay) -> None:
+        self._title.setText(display.title)
+        self._status.set_kind(display.status)
+        self._status.set_text(display.status.value)
+        self._primary_card.set_primary_text(display.primary)
+        self._primary_card.set_secondary_text(display.secondary)
+        self._primary_card.set_status(display.status, None)
+        self._explanation.setText(display.detail)
 
 
 class _RolePanel(QFrame):
@@ -177,7 +277,7 @@ class _RolePanel(QFrame):
         self._status.set_kind(UiStatusKind.NEUTRAL)
         self._status.set_text("absent")
 
-        self._rmssd_card = MetricCard("RMSSD", self)
+        self._rmssd_card = MetricCard(physiology_labels().rmssd_title, self)
         self._hr_card = MetricCard("Heart rate", self)
         self._freshness_card = MetricCard("Freshness", self)
         self._provider_card = MetricCard("Provider", self)
@@ -189,22 +289,21 @@ class _RolePanel(QFrame):
         top.addStretch(1)
         top.addWidget(self._status)
 
-        grid = QGridLayout()
-        grid.setContentsMargins(0, 0, 0, 0)
-        grid.setHorizontalSpacing(10)
-        grid.setVerticalSpacing(10)
-        grid.addWidget(self._rmssd_card, 0, 0)
-        grid.addWidget(self._hr_card, 0, 1)
-        grid.addWidget(self._freshness_card, 1, 0)
-        grid.addWidget(self._provider_card, 1, 1)
-        for col in range(2):
-            grid.setColumnStretch(col, 1)
+        self._metrics_grid = ResponsiveMetricGrid(parent=self)
+        self._metrics_grid.set_widgets(
+            [
+                self._rmssd_card,
+                self._hr_card,
+                self._freshness_card,
+                self._provider_card,
+            ]
+        )
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 12, 16, 16)
         layout.setSpacing(10)
         layout.addLayout(top)
-        layout.addLayout(grid)
+        layout.addWidget(self._metrics_grid)
 
     def set_snapshot(self, snap: PhysiologyCurrentSnapshot | None) -> None:
         if snap is None:
@@ -214,7 +313,7 @@ class _RolePanel(QFrame):
             self._apply_no_rmssd(snap)
             return
         self._rmssd_card.set_primary_text(f"{snap.rmssd_ms:.0f} ms")
-        self._rmssd_card.set_secondary_text("root mean square of successive differences")
+        self._rmssd_card.set_secondary_text(physiology_labels().rmssd_explanation)
         self._rmssd_card.set_status(UiStatusKind.INFO, None)
 
         if snap.heart_rate_bpm is not None:
@@ -260,7 +359,7 @@ class _RolePanel(QFrame):
         # treat as absent for the numeric cards but surface the provider
         # so the operator can tell "strap off" from "strap on, no data".
         self._rmssd_card.set_primary_text("—")
-        self._rmssd_card.set_secondary_text("no RMSSD in snapshot")
+        self._rmssd_card.set_secondary_text(physiology_labels().no_rmssd_detail)
         self._rmssd_card.set_status(UiStatusKind.NEUTRAL, None)
         if snap.heart_rate_bpm is not None:
             self._hr_card.set_primary_text(f"{snap.heart_rate_bpm} bpm")
@@ -279,7 +378,7 @@ class _RolePanel(QFrame):
         self._provider_card.set_secondary_text("")
         self._provider_card.set_status(UiStatusKind.NEUTRAL, None)
         self._status.set_kind(UiStatusKind.NEUTRAL)
-        self._status.set_text("no RMSSD")
+        self._status.set_text("no variability")
 
 
 class _CoModulationPanel(QFrame):
@@ -298,41 +397,57 @@ class _CoModulationPanel(QFrame):
         self.setObjectName("Panel")
         self.setFrameShape(QFrame.Shape.NoFrame)
 
-        self._title = QLabel("Co-Modulation Index", self)
+        labels = physiology_labels()
+        self._title = QLabel(labels.comodulation_title, self)
         self._title.setObjectName("PanelTitle")
         self._subtitle = QLabel(
-            "Rolling Pearson correlation over aligned RMSSD bins.",
+            labels.comodulation_subtitle,
             self,
         )
         self._subtitle.setObjectName("PanelSubtitle")
         self._subtitle.setWordWrap(True)
+
+        self._null_valid_pill = QLabel("valid · null", self)
+        self._null_valid_pill.setObjectName("NullValidPill")
+        self._null_valid_pill.setVisible(False)
+        self._null_valid_pill.setAccessibleName("Co-modulation null-valid")
+        self._null_valid_pill.setAccessibleDescription(
+            "Sync result is intentionally null for this window — a valid §7C outcome, "
+            "not a failure."
+        )
 
         self._index_card = MetricCard("Index", self)
         self._observations_card = MetricCard("Observations", self)
         self._coverage_card = MetricCard("Coverage", self)
         self._window_card = MetricCard("Window", self)
 
-        grid = QGridLayout()
-        grid.setContentsMargins(0, 0, 0, 0)
-        grid.setHorizontalSpacing(10)
-        grid.setVerticalSpacing(10)
-        grid.addWidget(self._index_card, 0, 0)
-        grid.addWidget(self._observations_card, 0, 1)
-        grid.addWidget(self._coverage_card, 0, 2)
-        grid.addWidget(self._window_card, 0, 3)
-        for col in range(4):
-            grid.setColumnStretch(col, 1)
+        self._metrics_grid = ResponsiveMetricGrid(parent=self)
+        self._metrics_grid.set_widgets(
+            [
+                self._index_card,
+                self._observations_card,
+                self._coverage_card,
+                self._window_card,
+            ]
+        )
 
         self._explanation = QLabel("", self)
         self._explanation.setObjectName("MetricCardSecondary")
         self._explanation.setWordWrap(True)
 
+        title_row = QHBoxLayout()
+        title_row.setContentsMargins(0, 0, 0, 0)
+        title_row.setSpacing(10)
+        title_row.addWidget(self._title)
+        title_row.addWidget(self._null_valid_pill)
+        title_row.addStretch(1)
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 12, 16, 16)
         layout.setSpacing(8)
-        layout.addWidget(self._title)
+        layout.addLayout(title_row)
         layout.addWidget(self._subtitle)
-        layout.addLayout(grid)
+        layout.addWidget(self._metrics_grid)
         layout.addWidget(self._explanation)
 
     def set_summary(
@@ -344,23 +459,33 @@ class _CoModulationPanel(QFrame):
         if summary is None:
             self._apply_absent(explanation)
             return
-        self._index_card.set_primary_text(format_comodulation_index(summary))
         if summary.co_modulation_index is None:
-            # §7C null-valid: info pill (not warn/error).
-            self._index_card.set_status(UiStatusKind.INFO, "null-valid")
+            # §7C null-valid is a real outcome, not a missing value. Show
+            # an inline "valid · null" pill in the accent colour and put
+            # the reason as primary-weight text — operators must not read
+            # this as a subsystem failure.
+            reason = summary.null_reason or "insufficient aligned non-stale pairs"
+            self._index_card.set_primary_text(reason)
             self._index_card.set_secondary_text(
-                summary.null_reason or "insufficient aligned non-stale pairs"
+                "Sync result is intentionally null for this window."
             )
+            self._index_card.set_status(
+                UiStatusKind.INFO,
+                physiology_labels().comodulation_null_status,
+            )
+            self._null_valid_pill.setVisible(True)
         else:
-            self._index_card.set_status(UiStatusKind.OK, "valid")
-            self._index_card.set_secondary_text("Pearson r ∈ [-1, 1]")
+            self._null_valid_pill.setVisible(False)
+            self._index_card.set_primary_text(format_comodulation_index(summary))
+            self._index_card.set_status(UiStatusKind.OK, "ready")
+            self._index_card.set_secondary_text("+ means moving together; - means moving apart")
 
         self._observations_card.set_primary_text(str(summary.n_paired_observations))
-        self._observations_card.set_secondary_text("aligned non-stale pairs")
+        self._observations_card.set_secondary_text(physiology_labels().observations_detail)
         self._observations_card.set_status(UiStatusKind.NEUTRAL, None)
 
         self._coverage_card.set_primary_text(format_percentage(summary.coverage_ratio, digits=0))
-        self._coverage_card.set_secondary_text("window coverage")
+        self._coverage_card.set_secondary_text(physiology_labels().coverage_detail)
         self._coverage_card.set_status(UiStatusKind.NEUTRAL, None)
 
         window_text = (
@@ -374,6 +499,7 @@ class _CoModulationPanel(QFrame):
         self._explanation.setText(explanation)
 
     def _apply_absent(self, explanation: str) -> None:
+        self._null_valid_pill.setVisible(False)
         for card in (
             self._index_card,
             self._observations_card,

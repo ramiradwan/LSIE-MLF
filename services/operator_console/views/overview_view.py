@@ -25,13 +25,11 @@ Spec references:
 
 from __future__ import annotations
 
-from typing import ClassVar
 from uuid import UUID
 
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtWidgets import (
     QFrame,
-    QGridLayout,
     QHBoxLayout,
     QLabel,
     QScrollArea,
@@ -52,18 +50,23 @@ from packages.schemas.operator_console import (
 )
 from services.operator_console.formatters import (
     build_physiology_explanation,
-    format_duration,
+    format_active_session_readback,
     format_health_state,
     format_reward,
     format_semantic_gate,
+    format_session_id_compact,
     format_timestamp,
-    truncate_expected_greeting,
+    physiology_labels,
+    reward_detail_labels,
 )
 from services.operator_console.viewmodels.overview_vm import OverviewViewModel
 from services.operator_console.widgets.alert_banner import AlertBanner
 from services.operator_console.widgets.empty_state import EmptyStateWidget
 from services.operator_console.widgets.metric_card import MetricCard
+from services.operator_console.widgets.responsive_layout import ResponsiveMetricGrid
 from services.operator_console.widgets.section_header import SectionHeader
+
+_ACTIVE_CONFLICT_STATUS = "active conflict"
 
 # Cap on the attention queue length on the Overview — the full alert
 # timeline lives on the Health page. Keeping the overview
@@ -100,8 +103,6 @@ class OverviewView(QWidget):
     # uses this to push the session id into the store and switch route.
     session_activated = Signal(object)  # UUID
 
-    _CARD_COLUMNS: ClassVar[int] = 3
-
     def __init__(
         self,
         vm: OverviewViewModel,
@@ -113,8 +114,9 @@ class OverviewView(QWidget):
 
         self._header = SectionHeader(
             "Overview",
-            "Active session, experiment, physiology, health, latest encounter.",
+            "What is running now, what needs attention, and why the latest result counted.",
             self,
+            level="page",
         )
         self._error_banner = AlertBanner(self)
 
@@ -122,7 +124,7 @@ class OverviewView(QWidget):
         # Clicking the active-session card is the single navigation
         # shortcut on this page — takes the operator into Live Session
         # with the same session already selected.
-        self._active_session_card.set_clickable(True)
+        self._active_session_card.set_clickable(True, destination="Live Session")
         self._active_session_card.clicked.connect(self._on_active_session_clicked)
 
         self._experiment_card = MetricCard("Experiment", self)
@@ -131,38 +133,69 @@ class OverviewView(QWidget):
         self._latest_encounter_card = MetricCard("Latest Encounter", self)
         self._attention_card = MetricCard("Attention", self)
 
-        cards_grid = QGridLayout()
-        cards_grid.setContentsMargins(0, 0, 0, 0)
-        cards_grid.setHorizontalSpacing(14)
-        cards_grid.setVerticalSpacing(14)
-        order: list[MetricCard] = [
-            self._active_session_card,
-            self._experiment_card,
-            self._physiology_card,
-            self._health_card,
-            self._latest_encounter_card,
-            self._attention_card,
-        ]
-        for idx, card in enumerate(order):
-            row, col = divmod(idx, self._CARD_COLUMNS)
-            cards_grid.addWidget(card, row, col)
-        for col in range(self._CARD_COLUMNS):
-            cards_grid.setColumnStretch(col, 1)
+        # Three operator jobs, three bands. Each pair of cards lives under
+        # its own SectionHeader so the operator scans for "what's
+        # running" / "do I trust the last result" / "what needs me"
+        # without reading every card.
+        self._now_header = SectionHeader(
+            "Now",
+            "What is currently running.",
+            self,
+            level="sub",
+        )
+        self._trust_header = SectionHeader(
+            "Trust",
+            "Whether the latest result and physiology can be relied on.",
+            self,
+            level="sub",
+        )
+        self._attention_header = SectionHeader(
+            "Needs attention",
+            "Subsystems and alerts the operator should triage.",
+            self,
+            level="sub",
+        )
+
+        self._now_grid = ResponsiveMetricGrid(parent=self)
+        self._now_grid.set_widgets([self._active_session_card, self._experiment_card])
+        self._trust_grid = ResponsiveMetricGrid(parent=self)
+        self._trust_grid.set_widgets([self._latest_encounter_card, self._physiology_card])
+        self._attention_grid = ResponsiveMetricGrid(parent=self)
+        self._attention_grid.set_widgets([self._health_card, self._attention_card])
 
         self._attention_list = _AttentionList(self)
 
-        body = QVBoxLayout()
+        # Body wraps in a scroll area so the three bands and the
+        # attention list keep their natural heights when the page is
+        # narrower than the total content needs. Without scroll, the
+        # outer QVBoxLayout would squash MetricCards below their
+        # wrap-aware minimumHeight at <900px viewports.
+        self._body_container = QWidget(self)
+        body = QVBoxLayout(self._body_container)
         body.setContentsMargins(0, 0, 0, 0)
-        body.setSpacing(14)
-        body.addLayout(cards_grid)
-        body.addWidget(self._attention_list, 1)
+        body.setSpacing(10)
+        body.addWidget(self._now_header)
+        body.addWidget(self._now_grid)
+        body.addWidget(self._trust_header)
+        body.addWidget(self._trust_grid)
+        body.addWidget(self._attention_header)
+        body.addWidget(self._attention_grid)
+        body.addWidget(self._attention_list)
+        body.addStretch(1)
+
+        self._scroll = QScrollArea(self)
+        self._scroll.setObjectName("OverviewScrollArea")
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._scroll.setWidget(self._body_container)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 24, 24, 24)
         layout.setSpacing(14)
         layout.addWidget(self._header)
         layout.addWidget(self._error_banner)
-        layout.addLayout(body, 1)
+        layout.addWidget(self._scroll, 1)
         layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
         # Cache the session id so the click handler does not re-read the
@@ -213,22 +246,20 @@ class OverviewView(QWidget):
             self._active_session_id = None
             self._active_session_card.set_primary_text("No active session")
             self._active_session_card.set_secondary_text(
-                "Nothing is running. Start a session from the capture stack."
+                "Nothing is running. Start a session when the phone is ready."
             )
             self._active_session_card.set_status(UiStatusKind.NEUTRAL, "idle")
             # Disable the click affordance when nothing to navigate to.
             self._active_session_card.set_clickable(False)
             return
         self._active_session_id = session.session_id
-        self._active_session_card.set_clickable(True)
-        self._active_session_card.set_primary_text(str(session.session_id))
-        arm_part = session.active_arm if session.active_arm else "no active arm"
-        greeting_part = truncate_expected_greeting(session.expected_greeting, limit=42)
-        duration_part = format_duration(session.duration_s)
-        self._active_session_card.set_secondary_text(
-            f"arm {arm_part} · greeting “{greeting_part}” · {duration_part}"
+        self._active_session_card.set_clickable(True, destination="Live Session")
+        self._active_session_card.set_primary_text(format_session_id_compact(session.session_id))
+        self._active_session_card.set_secondary_text(format_active_session_readback(session))
+        status_kind = (
+            UiStatusKind.ERROR if session.status == _ACTIVE_CONFLICT_STATUS else UiStatusKind.OK
         )
-        self._active_session_card.set_status(UiStatusKind.OK, session.status)
+        self._active_session_card.set_status(status_kind, session.status)
 
     def _render_experiment(self, summary: ExperimentSummary | None) -> None:
         if summary is None:
@@ -238,10 +269,9 @@ class OverviewView(QWidget):
             return
         label = summary.label or summary.experiment_id
         self._experiment_card.set_primary_text(label)
-        arm_id = summary.active_arm_id or "—"
         reward = format_reward(summary.latest_reward)
         self._experiment_card.set_secondary_text(
-            f"active arm {arm_id} · {summary.arm_count} arm(s) · latest reward {reward}"
+            f"{summary.arm_count} strategy option(s) · latest reward {reward}"
         )
         self._experiment_card.set_status(UiStatusKind.INFO, "sampling")
 
@@ -261,9 +291,9 @@ class OverviewView(QWidget):
             for snap in (snapshot.operator, snapshot.streamer)
         )
         if not any_present:
-            self._physiology_card.set_primary_text("No RMSSD")
+            self._physiology_card.set_primary_text(physiology_labels().no_rmssd_summary)
         else:
-            self._physiology_card.set_primary_text("Live")
+            self._physiology_card.set_primary_text("Live heart data")
         self._physiology_card.set_secondary_text(build_physiology_explanation(snapshot))
         if not any_present:
             self._physiology_card.set_status(UiStatusKind.NEUTRAL, "absent")
@@ -308,9 +338,10 @@ class OverviewView(QWidget):
         # §8/§7E diagnostics stay compact here; the full readback lives in
         # Live Session and does not add Overview table columns.
         diagnostics = self._vm.latest_encounter_semantic_attribution_diagnostics()
+        reward_labels = reward_detail_labels()
         parts: list[str] = [
-            f"P90 {format_reward(encounter.p90_intensity)}",
-            format_semantic_gate(encounter.semantic_gate),
+            f"{reward_labels.p90_title} {format_reward(encounter.p90_intensity)}",
+            f"{reward_labels.gate_title} {format_semantic_gate(encounter.semantic_gate)}",
         ]
         if encounter.n_frames_in_window is not None:
             parts.append(f"{encounter.n_frames_in_window} frames")

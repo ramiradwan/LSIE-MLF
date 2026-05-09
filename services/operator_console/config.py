@@ -9,7 +9,7 @@ overview card. `PollingCoordinator` scopes jobs to the active route
 without re-deriving intervals elsewhere.
 
 All values are read from environment variables at startup. Defaults
-target the local docker-compose stack. Every interval is validated
+target a local API Server on the operator host. Every interval is validated
 positive — a zero-or-negative poll interval would either busy-loop Qt
 timers or silently stop polling, both of which are worse than a hard
 failure at startup.

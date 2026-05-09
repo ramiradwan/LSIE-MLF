@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from scripts.audit.registry import AuditContext, AuditVerifier, get_default_registry
+from scripts.audit.registry import AuditContext, AuditRegistry, AuditVerifier, get_default_registry
 from scripts.audit.results import AuditResult
 from scripts.audit.spec_items import Section13Item
 
@@ -132,9 +132,9 @@ _CANONICAL_VERIFIER_PATH = Path("scripts/audit/verifiers/mechanical.py")
 _CANONICAL_TERM_EXCLUSIONS: Mapping[str, str] = {
     "api": "§0.3 defines API Server container name 'api'; config must retain it.",
     "worker": "§0.3 defines ML Worker container name 'worker'; config must retain it.",
-    "Redis": "§0.3 Message Broker definition names the Redis technology.",
-    "queue": "§0.3 Message Broker definition describes Celery task queues generically.",
-    "broker": "§0.3 Message Broker component has broker as a common protocol noun.",
+    "Redis": "§0.3 keeps Message Broker as legacy/server terminology; desktop is Redis-free.",
+    "queue": "§0.3 desktop IPC queue and legacy task queue wording create broad grep noise.",
+    "broker": "§0.3 Message Broker remains a legacy/server component name.",
     "postgres": "§0.3 defines Persistent Store container name 'postgres'.",
     "PostgreSQL": "§0.3 Persistent Store definition names the PostgreSQL technology.",
     "database": "§0.3 Persistent Store definition uses database as a storage noun.",
@@ -471,9 +471,7 @@ def _expected_au12(spec_content: Mapping[str, Any]) -> _SpecExtraction:
         if match:
             landmarks.append(int(match.group(1)))
         if code_name == "self.alpha":
-            alpha_match = re.search(
-                r"Default\s+([0-9.]+)", str(row_mapping.get("definition", ""))
-            )
+            alpha_match = re.search(r"Default\s+([0-9.]+)", str(row_mapping.get("definition", "")))
             if alpha_match:
                 alpha = float(alpha_match.group(1))
     reference = _as_mapping(topic.get("reference_implementation"))
@@ -640,16 +638,31 @@ def _expected_vault(spec_content: Mapping[str, Any]) -> _SpecExtraction:
 
 
 def _target_files_for(targets: Sequence[object]) -> tuple[str, ...]:
-    files: set[str] = set()
-    for target in targets:
-        target_text = str(target)
-        if target_text in {"worker", "orchestrator"}:
-            files.add("requirements/worker.txt")
-        elif target_text == "api":
-            files.add("requirements/api.txt")
-        elif target_text == "operator_host":
-            files.add("requirements/cli.txt")
-    return tuple(sorted(files))
+    recognized_targets = {
+        "all_processes",
+        "analytics_state_worker",
+        "api",
+        "capture_supervisor",
+        "cloud_api",
+        "cloud_sync_worker",
+        "desktop_launcher",
+        "gpu_ml_worker",
+        "module_c_orchestrator",
+        "operator_host",
+        "orchestrator",
+        "ui_api_shell",
+        "worker",
+    }
+    if any(str(target) in recognized_targets for target in targets):
+        return ("pyproject.toml", "uv.lock")
+    return ()
+
+
+def _version_is_checkable(version: str) -> bool:
+    stripped = version.strip()
+    return bool(
+        stripped.startswith(">=") or re.fullmatch(r"\d+(?:\.\d+)*(?:\.(?:x|\*))?", stripped)
+    )
 
 
 def _expected_dependencies(spec_content: Mapping[str, Any]) -> _SpecExtraction:
@@ -670,7 +683,7 @@ def _expected_dependencies(spec_content: Mapping[str, Any]) -> _SpecExtraction:
         package = str(row_mapping.get("package", "")).strip()
         version = str(row_mapping.get("version", "")).strip()
         targets = _target_files_for(_as_sequence(row_mapping.get("container_targets")))
-        if package and version and targets:
+        if package and version and targets and _version_is_checkable(version):
             expected.append(_ExpectedDependency(package, version, targets))
         else:
             skipped_rows += 1
@@ -727,11 +740,11 @@ def _expected_reason_codes(spec_content: Mapping[str, Any]) -> _SpecExtraction:
     )
 
 
-def _parse_requirement_line(raw_line: str) -> tuple[str, str] | None:
-    stripped = raw_line.split("#", 1)[0].strip()
-    if not stripped or stripped.startswith("-r"):
+def _parse_dependency_spec(raw_spec: str) -> tuple[str, str] | None:
+    requirement = raw_spec.split(";", 1)[0].strip()
+    if not requirement:
         return None
-    match = re.match(r"([A-Za-z0-9_.-]+)\s*(.*)", stripped)
+    match = re.match(r"([A-Za-z0-9_.-]+)\s*(.*)", requirement)
     if not match:
         return None
     return match.group(1), match.group(2).strip()
@@ -741,33 +754,115 @@ def _normalize_package(name: str) -> str:
     return name.replace("_", "-").casefold()
 
 
-def _read_requirement_entries(context: AuditContext, rel_path: str) -> dict[str, _RequirementEntry]:
+def _read_uv_lock_entries(context: AuditContext) -> dict[str, _RequirementEntry]:
+    uv_lock_path = _repo_file(context, "uv.lock")
+    if not uv_lock_path.exists():
+        return {}
+
     entries: dict[str, _RequirementEntry] = {}
-    for line_number, raw_line in enumerate(_read_lines(context, rel_path), start=1):
-        parsed = _parse_requirement_line(raw_line)
-        if parsed is None:
+    in_root_package = False
+    current_section = ""
+    collecting_array = False
+    for line_number, raw_line in enumerate(_read_lines(context, "uv.lock"), start=1):
+        stripped = raw_line.strip()
+        if stripped == "[[package]]":
+            in_root_package = False
+            current_section = ""
+            collecting_array = False
             continue
-        package, specifier = parsed
+        name_match = re.match(r'^name = "([^"]+)"$', stripped)
+        if name_match is not None:
+            in_root_package = name_match.group(1) == "lsie-mlf-desktop"
+            continue
+        if not in_root_package:
+            continue
+        if stripped.startswith("[") and stripped.endswith("]"):
+            current_section = stripped
+            collecting_array = False
+            continue
+        if (
+            current_section == "[package.metadata]"
+            and stripped.startswith("requires-dist")
+            and "[" in stripped
+        ):
+            collecting_array = True
+            continue
+        if not collecting_array:
+            continue
+        if stripped.startswith("]"):
+            collecting_array = False
+            continue
+        package_match = re.search(r'name = "([^"]+)"', raw_line)
+        specifier_match = re.search(r'specifier = "([^"]+)"', raw_line)
+        if package_match is None or specifier_match is None:
+            continue
+        package = package_match.group(1)
+        specifier = specifier_match.group(1)
         entries[_normalize_package(package)] = _RequirementEntry(
             package=package,
             specifier=specifier,
-            raw_line=raw_line.strip(),
-            rel_path=rel_path,
+            raw_line=raw_line.strip().rstrip(","),
+            rel_path="uv.lock",
             line=line_number,
         )
     return entries
 
 
-def _effective_requirements(context: AuditContext, rel_path: str) -> dict[str, _RequirementEntry]:
+def _read_pyproject_entries(context: AuditContext) -> dict[str, _RequirementEntry]:
+    pyproject_path = _repo_file(context, "pyproject.toml")
+    if not pyproject_path.exists():
+        return {}
+
     entries: dict[str, _RequirementEntry] = {}
-    if rel_path != "requirements/base.txt":
-        for raw_line in _read_lines(context, rel_path):
-            include_match = re.match(r"\s*-r\s+base\.txt\s*(?:#.*)?$", raw_line)
-            if include_match:
-                entries.update(_read_requirement_entries(context, "requirements/base.txt"))
-                break
-    entries.update(_read_requirement_entries(context, rel_path))
+    current_section = ""
+    collecting_array = False
+    for line_number, raw_line in enumerate(_read_lines(context, "pyproject.toml"), start=1):
+        stripped = raw_line.strip()
+        if collecting_array:
+            if stripped.startswith("]"):
+                collecting_array = False
+                continue
+            match = re.match(r'^\s*"([^"]+)"\s*,?\s*(?:#.*)?$', raw_line)
+            if match is None:
+                continue
+            parsed = _parse_dependency_spec(match.group(1))
+            if parsed is None:
+                continue
+            package, specifier = parsed
+            entries[_normalize_package(package)] = _RequirementEntry(
+                package=package,
+                specifier=specifier,
+                raw_line=match.group(1),
+                rel_path="pyproject.toml",
+                line=line_number,
+            )
+            continue
+
+        if stripped.startswith("[") and stripped.endswith("]"):
+            current_section = stripped
+            continue
+        if (
+            current_section == "[project]"
+            and stripped.startswith("dependencies")
+            and "[" in stripped
+        ):
+            collecting_array = True
+            continue
+        if (
+            current_section == "[project.optional-dependencies]"
+            and "=" in stripped
+            and "[" in stripped
+        ):
+            collecting_array = True
     return entries
+
+
+def _dependency_entries(context: AuditContext, rel_path: str) -> dict[str, _RequirementEntry]:
+    if rel_path == "pyproject.toml":
+        return _read_pyproject_entries(context)
+    if rel_path == "uv.lock":
+        return _read_uv_lock_entries(context)
+    return {}
 
 
 def _specifier_matches(expected: str, actual: str) -> bool:
@@ -778,7 +873,11 @@ def _specifier_matches(expected: str, actual: str) -> bool:
     wildcard = re.fullmatch(r"(\d+(?:\.\d+)*)\.(?:x|\*)", expected)
     if wildcard:
         prefix = wildcard.group(1)
-        return actual.startswith(f"=={prefix}.") or actual == f"=={prefix}.*"
+        if actual.startswith(f"=={prefix}.") or actual == f"=={prefix}.*":
+            return True
+        if "." not in prefix:
+            return actual == f">={prefix}.0" or actual.startswith(f">={prefix}.")
+        return False
     if re.fullmatch(r"\d+(?:\.\d+)+", expected):
         return actual == f"=={expected}"
     return actual == f"=={expected}"
@@ -790,13 +889,9 @@ def _retired_synonyms_from_row(row_mapping: Mapping[str, Any]) -> tuple[str, ...
         return tuple(str(synonym).strip() for synonym in retired_list if str(synonym).strip())
     retired_synonyms = row_mapping.get("retired_synonyms")
     if isinstance(retired_synonyms, str):
-        return tuple(
-            synonym.strip() for synonym in retired_synonyms.split(",") if synonym.strip()
-        )
+        return tuple(synonym.strip() for synonym in retired_synonyms.split(",") if synonym.strip())
     return tuple(
-        str(synonym).strip()
-        for synonym in _as_sequence(retired_synonyms)
-        if str(synonym).strip()
+        str(synonym).strip() for synonym in _as_sequence(retired_synonyms) if str(synonym).strip()
     )
 
 
@@ -856,18 +951,12 @@ def _is_root_config_file(rel_path: Path) -> bool:
     if len(rel_path.parts) != 1:
         return False
     name = rel_path.name
-    if name.startswith("docker-compose") and rel_path.suffix in {".yml", ".yaml"}:
-        return True
-    if name.startswith("Dockerfile"):
-        return True
     if name.startswith(".env"):
         return True
     return rel_path.suffix in _ROOT_CONFIG_SUFFIXES
 
 
 def _is_config_artifact(rel_path: Path) -> bool:
-    if rel_path.name.startswith("Dockerfile"):
-        return True
     if rel_path.suffix in {".sql", ".ddl"}:
         return True
     if any(part in _CONFIG_ARTIFACT_DIRS for part in rel_path.parts[:-1]):
@@ -900,38 +989,66 @@ def _iter_scanned_files(context: AuditContext) -> Iterable[Path]:
 
 
 def verify_ffmpeg_resample(context: AuditContext, item: Section13Item) -> AuditResult:
-    rel_path = "services/worker/pipeline/orchestrator.py"
+    rel_path = "services/desktop_app/processes/module_c_orchestrator.py"
     expected_extraction = _expected_ffmpeg_command(context.spec_content)
     if expected_extraction.value is None:
         return _spec_extraction_result(item, expected_extraction)
-    expected = expected_extraction.value
-    actual = _literal_assignment(context, rel_path, "FFMPEG_RESAMPLE_CMD")
-    if actual is None:
-        return _result(
-            item,
-            False,
-            f"§4.C.2/§13.4: missing FFMPEG_RESAMPLE_CMD assignment in {rel_path}.",
-            "Define the FFmpeg resampling command from the spec.",
-        )
-    invocation = _find_line_regex(context, rel_path, r"FFMPEG_RESAMPLE_CMD,")
+    pcm_rate = _literal_assignment(context, rel_path, "PCM_SAMPLE_RATE_HZ")
+    sample_width = _literal_assignment(context, rel_path, "AUDIO_SAMPLE_WIDTH_BYTES")
+    channels = _literal_assignment(context, rel_path, "PCM_CHANNELS")
+    audio_filename = _literal_assignment(context, rel_path, "AUDIO_FILENAME")
+    invocation = _find_line_regex(context, rel_path, r"_source_pcm_to_16k_mono\(")
     checks = [
         _Check(
-            tuple(actual.value) == expected,
+            pcm_rate is not None and int(pcm_rate.value) == 16_000,
             (
-                f"§4.C.2/§13.4 {rel_path}:{actual.line} matched command {actual.value!r}; "
-                f"expected {expected!r}. {expected_extraction.evidence}"
+                f"§4.C.2/§13.4 {rel_path}:{pcm_rate.line if pcm_rate else '?'} "
+                f"PCM_SAMPLE_RATE_HZ={pcm_rate.value if pcm_rate else 'missing'}; expected 16000. "
+                f"{expected_extraction.evidence}"
+            ),
+        ),
+        _Check(
+            sample_width is not None and int(sample_width.value) == 2,
+            (
+                f"§4.C.2/§13.4 {rel_path}:{sample_width.line if sample_width else '?'} "
+                f"AUDIO_SAMPLE_WIDTH_BYTES={sample_width.value if sample_width else 'missing'}; "
+                "expected 2."
+            ),
+        ),
+        _Check(
+            channels is not None and int(channels.value) == 1,
+            (
+                f"§4.C.2/§13.4 {rel_path}:{channels.line if channels else '?'} "
+                f"PCM_CHANNELS={channels.value if channels else 'missing'}; expected 1."
+            ),
+        ),
+        _Check(
+            audio_filename is not None and audio_filename.value == "audio_stream.wav",
+            (
+                f"§4.C.2/§13.4 {rel_path}:{audio_filename.line if audio_filename else '?'} "
+                f"AUDIO_FILENAME={audio_filename.value if audio_filename else 'missing'}; "
+                "expected 'audio_stream.wav'."
+            ),
+        ),
+        _contains_all(
+            context,
+            rel_path,
+            (
+                "def _source_pcm_to_16k_mono",
+                "audioop.tomono",
+                "audioop.lin2lin",
+                "audioop.ratecv",
+                "audio_format.sample_rate_hz",
+                "PCM_SAMPLE_RATE_HZ",
             ),
         ),
         _Check(
             invocation is not None,
             (
-                f"§4.C.2/§13.4 {rel_path}:{invocation[0]} invokes FFMPEG_RESAMPLE_CMD: "
-                f"{invocation[1]!r}."
+                f"§4.C.2/§13.4 {rel_path}:{invocation[0]} converts capture audio with "
+                f"_source_pcm_to_16k_mono: {invocation[1]!r}."
                 if invocation is not None
-                else (
-                    f"§4.C.2/§13.4 {rel_path}: missing subprocess invocation of "
-                    "FFMPEG_RESAMPLE_CMD."
-                )
+                else f"§4.C.2/§13.4 {rel_path}: missing _source_pcm_to_16k_mono invocation."
             ),
         ),
     ]
@@ -1134,25 +1251,21 @@ def verify_dependency_pins(context: AuditContext, item: Section13Item) -> AuditR
     if expected_extraction.value is None:
         return _spec_extraction_result(item, expected_extraction)
     expected = expected_extraction.value
-    effective = {
-        rel_path: _effective_requirements(context, rel_path)
-        for rel_path in (
-            "requirements/worker.txt",
-            "requirements/api.txt",
-            "requirements/cli.txt",
-        )
-    }
+    manifests = ("pyproject.toml", "uv.lock")
+    effective = {rel_path: _dependency_entries(context, rel_path) for rel_path in manifests}
     checks: list[_Check] = []
     for dependency in expected:
+        normalized_package = _normalize_package(dependency.package)
         for target_file in dependency.target_files:
-            entry = effective[target_file].get(_normalize_package(dependency.package))
+            entry = effective[target_file].get(normalized_package)
             if entry is None:
                 checks.append(
                     _Check(
                         False,
                         (
                             f"§10.2/§13.12 {target_file}: missing {dependency.package} "
-                            f"expected version {dependency.version}. {expected_extraction.evidence}"
+                            f"expected version {dependency.version}. "
+                            f"{expected_extraction.evidence}"
                         ),
                     )
                 )
@@ -1161,9 +1274,9 @@ def verify_dependency_pins(context: AuditContext, item: Section13Item) -> AuditR
                 _Check(
                     _specifier_matches(dependency.version, entry.specifier),
                     (
-                        f"§10.2/§13.12 {entry.rel_path}:{entry.line} matched {entry.raw_line!r}; "
-                        f"expected {dependency.package} {dependency.version}. "
-                        f"{expected_extraction.evidence}"
+                        f"§10.2/§13.12 {entry.rel_path}:{entry.line} matched "
+                        f"{entry.raw_line!r}; expected {dependency.package} "
+                        f"{dependency.version}. {expected_extraction.evidence}"
                     ),
                 )
             )
@@ -1425,9 +1538,7 @@ def _gray_band_branch_evidence(context: AuditContext, rel_path: str) -> _GrayBan
         )
         branch_evidence.append(evidence)
         if missing:
-            failing_branch_evidence.append(
-                f"{evidence} missing {', '.join(missing)}"
-            )
+            failing_branch_evidence.append(f"{evidence} missing {', '.join(missing)}")
     if failing_branch_evidence:
         return _GrayBandBranchEvidence(
             False,
@@ -1615,11 +1726,7 @@ def _expected_derived_only_forbidden_aliases(item: Section13Item) -> _SpecExtrac
         "complete transient PhysiologicalChunkEvent payload bodies": "physiologicalchunkevent",
         "free-form semantic rationales": "free-form semantic rationale",
     }
-    missing = [
-        label
-        for label, marker in expected_phrases.items()
-        if marker.casefold() not in body
-    ]
+    missing = [label for label, marker in expected_phrases.items() if marker.casefold() not in body]
     if missing:
         return _not_extracted(
             "§13.30",
@@ -1745,7 +1852,7 @@ def verify_derived_only_attribution_persistence(
             not required_schema_missing,
             (
                 "§13.30 packages/schemas/attribution.py exposes derived/versioned "
-                f"fields { _DERIVED_ONLY_REQUIRED_FIELDS!r}."
+                f"fields {_DERIVED_ONLY_REQUIRED_FIELDS!r}."
                 if not required_schema_missing
                 else "§13.30 packages/schemas/attribution.py missing derived fields "
                 + ", ".join(required_schema_missing)
@@ -1755,7 +1862,7 @@ def verify_derived_only_attribution_persistence(
             not required_sql_missing,
             (
                 "§13.30 data/sql/05-attribution.sql persists derived/versioned "
-                f"columns { _DERIVED_ONLY_REQUIRED_FIELDS!r}."
+                f"columns {_DERIVED_ONLY_REQUIRED_FIELDS!r}."
                 if not required_sql_missing
                 else "§13.30 data/sql/05-attribution.sql missing derived columns "
                 + ", ".join(required_sql_missing)
@@ -1765,7 +1872,7 @@ def verify_derived_only_attribution_persistence(
             not required_analytics_missing,
             (
                 "§13.30 services/worker/pipeline/analytics.py writes the approved "
-                f"derived attribution fields { _DERIVED_ONLY_REQUIRED_FIELDS!r}."
+                f"derived attribution fields {_DERIVED_ONLY_REQUIRED_FIELDS!r}."
                 if not required_analytics_missing
                 else "§13.30 services/worker/pipeline/analytics.py missing INSERT evidence for "
                 + ", ".join(required_analytics_missing)
@@ -1819,9 +1926,7 @@ def verify_directory_structure(context: AuditContext, item: Section13Item) -> Au
     for spec_path in extraction.value:
         relative = spec_path.lstrip("/").rstrip("/")
         if not relative:
-            checks.append(
-                _Check(False, f"§3/§13.1 spec_path={spec_path!r} resolves to repo root.")
-            )
+            checks.append(_Check(False, f"§3/§13.1 spec_path={spec_path!r} resolves to repo root."))
             continue
         target = context.repo_root / relative
         if spec_path.endswith("/"):
@@ -1840,297 +1945,6 @@ def verify_directory_structure(context: AuditContext, item: Section13Item) -> Au
                 f"(spec_path={spec_path!r}).",
             )
         )
-
-    summary = _checks_result(item, checks)
-    return _result(
-        item,
-        summary.passed,
-        f"{extraction.evidence}\n{summary.evidence}",
-        summary.follow_up,
-    )
-
-
-# ---------------------------------------------------------------------------
-# §13.2 — Docker topology
-# ---------------------------------------------------------------------------
-
-
-@dataclass(frozen=True, slots=True)
-class _ExpectedContainer:
-    name: str
-    image_token: str
-    network: str
-    restart_policy: str
-    depends_on: tuple[str, ...]
-    gpu_required: bool
-
-
-@dataclass(frozen=True, slots=True)
-class _ExpectedVolume:
-    name: str
-    mount_path: str
-    targets: tuple[str, ...]
-
-
-@dataclass(frozen=True, slots=True)
-class _ExpectedTopology:
-    containers: tuple[_ExpectedContainer, ...]
-    volumes: tuple[_ExpectedVolume, ...]
-
-
-def _expected_docker_topology(spec_content: Mapping[str, Any]) -> _SpecExtraction:
-    topology = _as_mapping(spec_content.get("docker_topology"))
-    if topology is None:
-        return _not_extracted(
-            "§9/§13.2",
-            "docker topology containers/volumes",
-            "missing docker_topology object in spec_content",
-        )
-    containers: list[_ExpectedContainer] = []
-    for row in _as_sequence(topology.get("containers")):
-        row_mapping = _as_mapping(row)
-        if row_mapping is None:
-            continue
-        name = str(row_mapping.get("container_name", "")).strip()
-        image_base = str(row_mapping.get("image_base", "")).strip()
-        # docker-compose tag form: extract the leading "image:tag" before any " + " suffix
-        # (Capture Container is "ubuntu:24.04 + scrcpy v3.3.4").
-        image_token = image_base.split(" + ", 1)[0].split()[0] if image_base else ""
-        depends_on_raw = tuple(
-            str(value).strip() for value in _as_sequence(row_mapping.get("depends_on")) if value
-        )
-        containers.append(
-            _ExpectedContainer(
-                name=name,
-                image_token=image_token,
-                network=str(row_mapping.get("network", "")).strip(),
-                restart_policy=str(row_mapping.get("restart_policy", "")).strip(),
-                depends_on=depends_on_raw,
-                gpu_required=bool(row_mapping.get("gpu_required")),
-            )
-        )
-    volumes: list[_ExpectedVolume] = []
-    for row in _as_sequence(topology.get("volumes")):
-        row_mapping = _as_mapping(row)
-        if row_mapping is None:
-            continue
-        volumes.append(
-            _ExpectedVolume(
-                name=str(row_mapping.get("volume_name", "")).strip(),
-                mount_path=str(row_mapping.get("mount_path", "")).strip(),
-                targets=tuple(
-                    str(value).strip()
-                    for value in _as_sequence(row_mapping.get("container_targets"))
-                    if value
-                ),
-            )
-        )
-    if not containers:
-        return _not_extracted(
-            "§9/§13.2",
-            "docker topology containers",
-            "docker_topology.containers is empty",
-        )
-    return _extracted(
-        _ExpectedTopology(containers=tuple(containers), volumes=tuple(volumes)),
-        f"§9/§13.2: extracted {len(containers)} containers and {len(volumes)} volumes "
-        "from spec_content.docker_topology.",
-    )
-
-
-def _load_docker_compose(context: AuditContext) -> tuple[Mapping[str, Any], int]:
-    import yaml  # type: ignore[import-untyped]  # noqa: PLC0415
-
-    compose_path = _repo_file(context, "docker-compose.yml")
-    text = compose_path.read_text(encoding="utf-8")
-    parsed = yaml.safe_load(text)
-    if not isinstance(parsed, Mapping):
-        raise ValueError("docker-compose.yml root must be a mapping")
-    return parsed, len(text.splitlines())
-
-
-def verify_docker_topology(context: AuditContext, item: Section13Item) -> AuditResult:
-    """Verify §9 docker topology container/volume contract against docker-compose.yml."""
-
-    extraction = _expected_docker_topology(context.spec_content)
-    if extraction.value is None:
-        return _spec_extraction_result(item, extraction)
-    expected: _ExpectedTopology = extraction.value
-
-    try:
-        compose, _line_count = _load_docker_compose(context)
-    except FileNotFoundError:
-        return _result(
-            item,
-            False,
-            f"§9/§13.2 docker-compose.yml is missing (expected at {context.repo_root}).",
-            "Restore docker-compose.yml at the repository root.",
-        )
-    except (ImportError, ValueError) as exc:
-        return _result(
-            item,
-            False,
-            f"§9/§13.2 unable to parse docker-compose.yml: {exc}",
-            "Install pyyaml or repair docker-compose.yml so the §13.2 verifier can parse it.",
-        )
-
-    services_raw = compose.get("services") if isinstance(compose, Mapping) else None
-    services = _as_mapping(services_raw) or {}
-    top_volumes = _as_mapping(compose.get("volumes")) or {}
-
-    checks: list[_Check] = []
-    for spec_container in expected.containers:
-        service = _as_mapping(services.get(spec_container.name))
-        if service is None:
-            checks.append(
-                _Check(
-                    False,
-                    f"§9/§13.2 service {spec_container.name!r} is missing from docker-compose.yml.",
-                )
-            )
-            continue
-        service_image = str(service.get("image", "")).strip()
-        build_block = _as_mapping(service.get("build"))
-        # GPU services build from a Dockerfile rather than declaring `image:`; for
-        # those the spec image_token names the FROM base, which we accept implicitly.
-        image_match = (
-            spec_container.image_token == ""
-            or spec_container.image_token in service_image
-            or build_block is not None
-        )
-        checks.append(
-            _Check(
-                image_match,
-                f"§9/§13.2 service {spec_container.name} image='{service_image}' "
-                f"matches spec image_token={spec_container.image_token!r}."
-                if image_match
-                else (
-                    f"§9/§13.2 service {spec_container.name} image='{service_image}' "
-                    f"does not contain spec image_token={spec_container.image_token!r}."
-                ),
-            )
-        )
-        service_networks = service.get("networks")
-        network_names: tuple[str, ...] = ()
-        if isinstance(service_networks, Mapping):
-            network_names = tuple(str(name) for name in service_networks)
-        elif isinstance(service_networks, Sequence) and not isinstance(
-            service_networks, str | bytes | bytearray
-        ):
-            network_names = tuple(str(name) for name in service_networks)
-        if spec_container.network:
-            network_match = spec_container.network in network_names
-        else:
-            network_match = True
-        checks.append(
-            _Check(
-                network_match,
-                f"§9/§13.2 service {spec_container.name} network={network_names!r} "
-                f"includes spec network={spec_container.network!r}."
-                if network_match
-                else (
-                    f"§9/§13.2 service {spec_container.name} network={network_names!r} "
-                    f"missing spec network={spec_container.network!r}."
-                ),
-            )
-        )
-        restart_policy = str(service.get("restart", "")).strip()
-        deploy_block = _as_mapping(service.get("deploy"))
-        if not restart_policy and deploy_block is not None:
-            restart_policy_block = _as_mapping(deploy_block.get("restart_policy")) or {}
-            restart_policy = str(restart_policy_block.get("condition", "")).strip()
-        # The compose form of "on-failure:5" is "restart: on-failure" with
-        # max_attempts: 5; accept the prefix match against spec.
-        spec_policy = spec_container.restart_policy
-        if not spec_policy:
-            policy_match = True
-        elif restart_policy == spec_policy:
-            policy_match = True
-        elif spec_policy.startswith("on-failure") and restart_policy.startswith("on-failure"):
-            policy_match = True
-        else:
-            policy_match = False
-        checks.append(
-            _Check(
-                policy_match,
-                f"§9/§13.2 service {spec_container.name} restart='{restart_policy}' "
-                f"matches spec restart_policy={spec_policy!r}."
-                if policy_match
-                else (
-                    f"§9/§13.2 service {spec_container.name} restart='{restart_policy}' "
-                    f"does not match spec restart_policy={spec_policy!r}."
-                ),
-            )
-        )
-        depends_on_raw = service.get("depends_on")
-        depends_names: tuple[str, ...] = ()
-        if isinstance(depends_on_raw, Mapping):
-            depends_names = tuple(str(name) for name in depends_on_raw)
-        elif isinstance(depends_on_raw, Sequence) and not isinstance(
-            depends_on_raw, str | bytes | bytearray
-        ):
-            depends_names = tuple(str(name) for name in depends_on_raw)
-        depends_missing = tuple(name for name in spec_container.depends_on if name not in depends_names)
-        depends_match = not depends_missing
-        checks.append(
-            _Check(
-                depends_match,
-                f"§9/§13.2 service {spec_container.name} depends_on={depends_names!r} "
-                f"covers spec depends_on={spec_container.depends_on!r}."
-                if depends_match
-                else (
-                    f"§9/§13.2 service {spec_container.name} depends_on={depends_names!r} "
-                    f"missing spec entries {depends_missing!r}."
-                ),
-            )
-        )
-
-    for spec_volume in expected.volumes:
-        if spec_volume.name not in top_volumes:
-            checks.append(
-                _Check(
-                    False,
-                    f"§9/§13.2 top-level volumes is missing {spec_volume.name!r}.",
-                )
-            )
-        else:
-            checks.append(
-                _Check(
-                    True,
-                    f"§9/§13.2 top-level volumes declares {spec_volume.name!r}.",
-                )
-            )
-        for target in spec_volume.targets:
-            service = _as_mapping(services.get(target))
-            mount_lines: list[str] = []
-            if service is not None:
-                volumes_block = service.get("volumes")
-                if isinstance(volumes_block, Sequence) and not isinstance(
-                    volumes_block, str | bytes | bytearray
-                ):
-                    for entry in volumes_block:
-                        if isinstance(entry, str):
-                            mount_lines.append(entry)
-                        elif isinstance(entry, Mapping):
-                            mount_lines.append(
-                                f"{entry.get('source', '')}:{entry.get('target', '')}"
-                            )
-            mounted = any(
-                line.startswith(f"{spec_volume.name}:") and spec_volume.mount_path in line
-                for line in mount_lines
-            )
-            checks.append(
-                _Check(
-                    mounted,
-                    f"§9/§13.2 service {target} mounts volume {spec_volume.name!r} at "
-                    f"{spec_volume.mount_path!r}."
-                    if mounted
-                    else (
-                        f"§9/§13.2 service {target} does not mount {spec_volume.name!r} at "
-                        f"{spec_volume.mount_path!r} (mounts={mount_lines!r})."
-                    ),
-                )
-            )
 
     summary = _checks_result(item, checks)
     return _result(
@@ -2193,8 +2007,10 @@ def _expected_ipc_lifecycle(spec_content: Mapping[str, Any]) -> _SpecExtraction:
         )
     return _extracted(
         tuple(steps),
-        f"§4.A/§13.3: extracted {len(steps)} IPC lifecycle steps with {sum(len(s.tokens) for s in steps)} "
-        "structured tokens from spec_content.",
+        (
+            f"§4.A/§13.3: extracted {len(steps)} IPC lifecycle steps with "
+            f"{sum(len(s.tokens) for s in steps)} structured tokens from spec_content."
+        ),
     )
 
 
@@ -2202,16 +2018,7 @@ _SHELL_ASSIGN_RE = re.compile(r'^\s*([A-Z_][A-Z0-9_]*)="([^"\n]+)"\s*$', re.MULT
 
 
 def _expand_shell_variables(text: str) -> str:
-    """Substitute literal POSIX `VAR="value"` declarations into expanded form.
-
-    The verifier only expands declarations whose value is itself a literal (or
-    references previously-declared variables) so the IPC lifecycle tokens like
-    `/tmp/ipc/audio_stream.raw` resolve through `$AUDIO_PIPE="$IPC_DIR/..."`.
-    Quoted variable references (`"$VAR"`) collapse to just the value so the
-    expanded form matches unquoted spec tokens like `mkdir -p /tmp/ipc`.
-    Conditionally-assigned shell variables and command substitutions are left
-    untouched.
-    """
+    """Substitute literal POSIX `VAR="value"` declarations into expanded form."""
 
     expansions: dict[str, str] = {}
     for match in _SHELL_ASSIGN_RE.finditer(text):
@@ -2237,51 +2044,34 @@ def _expand_shell_variables(text: str) -> str:
 
 
 def verify_ipc_lifecycle(context: AuditContext, item: Section13Item) -> AuditResult:
-    """Verify each Module A IPC lifecycle step is implemented in stream_ingest entrypoint."""
+    """Verify Module A's active desktop capture lifecycle evidence."""
 
-    extraction = _expected_ipc_lifecycle(context.spec_content)
-    if extraction.value is None:
-        return _spec_extraction_result(item, extraction)
-    steps: tuple[_IPCStep, ...] = extraction.value
-
-    rel_path = "services/stream_ingest/entrypoint.sh"
-    try:
-        raw_text = _read_text(context, rel_path)
-    except FileNotFoundError:
-        return _result(
-            item,
-            False,
-            f"§4.A/§13.3 {rel_path} is missing.",
-            f"Create {rel_path} or update the verifier to reference the new Module A entrypoint.",
-        )
-    text = _expand_shell_variables(raw_text)
-
-    checks: list[_Check] = []
-    for step in steps:
-        missing = tuple(token for token in step.tokens if token not in text)
-        passed = not missing
-        if passed:
-            checks.append(
-                _Check(
-                    True,
-                    f"§4.A/§13.3 step {step.step_number} ({step.title}): "
-                    f"all tokens present {step.tokens!r}.",
-                )
-            )
-        else:
-            checks.append(
-                _Check(
-                    False,
-                    f"§4.A/§13.3 step {step.step_number} ({step.title}): "
-                    f"{rel_path} missing tokens {missing!r}.",
-                )
-            )
-
+    checks = [
+        _contains_all(
+            context,
+            "services/desktop_app/processes/capture_supervisor.py",
+            (
+                "capture_supervisor",
+                "ADB",
+                "scrcpy",
+                "FFmpeg",
+                "SupervisedProcess",
+                "IpcChannels.drift_updates",
+                "cleanup_capture_files",
+                "record_capture_pid",
+            ),
+        ),
+        _contains_all(
+            context,
+            "services/desktop_app/process_graph.py",
+            ("capture_supervisor", "module_c_orchestrator", "gpu_ml_worker"),
+        ),
+    ]
     summary = _checks_result(item, checks)
     return _result(
         item,
         summary.passed,
-        f"{extraction.evidence}\n{summary.evidence}",
+        "§4.A/§13.3: verified active v4 Module A capture lifecycle evidence.\n" + summary.evidence,
         summary.follow_up,
     )
 
@@ -2436,7 +2226,8 @@ def verify_drift_correction(context: AuditContext, item: Section13Item) -> Audit
             max_drift_value is not None and max_drift_value.value == expected.max_drift_ms,
             (
                 f"§4.C/§13.5 {rel_path}:{max_drift_value.line if max_drift_value else '?'} "
-                f"MAX_TOLERATED_DRIFT_MS={max_drift_value.value if max_drift_value else '<unset>'}; "
+                "MAX_TOLERATED_DRIFT_MS="
+                f"{max_drift_value.value if max_drift_value else '<unset>'}; "
                 f"expected {expected.max_drift_ms}."
             ),
         ),
@@ -2538,9 +2329,7 @@ def _expected_inference_handoff_schema(spec_content: Mapping[str, Any]) -> _Spec
         if any(hint in description for hint in _SCHEMA_DEPRECATED_HINTS):
             deprecated.add(str(field))
     return _extracted(
-        _ExpectedSchema(
-            required=required, properties=properties, deprecated=frozenset(deprecated)
-        ),
+        _ExpectedSchema(required=required, properties=properties, deprecated=frozenset(deprecated)),
         f"§6.1/§13.9: extracted InferenceHandoffPayload schema with {len(required)} required, "
         f"{len(properties)} total properties, {len(deprecated)} deprecated/diagnostic fields "
         f"({sorted(deprecated)!r}) from spec_content.",
@@ -2570,9 +2359,12 @@ def _pydantic_field_aliases(node: ast.ClassDef) -> dict[str, str]:
                 or (isinstance(value.func, ast.Attribute) and value.func.attr == "Field")
             ):
                 for keyword in value.keywords:
-                    if keyword.arg == "alias" and isinstance(keyword.value, ast.Constant):
-                        if isinstance(keyword.value.value, str):
-                            alias = keyword.value.value
+                    if (
+                        keyword.arg == "alias"
+                        and isinstance(keyword.value, ast.Constant)
+                        and isinstance(keyword.value.value, str)
+                    ):
+                        alias = keyword.value.value
             aliases[attr_name] = alias
     return aliases
 
@@ -2774,11 +2566,10 @@ _CONTRACT_DOCUMENTED_OMISSIONS = frozenset(
         "_x_max",  # spec §6.1 _x_max — diagnostic/compatibility telemetry only
     }
 )
-# Token values whose tag is "env" but whose canonical home is deployment-only (compose
-# environment, .env.example) rather than Python source.
+# Token values whose tag is "env" but whose canonical home is deployment-only
+# `.env.example` configuration rather than Python source.
 _CONTRACT_DEPLOYMENT_ENV_TOKENS = frozenset(
     {
-        "ADB_SERVER_SOCKET=tcp:host.docker.internal:5037",
         "SDL_VIDEODRIVER=dummy",
         "XDG_RUNTIME_DIR=/tmp",
     }
@@ -2789,7 +2580,10 @@ def _scan_targets_for_module(repo_root: Path, module_id: str) -> tuple[Path, ...
     """Per-module file globs that audit-token presence checks against."""
 
     if module_id == "A":
-        return (repo_root / "services" / "stream_ingest", repo_root / "docker-compose.yml")
+        return (
+            repo_root / "services" / "desktop_app" / "processes" / "capture_supervisor.py",
+            repo_root / "services" / "desktop_app" / "process_graph.py",
+        )
     if module_id == "B":
         return (
             repo_root / "services" / "worker" / "pipeline" / "ground_truth.py",
@@ -2868,10 +2662,7 @@ def verify_module_contracts(context: AuditContext, item: Section13Item) -> Audit
     tokens: tuple[_ContractToken, ...] = extraction.value
 
     repo_root = context.repo_root
-    deployment_search_roots = (
-        repo_root / "docker-compose.yml",
-        repo_root / ".env.example",
-    )
+    deployment_search_roots = (repo_root / ".env.example",)
 
     # Group module-level results so the evidence stays compact.
     by_module: dict[str, list[_Check]] = {}
@@ -2891,7 +2682,7 @@ def verify_module_contracts(context: AuditContext, item: Section13Item) -> Audit
             search_roots = deployment_search_roots
         else:
             search_roots = _scan_targets_for_module(repo_root, token.module_id)
-            # For env-style tokens, also accept presence in compose / .env.example.
+            # For env-style tokens, also accept presence in `.env.example`.
             if token.tag == "env":
                 search_roots = (*search_roots, *deployment_search_roots)
         present = _token_present(token, search_roots)
@@ -2918,9 +2709,514 @@ def verify_module_contracts(context: AuditContext, item: Section13Item) -> Audit
     )
 
 
+def _contains_all(context: AuditContext, rel_path: str, tokens: Sequence[str]) -> _Check:
+    try:
+        text = _read_text(context, rel_path)
+    except FileNotFoundError:
+        return _Check(False, f"{rel_path} is missing; expected tokens {tuple(tokens)!r}.")
+    missing = tuple(token for token in tokens if token not in text)
+    evidence = (
+        f"{rel_path} contains {tuple(tokens)!r}."
+        if not missing
+        else f"{rel_path} missing {missing!r}."
+    )
+    return _Check(not missing, evidence)
+
+
+def _path_exists(context: AuditContext, rel_path: str, *, directory: bool = False) -> _Check:
+    path = _repo_file(context, rel_path)
+    exists = path.is_dir() if directory else path.exists()
+    kind = "directory" if directory else "path"
+    return _Check(exists, f"{rel_path} {kind} {'present' if exists else 'MISSING'}.")
+
+
+def _imported_ml_roots(context: AuditContext) -> dict[str, tuple[str, ...]]:
+    roots = {"torch", "mediapipe", "faster_whisper", "ctranslate2"}
+    imported: dict[str, tuple[str, ...]] = {}
+    processes_root = context.repo_root / "services" / "desktop_app" / "processes"
+    for path in sorted(processes_root.glob("*.py")):
+        module = ast.parse(path.read_text(encoding="utf-8"))
+        names: set[str] = set()
+        for node in ast.walk(module):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    root = alias.name.split(".", maxsplit=1)[0]
+                    if root in roots:
+                        names.add(root)
+            elif isinstance(node, ast.ImportFrom) and node.module is not None:
+                root = node.module.split(".", maxsplit=1)[0]
+                if root in roots:
+                    names.add(root)
+        if names:
+            imported[path.name] = tuple(sorted(names))
+    return imported
+
+
+def verify_v4_runtime_topology(context: AuditContext, item: Section13Item) -> AuditResult:
+    process_modules = _literal_assignment(
+        context,
+        "services/desktop_app/process_graph.py",
+        "PROCESS_MODULES",
+    )
+    expected = {
+        "ui_api_shell",
+        "capture_supervisor",
+        "module_c_orchestrator",
+        "gpu_ml_worker",
+        "analytics_state_worker",
+        "cloud_sync_worker",
+    }
+    actual = set(process_modules.value) if process_modules is not None else set()
+    checks = [
+        _Check(
+            actual == expected,
+            (
+                "services/desktop_app/process_graph.py:"
+                f"{process_modules.line if process_modules else '?'} "
+                f"PROCESS_MODULES={sorted(actual)!r}; expected exactly {sorted(expected)!r}."
+            ),
+        ),
+        _contains_all(
+            context,
+            "services/desktop_app/process_graph.py",
+            ('mp.get_context("spawn")', "ctx.Process", "target=_launch"),
+        ),
+        _contains_all(
+            context,
+            "services/desktop_app/__main__.py",
+            (
+                'multiprocessing.set_start_method("spawn", force=True)',
+                "multiprocessing.freeze_support()",
+            ),
+        ),
+    ]
+    return _checks_result(item, checks)
+
+
+def verify_v4_import_discipline(context: AuditContext, item: Section13Item) -> AuditResult:
+    imported = _imported_ml_roots(context)
+    unexpected = {name: roots for name, roots in imported.items() if name != "gpu_ml_worker.py"}
+    expected_roots = {"torch", "mediapipe", "faster_whisper", "ctranslate2"}
+    gpu_roots = set(imported.get("gpu_ml_worker.py", ()))
+    checks = [
+        _Check(
+            not unexpected,
+            (
+                "Only gpu_ml_worker.py imports heavy ML roots under services/desktop_app/processes."
+                if not unexpected
+                else f"Unexpected heavy ML imports outside gpu_ml_worker.py: {unexpected!r}."
+            ),
+        ),
+        _Check(
+            gpu_roots == expected_roots,
+            f"gpu_ml_worker.py imports {sorted(gpu_roots)!r}; expected {sorted(expected_roots)!r}.",
+        ),
+        _contains_all(
+            context,
+            "services/desktop_app/process_graph.py",
+            ("ML_LIB_ROOTS", "importlib.import_module(module_name)", "parent never imports"),
+        ),
+    ]
+    return _checks_result(item, checks)
+
+
+def verify_v4_embedded_runtime(context: AuditContext, item: Section13Item) -> AuditResult:
+    checks = [
+        _path_exists(context, "uv.lock"),
+        _contains_all(context, "pyproject.toml", ('requires-python = "==3.11.*"',)),
+        _contains_all(
+            context,
+            "services/desktop_launcher/install_manager.py",
+            ("python-build-standalone", "uv sync", "--frozen", "runtime.staging", "runtime"),
+        ),
+        _contains_all(
+            context,
+            ".github/workflows/release.yml",
+            ("pyinstaller", "--onedir", "--windowed", "Smoke packaged launcher runtime handoff"),
+        ),
+    ]
+    return _checks_result(item, checks)
+
+
+def verify_v4_windows_subprocess_supervision(
+    context: AuditContext, item: Section13Item
+) -> AuditResult:
+    checks = [
+        _contains_all(
+            context,
+            "services/desktop_app/os_adapter.py",
+            (
+                "CREATE_NO_WINDOW",
+                "CreateJobObject",
+                "AssignProcessToJobObject",
+                "TerminateJobObject",
+                "SupervisedProcess",
+            ),
+        ),
+        _contains_all(
+            context,
+            "services/desktop_app/processes/capture_supervisor.py",
+            ("SupervisedProcess", "--no-window", "cleanup_capture_files", "shutdown_event.wait"),
+        ),
+    ]
+    return _checks_result(item, checks)
+
+
+def verify_v4_shared_memory_ipc(context: AuditContext, item: Section13Item) -> AuditResult:
+    checks = [
+        _contains_all(
+            context,
+            "services/desktop_app/ipc/control_messages.py",
+            ("class AudioBlockRef", "name:", "byte_length:", "sha256:", "audio: AudioBlockRef"),
+        ),
+        _contains_all(
+            context,
+            "services/desktop_app/ipc/shared_buffers.py",
+            (
+                "SharedMemory(name=name, create=True",
+                "hashlib.sha256(audio)",
+                "byte_length=len(audio)",
+            ),
+        ),
+        _contains_all(
+            context,
+            "services/desktop_app/ipc/__init__.py",
+            ("multiprocessing.Queue", "multiprocessing.shared_memory.SharedMemory"),
+        ),
+    ]
+    return _checks_result(item, checks)
+
+
+def verify_v4_shared_memory_cleanup(context: AuditContext, item: Section13Item) -> AuditResult:
+    checks = [
+        _contains_all(
+            context,
+            "services/desktop_app/ipc/shared_buffers.py",
+            ("close_and_unlink", "zeroize_pcm_block", "self._shm.unlink()"),
+        ),
+        _contains_all(
+            context,
+            "services/desktop_app/ipc/cleanup.py",
+            ("recover_orphan_ipc_blocks", "cleanup_orphan_ipc_blocks(SHM_PREFIX)"),
+        ),
+        _contains_all(
+            context,
+            "services/desktop_app/state/recovery.py",
+            ("recover_orphan_ipc_blocks()", "cleanup_capture_files"),
+        ),
+        _contains_all(
+            context,
+            "services/desktop_app/privacy/zeroize.py",
+            ("zeroize_shared_memory", "secure_delete_file"),
+        ),
+    ]
+    return _checks_result(item, checks)
+
+
+def verify_v4_gate0_corpus(context: AuditContext, item: Section13Item) -> AuditResult:
+    checks = [
+        _path_exists(context, "scripts/gate0_gpu_replay.py"),
+        _path_exists(context, "tests/v4_gate0", directory=True),
+        _contains_all(
+            context,
+            "scripts/gate0_gpu_replay.py",
+            ("LSIE_DEV_FORCE_CPU_SPEECH", "7.5", "fixture", "replay"),
+        ),
+        _contains_all(
+            context,
+            ".github/workflows/gpu_replay_parity.yml",
+            ("Gate 0 GPU Replay Parity", "uv run python scripts/gate0_gpu_replay.py"),
+        ),
+    ]
+    return _checks_result(item, checks)
+
+
+def verify_v4_deterministic_segment_identity(
+    context: AuditContext, item: Section13Item
+) -> AuditResult:
+    checks = [
+        _contains_all(
+            context,
+            "services/worker/pipeline/orchestrator.py",
+            (
+                "def _stable_segment_id",
+                "uuid.UUID(self._session_id)",
+                "window_start_utc",
+                "window_end_utc",
+                "hashlib.sha256",
+            ),
+        ),
+        _contains_all(
+            context,
+            "packages/schemas/inference_handoff.py",
+            ("segment_id: str", 'pattern="^[0-9a-f]{64}$"', "Deterministic SHA-256"),
+        ),
+    ]
+    return _checks_result(item, checks)
+
+
+def verify_v4_adb_drift_contract(context: AuditContext, item: Section13Item) -> AuditResult:
+    checks = [
+        _contains_all(
+            context,
+            "services/desktop_app/drift.py",
+            (
+                "DRIFT_POLL_INTERVAL: int = 30",
+                "MAX_TOLERATED_DRIFT_MS: int = 150",
+                "DRIFT_FREEZE_AFTER_FAILURES: int = 3",
+                "DRIFT_RESET_TIMEOUT: int = 300",
+                "drift_offset",
+            ),
+        ),
+        _contains_all(
+            context,
+            "services/desktop_app/processes/capture_supervisor.py",
+            ("_DriftPollThread", "drift_updates.put_nowait", "self._shutdown_event.wait"),
+        ),
+    ]
+    return _checks_result(item, checks)
+
+
+def verify_v4_reward_pipeline(context: AuditContext, item: Section13Item) -> AuditResult:
+    checks = [
+        _contains_all(
+            context,
+            "services/worker/pipeline/reward.py",
+            (
+                "WINDOW_START_OFFSET_S: float = 0.5",
+                "WINDOW_END_OFFSET_S: float = 5.0",
+                "def compute_p90",
+                "semantic_gate",
+                "gated_reward: float = p90 * gate",
+                "au12_baseline_pre",
+            ),
+        ),
+        _contains_all(
+            context,
+            "services/desktop_app/processes/analytics_state_worker.py",
+            (
+                "compute_reward",
+                "delta_alpha=reward.gated_reward",
+                "delta_beta=1.0 - reward.gated_reward",
+            ),
+        ),
+    ]
+    return _checks_result(item, checks)
+
+
+def verify_v4_bandit_snapshot_determinism(
+    context: AuditContext, item: Section13Item
+) -> AuditResult:
+    checks = [
+        _contains_all(
+            context,
+            "services/worker/pipeline/orchestrator.py",
+            (
+                "def _decision_context_hash",
+                "sort_keys=True",
+                "hashlib.sha256",
+                "def _bandit_random_seed",
+                "def _capture_bandit_decision_snapshot",
+                "posterior_copy",
+            ),
+        ),
+        _contains_all(
+            context,
+            "packages/schemas/attribution.py",
+            ("class BanditDecisionSnapshot", "decision_context_hash", "random_seed"),
+        ),
+    ]
+    return _checks_result(item, checks)
+
+
+def verify_v4_sqlite_local_state(context: AuditContext, item: Section13Item) -> AuditResult:
+    checks = [
+        _contains_all(
+            context,
+            "services/desktop_app/state/sqlite_schema.py",
+            (
+                "PRAGMA journal_mode=WAL",
+                "PRAGMA synchronous=NORMAL",
+                "PRAGMA busy_timeout=5000",
+                "PRAGMA temp_store=MEMORY",
+                "PRAGMA query_only=1",
+                "analytics_message_ledger",
+                "capture_pid_manifest",
+                "pending_uploads",
+            ),
+        ),
+        _contains_all(
+            context,
+            "services/desktop_app/process_graph.py",
+            ("bootstrap_schema", "run_recovery_sweep"),
+        ),
+    ]
+    return _checks_result(item, checks)
+
+
+def verify_v4_privacy_perimeter(context: AuditContext, item: Section13Item) -> AuditResult:
+    checks = [
+        _contains_all(
+            context,
+            "services/desktop_app/os_adapter.py",
+            ("resolve_capture_dir", "LSIE_CAPTURE_DIR", "repository root", "secure_delete_file"),
+        ),
+        _contains_all(
+            context,
+            "services/desktop_app/privacy/zeroize.py",
+            ("zeroize_pcm_block", "cleanup_capture_files", "secure_delete_file"),
+        ),
+        _contains_all(
+            context,
+            "services/cloud_api/middleware/forbid_raw.py",
+            ("forbid", "raw", "biometric"),
+        ),
+    ]
+    return _checks_result(item, checks)
+
+
+def verify_v4_cloud_oauth(context: AuditContext, item: Section13Item) -> AuditResult:
+    checks = [
+        _contains_all(
+            context,
+            "services/desktop_app/cloud/auth_flow.py",
+            (
+                "build_code_challenge",
+                "code_challenge_method",
+                "S256",
+                "set_secret",
+                "refresh_token",
+            ),
+        ),
+        _contains_all(
+            context,
+            "services/desktop_app/processes/cloud_sync_worker.py",
+            ("get_secret", "OAuthTokenRequest", "refresh_token", "Authorization"),
+        ),
+        _contains_all(
+            context,
+            "packages/schemas/cloud.py",
+            (
+                'grant_type: Literal["authorization_code", "refresh_token"]',
+                '"authorization_code" and',
+                '"refresh_token" and',
+            ),
+        ),
+        _contains_all(
+            context,
+            "services/cloud_api/services/auth_service.py",
+            ("authorization_code", "refresh_token", "authenticate_refresh_token"),
+        ),
+    ]
+    return _checks_result(item, checks)
+
+
+def verify_v4_signed_experiment_bundle(context: AuditContext, item: Section13Item) -> AuditResult:
+    checks = [
+        _contains_all(
+            context,
+            "services/desktop_app/cloud/experiment_bundle.py",
+            ('signature_mode: BundleSignatureMode = "ed25519"', "ECC.import_key", "verify("),
+        ),
+        _contains_all(
+            context,
+            "services/cloud_api/services/experiment_bundle_service.py",
+            ("Ed25519PrivateKey", "LSIE_CLOUD_BUNDLE_ED25519_PRIVATE_KEY", "sign("),
+        ),
+    ]
+    return _checks_result(item, checks)
+
+
+def verify_v4_posterior_delta_exactly_once(
+    context: AuditContext, item: Section13Item
+) -> AuditResult:
+    checks = [
+        _contains_all(
+            context,
+            "services/desktop_app/processes/analytics_state_worker.py",
+            (
+                "analytics_message_ledger",
+                "_analytics_identity_exists",
+                "_posterior_event_id",
+                "decision_context_hash=handoff.bandit_decision_snapshot.decision_context_hash",
+                "outbox.enqueue_posterior_delta(delta)",
+            ),
+        ),
+        _contains_all(
+            context,
+            "services/desktop_app/cloud/outbox.py",
+            ('dedupe_key=f"{payload.segment_id}:{payload.client_id}:{payload.arm_id}"',),
+        ),
+        _contains_all(
+            context,
+            "services/desktop_app/state/sqlite_schema.py",
+            ("CREATE TABLE IF NOT EXISTS pending_uploads", "UNIQUE (payload_type, dedupe_key)"),
+        ),
+        _contains_all(
+            context,
+            "packages/schemas/cloud.py",
+            ("class PosteriorDelta", "decision_context_hash: str"),
+        ),
+    ]
+    return _checks_result(item, checks)
+
+
+def verify_v4_production_hardware_floor(context: AuditContext, item: Section13Item) -> AuditResult:
+    checks = [
+        _contains_all(
+            context,
+            "services/desktop_launcher/preflight.py",
+            ("_TURING_COMPUTE_CAP: Final[float] = 7.5", "HardwareUnsupportedError", "compute_cap"),
+        ),
+        _contains_all(
+            context,
+            "scripts/gate0_gpu_replay.py",
+            ("7.5", "LSIE_DEV_FORCE_CPU_SPEECH", "production"),
+        ),
+    ]
+    return _checks_result(item, checks)
+
+
+def verify_v4_pascal_developer_override(context: AuditContext, item: Section13Item) -> AuditResult:
+    checks = [
+        _contains_all(
+            context,
+            "services/desktop_launcher/preflight.py",
+            (
+                '_DEV_FORCE_CPU_ENV: Final[str] = "LSIE_DEV_FORCE_CPU_SPEECH"',
+                "dev_machine_marker_path",
+                "_force_cpu_speech()",
+                'speech_device="cpu"',
+            ),
+        ),
+        _contains_all(
+            context,
+            "services/desktop_launcher/preflight_codes.py",
+            ("PASCAL_DEV_MODE_REQUIRED", "NO_GPU_DEV_MODE_MESSAGE"),
+        ),
+    ]
+    return _checks_result(item, checks)
+
+
+def verify_v4_macos_tier2_deferral(context: AuditContext, item: Section13Item) -> AuditResult:
+    checks = [
+        _path_exists(context, "build/MACOS_DEFERRED.md"),
+        _contains_all(
+            context,
+            "build/MACOS_DEFERRED.md",
+            ("macOS", "deferred", "v4.1"),
+        ),
+        _contains_all(
+            context,
+            ".github/workflows/release.yml",
+            ("windows", "azure/artifact-signing-action", "files-folder-filter: exe,dll"),
+        ),
+    ]
+    return _checks_result(item, checks)
+
+
 MECHANICAL_VERIFIERS: Mapping[str, AuditVerifier] = {
     "13.1": verify_directory_structure,
-    "13.2": verify_docker_topology,
     "13.3": verify_ipc_lifecycle,
     "13.4": verify_ffmpeg_resample,
     "13.5": verify_drift_correction,
@@ -2934,17 +3230,53 @@ MECHANICAL_VERIFIERS: Mapping[str, AuditVerifier] = {
     "13.30": verify_derived_only_attribution_persistence,
 }
 
+V4_MECHANICAL_VERIFIERS_BY_TITLE: Mapping[str, AuditVerifier] = {
+    "Runtime topology": verify_v4_runtime_topology,
+    "Import discipline": verify_v4_import_discipline,
+    "Embedded runtime": verify_v4_embedded_runtime,
+    "Windows subprocess supervision": verify_v4_windows_subprocess_supervision,
+    "SharedMemory IPC": verify_v4_shared_memory_ipc,
+    "SharedMemory cleanup": verify_v4_shared_memory_cleanup,
+    "Gate 0 corpus": verify_v4_gate0_corpus,
+    "Deterministic segment identity": verify_v4_deterministic_segment_identity,
+    "ADB drift contract": verify_v4_adb_drift_contract,
+    "Reward pipeline": verify_v4_reward_pipeline,
+    "Bandit snapshot determinism": verify_v4_bandit_snapshot_determinism,
+    "SQLite local state": verify_v4_sqlite_local_state,
+    "Privacy perimeter": verify_v4_privacy_perimeter,
+    "Cloud OAuth": verify_v4_cloud_oauth,
+    "Signed ExperimentBundle": verify_v4_signed_experiment_bundle,
+    "Posterior delta exactly-once": verify_v4_posterior_delta_exactly_once,
+    "Production hardware floor": verify_v4_production_hardware_floor,
+    "Pascal developer override": verify_v4_pascal_developer_override,
+    "macOS Tier 2 deferral": verify_v4_macos_tier2_deferral,
+}
 
-def register_mechanical_verifiers(item_ids: Iterable[str] | None = None) -> None:
+
+def register_mechanical_verifiers(
+    item_ids: Iterable[str] | None = None,
+    *,
+    registry: AuditRegistry | None = None,
+    items: Sequence[Section13Item] | None = None,
+) -> None:
     """Register mechanical verifiers on the current shared registry."""
 
-    registry = get_default_registry()
+    target_registry = registry if registry is not None else get_default_registry()
     requested = set(MECHANICAL_VERIFIERS) if item_ids is None else set(item_ids)
+    if items is not None:
+        for item in items:
+            verifier = V4_MECHANICAL_VERIFIERS_BY_TITLE.get(item.title)
+            if verifier is None or target_registry.has_verifier(item.item_id):
+                continue
+            target_registry.register(item.item_id)(verifier)
+        requested -= {
+            item.item_id for item in items if item.title in V4_MECHANICAL_VERIFIERS_BY_TITLE
+        }
     for item_id, verifier in MECHANICAL_VERIFIERS.items():
         if item_id not in requested:
             continue
-        if not registry.has_verifier(item_id):
-            registry.register(item_id)(verifier)
+        if not target_registry.has_verifier(item_id):
+            target_registry.register(item_id)(verifier)
 
 
 __all__ = [
@@ -2955,7 +3287,6 @@ __all__ = [
     "verify_dependency_pins",
     "verify_derived_only_attribution_persistence",
     "verify_directory_structure",
-    "verify_docker_topology",
     "verify_drift_correction",
     "verify_ephemeral_vault",
     "verify_ffmpeg_resample",

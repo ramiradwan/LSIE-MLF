@@ -13,12 +13,16 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import pytest
-from PySide6.QtWidgets import QDialog
+from PySide6.QtWidgets import QDialog, QHeaderView
 
 from packages.schemas.operator_console import (
     AttributionSummary,
     EncounterState,
     EncounterSummary,
+    ExperimentSummary,
+    HealthSnapshot,
+    HealthState,
+    HealthSubsystemStatus,
     ObservationalAcousticSummary,
     SemanticEvaluationSummary,
     SessionSummary,
@@ -32,9 +36,12 @@ from services.operator_console.table_models.encounters_table_model import (
 )
 from services.operator_console.viewmodels.live_session_vm import LiveSessionViewModel
 from services.operator_console.views.live_session_view import (
+    _NARROW_PHONE_PREVIEW_HEIGHT,
+    _WIDE_PHONE_PREVIEW_HEIGHT,
     LiveSessionView,
     _StartSessionDialog,
 )
+from services.operator_console.widgets.responsive_layout import ResponsiveWidthBand
 
 pytestmark = pytest.mark.usefixtures("qt_app")
 
@@ -75,6 +82,7 @@ def _encounter(
     semantic_evaluation: SemanticEvaluationSummary | None = None,
     attribution: AttributionSummary | None = None,
     segment_timestamp_utc: datetime = _NOW,
+    transcription: str | None = None,
 ) -> EncounterSummary:
     return EncounterSummary(
         encounter_id=encounter_id,
@@ -89,6 +97,7 @@ def _encounter(
         gated_reward=gated_reward,
         n_frames_in_window=frames,
         au12_baseline_pre=0.1,
+        transcription=transcription,
         observational_acoustic=observational_acoustic,
         semantic_evaluation=semantic_evaluation,
         attribution=attribution,
@@ -131,18 +140,208 @@ def test_live_session_view_shows_empty_state_without_session() -> None:
     # `isHidden()` reads the local flag and tells us the page was wired to
     # show the empty state rather than the body container.
     assert view._empty_state.isHidden() is False  # type: ignore[attr-defined]
-    assert view._body_container.isHidden() is True  # type: ignore[attr-defined]
+    assert view._scroll.isHidden() is True  # type: ignore[attr-defined]
 
 
-def test_live_session_view_header_reads_from_live_session_dto() -> None:
+def test_live_session_view_ttv_waiting_for_device_uses_instructional_empty_state() -> None:
+    view, _store, _vm = _build_view()
+    assert view._empty_state.isHidden() is False  # type: ignore[attr-defined]
+    assert view._scroll.isHidden() is True  # type: ignore[attr-defined]
+    assert "Setup not ready" in view._empty_state._title.text()  # type: ignore[attr-defined]
+
+
+def test_live_session_view_ttv_gate_shows_connected_capture_status() -> None:
+    view, store, _vm = _build_view()
+    store.set_health(
+        HealthSnapshot(
+            generated_at_utc=_NOW,
+            overall_state=HealthState.OK,
+            subsystems=[
+                HealthSubsystemStatus(
+                    subsystem_key="adb",
+                    label="Android Device Bridge",
+                    state=HealthState.OK,
+                ),
+                HealthSubsystemStatus(
+                    subsystem_key="audio_capture",
+                    label="Audio Capture",
+                    state=HealthState.OK,
+                ),
+                HealthSubsystemStatus(
+                    subsystem_key="video_capture",
+                    label="Video Capture",
+                    state=HealthState.OK,
+                ),
+            ],
+        )
+    )
+
+    assert view._empty_state.isHidden() is False  # type: ignore[attr-defined]
+    assert view._scroll.isHidden() is True  # type: ignore[attr-defined]
+    assert "Setup not ready" in view._empty_state._title.text()  # type: ignore[attr-defined]
+    assert "Audio capture healthy" in view._empty_state._message.text()  # type: ignore[attr-defined]
+    assert "Video capture healthy" in view._empty_state._message.text()  # type: ignore[attr-defined]
+
+
+def test_live_session_view_ttv_waiting_for_face_shows_muted_dashboard_overlay() -> None:
+    view, store, _vm = _build_view()
+    session = _session(
+        is_calibrating=True,
+        calibration_frames_accumulated=12,
+        calibration_frames_required=45,
+    )
+    store.set_selected_session_id(session.session_id)
+    store.set_live_session(session)
+    assert view._empty_state.isHidden() is True  # type: ignore[attr-defined]
+    assert view._body_container.isHidden() is False  # type: ignore[attr-defined]
+    assert view._setup_overlay.isHidden() is False  # type: ignore[attr-defined]
+    assert view._phone_preview.isEnabled() is False  # type: ignore[attr-defined]
+    assert "visible face" in view._setup_overlay._message.text()  # type: ignore[attr-defined]
+    assert "12/45 face frames" in view._setup_overlay._detail.text()  # type: ignore[attr-defined]
+    # UX-12 — primary line affirms the live capture; the no-raw-frames
+    # disclaimer becomes the secondary caveat.
+    preview_status = view._phone_preview._status.text()  # type: ignore[attr-defined]
+    preview_caveat = view._phone_preview._caveat.text()  # type: ignore[attr-defined]
+    assert "Capture active" in preview_status
+    assert "12/45 face frames" in preview_status
+    assert "Raw phone frames are not shown" in preview_caveat
+
+
+def test_live_session_view_ttv_ready_shows_dashboard_and_smile_timeline() -> None:
+    view, store, _vm = _build_view()
+    assert view._readiness_panel.accessibleName() == "Live Session next step"  # type: ignore[attr-defined]
+    assert view._telemetry_panel.accessibleName() == "Live response ticker"  # type: ignore[attr-defined]
+    assert view._phone_preview.accessibleName() == "Live visual status"  # type: ignore[attr-defined]
+    assert view._cause_effect_panel.accessibleName() == "Observed response"  # type: ignore[attr-defined]
+    session = _session(
+        is_calibrating=True,
+        calibration_frames_accumulated=45,
+        calibration_frames_required=45,
+    )
+    store.set_selected_session_id(session.session_id)
+    store.set_live_session(session)
+    store.set_encounters([_encounter("e-smile", session_id=session.session_id, p90=0.64)])
+
+    assert view._empty_state.isHidden() is True  # type: ignore[attr-defined]
+    assert view._scroll.isHidden() is False  # type: ignore[attr-defined]
+    assert view._body_container.isHidden() is False  # type: ignore[attr-defined]
+    assert view._setup_overlay.isHidden() is True  # type: ignore[attr-defined]
+    assert view._phone_preview.isEnabled() is True  # type: ignore[attr-defined]
+    # UX-12: ready state primary now affirms the live capture.
+    assert "Capture active" in view._phone_preview._status.text()  # type: ignore[attr-defined]
+    assert "Preview placeholder" not in view._phone_preview._placeholder.text()  # type: ignore[attr-defined]
+    assert view._live_analytics_notice.isHidden() is True  # type: ignore[attr-defined]
+    assert view._smile_card._primary.text() == "64%"  # type: ignore[attr-defined]
+    assert view._timeline_model.rowCount() == 1  # type: ignore[attr-defined]
+
+
+def test_live_session_view_applies_narrow_width_responsive_layout() -> None:
+    view, store, _vm = _build_view()
+    session = _session(
+        is_calibrating=True,
+        calibration_frames_accumulated=45,
+        calibration_frames_required=45,
+    )
+    store.set_selected_session_id(session.session_id)
+    store.set_live_session(session)
+    store.set_encounters([_encounter("e-smile", session_id=session.session_id, p90=0.64)])
+
+    view.resize(900, 640)
+    view._apply_responsive_layout()  # type: ignore[attr-defined]
+
+    assert view._dashboard_grid.column_count() == 2  # type: ignore[attr-defined]
+    assert view._phone_preview._placeholder.minimumHeight() == _WIDE_PHONE_PREVIEW_HEIGHT  # type: ignore[attr-defined]
+    assert view._detail_panel._reward_grid.column_count() == 2  # type: ignore[attr-defined]
+    assert view._detail_panel._acoustic_grid.column_count() == 2  # type: ignore[attr-defined]
+    assert view._detail_panel._semantic_grid.column_count() == 2  # type: ignore[attr-defined]
+    assert view._table.isColumnHidden(2) is True  # type: ignore[attr-defined]
+    assert view._table.isColumnHidden(6) is False  # type: ignore[attr-defined]
+    assert view._table.isColumnHidden(7) is True  # type: ignore[attr-defined]
+    header = view._table.horizontalHeader()  # type: ignore[attr-defined]
+    assert header.sectionResizeMode(4) == QHeaderView.ResizeMode.ResizeToContents
+    assert view._timeline.current_width_band() == ResponsiveWidthBand.MEDIUM  # type: ignore[attr-defined]
+
+
+def test_live_session_view_applies_extra_narrow_column_policy_and_preview_height() -> None:
+    view, store, _vm = _build_view()
+    session = _session(
+        is_calibrating=True,
+        calibration_frames_accumulated=45,
+        calibration_frames_required=45,
+    )
+    store.set_selected_session_id(session.session_id)
+    store.set_live_session(session)
+    store.set_encounters([_encounter("e-smile", session_id=session.session_id, p90=0.64)])
+
+    view.resize(620, 640)
+    view._apply_responsive_layout()  # type: ignore[attr-defined]
+
+    assert view._dashboard_grid.column_count() == 1  # type: ignore[attr-defined]
+    assert view._phone_preview._placeholder.minimumHeight() == _NARROW_PHONE_PREVIEW_HEIGHT  # type: ignore[attr-defined]
+    assert view._detail_panel._reward_grid.column_count() == 1  # type: ignore[attr-defined]
+    assert view._detail_panel._acoustic_grid.column_count() == 1  # type: ignore[attr-defined]
+    assert view._detail_panel._semantic_grid.column_count() == 1  # type: ignore[attr-defined]
+    assert view._table.isColumnHidden(2) is True  # type: ignore[attr-defined]
+    assert view._table.isColumnHidden(6) is True  # type: ignore[attr-defined]
+    assert view._table.isColumnHidden(7) is True  # type: ignore[attr-defined]
+    assert view._timeline.current_width_band() == ResponsiveWidthBand.NARROW  # type: ignore[attr-defined]
+
+
+def test_live_session_view_ready_shows_no_producer_notice_without_error_banner() -> None:
+    view, store, _vm = _build_view()
+    session = _session(is_calibrating=True)
+    store.set_selected_session_id(session.session_id)
+    store.set_live_session(session)
+    store.set_health(
+        HealthSnapshot(
+            generated_at_utc=_NOW,
+            overall_state=HealthState.DEGRADED,
+            degraded_count=1,
+            subsystems=[
+                HealthSubsystemStatus(
+                    subsystem_key="adb",
+                    label="Android Device Bridge",
+                    state=HealthState.OK,
+                ),
+                HealthSubsystemStatus(
+                    subsystem_key="gpu_ml_worker",
+                    label="GPU ML Worker",
+                    state=HealthState.OK,
+                ),
+                HealthSubsystemStatus(
+                    subsystem_key="live_analytics_producer",
+                    label="Live Analytics Producer",
+                    state=HealthState.DEGRADED,
+                ),
+            ],
+        )
+    )
+
+    assert view._empty_state.isHidden() is True  # type: ignore[attr-defined]
+    assert view._body_container.isHidden() is False  # type: ignore[attr-defined]
+    assert view._setup_overlay.isHidden() is True  # type: ignore[attr-defined]
+    assert view._error_banner.isHidden() is True  # type: ignore[attr-defined]
+    assert view._live_analytics_notice.isHidden() is False  # type: ignore[attr-defined]
+    notice_text = view._live_analytics_notice._message.text()  # type: ignore[attr-defined]
+    assert "Waiting for the first result" in notice_text
+    assert view._smile_card._primary.text() == "—"  # type: ignore[attr-defined]
+    assert view._smile_card._secondary.text() == "Waiting for first result"  # type: ignore[attr-defined]
+
+
+def test_live_session_view_header_shows_session_status_without_repeating_action_context() -> None:
     view, store, _vm = _build_view()
     store.set_live_session(_session())
-    # Arm + greeting come from the live_session DTO, never from rows.
     panel = view._session_panel
-    assert "greeting_v7" in panel._arm_label.text()  # type: ignore[attr-defined]
-    assert "hei rakas" in panel._greeting_label.text()  # type: ignore[attr-defined]
+    assert panel.accessibleName() == "Session controls"  # type: ignore[attr-defined]
+    assert "Session" in panel._session_label.text()  # type: ignore[attr-defined]
+    assert "Session" in panel._session_label.accessibleDescription()  # type: ignore[attr-defined]
+    assert "active" in panel._session_meta_label.text()  # type: ignore[attr-defined]
+    assert "active" in panel._session_meta_label.accessibleDescription()  # type: ignore[attr-defined]
+    assert panel._start_button.accessibleName() == "Start new session"  # type: ignore[attr-defined]
+    assert "connected capture source" in panel._start_button.accessibleDescription()  # type: ignore[attr-defined]
+    assert panel._end_button.accessibleName() == "End session"  # type: ignore[attr-defined]
     assert panel._calibration_pill.kind() == UiStatusKind.OK  # type: ignore[attr-defined]
-    assert panel._calibration_pill.text() == "Ready"  # type: ignore[attr-defined]
+    assert panel._calibration_pill.text() == "Healthy"  # type: ignore[attr-defined]
 
 
 def test_live_session_view_header_shows_calibration_progress() -> None:
@@ -156,7 +355,7 @@ def test_live_session_view_header_shows_calibration_progress() -> None:
     )
     panel = view._session_panel
     assert panel._calibration_pill.kind() == UiStatusKind.PROGRESS  # type: ignore[attr-defined]
-    assert panel._calibration_pill.text() == "Calibrating · 12/45 frames"  # type: ignore[attr-defined]
+    assert panel._calibration_pill.text() == "Preparing response baseline · 12/45 face frames"  # type: ignore[attr-defined]
 
 
 def test_live_session_view_header_ready_at_safe_submit_threshold() -> None:
@@ -170,33 +369,60 @@ def test_live_session_view_header_ready_at_safe_submit_threshold() -> None:
     )
     panel = view._session_panel
     assert panel._calibration_pill.kind() == UiStatusKind.OK  # type: ignore[attr-defined]
-    assert panel._calibration_pill.text() == "Ready"  # type: ignore[attr-defined]
+    assert panel._calibration_pill.text() == "Healthy"  # type: ignore[attr-defined]
 
 
-def test_start_session_dialog_validates_and_trims_fields() -> None:
+def test_start_session_dialog_uses_source_summary_and_experiment_picker() -> None:
     _view, _store, vm = _build_view()
-    dialog = _StartSessionDialog(vm.validate_start_session_inputs)
+    dialog = _StartSessionDialog(
+        source_summary=vm.start_session_source_summary(),
+        summaries=[
+            ExperimentSummary(experiment_id="exp-a", label="Experiment A", arm_count=2),
+            ExperimentSummary(experiment_id="greeting_line_v1", label=None, arm_count=3),
+        ],
+        current_experiment_id="greeting_line_v1",
+        disabled_reason=None,
+        validator=vm.validate_start_session_inputs,
+    )
 
-    assert dialog._start_button.isEnabled() is False  # type: ignore[attr-defined]
-    assert "stream url" in dialog._validation_label.text().lower()  # type: ignore[attr-defined]
-
-    dialog._stream_url_input.setText("  rtmp://example/live  ")  # type: ignore[attr-defined]
-    assert dialog._start_button.isEnabled() is False  # type: ignore[attr-defined]
-    assert "experiment id" in dialog._validation_label.text().lower()  # type: ignore[attr-defined]
-
-    dialog._experiment_id_input.setText("  greeting_line_v1  ")  # type: ignore[attr-defined]
+    assert dialog.accessibleName() == "Start new session"
+    assert "connected-phone capture" in dialog.accessibleDescription()
+    assert "connected Android device" in dialog._source_summary.text()  # type: ignore[attr-defined]
+    assert dialog._source_summary.accessibleName() == "Session source"  # type: ignore[attr-defined]
+    assert dialog._experiment_label.buddy() is dialog._experiment_picker  # type: ignore[attr-defined]
+    assert dialog._experiment_picker.count() == 2  # type: ignore[attr-defined]
+    assert dialog._experiment_picker.currentData() == "greeting_line_v1"  # type: ignore[attr-defined]
+    assert dialog._experiment_picker.accessibleName() == "Experiment"  # type: ignore[attr-defined]
+    assert "stimulus strategies" in dialog._experiment_picker.accessibleDescription()  # type: ignore[attr-defined]
     assert dialog._start_button.isEnabled() is True  # type: ignore[attr-defined]
-    assert dialog.values() == ("rtmp://example/live", "greeting_line_v1")
+    assert dialog._start_button.accessibleName() == "Start session"  # type: ignore[attr-defined]
+    assert "selected experiment" in dialog._start_button.accessibleDescription()  # type: ignore[attr-defined]
+    assert dialog.values() == "greeting_line_v1"
+
+
+def test_start_session_dialog_disables_start_without_experiments() -> None:
+    _view, _store, vm = _build_view()
+    dialog = _StartSessionDialog(
+        source_summary=vm.start_session_source_summary(),
+        summaries=[],
+        current_experiment_id=None,
+        disabled_reason=vm.start_session_disabled_reason(),
+        validator=vm.validate_start_session_inputs,
+    )
+
+    assert dialog._start_button.isEnabled() is False  # type: ignore[attr-defined]
+    assert "experiments page" in dialog._validation_label.text().lower()  # type: ignore[attr-defined]
+    assert "experiments page" in dialog._validation_label.accessibleDescription().lower()  # type: ignore[attr-defined]
 
 
 def test_live_session_view_start_button_dispatches_modal_values(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     view, _store, vm = _build_view()
-    captured: list[tuple[str, str]] = []
+    captured: list[str] = []
 
-    def fake_start(stream_url: str, experiment_id: str) -> None:
-        captured.append((stream_url, experiment_id))
+    def fake_start(experiment_id: str) -> None:
+        captured.append(experiment_id)
 
     monkeypatch.setattr(vm, "start_new_session", fake_start)
 
@@ -204,13 +430,13 @@ def test_live_session_view_start_button_dispatches_modal_values(
         def exec(self) -> int:
             return int(QDialog.DialogCode.Accepted)
 
-        def values(self) -> tuple[str, str]:
-            return ("rtmp://example/live", "greeting_line_v1")
+        def values(self) -> str:
+            return "greeting_line_v1"
 
     monkeypatch.setattr(view, "_create_start_session_dialog", lambda: _DialogStub())
 
     view._session_panel._start_button.click()  # type: ignore[attr-defined]
-    assert captured == [("rtmp://example/live", "greeting_line_v1")]
+    assert captured == ["greeting_line_v1"]
 
 
 def test_live_session_view_end_button_only_shows_for_active_session(
@@ -266,32 +492,36 @@ def test_live_session_view_detail_pane_shows_reward_explanation() -> None:
                     sync_peak_lag=3,
                     outcome_link_lag_s=15.0,
                 ),
+                transcription="hello welcome to the stream",
             )
         ]
     )
     vm.select_encounter("e1")
 
     detail = view._detail_panel
-    # P90 card reads the intensity; reward card reads the gated reward.
+    assert detail._p90_card._title.text() == "Strongest response signal"  # type: ignore[attr-defined]
     assert "0.420" in detail._p90_card._primary.text()  # type: ignore[attr-defined]
     assert "0.420" in detail._reward_card._primary.text()  # type: ignore[attr-defined]
     assert "150" in detail._frames_card._primary.text()  # type: ignore[attr-defined]
-    # Reward explanation sentence mentions the §7B inputs by name.
-    assert "P90" in detail._explanation.text() or "p90" in detail._explanation.text().lower()  # type: ignore[attr-defined]
-    # v3.4 diagnostics render below reward/acoustics without changing reward cards.
-    assert detail._semantic_title.text() == "Semantic & Attribution (§8 / §7E)"  # type: ignore[attr-defined]
+    assert "Response signal × stimulus confirmation" in detail._explanation.text()  # type: ignore[attr-defined]
+    assert detail._transcription_title.text() == "Speech-to-text"  # type: ignore[attr-defined]
+    assert "hello welcome" in detail._transcription_text.text()  # type: ignore[attr-defined]
+    assert detail._semantic_title.text() == "Stimulus confirmation and follow-up signals"  # type: ignore[attr-defined]
     assert detail._semantic_empty.isHidden() is True  # type: ignore[attr-defined]
-    assert "local cross-encoder" in detail._semantic_method_pill.text()  # type: ignore[attr-defined]
+    assert "local stimulus confirmation checker" in detail._semantic_method_pill.text()  # type: ignore[attr-defined]
     assert detail._semantic_match_pill.text() == "match"  # type: ignore[attr-defined]
-    assert "Cross-encoder high-confidence match" in detail._semantic_reason_label.text()  # type: ignore[attr-defined]
-    assert detail._confidence_card._primary.text() == "p_match 91%"  # type: ignore[attr-defined]
+    assert "Stimulus was clearly confirmed" in detail._semantic_reason_label.text()  # type: ignore[attr-defined]
+    assert detail._title.text() == "Stimulus-response detail"  # type: ignore[attr-defined]
+    assert detail._confidence_card._title.text() == "Stimulus confirmation confidence"  # type: ignore[attr-defined]
+    assert detail._confidence_card._primary.text() == "91%"  # type: ignore[attr-defined]
+    assert "expected response" in detail._confidence_card._secondary.text()  # type: ignore[attr-defined]
     assert "offline final" in detail._attribution_finality_pill.text()  # type: ignore[attr-defined]
-    assert detail._soft_reward_card._primary.text() == "r_t^soft 0.770"  # type: ignore[attr-defined]
-    assert "P90 lift 0.550" in detail._au12_lifts_card._primary.text()  # type: ignore[attr-defined]
+    assert detail._soft_reward_card._primary.text() == "possible follow-up reward 0.770"  # type: ignore[attr-defined]
+    assert "strong response lift 0.550" in detail._au12_lifts_card._primary.text()  # type: ignore[attr-defined]
     assert detail._peak_latency_card._primary.text() == "1.25s"  # type: ignore[attr-defined]
-    assert "peak corr +0.401" in detail._synchrony_card._primary.text()  # type: ignore[attr-defined]
-    assert detail._outcome_link_lag_card._primary.text() == "lag_s 15.0s"  # type: ignore[attr-defined]
-    assert "no reward-path effect" in detail._semantic_observational_note.text()  # type: ignore[attr-defined]
+    assert "movement together +0.401" in detail._synchrony_card._primary.text()  # type: ignore[attr-defined]
+    assert detail._outcome_link_lag_card._primary.text() == "after 15.0s"  # type: ignore[attr-defined]
+    assert "do not change the reward" in detail._semantic_observational_note.text()  # type: ignore[attr-defined]
 
 
 def test_live_session_view_detail_pane_renders_acoustic_metrics_and_explanation() -> None:
@@ -313,7 +543,7 @@ def test_live_session_view_detail_pane_renders_acoustic_metrics_and_explanation(
     detail = view._detail_panel
     assert vm.selected_acoustic() == acoustic
     assert "F0 windows" in vm.acoustic_explanation()
-    assert detail._acoustic_title.text() == "Observational Acoustics (§7D)"  # type: ignore[attr-defined]
+    assert detail._acoustic_title.text() == "Voice signal details"  # type: ignore[attr-defined]
     assert detail._acoustic_empty.isHidden() is True  # type: ignore[attr-defined]
     assert detail._acoustic_metrics_container.isHidden() is False  # type: ignore[attr-defined]
     assert detail._f0_validity_pill.kind() == UiStatusKind.OK  # type: ignore[attr-defined]
@@ -411,14 +641,42 @@ def test_live_session_view_acoustic_detail_uses_same_fallback_encounter_without_
     )
 
     detail = view._detail_panel
-    expected = build_acoustic_detail_display(acoustic_on_detail_row)
-    assert "detail-row" in detail._subtitle.text()  # type: ignore[attr-defined]
-    assert "0.120" in detail._p90_card._primary.text()  # type: ignore[attr-defined]
-    assert "0.120" in detail._explanation.text()  # type: ignore[attr-defined]
-    assert "0.910" not in detail._explanation.text()  # type: ignore[attr-defined]
+    expected = build_acoustic_detail_display(acoustic_on_latest_completed)
+    assert "latest-completed" in detail._subtitle.text()  # type: ignore[attr-defined]
+    assert "0.910" in detail._p90_card._primary.text()  # type: ignore[attr-defined]
+    assert "0.910" in detail._explanation.text()  # type: ignore[attr-defined]
+    assert "0.120" not in detail._explanation.text()  # type: ignore[attr-defined]
     assert detail._f0_mean_card._primary.text() == expected.f0_mean.primary  # type: ignore[attr-defined]
     assert detail._acoustic_explanation.text() == expected.explanation  # type: ignore[attr-defined]
-    assert "333.0 Hz" not in detail._acoustic_explanation.text()  # type: ignore[attr-defined]
+    assert "333.0 Hz" in detail._acoustic_explanation.text()  # type: ignore[attr-defined]
+
+
+def test_live_session_view_default_detail_uses_newest_acoustic_row() -> None:
+    view, store, _vm = _build_view()
+    session = _session()
+    acoustic = _valid_acoustic(f0_mean_measure_hz=280.0)
+    store.set_live_session(session)
+    store.set_encounters(
+        [
+            _encounter(
+                "new-with-voice",
+                session_id=session.session_id,
+                observational_acoustic=acoustic,
+                segment_timestamp_utc=_NOW + timedelta(seconds=30),
+            ),
+            _encounter(
+                "old-no-voice",
+                session_id=session.session_id,
+                observational_acoustic=None,
+                segment_timestamp_utc=_NOW,
+            ),
+        ]
+    )
+
+    detail = view._detail_panel
+    assert "new-with-voice" in detail._subtitle.text()  # type: ignore[attr-defined]
+    assert detail._acoustic_empty.isHidden() is True  # type: ignore[attr-defined]
+    assert "measure 280.0 Hz" in detail._f0_mean_card._primary.text()  # type: ignore[attr-defined]
 
 
 def test_live_session_view_acoustic_validity_pills_update_independently() -> None:
@@ -515,16 +773,16 @@ def test_live_session_view_acoustic_empty_state_without_error_banner() -> None:
     vm.select_encounter("e1")
 
     detail = view._detail_panel
-    assert detail._acoustic_empty.text() == "No acoustic analytics for this segment"  # type: ignore[attr-defined]
+    assert detail._acoustic_empty.text() == "No voice signal details for this segment"  # type: ignore[attr-defined]
     assert detail._acoustic_empty.isHidden() is False  # type: ignore[attr-defined]
     assert detail._acoustic_metrics_container.isHidden() is True  # type: ignore[attr-defined]
     assert view._error_banner.isHidden() is True  # type: ignore[attr-defined]
-    assert detail._semantic_empty.text() == "Attribution analytics absent for this encounter"  # type: ignore[attr-defined]
+    assert detail._semantic_empty.text() == "No follow-up signal details for this encounter"  # type: ignore[attr-defined]
     assert detail._semantic_empty.isHidden() is False  # type: ignore[attr-defined]
-    assert "LLM gray-band fallback" in detail._semantic_method_pill.text()  # type: ignore[attr-defined]
+    assert "backup stimulus confirmation checker" in detail._semantic_method_pill.text()  # type: ignore[attr-defined]
     assert detail._semantic_match_pill.text() == "non-match"  # type: ignore[attr-defined]
     assert detail._soft_reward_card.isHidden() is True  # type: ignore[attr-defined]
-    assert "no reward-path effect" in detail._semantic_observational_note.text()  # type: ignore[attr-defined]
+    assert "do not change the reward" in detail._semantic_observational_note.text()  # type: ignore[attr-defined]
 
 
 def test_live_session_view_detail_pane_flags_zero_frames() -> None:
@@ -545,7 +803,7 @@ def test_live_session_view_detail_pane_flags_zero_frames() -> None:
     )
     vm.select_encounter("e1")
     detail = view._detail_panel
-    assert "No valid AU12 frames" in detail._explanation.text()  # type: ignore[attr-defined]
+    assert "No usable face frames" in detail._explanation.text()  # type: ignore[attr-defined]
 
 
 def test_live_session_view_detail_pane_flags_gate_closed() -> None:
@@ -564,16 +822,16 @@ def test_live_session_view_detail_pane_flags_gate_closed() -> None:
     )
     vm.select_encounter("e1")
     detail = view._detail_panel
-    assert "gate closed" in detail._explanation.text().lower()  # type: ignore[attr-defined]
+    assert "stimulus was not confirmed" in detail._explanation.text().lower()  # type: ignore[attr-defined]
 
 
 def test_live_session_view_countdown_timer_activates_on_measuring() -> None:
     view, store, _vm = _build_view()
     session = _session()
     store.set_live_session(session)
-    # Anchor the stimulus clock to wall-clock "now" so the §7B 30-second
-    # measurement window is in the future and the 1s tick does not auto-
-    # stop itself on the zero-remaining boundary.
+    # Anchor the stimulus clock to wall-clock "now" so the result window
+    # is in the future and the 1s tick does not auto-stop itself on the
+    # zero-remaining boundary.
     store.set_stimulus_ui_context(
         StimulusUiContext(
             state=StimulusActionState.MEASURING,
@@ -581,6 +839,8 @@ def test_live_session_view_countdown_timer_activates_on_measuring() -> None:
         )
     )
     assert view._countdown_timer.isActive() is True
+    assert not hasattr(view._detail_panel, "_countdown_label")  # type: ignore[attr-defined]
+    assert not hasattr(view._detail_panel, "_progress_label")  # type: ignore[attr-defined]
 
 
 def test_live_session_view_countdown_timer_stops_when_not_measuring() -> None:

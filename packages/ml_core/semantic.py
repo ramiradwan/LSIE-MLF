@@ -15,7 +15,10 @@ import json
 import logging
 import math
 import os
+import re
 from collections.abc import Callable
+from difflib import SequenceMatcher
+from pathlib import Path
 from typing import Any, Final
 
 from packages.schemas.evaluation import (
@@ -113,6 +116,28 @@ GRAY_BAND_RESPONSE_FORMAT: dict[str, Any] = {
 
 PrimaryScorer = Callable[[str, str], float]
 
+_TOKEN_PATTERN: Final[re.Pattern[str]] = re.compile(r"[a-z0-9]+")
+_LEXICAL_FALLBACK_STOP_WORDS: Final[frozenset[str]] = frozenset(
+    {
+        "a",
+        "an",
+        "and",
+        "are",
+        "be",
+        "is",
+        "of",
+        "or",
+        "please",
+        "say",
+        "the",
+        "to",
+    }
+)
+
+
+class SemanticModelUnavailableError(RuntimeError):
+    """Raised when the configured local semantic model artifact is absent."""
+
 
 def _env_flag(name: str, *, default: bool = False) -> bool:
     """Read a deterministic boolean feature flag from the environment."""
@@ -129,6 +154,28 @@ def _resolve_local_model_path(model_id: str) -> str:
     if model_id.startswith("local://"):
         return model_id.removeprefix("local://")
     return model_id
+
+
+def _tokenize_for_fallback(text: str) -> set[str]:
+    return {
+        token
+        for token in _TOKEN_PATTERN.findall(text.lower())
+        if token not in _LEXICAL_FALLBACK_STOP_WORDS
+    }
+
+
+def score_lexical_semantic_similarity(expected_greeting: str, actual_utterance: str) -> float:
+    expected_tokens = _tokenize_for_fallback(expected_greeting)
+    actual_tokens = _tokenize_for_fallback(actual_utterance)
+    if not expected_tokens or not actual_tokens:
+        return 0.0
+    overlap = len(expected_tokens & actual_tokens) / len(expected_tokens)
+    sequence_ratio = SequenceMatcher(
+        None,
+        " ".join(sorted(expected_tokens)),
+        " ".join(sorted(actual_tokens)),
+    ).ratio()
+    return min(1.0, max(0.0, (0.8 * overlap) + (0.2 * sequence_ratio)))
 
 
 def _extract_scalar(value: Any) -> float:
@@ -230,10 +277,16 @@ class LocalCrossEncoderScorer:
     def _init_model(self) -> None:
         """Load the pinned sentence-transformers CrossEncoder lazily."""
 
+        resolved_model_id = _resolve_local_model_path(self.model_id)
+        if self.model_id.startswith("local://") and not Path(resolved_model_id).exists():
+            raise SemanticModelUnavailableError(
+                f"Local semantic model artifact is missing: {resolved_model_id}"
+            )
+
         from sentence_transformers import CrossEncoder
 
         self._model = CrossEncoder(
-            _resolve_local_model_path(self.model_id),
+            resolved_model_id,
             device=self.device_mode,
         )
 
@@ -243,7 +296,7 @@ class LocalCrossEncoderScorer:
         if self._model is None:
             self._init_model()
 
-        raw_score = self._model.predict(  # type: ignore[union-attr]
+        raw_score = self._model.predict(
             [(expected_greeting, actual_utterance)],
             show_progress_bar=False,
         )
@@ -381,6 +434,23 @@ class SemanticEvaluator:
             confidence_score=0.0,
         )
 
+    def _local_model_unavailable_result(
+        self,
+        expected_greeting: str,
+        actual_utterance: str,
+    ) -> dict[str, Any]:
+        score = score_lexical_semantic_similarity(expected_greeting, actual_utterance)
+        is_match = score >= MATCH_THRESHOLD
+        self._record_attribution(
+            semantic_method="cross_encoder",
+            semantic_method_version=f"{CROSS_ENCODER_METHOD_VERSION}+lexical-unavailable-fallback",
+        )
+        return self._validated_result(
+            reasoning="cross_encoder_high_match" if is_match else "cross_encoder_high_nonmatch",
+            is_match=is_match,
+            confidence_score=score,
+        )
+
     def _evaluate_gray_band_fallback(
         self,
         expected_greeting: str,
@@ -470,6 +540,11 @@ class SemanticEvaluator:
             primary_score = calibrate_cross_encoder_score(
                 self._score_primary(expected_greeting, actual_utterance)
             )
+        except SemanticModelUnavailableError:
+            logger.info("Local semantic Cross-Encoder artifact unavailable; using lexical fallback")
+            result = self._local_model_unavailable_result(expected_greeting, actual_utterance)
+            self._evaluate_shadow(expected_greeting, actual_utterance)
+            return result
         except Exception:
             logger.warning("Local semantic Cross-Encoder scoring failed", exc_info=True)
             self._record_attribution(

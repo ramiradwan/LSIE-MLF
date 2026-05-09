@@ -37,7 +37,8 @@ def _view() -> tuple[PhysiologyView, OperatorStore]:
 def test_physiology_view_empty_until_snapshot_set() -> None:
     view, _store = _view()
     assert view._empty_state.isHidden() is False  # type: ignore[attr-defined]
-    assert view._body_container.isHidden() is True  # type: ignore[attr-defined]
+    assert view._scroll.isHidden() is True  # type: ignore[attr-defined]
+    assert view._scroll.widget() is view._body_container  # type: ignore[attr-defined]
 
 
 def test_physiology_view_fresh_streamer_renders_ok_pill() -> None:
@@ -122,8 +123,9 @@ def test_physiology_view_no_rmssd_path_is_distinct_from_absent() -> None:
         )
     )
     panel = view._streamer_panel  # type: ignore[attr-defined]
-    assert panel._status._label.text() == "no RMSSD"  # type: ignore[attr-defined]
+    assert panel._status._label.text() == "no variability"  # type: ignore[attr-defined]
     assert panel._rmssd_card._primary.text() == "—"  # type: ignore[attr-defined]
+    assert "heart-rate variability" in panel._rmssd_card._secondary.text()  # type: ignore[attr-defined]
 
 
 def test_physiology_view_comodulation_null_valid_renders_as_info() -> None:
@@ -146,9 +148,45 @@ def test_physiology_view_comodulation_null_valid_renders_as_info() -> None:
             ),
         )
     )
+    assert view._scroll.isHidden() is False  # type: ignore[attr-defined]
+    assert view._scroll.widget() is view._body_container  # type: ignore[attr-defined]
+    co_modulation_panel = view._co_modulation_summary_panel  # type: ignore[attr-defined]
+    assert co_modulation_panel.accessibleName() == "Co-Modulation Index"
+    assert co_modulation_panel._title.text() == "Co-Modulation Index"  # type: ignore[attr-defined]
+    assert "Paired heart-data trends" in co_modulation_panel._subtitle.text()  # type: ignore[attr-defined]
+    assert co_modulation_panel._status._kind is UiStatusKind.INFO  # type: ignore[attr-defined]
+    assert co_modulation_panel._primary_card._secondary.text() == "Sync data accumulating"  # type: ignore[attr-defined]
+    assert "insufficient aligned non-stale pairs" in co_modulation_panel._explanation.text()  # type: ignore[attr-defined]
+
     panel = view._comodulation_panel  # type: ignore[attr-defined]
-    assert panel._index_card._status._label.text() == "null-valid"  # type: ignore[attr-defined]
+    assert panel._index_card._status._label.text() == "not enough data yet"  # type: ignore[attr-defined]
     assert panel._index_card._status._kind is UiStatusKind.INFO  # type: ignore[attr-defined]
+    assert panel._title.text() == "Shared stress/recovery movement"  # type: ignore[attr-defined]
+
+
+def test_physiology_view_comodulation_numeric_updates_summary_panel() -> None:
+    view, store = _view()
+    session_id = uuid4()
+    store.set_physiology(
+        SessionPhysiologySnapshot(
+            session_id=session_id,
+            generated_at_utc=_NOW,
+            comodulation=CoModulationSummary(
+                session_id=session_id,
+                co_modulation_index=0.82,
+                n_paired_observations=8,
+                coverage_ratio=0.75,
+                null_reason=None,
+                window_start_utc=_NOW,
+                window_end_utc=_NOW,
+            ),
+        )
+    )
+
+    co_modulation_panel = view._co_modulation_summary_panel  # type: ignore[attr-defined]
+    assert co_modulation_panel._primary_card._primary.text() == "+0.82"  # type: ignore[attr-defined]
+    assert "moving together" in co_modulation_panel._primary_card._secondary.text()  # type: ignore[attr-defined]
+    assert "8 fresh paired observation" in co_modulation_panel._explanation.text()  # type: ignore[attr-defined]
 
 
 def test_physiology_view_error_changed_shows_alert_banner() -> None:

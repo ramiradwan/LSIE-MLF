@@ -17,3 +17,5 @@ def test_setters_apply() -> None:
     assert widget._message.text() == (  # type: ignore[attr-defined]
         "Select a session from the sidebar to begin."
     )
+    assert widget.accessibleName() == "No session selected"
+    assert widget.accessibleDescription() == "Select a session from the sidebar to begin."

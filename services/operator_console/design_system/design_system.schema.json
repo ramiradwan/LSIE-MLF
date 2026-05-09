@@ -1,0 +1,105 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "./design_system.schema.json",
+  "title": "Operator Console design-system manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "$schema",
+    "version",
+    "source_audit",
+    "spec_refs",
+    "tokens_file",
+    "shells",
+    "primitives",
+    "compounds",
+    "selectors"
+  ],
+  "properties": {
+    "$schema": {
+      "type": "string"
+    },
+    "version": {
+      "type": "string"
+    },
+    "source_audit": {
+      "type": "string"
+    },
+    "spec_refs": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "tokens_file": {
+      "type": "string"
+    },
+    "shells": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/shell"
+      }
+    },
+    "primitives": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/component"
+      }
+    },
+    "compounds": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/component"
+      }
+    },
+    "selectors": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/selector"
+      }
+    }
+  },
+  "$defs": {
+    "shell": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "routes", "regions", "description"],
+      "properties": {
+        "name": {"type": "string"},
+        "routes": {
+          "type": "array",
+          "items": {"type": "string"}
+        },
+        "regions": {
+          "type": "array",
+          "items": {"type": "string"}
+        },
+        "description": {"type": "string"}
+      }
+    },
+    "component": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["name", "description"],
+      "properties": {
+        "name": {"type": "string"},
+        "description": {"type": "string"},
+        "object_names": {
+          "type": "array",
+          "items": {"type": "string"}
+        },
+        "object_name": {"type": "string"},
+        "kind": {"type": "string"}
+      }
+    },
+    "selector": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["object_name", "kind"],
+      "properties": {
+        "object_name": {"type": "string"},
+        "kind": {"type": "string"}
+      }
+    }
+  }
+}

@@ -23,8 +23,10 @@ from datetime import UTC, datetime
 import pytest
 
 from packages.schemas.operator_console import (
+    HealthProbeState,
     HealthSnapshot,
     HealthState,
+    HealthSubsystemProbe,
     HealthSubsystemStatus,
     UiStatusKind,
 )
@@ -76,11 +78,24 @@ def test_health_view_renders_degraded_recovering_error_as_three_states() -> None
                     label="Worker",
                     state=HealthState.ERROR,
                     detail="GPU not available",
-                    operator_action_hint="restart worker container",
+                    operator_action_hint="restart local worker process",
                 ),
             ],
+            subsystem_probes={
+                "azure_openai": HealthSubsystemProbe(
+                    subsystem_key="azure_openai",
+                    label="Azure OpenAI",
+                    state=HealthProbeState.NOT_CONFIGURED,
+                    latency_ms=None,
+                    detail="missing AZURE_OPENAI_ENDPOINT",
+                    checked_at_utc=_NOW,
+                )
+            },
         )
     )
+
+    assert view._scroll.isHidden() is False  # type: ignore[attr-defined]
+    assert view._probe_matrix._state_pills[0].text() == "not configured"  # type: ignore[attr-defined]
 
     # Three distinct pill kinds — the §12 line the operator must see.
     kinds = {

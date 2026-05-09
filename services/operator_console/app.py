@@ -32,9 +32,9 @@ from PySide6.QtWidgets import QApplication
 
 from services.operator_console.api_client import ApiClient
 from services.operator_console.config import OperatorConsoleConfig, load_config
+from services.operator_console.design_system import install_application_stylesheet
 from services.operator_console.polling import PollingCoordinator
 from services.operator_console.state import OperatorStore
-from services.operator_console.theme import build_stylesheet
 from services.operator_console.views.main_window import MainWindow
 
 
@@ -84,7 +84,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     app = QApplication(list(argv) if argv is not None else sys.argv)
     app.setApplicationName("LSIE-MLF Operator Console")
     app.setOrganizationName("LSIE-MLF")
-    app.setStyleSheet(build_stylesheet())
+    install_application_stylesheet(app)
 
     # 1. store first — views and the coordinator both subscribe to its
     #    signals on construction.

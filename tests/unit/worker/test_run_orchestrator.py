@@ -1,14 +1,17 @@
 """
-Tests for services/worker/run_orchestrator.py — Phase 3.4 gap-fix coverage.
+Tests for the retained server-side services/worker/run_orchestrator.py entrypoint.
 
 Verifies the orchestrator entrypoint:
   §4.C — Module C standalone process startup
-  §4.E.1 — Stimulus trigger setup (auto-trigger + Redis listener)
+  §4.E.1 — retained server/API stimulus trigger setup (auto-trigger + Redis listener)
 """
 
 from __future__ import annotations
 
-from typing import Any
+import importlib
+import sys
+from types import ModuleType
+from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
 
@@ -122,7 +125,7 @@ class TestMain:
         refs["orchestrator"].run.assert_called_once()
 
     def test_stimulus_triggers_setup(self) -> None:
-        """Both auto-trigger and Redis listener are set up."""
+        """Retained server entrypoint sets up both auto-trigger and Redis listener."""
         refs = self._run_main()
         refs["setup_auto"].assert_called_once_with(refs["orchestrator"])
         refs["start_redis"].assert_called_once_with(refs["orchestrator"])
@@ -170,8 +173,12 @@ class TestMain:
 
     def test_entrypoint_leaves_handoff_enqueue_to_orchestrator(self) -> None:
         mock_task = MagicMock()
+        inference_module = cast(Any, ModuleType("services.worker.tasks.inference"))
+        inference_module.process_segment = mock_task
+        sys.modules.pop("services.worker.tasks.inference", None)
 
-        with patch("services.worker.tasks.inference.process_segment", mock_task):
+        with patch.dict(sys.modules, {"services.worker.tasks.inference": inference_module}):
+            importlib.invalidate_caches()
             refs = self._run_main()
 
         refs["orchestrator"].run.assert_called_once()

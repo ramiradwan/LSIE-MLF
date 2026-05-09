@@ -118,6 +118,8 @@ def test_action_bar_disables_submit_while_stimulus_submitting() -> None:
     bar.set_session_context(session.session_id, session.active_arm, session.expected_greeting)
     # Idle state — the button is enabled because a session is bound.
     assert bar._submit_button.isEnabled() is True  # type: ignore[attr-defined]
+    assert "stimulus strategy: greeting_v1" in bar._session_label.text()  # type: ignore[attr-defined]
+    assert bar._greeting_label.text() == "Expected response: “hei rakas”"  # type: ignore[attr-defined]
 
     # Submitting lands on the bar through the store → shell wiring.
     bar.set_action_state(
@@ -126,7 +128,9 @@ def test_action_bar_disables_submit_while_stimulus_submitting() -> None:
             submitted_at_utc=_NOW,
         )
     )
+    bar.set_last_message("Sending the test message now.")
     assert bar._submit_button.isEnabled() is False  # type: ignore[attr-defined]
+    assert "sending the test message" in bar._message_label.text().lower()  # type: ignore[attr-defined]
 
     # Back to idle — re-enabled so the operator can retry.
     bar.set_action_state(StimulusUiContext(state=StimulusActionState.IDLE))
@@ -201,11 +205,10 @@ def test_live_session_view_encounter_selection_updates_detail_pane() -> None:
     # which drives the detail pane's reward-explanation text.
     vm.select_encounter(encounter.encounter_id)
     detail_text = view._detail_panel._explanation.text()  # type: ignore[attr-defined]
-    # The explanation mentions the two §7B reward inputs by name. The
-    # exact formatting is the formatter's business; integration-level
-    # we only assert both show up in the rendered string.
-    assert "p90" in detail_text.lower()
-    assert "gate" in detail_text.lower()
+    # The exact formatting is the formatter's business; integration-level
+    # we only assert the key concepts show up in the rendered string.
+    assert "response signal" in detail_text.lower()
+    assert "stimulus confirmation" in detail_text.lower()
     # And the reward card reads a numeric value (the §7B gated reward).
     assert view._detail_panel._reward_card._primary.text() != "—"  # type: ignore[attr-defined]
     # The detail pane keeps the original six reward/physiology cards and adds
@@ -263,7 +266,7 @@ def test_live_session_view_session_start_failure_surfaces_error_banner() -> None
     vm.bind_session_lifecycle_actions(start_dispatcher, end_dispatcher)
     view = LiveSessionView(vm)
 
-    vm.start_new_session("rtmp://example/live", "greeting_line_v1")
+    vm.start_new_session("greeting_line_v1")
     start_dispatcher.signals[0].failed.emit(
         "session_start",
         ApiError(message="broker unavailable", retryable=True),

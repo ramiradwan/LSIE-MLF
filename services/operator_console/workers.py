@@ -35,6 +35,8 @@ from collections.abc import Callable
 from PySide6.QtCore import (
     QObject,
     QRunnable,
+    Qt,
+    QThread,
     QThreadPool,
     QTimer,
     Signal,
@@ -42,6 +44,7 @@ from PySide6.QtCore import (
 )
 
 from services.operator_console.api_client import ApiError
+from services.operator_console.event_client import EventStreamResponse, OperatorEventClient
 
 
 class PollingWorker(QObject):
@@ -72,6 +75,8 @@ class PollingWorker(QObject):
         self._interval_ms = interval_ms
         self._fetch = fetch
         self._timer: QTimer | None = None
+        self._stopped = False
+        self._fetch_in_progress = False
 
     @property
     def job_name(self) -> str:
@@ -81,15 +86,15 @@ class PollingWorker(QObject):
     def run(self) -> None:
         """Start the periodic fetch. Emits the first tick immediately so
         the UI shows data without waiting one interval."""
-        if self._timer is not None:
+        if self._timer is not None or self._stopped:
             return
         self.started.emit(self._job_name)
-        self._run_once()
         timer = QTimer(self)
         timer.setInterval(self._interval_ms)
         timer.timeout.connect(self._run_once)
         timer.start()
         self._timer = timer
+        QTimer.singleShot(0, self._run_once)
 
     @Slot()
     def stop(self) -> None:
@@ -101,35 +106,139 @@ class PollingWorker(QObject):
         # connection wired in `PollingCoordinator._start_job`. That
         # delete also runs on the worker thread, which is the only
         # way to avoid the cross-thread `killTimer` warning.
-        if self._timer is None:
+        if self._stopped:
             return
-        self._timer.stop()
-        self._timer = None
+        self._stopped = True
+        if self._timer is not None:
+            self._timer.stop()
+            self._timer = None
         self.stopped.emit(self._job_name)
 
     @Slot()
     def refresh_now(self) -> None:
         """Force an immediate tick outside the regular cadence."""
+        if self._stopped:
+            return
         self._run_once()
 
     def _run_once(self) -> None:
+        if self._stopped or self._fetch_in_progress:
+            return
+        self._fetch_in_progress = True
         try:
-            payload = self._fetch()
-        except ApiError as exc:
-            self.error.emit(self._job_name, exc)
+            try:
+                payload = self._fetch()
+            except ApiError as exc:
+                if not self._stopped:
+                    self.error.emit(self._job_name, exc)
+                return
+            except Exception as exc:  # defensive — don't let the worker die
+                # §12: a non-ApiError in a worker is a bug on our side;
+                # surface it as a non-retryable ApiError so the UI treats
+                # it like any other permanent failure.
+                wrapped = ApiError(
+                    message=f"unexpected error: {exc}",
+                    endpoint=None,
+                    retryable=False,
+                )
+                if not self._stopped:
+                    self.error.emit(self._job_name, wrapped)
+                return
+            if not self._stopped:
+                self.data_ready.emit(self._job_name, payload)
+        finally:
+            self._fetch_in_progress = False
+
+
+class EventStreamWorker(QObject):
+    connected = Signal()
+    event_ready = Signal(object)
+    error = Signal(object)
+    stopped = Signal()
+
+    def __init__(
+        self,
+        client: OperatorEventClient,
+        *,
+        initial_last_event_id: str | None = None,
+        parent: QObject | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._client = client
+        self._last_event_id = initial_last_event_id
+        self._stopped = False
+        self._response: EventStreamResponse | None = None
+
+    @property
+    def last_event_id(self) -> str | None:
+        return self._last_event_id
+
+    @Slot()
+    def run(self) -> None:
+        if self._stopped:
+            self.stopped.emit()
             return
-        except Exception as exc:  # defensive — don't let the worker die
-            # §12: a non-ApiError in a worker is a bug on our side;
-            # surface it as a non-retryable ApiError so the UI treats
-            # it like any other permanent failure.
-            wrapped = ApiError(
-                message=f"unexpected error: {exc}",
-                endpoint=None,
-                retryable=False,
+        try:
+            stream = self._client.stream_events(
+                last_event_id=self._last_event_id,
+                on_open=self._handle_open,
             )
-            self.error.emit(self._job_name, wrapped)
+            for envelope in stream:
+                if self._stopped:
+                    break
+                self._last_event_id = envelope.event_id
+                self.event_ready.emit(envelope)
+        except ApiError as exc:
+            if not self._stopped:
+                self.error.emit(exc)
+        except Exception as exc:
+            if not self._stopped:
+                self.error.emit(
+                    ApiError(
+                        message=f"unexpected event stream error: {exc}",
+                        endpoint=None,
+                        retryable=True,
+                    )
+                )
+        finally:
+            self._response = None
+            self.stopped.emit()
+
+    def _handle_open(self, response: EventStreamResponse) -> None:
+        if self._stopped:
+            response.close()
             return
-        self.data_ready.emit(self._job_name, payload)
+        self._response = response
+        self.connected.emit()
+
+    @Slot()
+    def stop(self) -> None:
+        self._stopped = True
+        response = self._response
+        if response is not None:
+            response.close()
+
+
+class EventStreamHandle:
+    def __init__(self, worker: EventStreamWorker, thread: QThread) -> None:
+        self.worker = worker
+        self.thread = thread
+
+
+def start_event_stream_worker(
+    client: OperatorEventClient,
+    *,
+    initial_last_event_id: str | None = None,
+) -> EventStreamHandle:
+    thread = QThread()
+    worker = EventStreamWorker(client, initial_last_event_id=initial_last_event_id)
+    worker.moveToThread(thread)
+    worker.stopped.connect(worker.deleteLater)
+    worker.stopped.connect(thread.quit, Qt.ConnectionType.DirectConnection)
+    thread.finished.connect(thread.deleteLater)
+    thread.started.connect(worker.run)
+    thread.start()
+    return EventStreamHandle(worker, thread)
 
 
 class OneShotSignals(QObject):
@@ -138,10 +247,23 @@ class OneShotSignals(QObject):
     (e.g., the operator double-clicks the stimulus button)."""
 
     # fmt: off
-    succeeded  = Signal(str, object)   # job_name, payload
-    failed     = Signal(str, object)   # job_name, ApiError
-    finished   = Signal(str)           # job_name — fires after succeeded/failed
+    succeeded  = Signal(str, object)        # job_name, payload
+    failed     = Signal(str, object)        # job_name, ApiError
+    finished   = Signal(str)                # job_name — fires after succeeded/failed
+    _completed = Signal(str, bool, object)  # job_name, succeeded, payload_or_error
     # fmt: on
+
+    def __init__(self, parent: QObject | None = None) -> None:
+        super().__init__(parent)
+        self._completed.connect(self._deliver_completed)
+
+    @Slot(str, bool, object)
+    def _deliver_completed(self, job_name: str, succeeded: bool, payload: object) -> None:
+        if succeeded:
+            self.succeeded.emit(job_name, payload)
+        else:
+            self.failed.emit(job_name, payload)
+        self.finished.emit(job_name)
 
 
 class _OneShotRunnable(QRunnable):
@@ -162,18 +284,16 @@ class _OneShotRunnable(QRunnable):
         try:
             result = self._fn()
         except ApiError as exc:
-            self._signals.failed.emit(self._job_name, exc)
+            self._signals._completed.emit(self._job_name, False, exc)
         except Exception as exc:
             wrapped = ApiError(
                 message=f"unexpected error: {exc}",
                 endpoint=None,
                 retryable=False,
             )
-            self._signals.failed.emit(self._job_name, wrapped)
+            self._signals._completed.emit(self._job_name, False, wrapped)
         else:
-            self._signals.succeeded.emit(self._job_name, result)
-        finally:
-            self._signals.finished.emit(self._job_name)
+            self._signals._completed.emit(self._job_name, True, result)
 
 
 def run_one_shot(job_name: str, fn: Callable[[], object]) -> OneShotSignals:
@@ -185,5 +305,8 @@ def run_one_shot(job_name: str, fn: Callable[[], object]) -> OneShotSignals:
     the emission.
     """
     signals = OneShotSignals()
-    QThreadPool.globalInstance().start(_OneShotRunnable(job_name, fn, signals))
+    QTimer.singleShot(
+        0,
+        lambda: QThreadPool.globalInstance().start(_OneShotRunnable(job_name, fn, signals)),
+    )
     return signals

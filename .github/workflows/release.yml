@@ -1,0 +1,144 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+jobs:
+  windows-release:
+    runs-on: windows-2022
+    env:
+      PYTHONHASHSEED: "0"
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Set up Python 3.11
+        run: uv python install 3.11
+
+      - name: Sync release build environment
+        run: uv sync --frozen --group dev
+
+      - name: Build desktop launcher artifact
+        shell: pwsh
+        run: >-
+          uv run --with pyinstaller==6.11.* pyinstaller --clean --noconfirm --onedir --windowed
+          --name LSIE-MLF-Launcher
+          --collect-submodules services.desktop_launcher
+          --collect-submodules services.desktop_app
+          -p ${{ github.workspace }}
+          services/desktop_launcher/ui.py
+
+      - name: Bundle desktop app source for hydrated runtime
+        shell: pwsh
+        run: |
+          $appRoot = "${{ github.workspace }}\dist\LSIE-MLF-Launcher\app"
+          New-Item -ItemType Directory -Force $appRoot | Out-Null
+          Copy-Item -Recurse -Force "${{ github.workspace }}\packages" $appRoot
+          Copy-Item -Recurse -Force "${{ github.workspace }}\services" $appRoot
+          Copy-Item -Force "${{ github.workspace }}\pyproject.toml" $appRoot
+          Copy-Item -Force "${{ github.workspace }}\uv.lock" $appRoot
+
+      - name: Smoke packaged launcher runtime handoff
+        shell: pwsh
+        env:
+          LSIE_DEV_FORCE_CPU_SPEECH: "1"
+        run: >-
+          & "${{ github.workspace }}\dist\LSIE-MLF-Launcher\LSIE-MLF-Launcher.exe"
+          --smoke
+
+      - name: Sign Windows binaries
+        uses: azure/artifact-signing-action@v1
+        with:
+          azure-tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          azure-client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          azure-client-secret: ${{ secrets.AZURE_CLIENT_SECRET }}
+          endpoint: ${{ secrets.AZURE_ARTIFACT_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ secrets.AZURE_ARTIFACT_SIGNING_ACCOUNT_NAME }}
+          certificate-profile-name: ${{ secrets.AZURE_ARTIFACT_SIGNING_CERTIFICATE_PROFILE_NAME }}
+          files-folder: ${{ github.workspace }}\dist\LSIE-MLF-Launcher
+          files-folder-filter: exe,dll
+          files-folder-recurse: true
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+          correlation-id: ${{ github.run_id }}
+          exclude-environment-credential: false
+          exclude-workload-identity-credential: true
+          exclude-managed-identity-credential: true
+          exclude-shared-token-cache-credential: true
+          exclude-visual-studio-credential: true
+          exclude-visual-studio-code-credential: true
+          exclude-azure-cli-credential: true
+          exclude-azure-powershell-credential: true
+          exclude-azure-developer-cli-credential: true
+          exclude-interactive-browser-credential: true
+
+      - name: Archive signed artifact
+        shell: pwsh
+        run: Compress-Archive -Path dist\LSIE-MLF-Launcher\* -DestinationPath dist\LSIE-MLF-windows-${{ github.ref_name }}.zip -Force
+
+      - name: Generate SHA256 checksum manifest
+        shell: pwsh
+        run: |
+          $zipPath = "dist\LSIE-MLF-windows-${{ github.ref_name }}.zip"
+          $hash = Get-FileHash -Path $zipPath -Algorithm SHA256
+          "$($hash.Hash)  $(Split-Path $zipPath -Leaf)" | Out-File -FilePath dist\sha256sums.txt -Encoding ascii
+
+      - name: Generate SBOM (SPDX JSON)
+        uses: anchore/sbom-action@v0
+        with:
+          path: .
+          format: spdx-json
+          output-file: dist/LSIE-MLF-sbom.spdx.json
+          upload-artifact: false
+          upload-release-assets: false
+
+      - name: Generate build provenance attestation
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dist\LSIE-MLF-windows-${{ github.ref_name }}.zip
+
+      - name: Upload signed artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: LSIE-MLF-windows-${{ github.ref_name }}
+          path: |
+            dist\LSIE-MLF-windows-${{ github.ref_name }}.zip
+            dist\sha256sums.txt
+            dist\LSIE-MLF-sbom.spdx.json
+          if-no-files-found: error
+
+      - name: Publish to GitHub Release
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: |
+            dist/LSIE-MLF-windows-${{ github.ref_name }}.zip
+            dist/sha256sums.txt
+            dist/LSIE-MLF-sbom.spdx.json
+          name: LSIE-MLF ${{ github.ref_name }}
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          draft: false
+          fail_on_unmatched_files: true
+          body: |
+            Pre-release alpha test build of the LSIE-MLF v4 desktop runtime. v4 is under active development and is not feature-complete; this build exists to exercise the signed release pipeline and is not intended for production deployment.
+
+            Verification surfaces:
+            - `LSIE-MLF-windows-${{ github.ref_name }}.zip` — Authenticode-signed Windows launcher bundle (Azure Trusted Signing, RFC 3161 timestamped).
+            - `sha256sums.txt` — SHA-256 manifest for the archive.
+            - `LSIE-MLF-sbom.spdx.json` — SPDX 2.3 software bill of materials for the build environment.
+            - Build provenance attestation is published to the GitHub attestation store; verify with `gh attestation verify LSIE-MLF-windows-${{ github.ref_name }}.zip --repo ${{ github.repository }}`.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

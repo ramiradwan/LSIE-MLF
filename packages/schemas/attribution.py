@@ -15,10 +15,16 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from packages.schemas.evaluation import SemanticMethod, SemanticReasonCode
+from packages.schemas.evaluation import (
+    ResponseReasonCode,
+    ResponseRegistrationStatus,
+    SemanticMethod,
+    SemanticReasonCode,
+    StimulusModality,
+)
 
 AttributionFinality = Literal["online_provisional", "offline_final"]
-AttributionEventType = Literal["greeting_interaction"]
+AttributionEventType = Literal["greeting_interaction", "stimulus_interaction"]
 OutcomeEventType = Literal["creator_follow"]
 BanditSelectionMethod = Literal["thompson_sampling"]
 
@@ -73,10 +79,9 @@ class BanditDecisionSnapshot(AttributionBaseModel):
     Validate the pre-update Thompson Sampling BanditDecisionSnapshot (§6.4 / §6.1).
 
     Accepts selection metadata, selected/candidate arm IDs, posterior parameters,
-    optional sampled theta values, and the expected greeting captured at arm
-    selection time. Produces a replayable decision record for handoff and
-    attribution; it does not perform selection, update posteriors, or compute
-    rewards.
+    sampled theta values, and the expected greeting captured at arm selection
+    time. Produces a replayable decision record for handoff and attribution; it
+    does not perform selection, update posteriors, or compute rewards.
     """
 
     selection_method: BanditSelectionMethod
@@ -86,10 +91,14 @@ class BanditDecisionSnapshot(AttributionBaseModel):
     selected_arm_id: str
     candidate_arm_ids: list[str] = Field(..., min_length=1)
     posterior_by_arm: dict[str, ArmPosterior] = Field(..., min_length=1)
-    sampled_theta_by_arm: dict[str, float] | None = None
+    sampled_theta_by_arm: dict[str, float]
     expected_greeting: str
-    decision_context_hash: str | None = Field(default=None, pattern="^[0-9a-f]{64}$")
-    random_seed: int | None = None
+    decision_context_hash: str = Field(..., pattern="^[0-9a-f]{64}$")
+    random_seed: int = Field(..., ge=0, le=18446744073709551615)
+    stimulus_modality: StimulusModality | None = None
+    expected_stimulus_rule: str | None = None
+    expected_response_rule: str | None = None
+    stimulus_payload: dict[str, object] | None = None
 
     @field_validator("candidate_arm_ids")
     @classmethod
@@ -98,11 +107,7 @@ class BanditDecisionSnapshot(AttributionBaseModel):
 
     @field_validator("sampled_theta_by_arm")
     @classmethod
-    def _theta_values_are_probabilities(
-        cls, values: dict[str, float] | None
-    ) -> dict[str, float] | None:
-        if values is None:
-            return values
+    def _theta_values_are_probabilities(cls, values: dict[str, float]) -> dict[str, float]:
         if any(theta < 0.0 or theta > 1.0 for theta in values.values()):
             raise ValueError("sampled theta values must be between 0.0 and 1.0")
         return values
@@ -143,6 +148,12 @@ class AttributionEvent(AttributionBaseModel):
     finality: AttributionFinality = Field(..., description=_FINALITY_DESCRIPTION)
     schema_version: str = Field(..., description=_SCHEMA_VERSION_DESCRIPTION)
     created_at: datetime = Field(..., description=_CREATED_AT_DESCRIPTION)
+    stimulus_id: UUID | None = None
+    stimulus_modality: StimulusModality | None = None
+    matched_response_time_utc: datetime | None = None
+    response_registration_status: ResponseRegistrationStatus | None = None
+    response_reason_code: ResponseReasonCode | None = None
+    expected_response_rule_text_hash: str | None = Field(default=None, pattern="^[0-9a-f]{64}$")
 
     @field_validator("evidence_flags")
     @classmethod

@@ -14,11 +14,13 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from fastapi import HTTPException
 
 from packages.schemas.operator_console import (
     AttributionSummary,
@@ -28,6 +30,7 @@ from packages.schemas.operator_console import (
     HealthSnapshot,
     HealthState,
     ObservationalAcousticSummary,
+    OperatorStateBootstrap,
     OverviewSnapshot,
     SemanticEvaluationSummary,
     SessionPhysiologySnapshot,
@@ -38,12 +41,15 @@ from packages.schemas.operator_console import (
 from services.api.routes.operator import (
     get_experiment_detail,
     get_health,
+    get_operator_state_bootstrap,
     get_overview,
     get_session,
     get_session_physiology,
+    get_supported_event_service,
     list_alerts,
     list_session_encounters,
     list_sessions,
+    stream_operator_state_events,
     submit_stimulus,
 )
 from services.api.services.operator_action_service import (
@@ -63,6 +69,52 @@ def _now() -> datetime:
 
 
 class TestOperatorReadRoutes:
+    def test_state_bootstrap_returns_dto(self) -> None:
+        health = HealthSnapshot(generated_at_utc=_now(), overall_state=HealthState.OK)
+        overview = OverviewSnapshot(generated_at_utc=_now(), health=health)
+        payload = OperatorStateBootstrap(
+            generated_at_utc=_now(),
+            overview=overview,
+            health=health,
+        )
+        svc = MagicMock()
+        svc.build_bootstrap = AsyncMock(return_value=payload)
+        result = asyncio.run(get_operator_state_bootstrap(service=svc))
+        assert result is payload
+        svc.build_bootstrap.assert_awaited_once()
+
+    def test_state_events_passes_last_event_id(self) -> None:
+        request = MagicMock()
+
+        async def stream() -> AsyncIterator[str]:
+            yield "event"
+
+        svc = MagicMock()
+        svc.has_event_stream_support.return_value = True
+        svc.stream_events.return_value = stream()
+
+        async def collect() -> list[Any]:
+            return [
+                event
+                async for event in stream_operator_state_events(
+                    request=request,
+                    last_event_id="overview:abc",
+                    service=svc,
+                )
+            ]
+
+        assert asyncio.run(collect()) == ["event"]
+        svc.stream_events.assert_called_once_with(request, last_event_id="overview:abc")
+
+    def test_state_events_rejects_unsupported_runtime(self) -> None:
+        svc = MagicMock()
+        svc.has_event_stream_support.return_value = False
+
+        with pytest.raises(HTTPException) as exc_info:
+            get_supported_event_service(service=svc)
+
+        assert exc_info.value.status_code == 503
+
     def test_overview_returns_dto(self) -> None:
         payload = OverviewSnapshot(generated_at_utc=_now())
         svc = MagicMock()

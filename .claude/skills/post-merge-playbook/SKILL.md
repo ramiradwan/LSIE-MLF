@@ -27,9 +27,9 @@ These three facts feed the cycle log and Part 2 (Merge-Specific Chores) of the p
 
 Run the eight Standing Post-Merge Chores **in order**. Each one feeds the next; do not parallelize:
 
-1. **Canonical Terminology Sweep** — run the §0.3 retired-synonym grep from `CLAUDE.md` against `services/`, `packages/`, and `docker-compose.yml`. Zero matches in code/docstrings is the gate. README narrative prose is exempt; the executable §13 audit harness in Chore #8 is the authoritative automated gate for canonical-name verifier results.
-2. **Documentation Reconciliation** — diff merge against `README.md`, `.claude/skills/*/SKILL.md`, `CLAUDE.md`, `docs/SPEC_REFERENCE.md`, and `docs/SPEC_AMENDMENTS.md`. Every new container, env var, port, schema field, or Redis key in code must surface in at least one doc. New spec deviations → register a SPEC-AMEND entry.
-3. **Schema-Code Consistency Verification** — run `python scripts/check_schema_consistency.py` (see the `schema-consistency` skill) AND verify SQL DDL ↔ Pydantic ↔ Python DDL string ↔ content.json alignment for every persistence table touched. `mypy --strict` must pass.
+1. **Canonical Terminology Sweep** — run the §0.3 retired-synonym grep from `CLAUDE.md` against `services/`, `packages/`, and `scripts/`. Zero matches in code/docstrings is the gate. README narrative prose is exempt; the executable §13 audit harness in Chore #8 is the authoritative automated gate for canonical-name verifier results. There is no active `docker-compose.yml` input for the v4 desktop runtime.
+2. **Documentation Reconciliation** — diff merge against `README.md`, `.claude/skills/*/SKILL.md`, `CLAUDE.md`, and spec references resolved from `docs/tech-spec-v*.pdf` with `scripts/spec_ref_check.py`. Every new desktop process, env var, port, schema field, local SQLite table, IPC channel, or retained/server key in code must surface in the signed spec payload or at least one project-facing doc. Container manifests are expected only if a future signed spec change reintroduces them.
+3. **Schema-Code Consistency Verification** — run `python scripts/check_schema_consistency.py` (see the `schema-consistency` skill) and verify Pydantic ↔ extracted JSON Schema ↔ cloud PostgreSQL DDL alignment for every contract-bearing payload or cloud persistence surface touched. `mypy --strict` must pass.
 4. **Test Coverage Gap Analysis** — list new/modified files lacking corresponding tests under `tests/unit/` or `tests/integration/`. Each gap → follow-up test commit OR ADO work item if infra is missing.
 5. **Logging and Observability Audit** — grep for emoji log lines, bare `except: pass`, `logger.error()` on §12-recoverable conditions, and log statements at WARNING+ that lack `session_id`/`segment_id`/`subject_role`. Confirm no raw biometric payloads in any log line.
 6. **Deferred Integration Inventory Refresh** — walk the diff for new public symbols. Each is either (a) imported by a runtime entrypoint, or (b) added to `docs/DEFERRED_INTEGRATIONS.md` with name, files, gating dependency, deferred-since date, and justification. Re-run the four search recipes from that file's "Search methodology" section.
@@ -37,11 +37,11 @@ Run the eight Standing Post-Merge Chores **in order**. Each one feeds the next; 
 8. **§13 Audit Checklist Execution** — run the strict harness and append its Markdown stdout report verbatim to the cycle log:
 
    ```bash
-   python scripts/run_audit.py --strict > /tmp/section13-audit.md
-   cat /tmp/section13-audit.md >> docs/artifacts/<cycle-log>.md
+   python scripts/run_audit.py --strict > section13-audit.md
+   cat section13-audit.md >> docs/artifacts/<cycle-log>.md
    ```
 
-   The harness report is a deterministic Markdown table in runtime-enumerated spec order with stable single-line cells, so adjacent cycle logs should produce meaningful diffs. Every fail must point to a follow-up commit OR a SPEC-AMEND entry.
+   The harness report is a deterministic Markdown table in runtime-enumerated spec order with stable single-line cells, so adjacent cycle logs should produce meaningful diffs. Every fail must point to a follow-up commit OR a signed-spec/content update.
 
 After Standing Chores complete, execute every chore in **Part 2 — Merge-Specific Chores (Current Cycle)** from the playbook. These are tied to what was just merged and rotate per cycle.
 
@@ -57,7 +57,7 @@ After Part 2 is done, **rewrite the Merge-Specific Chores section of `docs/POST_
 ## Failure handling
 
 - A chore failure does NOT stop the playbook. Record the failure, file the follow-up, and proceed to the next chore. The cycle is closed only when every fail has either a fix commit or a justified deferral.
-- If `scripts/check.sh` fails for unrelated reasons (Docker not running, etc.), note it as a `warn` and proceed — do not let environment friction block the audit trail.
+- If `scripts/check.sh` fails for unrelated environment reasons, note it as a `warn` and proceed — do not let local setup friction block the audit trail.
 - Never bypass a chore by editing the playbook to remove it. Standing chores are stable; if one is genuinely obsolete, that is a separate change with its own justification.
 
 ## Cross-references
@@ -65,5 +65,5 @@ After Part 2 is done, **rewrite the Merge-Specific Chores section of `docs/POST_
 - Source of truth: `docs/POST_MERGE_PLAYBOOK.md`
 - §13 audit checklist: `.claude/commands/audit.md`
 - Schema gate: see the `schema-consistency` skill
-- Spec deviation registry: `docs/SPEC_AMENDMENTS.md`
+- Spec reference tooling: `scripts/spec_ref_check.py` against `docs/tech-spec-v*.pdf`
 - Deferred-integration inventory: `docs/DEFERRED_INTEGRATIONS.md`

@@ -25,7 +25,7 @@ from unittest.mock import patch
 from uuid import UUID, uuid4
 
 import pytest
-from PySide6.QtCore import QCoreApplication, Qt
+from PySide6.QtCore import QCoreApplication, QElapsedTimer, QEventLoop, Qt, QThread
 
 from packages.schemas.experiments import (
     ExperimentAdminResponse,
@@ -40,12 +40,15 @@ from packages.schemas.operator_console import (
     EncounterState,
     EncounterSummary,
     ExperimentDetail,
+    ExperimentSummary,
     HealthSnapshot,
     HealthState,
+    OperatorEventEnvelope,
     OverviewSnapshot,
     SessionCreateRequest,
     SessionEndRequest,
     SessionLifecycleAccepted,
+    SessionPhysiologySnapshot,
     SessionSummary,
     StimulusAccepted,
     StimulusRequest,
@@ -55,19 +58,31 @@ from services.operator_console.config import OperatorConsoleConfig, load_config
 from services.operator_console.polling import (
     JOB_ALERTS,
     JOB_ENCOUNTERS,
+    JOB_EVENT_STREAM,
     JOB_EXPERIMENT,
+    JOB_EXPERIMENT_SUMMARIES,
     JOB_HEALTH,
     JOB_LIVE_SESSION,
     JOB_OVERVIEW,
     JOB_PHYSIOLOGY,
+    JOB_REPAIR_INSTALL,
     JOB_SESSION_END,
     JOB_SESSION_START,
     JOB_SESSIONS,
     JOB_STIMULUS,
     PollingCoordinator,
+    PollJobSpec,
 )
 from services.operator_console.state import AppRoute, OperatorStore
-from services.operator_console.workers import OneShotSignals
+from services.operator_console.table_models.encounters_table_model import EncountersTableModel
+from services.operator_console.viewmodels.live_session_vm import LiveSessionViewModel
+from services.operator_console.workers import (
+    EventStreamHandle,
+    EventStreamWorker,
+    OneShotSignals,
+    PollingWorker,
+    run_one_shot,
+)
 
 pytestmark = pytest.mark.usefixtures("qt_app")
 
@@ -79,6 +94,13 @@ pytestmark = pytest.mark.usefixtures("qt_app")
 
 def _utc(year: int, month: int, day: int, hour: int = 0, minute: int = 0) -> datetime:
     return datetime(year, month, day, hour, minute, tzinfo=UTC)
+
+
+def _drain_events_until(app: QCoreApplication, predicate: Callable[[], bool]) -> None:
+    timer = QElapsedTimer()
+    timer.start()
+    while not predicate() and timer.elapsed() < 1000:
+        app.processEvents(QEventLoop.ProcessEventsFlag.AllEvents, 25)
 
 
 @pytest.fixture
@@ -140,6 +162,7 @@ def harness(
     # Patch instance methods directly
     coord._start_job = fake_start  # type: ignore[method-assign]
     coord._stop_job = fake_stop  # type: ignore[method-assign]
+    coord._start_event_stream = lambda: None  # type: ignore[method-assign]
     coord.refresh_now = fake_refresh  # type: ignore[method-assign]
 
     yield rec
@@ -183,6 +206,25 @@ class TestRouteScoping:
         store.set_route(AppRoute.LIVE_SESSION)
         assert JOB_LIVE_SESSION not in harness.started
         assert JOB_ENCOUNTERS not in harness.started
+
+    def test_live_session_starts_health_job_without_selected_session(
+        self, harness: _CoordinatorHarness
+    ) -> None:
+        coord = harness.coordinator
+        store = coord._store
+        coord.start()
+        harness.started.clear()
+        store.set_route(AppRoute.LIVE_SESSION)
+        assert JOB_HEALTH in harness.started
+        assert JOB_EXPERIMENT_SUMMARIES in harness.started
+
+    def test_health_route_starts_health_job(self, harness: _CoordinatorHarness) -> None:
+        coord = harness.coordinator
+        store = coord._store
+        coord.start()
+        harness.started.clear()
+        store.set_route(AppRoute.HEALTH)
+        assert JOB_HEALTH in harness.started
 
     def test_selecting_session_starts_session_scoped_jobs(
         self, harness: _CoordinatorHarness
@@ -237,6 +279,267 @@ class TestRouteScoping:
 # ----------------------------------------------------------------------
 
 
+class TestEventStreamCoordination:
+    def test_event_dispatch_reuses_payload_path(
+        self, cfg: OperatorConsoleConfig, client: ApiClient
+    ) -> None:
+        store = OperatorStore()
+        coord = PollingCoordinator(cfg, client, store)
+        generated_at = _utc(2026, 5, 6, 12, 0)
+        overview = OverviewSnapshot(
+            generated_at_utc=generated_at,
+            health=HealthSnapshot(generated_at_utc=generated_at, overall_state=HealthState.OK),
+        )
+        envelope = OperatorEventEnvelope(
+            event_id="overview:1",
+            event_type="overview",
+            cursor="overview:1",
+            generated_at_utc=generated_at,
+            payload=overview,
+        )
+
+        coord._handle_event_stream_event(envelope)
+
+        assert store.overview() is overview
+        assert store.health() is overview.health
+        assert coord._last_event_id == "overview:1"
+
+    def test_stream_connected_pauses_unscoped_high_frequency_polling(
+        self, harness: _CoordinatorHarness
+    ) -> None:
+        coord = harness.coordinator
+        store = coord._store
+        store.set_route(AppRoute.LIVE_SESSION)
+        store.set_selected_session_id(uuid4())
+        coord.start()
+        harness.started.clear()
+        harness.stopped.clear()
+
+        coord._handle_event_stream_connected()
+
+        assert JOB_LIVE_SESSION not in harness.stopped
+        assert JOB_ENCOUNTERS not in harness.stopped
+        assert JOB_HEALTH in harness.stopped
+        assert JOB_ALERTS in harness.stopped
+        assert JOB_EXPERIMENT_SUMMARIES not in harness.stopped
+
+    def test_low_frequency_reconciliation_remains_active_while_stream_is_healthy(
+        self, harness: _CoordinatorHarness
+    ) -> None:
+        coord = harness.coordinator
+        store = coord._store
+        store.set_route(AppRoute.LIVE_SESSION)
+        store.set_selected_session_id(uuid4())
+        coord.start()
+        harness.stopped.clear()
+
+        coord._handle_event_stream_connected()
+
+        assert JOB_EXPERIMENT_SUMMARIES in coord._jobs
+        assert JOB_EXPERIMENT_SUMMARIES not in harness.stopped
+
+    def test_open_failure_does_not_mark_stream_connected_or_reset_backoff(
+        self, harness: _CoordinatorHarness
+    ) -> None:
+        coord = harness.coordinator
+        coord._sse_reconnect_ms = 4000
+        coord._handle_event_stream_error(
+            ApiError(message="open failed", endpoint=None, retryable=True)
+        )
+
+        assert coord._event_stream_connected is False
+        assert coord._sse_reconnect_ms == 4000
+
+    def test_stop_event_stream_calls_worker_stop_directly(
+        self, cfg: OperatorConsoleConfig, client: ApiClient
+    ) -> None:
+        coord = PollingCoordinator(cfg, client, OperatorStore())
+
+        worker = _StubWorker()
+        thread = _StubThread(running=False)
+        coord._event_stream = EventStreamHandle(worker, thread)  # type: ignore[arg-type]
+
+        coord._stop_event_stream()
+
+        assert worker.stop_calls == 1
+        assert coord._event_stream is None
+
+    def test_event_stream_worker_stop_closes_active_response(self) -> None:
+        class _Response:
+            def __init__(self) -> None:
+                self.closed = False
+
+            def close(self) -> None:
+                self.closed = True
+
+            def __iter__(self) -> Any:
+                return iter(())
+
+        class _Client:
+            def __init__(self) -> None:
+                self.response = _Response()
+
+            def stream_events(
+                self,
+                *,
+                last_event_id: str | None = None,
+                on_open: Callable[[object], None] | None = None,
+            ) -> Iterator[OperatorEventEnvelope]:
+                del last_event_id
+                if on_open is not None:
+                    on_open(self.response)
+                yield from ()
+
+        client = _Client()
+        worker = EventStreamWorker(client)  # type: ignore[arg-type]
+        worker._handle_open(client.response)  # type: ignore[attr-defined]
+
+        worker.stop()
+
+        assert client.response.closed is True
+
+    def test_live_session_empty_event_clears_current_session(
+        self, cfg: OperatorConsoleConfig, client: ApiClient
+    ) -> None:
+        store = OperatorStore()
+        stale = SessionSummary(
+            session_id=uuid4(),
+            status="active",
+            started_at_utc=_utc(2026, 5, 6, 12, 0),
+        )
+        store.set_live_session(stale)
+        coord = PollingCoordinator(cfg, client, store)
+
+        coord.apply_payload(JOB_LIVE_SESSION, [])
+
+        assert store.live_session() is None
+
+    def test_physiology_empty_event_clears_current_snapshot(
+        self, cfg: OperatorConsoleConfig, client: ApiClient
+    ) -> None:
+        store = OperatorStore()
+        physiology = SessionPhysiologySnapshot(
+            session_id=uuid4(),
+            generated_at_utc=_utc(2026, 5, 6, 12, 0),
+        )
+        store.set_physiology(physiology)
+        coord = PollingCoordinator(cfg, client, store)
+
+        coord.apply_payload(JOB_PHYSIOLOGY, [])
+
+        assert store.physiology() is None
+
+    def test_event_payload_ignores_non_selected_session_state(
+        self, cfg: OperatorConsoleConfig, client: ApiClient
+    ) -> None:
+        selected_session_id = uuid4()
+        active_session_id = uuid4()
+        store = OperatorStore()
+        store.set_selected_session_id(selected_session_id)
+        selected_session = SessionSummary(
+            session_id=selected_session_id,
+            status="ended",
+            started_at_utc=_utc(2026, 5, 6, 11, 0),
+        )
+        store.set_live_session(selected_session)
+        selected_physiology = SessionPhysiologySnapshot(
+            session_id=selected_session_id,
+            generated_at_utc=_utc(2026, 5, 6, 11, 0),
+        )
+        store.set_physiology(selected_physiology)
+        coord = PollingCoordinator(cfg, client, store)
+
+        coord.apply_event_payload(
+            JOB_LIVE_SESSION,
+            SessionSummary(
+                session_id=active_session_id,
+                status="active",
+                started_at_utc=_utc(2026, 5, 6, 12, 0),
+            ),
+        )
+        coord.apply_event_payload(
+            JOB_ENCOUNTERS,
+            [
+                EncounterSummary(
+                    encounter_id="active-encounter",
+                    session_id=active_session_id,
+                    segment_timestamp_utc=_utc(2026, 5, 6, 12, 1),
+                    state=EncounterState.COMPLETED,
+                )
+            ],
+        )
+        coord.apply_event_payload(
+            JOB_PHYSIOLOGY,
+            SessionPhysiologySnapshot(
+                session_id=active_session_id,
+                generated_at_utc=_utc(2026, 5, 6, 12, 0),
+            ),
+        )
+
+        assert store.live_session() is selected_session
+        assert store.encounters() == []
+        assert store.physiology() is selected_physiology
+
+    def test_event_experiment_does_not_change_managed_experiment(
+        self, cfg: OperatorConsoleConfig, client: ApiClient
+    ) -> None:
+        store = OperatorStore()
+        store.set_managed_experiment_id("operator-managed")
+        current = ExperimentDetail(experiment_id="operator-managed")
+        store.set_experiment_readback(current)
+        coord = PollingCoordinator(cfg, client, store)
+
+        coord.apply_event_payload(JOB_EXPERIMENT, ExperimentDetail(experiment_id="active-default"))
+
+        assert store.managed_experiment_id() == "operator-managed"
+        assert store.experiment() is current
+
+    def test_event_experiment_requires_explicit_managed_experiment(
+        self, cfg: OperatorConsoleConfig, client: ApiClient
+    ) -> None:
+        store = OperatorStore()
+        current = ExperimentDetail(experiment_id="default")
+        store.set_experiment_readback(current)
+        coord = PollingCoordinator(cfg, client, store)
+
+        coord.apply_event_payload(JOB_EXPERIMENT, ExperimentDetail(experiment_id="active-default"))
+
+        assert store.managed_experiment_id() is None
+        assert store.experiment() is current
+        assert store.error(JOB_EXPERIMENT) is None
+
+    def test_event_experiment_empty_payload_is_noop(
+        self, cfg: OperatorConsoleConfig, client: ApiClient
+    ) -> None:
+        store = OperatorStore()
+        store.set_managed_experiment_id("operator-managed")
+        current = ExperimentDetail(experiment_id="operator-managed")
+        store.set_experiment_readback(current)
+        coord = PollingCoordinator(cfg, client, store)
+
+        coord.apply_event_payload(JOB_EXPERIMENT, [])
+
+        assert store.managed_experiment_id() == "operator-managed"
+        assert store.experiment() is current
+        assert store.error(JOB_EXPERIMENT) is None
+
+    def test_polling_resumes_on_stream_failure(self, harness: _CoordinatorHarness) -> None:
+        coord = harness.coordinator
+        store = coord._store
+        store.set_route(AppRoute.OVERVIEW)
+        coord.start()
+        coord._handle_event_stream_connected()
+        harness.started.clear()
+
+        coord._handle_event_stream_error(
+            ApiError(message="stream broke", endpoint=None, retryable=True)
+        )
+
+        assert JOB_OVERVIEW in harness.started
+        assert JOB_ALERTS in harness.started
+        assert store.error(JOB_EVENT_STREAM) == "stream broke"
+
+
 class TestPayloadDispatch:
     def test_overview_payload_populates_overview_and_sub_slots(
         self, cfg: OperatorConsoleConfig, client: ApiClient
@@ -253,6 +556,25 @@ class TestPayloadDispatch:
         coord._handle_job_data(JOB_OVERVIEW, snap)
         assert store.overview() is snap
         assert store.health() is not None
+        assert store.live_session() is None
+
+    def test_overview_payload_clears_stale_live_session_when_no_active_session(
+        self, cfg: OperatorConsoleConfig, client: ApiClient
+    ) -> None:
+        store = OperatorStore()
+        stale = SessionSummary(
+            session_id=uuid4(),
+            status="active",
+            started_at_utc=_utc(2026, 4, 18, 9, 55),
+        )
+        store.set_live_session(stale)
+        coord = PollingCoordinator(cfg, client, store)
+        snap = OverviewSnapshot(generated_at_utc=_utc(2026, 4, 18, 10, 0))
+
+        coord._handle_job_data(JOB_OVERVIEW, snap)
+
+        assert store.overview() is snap
+        assert store.live_session() is None
 
     def test_encounters_list_routes_to_encounters_slot(
         self, cfg: OperatorConsoleConfig, client: ApiClient
@@ -388,9 +710,10 @@ class TestStimulusOneShot:
             assert registry, "run_one_shot not invoked"
             registry[0].fire()
 
-        # Success should have fanned out to overview/live/alerts
+        # Success should have fanned out to overview/live/encounters/alerts
         assert JOB_OVERVIEW in harness.refresh_calls
         assert JOB_LIVE_SESSION in harness.refresh_calls
+        assert JOB_ENCOUNTERS in harness.refresh_calls
         assert JOB_ALERTS in harness.refresh_calls
         # And cleared any stimulus error scope
         assert coord._store.error(JOB_STIMULUS) is None
@@ -412,6 +735,59 @@ class TestStimulusOneShot:
         assert (JOB_STIMULUS, "boom") in emissions
         # No refreshes on failure
         assert JOB_OVERVIEW not in harness.refresh_calls
+
+
+# ----------------------------------------------------------------------
+# Repair one-shot — success refreshes health; failure surfaces
+# ----------------------------------------------------------------------
+
+
+class TestRepairOneShot:
+    def _patch_one_shot(self, mode: str) -> tuple[Any, list[_FakeOneShot]]:
+        registry: list[_FakeOneShot] = []
+
+        def fake_run_one_shot(job_name: str, fn: Callable[[], object]) -> OneShotSignals:
+            inst = _FakeOneShot(job_name, fn, mode)
+            registry.append(inst)
+            return inst.signals
+
+        return fake_run_one_shot, registry
+
+    def test_success_clears_error_and_refreshes_health_surfaces(
+        self, harness: _CoordinatorHarness
+    ) -> None:
+        coord = harness.coordinator
+        coord._store.set_error(JOB_REPAIR_INSTALL, "previous repair failure")
+        fake, registry = self._patch_one_shot("success")
+
+        with (
+            patch("services.operator_console.polling.repair_runtime", lambda: "repaired"),
+            patch("services.operator_console.polling.run_one_shot", fake, create=False),
+        ):
+            coord.repair_install()
+            assert len(coord._inflight_repairs) == 1
+            assert registry, "run_one_shot not invoked"
+            registry[0].fire()
+
+        assert coord._store.error(JOB_REPAIR_INSTALL) is None
+        assert JOB_HEALTH in harness.refresh_calls
+        assert JOB_ALERTS in harness.refresh_calls
+        assert coord._inflight_repairs == {}
+
+    def test_failure_surfaces_error_and_job_failed(self, harness: _CoordinatorHarness) -> None:
+        coord = harness.coordinator
+        fake, registry = self._patch_one_shot("failure")
+        emissions: list[tuple[str, str]] = []
+        coord.job_failed.connect(lambda *args: emissions.append(tuple(args)))
+
+        with patch("services.operator_console.polling.run_one_shot", fake, create=False):
+            coord.repair_install()
+            registry[0].fire()
+
+        assert coord._store.error(JOB_REPAIR_INSTALL) == "boom"
+        assert (JOB_REPAIR_INSTALL, "boom") in emissions
+        assert JOB_HEALTH not in harness.refresh_calls
+        assert coord._inflight_repairs == {}
 
 
 # ----------------------------------------------------------------------
@@ -454,7 +830,7 @@ class TestExperimentManagementOneShot:
                 ],
             )
 
-        coord._client.create_experiment = fake_create  # type: ignore[assignment,method-assign]
+        coord._client.create_experiment = fake_create  # type: ignore[method-assign]
         request = ExperimentCreateRequest(
             experiment_id="exp-new",
             label="Greeting v2",
@@ -507,7 +883,7 @@ class TestExperimentManagementOneShot:
                 enabled=True,
             )
 
-        coord._client.patch_experiment_arm = fake_patch  # type: ignore[assignment,method-assign]
+        coord._client.patch_experiment_arm = fake_patch  # type: ignore[method-assign]
         with patch("services.operator_console.polling.run_one_shot", fake, create=False):
             coord.rename_experiment_arm("exp1", "a1", "new")
             registry[0].fire()
@@ -554,7 +930,7 @@ class TestExperimentManagementOneShot:
                 enabled=False,
             )
 
-        coord._client.patch_experiment_arm = fake_patch  # type: ignore[assignment,method-assign]
+        coord._client.patch_experiment_arm = fake_patch  # type: ignore[method-assign]
         with patch("services.operator_console.polling.run_one_shot", fake, create=False):
             coord.disable_experiment_arm("exp1", "a1")
             registry[0].fire()
@@ -598,7 +974,7 @@ class TestExperimentManagementOneShot:
                 reason="unused arm hard-deleted",
             )
 
-        coord._client.delete_experiment_arm = fake_delete  # type: ignore[assignment,method-assign]
+        coord._client.delete_experiment_arm = fake_delete  # type: ignore[method-assign]
         with patch("services.operator_console.polling.run_one_shot", fake, create=False):
             coord.delete_experiment_arm("exp-non-default", "unused")
             registry[0].fire()
@@ -627,23 +1003,29 @@ class TestSessionLifecycleOneShot:
 
         return fake_run_one_shot, registry
 
-    def test_session_start_success_refreshes_non_session_scoped_surfaces(
+    def test_session_start_success_selects_session_before_live_refresh(
         self,
         harness: _CoordinatorHarness,
     ) -> None:
         coord = harness.coordinator
+        coord._store.set_route(AppRoute.LIVE_SESSION)
+        coord.start()
+        harness.started.clear()
+        harness.refresh_calls.clear()
         fake, registry = self._patch_one_shot("success")
+
+        session_id = uuid4()
 
         def fake_post(request: SessionCreateRequest) -> SessionLifecycleAccepted:
             return SessionLifecycleAccepted(
                 action="start",
-                session_id=uuid4(),
+                session_id=session_id,
                 client_action_id=request.client_action_id,
                 accepted=True,
                 received_at_utc=_utc(2026, 4, 18, 10, 3),
             )
 
-        coord._client.post_session_start = fake_post  # type: ignore[assignment,method-assign]
+        coord._client.post_session_start = fake_post  # type: ignore[method-assign]
 
         with patch("services.operator_console.polling.run_one_shot", fake, create=False):
             req = SessionCreateRequest(
@@ -654,12 +1036,121 @@ class TestSessionLifecycleOneShot:
             coord.request_session_start(req)
             registry[0].fire()
 
+        assert coord._store.selected_session_id() == session_id
+        assert JOB_LIVE_SESSION in harness.started
+        assert JOB_ENCOUNTERS in harness.started
         assert JOB_OVERVIEW in harness.refresh_calls
         assert JOB_SESSIONS in harness.refresh_calls
+        assert JOB_LIVE_SESSION in harness.refresh_calls
+        assert JOB_ENCOUNTERS in harness.refresh_calls
         assert JOB_ALERTS in harness.refresh_calls
-        assert JOB_LIVE_SESSION not in harness.refresh_calls
-        assert JOB_ENCOUNTERS not in harness.refresh_calls
         assert coord._store.error(JOB_SESSION_START) is None
+
+    def test_fast_session_start_signal_reaches_late_connected_vm_slot(
+        self,
+        qt_app: QCoreApplication,
+    ) -> None:
+        session_id = uuid4()
+        request = SessionCreateRequest(
+            stream_url="rtmp://example/live",
+            experiment_id="greeting_line_v1",
+            client_action_id=uuid4(),
+        )
+
+        signals = run_one_shot(
+            JOB_SESSION_START,
+            lambda: SessionLifecycleAccepted(
+                action="start",
+                session_id=session_id,
+                client_action_id=request.client_action_id,
+                accepted=True,
+                received_at_utc=_utc(2026, 4, 18, 10, 3),
+            ),
+        )
+        payloads: list[SessionLifecycleAccepted] = []
+        signals.succeeded.connect(lambda _job, payload: payloads.append(payload))
+
+        _drain_events_until(qt_app, lambda: bool(payloads))
+
+        assert payloads and payloads[0].session_id == session_id
+
+    def test_manual_start_reaches_ready_viewmodel_state(
+        self,
+        cfg: OperatorConsoleConfig,
+        qt_app: QCoreApplication,
+    ) -> None:
+        store = OperatorStore()
+        store.set_route(AppRoute.LIVE_SESSION)
+        model = EncountersTableModel()
+        vm = LiveSessionViewModel(store, model)
+        session_id = uuid4()
+
+        class _Client:
+            def post_session_start(
+                self,
+                request: SessionCreateRequest,
+            ) -> SessionLifecycleAccepted:
+                return SessionLifecycleAccepted(
+                    action="start",
+                    session_id=session_id,
+                    client_action_id=request.client_action_id,
+                    accepted=True,
+                    received_at_utc=_utc(2026, 4, 18, 10, 3),
+                )
+
+            def get_session(self, requested_session_id: UUID) -> SessionSummary:
+                assert requested_session_id == session_id
+                return SessionSummary(
+                    session_id=session_id,
+                    status="active",
+                    started_at_utc=_utc(2026, 4, 18, 10, 3),
+                    experiment_id="greeting_line_v1",
+                )
+
+            def list_session_encounters(
+                self,
+                requested_session_id: UUID,
+                *,
+                limit: int = 100,
+                before_utc: datetime | None = None,
+            ) -> list[EncounterSummary]:
+                del limit, before_utc
+                assert requested_session_id == session_id
+                return []
+
+            def list_experiments(self) -> list[ExperimentSummary]:
+                return [ExperimentSummary(experiment_id="greeting_line_v1", arm_count=1)]
+
+        coord = PollingCoordinator(cfg, _Client(), store)  # type: ignore[arg-type]
+        coord._start_event_stream = lambda: None  # type: ignore[method-assign]
+        vm.bind_session_lifecycle_actions(coord.request_session_start, coord.request_session_end)
+        coord.start()
+
+        action_id = vm.start_new_session("greeting_line_v1")
+        _drain_events_until(qt_app, lambda: vm.ttv_state() == "READY")
+        coord.stop()
+
+        assert action_id is not None
+        assert store.selected_session_id() == session_id
+        assert vm.session() is not None
+        assert vm.ttv_state() == "READY"
+        assert vm.session_start_in_progress() is False
+
+    def test_one_shot_success_is_delivered_on_main_qt_thread(
+        self,
+        qt_app: QCoreApplication,
+    ) -> None:
+        main_thread = qt_app.thread()
+        delivered_threads: list[QThread] = []
+
+        signals = run_one_shot(JOB_SESSION_START, lambda: "ok")
+        signals.succeeded.connect(
+            lambda _job, _payload: delivered_threads.append(QThread.currentThread())
+        )
+
+        _drain_events_until(qt_app, lambda: bool(delivered_threads))
+
+        assert delivered_threads == [main_thread]
 
     def test_session_end_success_refreshes_live_session_surfaces(
         self,
@@ -689,6 +1180,7 @@ class TestSessionLifecycleOneShot:
         assert JOB_SESSIONS in harness.refresh_calls
         assert JOB_LIVE_SESSION in harness.refresh_calls
         assert JOB_ENCOUNTERS in harness.refresh_calls
+        assert JOB_HEALTH in harness.refresh_calls
         assert JOB_ALERTS in harness.refresh_calls
         assert coord._store.error(JOB_SESSION_END) is None
 
@@ -789,6 +1281,76 @@ class TestFetchFactories:
 
 
 # ----------------------------------------------------------------------
+# PollingWorker shutdown edge cases
+# ----------------------------------------------------------------------
+
+
+class TestPollingWorkerShutdown:
+    def test_stop_before_run_emits_stopped_once(self) -> None:
+        worker = PollingWorker(JOB_HEALTH, 1000, lambda: object())
+        stopped: list[str] = []
+        worker.stopped.connect(stopped.append)
+
+        worker.stop()
+        worker.stop()
+
+        assert stopped == [JOB_HEALTH]
+
+    def test_stop_before_queued_first_fetch_prevents_timer_creation(
+        self, qt_app: QCoreApplication
+    ) -> None:
+        fetch_count = 0
+
+        def fetch() -> object:
+            nonlocal fetch_count
+            fetch_count += 1
+            return object()
+
+        worker = PollingWorker(JOB_HEALTH, 1000, fetch)
+        stopped: list[str] = []
+        payloads: list[object] = []
+        worker.stopped.connect(stopped.append)
+        worker.data_ready.connect(lambda _job, payload: payloads.append(payload))
+
+        worker.run()
+        worker.stop()
+        qt_app.processEvents(QEventLoop.ProcessEventsFlag.AllEvents, 25)
+
+        assert stopped == [JOB_HEALTH]
+        assert fetch_count == 0
+        assert payloads == []
+        assert worker._timer is None
+
+    def test_refresh_after_stop_does_not_fetch(self) -> None:
+        fetch_count = 0
+
+        def fetch() -> object:
+            nonlocal fetch_count
+            fetch_count += 1
+            return object()
+
+        worker = PollingWorker(JOB_HEALTH, 1000, fetch)
+        worker.stop()
+        worker.refresh_now()
+
+        assert fetch_count == 0
+
+    def test_overlapping_fetch_tick_is_skipped(self) -> None:
+        fetch_count = 0
+
+        def fetch() -> object:
+            nonlocal fetch_count
+            fetch_count += 1
+            worker._run_once()
+            return object()
+
+        worker = PollingWorker(JOB_HEALTH, 1000, fetch)
+        worker._run_once()
+
+        assert fetch_count == 1
+
+
+# ----------------------------------------------------------------------
 # SessionSummary round-trip through live_session job
 # ----------------------------------------------------------------------
 
@@ -815,13 +1377,7 @@ class TestSessionDispatch:
 
 @dataclass
 class _StubThread:
-    """Just-enough QThread stand-in for the orphan-list bookkeeping.
-
-    Avoids spinning a real worker thread (flaky on Windows under
-    pytest's GC-during-teardown). The real `QThread.terminate()` /
-    `wait()` semantics are exercised in the standalone smoke test in
-    docs/artifacts/operator_console_checklist.md.
-    """
+    """Just-enough QThread stand-in for the orphan-list bookkeeping."""
 
     running: bool = True
     quit_called: int = 0
@@ -846,11 +1402,24 @@ class _StubThread:
         self.running = False  # post-terminate the thread is dead
 
 
+class _StubSignal:
+    def __init__(self) -> None:
+        self.disconnected: list[object] = []
+
+    def disconnect(self, slot: object) -> None:
+        self.disconnected.append(slot)
+
+
 class _StubWorker:
     """Stand-in worker exposing only what `_stop_job` / `refresh_now`
     poke at via QMetaObject.invokeMethod (which is patched out)."""
 
     def __init__(self) -> None:
+        self.connected = _StubSignal()
+        self.event_ready = _StubSignal()
+        self.data_ready = _StubSignal()
+        self.error = _StubSignal()
+        self.stopped = _StubSignal()
         self.refresh_calls = 0
         self.stop_calls = 0
 
@@ -906,6 +1475,8 @@ class TestNonBlockingTeardown:
             coord._stop_job(JOB_OVERVIEW)
 
         assert worker.stop_calls == 0, "stop must be queued, not called inline"
+        assert worker.data_ready.disconnected == [coord._handle_job_data]
+        assert worker.error.disconnected == [coord._handle_job_error]
         assert thread.quit_called == 0, "thread.quit must come from the signal chain"
         assert invocations == [
             (worker, "stop", Qt.ConnectionType.QueuedConnection),
@@ -915,45 +1486,154 @@ class TestNonBlockingTeardown:
         assert len(coord._orphan_jobs) == 1
         assert coord._orphan_jobs[0].thread is thread  # type: ignore[comparison-overlap]
 
-    def test_stop_job_drops_already_finished_orphans(
+    def test_thread_finished_prunes_orphan_handle(
         self, cfg: OperatorConsoleConfig, client: ApiClient
     ) -> None:
-        # The orphan list must not grow unbounded across many route
-        # changes — finished threads are pruned every time.
         coord = PollingCoordinator(cfg, client, OperatorStore())
-
-        # Seed with a finished orphan from a previous route change.
-        finished_worker = _StubWorker()
-        finished_thread = _StubThread(running=False)
+        worker = _StubWorker()
+        thread = _StubThread(running=False)
         coord._orphan_jobs.append(
-            _JobHandle(coord._specs[JOB_HEALTH], finished_worker, finished_thread)  # type: ignore[arg-type]
+            _JobHandle(coord._specs[JOB_HEALTH], worker, thread)  # type: ignore[arg-type]
         )
 
-        _install_orphan_handle(coord, JOB_OVERVIEW)
-        with patch("services.operator_console.polling.QMetaObject.invokeMethod"):
-            coord._stop_job(JOB_OVERVIEW)
+        coord._prune_orphan(worker)  # type: ignore[arg-type]
 
-        assert finished_thread not in [h.thread for h in coord._orphan_jobs]  # type: ignore[comparison-overlap]
+        assert coord._orphan_jobs == []
 
-    def test_drain_orphan_jobs_terminates_stuck_threads(
+    def test_route_sync_prunes_completed_orphan_handles(
         self, cfg: OperatorConsoleConfig, client: ApiClient
     ) -> None:
-        # On shutdown the drain gives each worker a short wait; if the
-        # thread is still in a urlopen after that, terminate() is the
-        # only lever — the process is exiting and the OS reclaims the
-        # socket either way.
+        coord = PollingCoordinator(cfg, client, OperatorStore())
+        completed = _JobHandle(coord._specs[JOB_HEALTH], _StubWorker(), _StubThread(False))  # type: ignore[arg-type]
+        running = _JobHandle(coord._specs[JOB_ALERTS], _StubWorker(), _StubThread(True))  # type: ignore[arg-type]
+        coord._orphan_jobs.extend([completed, running])
+        coord._start_job = lambda _spec: None  # type: ignore[assignment,method-assign]
+        coord._stop_job = lambda _job_name: None  # type: ignore[assignment,method-assign]
+
+        coord._sync_jobs_for_current_state()
+
+        assert completed not in coord._orphan_jobs
+        assert running in coord._orphan_jobs
+
+    def test_live_session_to_overview_parks_stopped_jobs_as_orphans(
+        self, cfg: OperatorConsoleConfig, client: ApiClient
+    ) -> None:
+        store = OperatorStore()
+        store.set_route(AppRoute.LIVE_SESSION)
+        session_id = uuid4()
+        store.set_selected_session_id(session_id)
+        coord = PollingCoordinator(cfg, client, store)
+
+        stopped: list[str] = []
+        started: list[str] = []
+
+        def fake_stop(job_name: str) -> None:
+            stopped.append(job_name)
+            coord._jobs.pop(job_name, None)
+            worker = _StubWorker()
+            thread = _StubThread(running=True)
+            coord._orphan_jobs.append(
+                _JobHandle(coord._specs[job_name], worker, thread)  # type: ignore[arg-type]
+            )
+
+        def fake_start(spec: PollJobSpec) -> None:
+            started.append(spec.name)
+            worker = _StubWorker()
+            thread = _StubThread(running=True)
+            coord._jobs[spec.name] = _JobHandle(spec, worker, thread)  # type: ignore[arg-type]
+
+        coord._stop_job = fake_stop  # type: ignore[method-assign]
+        coord._start_job = fake_start  # type: ignore[method-assign]
+        coord._start_event_stream = lambda: None  # type: ignore[method-assign]
+        coord.start()
+        started.clear()
+
+        store.set_route(AppRoute.OVERVIEW)
+
+        assert set(stopped) == {
+            JOB_LIVE_SESSION,
+            JOB_ENCOUNTERS,
+            JOB_EXPERIMENT_SUMMARIES,
+            JOB_HEALTH,
+        }
+        assert started == [JOB_OVERVIEW]
+        assert set(coord._jobs) == {JOB_ALERTS, JOB_OVERVIEW}
+        assert {handle.spec.name for handle in coord._orphan_jobs} == {
+            JOB_LIVE_SESSION,
+            JOB_ENCOUNTERS,
+            JOB_EXPERIMENT_SUMMARIES,
+            JOB_HEALTH,
+        }
+
+    def test_stop_event_stream_parks_running_thread_as_orphan(
+        self, cfg: OperatorConsoleConfig, client: ApiClient
+    ) -> None:
+        coord = PollingCoordinator(cfg, client, OperatorStore())
+        worker = _StubWorker()
+        thread = _StubThread(running=True)
+        handle = EventStreamHandle(worker, thread)  # type: ignore[arg-type]
+        coord._event_stream = handle
+
+        coord._stop_event_stream()
+
+        assert worker.stop_calls == 1
+        assert coord._event_stream is None
+        assert coord._orphan_event_streams == [handle]
+
+    def test_drain_orphan_event_streams_retains_connect_phase_thread(
+        self, cfg: OperatorConsoleConfig, client: ApiClient
+    ) -> None:
+        coord = PollingCoordinator(cfg, client, OperatorStore())
+        thread = _StubThread(running=True)
+        handle = EventStreamHandle(_StubWorker(), thread)  # type: ignore[arg-type]
+        coord._orphan_event_streams.append(handle)
+
+        coord._drain_orphan_event_streams()
+
+        assert thread.wait_calls
+        assert coord._orphan_event_streams == [handle]
+
+    def test_drain_orphan_event_streams_prunes_clean_exit(
+        self, cfg: OperatorConsoleConfig, client: ApiClient
+    ) -> None:
+        coord = PollingCoordinator(cfg, client, OperatorStore())
+        handle = EventStreamHandle(_StubWorker(), _StubThread(running=False))  # type: ignore[arg-type]
+        coord._orphan_event_streams.append(handle)
+
+        coord._drain_orphan_event_streams()
+
+        assert coord._orphan_event_streams == []
+
+    def test_final_stop_drains_event_stream_orphans(
+        self, cfg: OperatorConsoleConfig, client: ApiClient
+    ) -> None:
+        coord = PollingCoordinator(cfg, client, OperatorStore())
+        worker = _StubWorker()
+        thread = _StubThread(running=True)
+        coord._event_stream = EventStreamHandle(worker, thread)  # type: ignore[arg-type]
+        coord._started = True
+        coord._drain_orphan_jobs = lambda: None  # type: ignore[method-assign]
+
+        coord.stop()
+
+        assert worker.stop_calls == 1
+        assert thread.wait_calls
+        assert len(coord._orphan_event_streams) == 1
+
+    def test_drain_orphan_jobs_retains_stuck_threads_without_terminating(
+        self, cfg: OperatorConsoleConfig, client: ApiClient
+    ) -> None:
         coord = PollingCoordinator(cfg, client, OperatorStore())
 
-        stuck = _StubThread(running=True)  # `wait` keeps returning False
-        coord._orphan_jobs.append(
-            _JobHandle(coord._specs[JOB_OVERVIEW], _StubWorker(), stuck)  # type: ignore[arg-type]
-        )
+        stuck = _StubThread(running=True)
+        handle = _JobHandle(coord._specs[JOB_OVERVIEW], _StubWorker(), stuck)  # type: ignore[arg-type]
+        coord._orphan_jobs.append(handle)
 
         coord._drain_orphan_jobs()
 
-        assert stuck.wait_calls, "graceful wait must run before terminate"
-        assert stuck.terminate_called == 1
-        assert coord._orphan_jobs == []
+        assert stuck.wait_calls
+        assert stuck.terminate_called == 0
+        assert coord._orphan_jobs == [handle]
 
     def test_drain_orphan_jobs_skips_terminate_for_clean_exits(
         self, cfg: OperatorConsoleConfig, client: ApiClient

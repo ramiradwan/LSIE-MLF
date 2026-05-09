@@ -47,6 +47,7 @@ from packages.schemas.operator_console import (
     AlertEvent,
     EncounterSummary,
     ExperimentDetail,
+    ExperimentSummary,
     HealthSnapshot,
     OverviewSnapshot,
     SessionCreateRequest,
@@ -189,6 +190,9 @@ def _parse_error_body(exc: HTTPError) -> str:
 # module scope avoids re-parsing the schema on every call.
 _SESSION_LIST_ADAPTER: TypeAdapter[list[SessionSummary]] = TypeAdapter(list[SessionSummary])
 _ENCOUNTER_LIST_ADAPTER: TypeAdapter[list[EncounterSummary]] = TypeAdapter(list[EncounterSummary])
+_EXPERIMENT_SUMMARY_LIST_ADAPTER: TypeAdapter[list[ExperimentSummary]] = TypeAdapter(
+    list[ExperimentSummary]
+)
 _ALERT_LIST_ADAPTER: TypeAdapter[list[AlertEvent]] = TypeAdapter(list[AlertEvent])
 
 
@@ -250,6 +254,13 @@ class ApiClient:
             f"/api/v1/operator/sessions/{_path_segment(session_id)}/encounters?{urlencode(params)}"
         )
         return self._get_list(path, _ENCOUNTER_LIST_ADAPTER)
+
+    def list_experiments(self) -> list[ExperimentSummary]:
+        """`GET /api/v1/operator/experiments` — experiment picker summaries."""
+        return self._get_list(
+            "/api/v1/operator/experiments",
+            _EXPERIMENT_SUMMARY_LIST_ADAPTER,
+        )
 
     def get_experiment_detail(self, experiment_id: str) -> ExperimentDetail:
         """`GET /api/v1/operator/experiments/{id}`."""

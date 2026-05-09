@@ -33,17 +33,21 @@ from __future__ import annotations
 
 import inspect
 import logging
+from collections.abc import AsyncIterable
 from datetime import datetime
-from typing import Any, cast
+from typing import Annotated, Any, cast
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
+from fastapi.sse import EventSourceResponse, ServerSentEvent
 
 from packages.schemas.operator_console import (
     AlertEvent,
     EncounterSummary,
     ExperimentDetail,
+    ExperimentSummary,
     HealthSnapshot,
+    OperatorStateBootstrap,
     OverviewSnapshot,
     SessionPhysiologySnapshot,
     SessionSummary,
@@ -56,6 +60,7 @@ from services.api.services.operator_action_service import (
     SessionNotFoundError,
     StimulusPublishError,
 )
+from services.api.services.operator_event_service import OperatorEventService
 from services.api.services.operator_read_service import (
     OperatorReadService,
     _default_redis_factory,
@@ -78,22 +83,63 @@ def get_action_service() -> OperatorActionService:
     return OperatorActionService()
 
 
+def get_event_service() -> OperatorEventService:
+    return OperatorEventService(read_service=get_read_service())
+
+
+_RawEventDep = Depends(get_event_service)
+
+
+def get_supported_event_service(
+    service: OperatorEventService = _RawEventDep,
+) -> OperatorEventService:
+    if not service.has_event_stream_support():
+        raise HTTPException(status_code=503, detail="Operator event stream is not available")
+    return service
+
+
 # Module-level singletons for FastAPI defaults — extracted to satisfy
 # B008 (no function calls in argument defaults). Behavior is identical:
 # FastAPI resolves `Depends(...)` at request time regardless of where
 # the sentinel is declared.
 _ReadDep = Depends(get_read_service)
 _ActionDep = Depends(get_action_service)
+_EventDep = Depends(get_event_service)
+_SupportedEventDep = Depends(get_supported_event_service)
 _LimitSessionsQuery = Query(50, ge=1, le=500)
 _LimitEncountersQuery = Query(100, ge=1, le=1000)
 _BeforeUtcQuery = Query(None)
 _LimitAlertsQuery = Query(50, ge=1, le=500)
 _SinceUtcQuery = Query(None)
+_LastEventIdHeader = Header(alias="Last-Event-ID")
 
 
 # ----------------------------------------------------------------------
 # Read endpoints
 # ----------------------------------------------------------------------
+
+
+@router.get("/state/bootstrap", response_model=OperatorStateBootstrap)
+async def get_operator_state_bootstrap(
+    service: OperatorEventService = _EventDep,
+) -> OperatorStateBootstrap:
+    try:
+        return await service.build_bootstrap()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        logger.error("operator state bootstrap failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error") from exc
+
+
+@router.get("/state/events", response_class=EventSourceResponse)
+async def stream_operator_state_events(
+    request: Request,
+    last_event_id: Annotated[str | None, _LastEventIdHeader] = None,
+    service: OperatorEventService = _SupportedEventDep,
+) -> AsyncIterable[ServerSentEvent]:
+    async for event in service.stream_events(request, last_event_id=last_event_id):
+        yield event
 
 
 @router.get("/overview", response_model=OverviewSnapshot)
@@ -158,6 +204,19 @@ async def list_session_encounters(
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
         logger.error("operator list_encounters failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error") from exc
+
+
+@router.get("/experiments", response_model=list[ExperimentSummary])
+async def list_experiments(
+    service: OperatorReadService = _ReadDep,
+) -> list[ExperimentSummary]:
+    try:
+        return service.list_experiments()
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        logger.error("operator list_experiments failed: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail="Internal server error") from exc
 
 

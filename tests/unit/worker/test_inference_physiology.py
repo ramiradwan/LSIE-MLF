@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib
 import logging
 import sys
+from types import ModuleType
 from typing import Any
 from unittest.mock import MagicMock, call, patch
 
@@ -13,8 +14,21 @@ def _get_inference_module() -> Any:
     """Import inference module with mocked celery decorator."""
     mock_app = MagicMock()
     mock_app.task.return_value = lambda f: f
+    celery_mod = ModuleType("celery")
+    celery_mod.Task = object  # type: ignore[attr-defined]
+    celery_app_mod = ModuleType("services.worker.celery_app")
+    celery_app_mod.celery_app = mock_app  # type: ignore[attr-defined]
 
-    with patch("services.worker.celery_app.celery_app", mock_app):
+    with (
+        patch.dict(
+            sys.modules,
+            {
+                "celery": celery_mod,
+                "services.worker.celery_app": celery_app_mod,
+            },
+        ),
+        patch("services.worker.celery_app.celery_app", mock_app),
+    ):
         mod_name = "services.worker.tasks.inference"
         if mod_name in sys.modules:
             del sys.modules[mod_name]

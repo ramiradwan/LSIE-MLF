@@ -31,5 +31,5 @@
 
 # Lockfiles and large generated docs: mark as text but exclude from
 # `git diff` output by default — they review better as "file changed" summaries.
-requirements/*.txt text
+uv.lock text
 docs/content.json text linguist-generated=true

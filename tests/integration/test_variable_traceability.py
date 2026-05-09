@@ -17,74 +17,39 @@ import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 REGISTRY_PATH = REPO_ROOT / "docs" / "registries" / "variable_traceability.yaml"
-EXPECTED_COUNTS = {"A": 2, "B": 2, "C": 17, "D": 22, "E": 16, "F": 1}
-EXPECTED_SECTIONS = {
-    "Encoded Video Stream": "§11.1.1",
-    "Raw Audio PCM": "§11.1.2",
-    "Live Event Payloads": "§11.2.1",
-    "Action Combo Trigger": "§11.2.2",
-    "UTC Drift Offset": "§11.3.1",
-    "Resampled Audio Chunks": "§11.3.2",
-    "stimulus_time": "§11.3.3",
-    "Segment ID": "§11.3.4",
-    "Bandit Decision Snapshot": "§11.3.5",
-    "3D Facial Landmarks": "§11.3.6",
-    "AU12 Intensity Score": "§11.3.7",
-    "RMSSD (Streamer)": "§11.3.8",
-    "RMSSD (Operator)": "§11.3.9",
-    "Heart Rate (Streamer/Operator)": "§11.3.10",
-    "Physiological Validity Ratio": "§11.3.11",
-    "Physiological Validity Flag": "§11.3.12",
-    "Physiological Source Kind": "§11.3.13",
-    "Physiological Derivation Method": "§11.3.14",
-    "Physiological Window Length": "§11.3.15",
-    "Physiological Freshness": "§11.3.16",
-    "Physiological Staleness Flag": "§11.3.17",
-    "Vocal Pitch F0": "§11.4.1",
-    "Jitter": "§11.4.2",
-    "Shimmer": "§11.4.3",
-    "ASR Transcription": "§11.4.4",
-    "Semantic Match": "§11.4.5",
-    "F0 Validity (Measure Window)": "§11.4.6",
-    "F0 Validity (Baseline Window)": "§11.4.7",
-    "Perturbation Validity (Measure Window)": "§11.4.8",
-    "Perturbation Validity (Baseline Window)": "§11.4.9",
-    "Voiced Coverage (Measure Window)": "§11.4.10",
-    "Voiced Coverage (Baseline Window)": "§11.4.11",
-    "F0 Mean (Measure Window)": "§11.4.12",
-    "F0 Mean (Baseline Window)": "§11.4.13",
-    "F0 Delta (Semitones)": "§11.4.14",
-    "Jitter Mean (Measure Window)": "§11.4.15",
-    "Jitter Mean (Baseline Window)": "§11.4.16",
-    "Jitter Delta": "§11.4.17",
-    "Shimmer Mean (Measure Window)": "§11.4.18",
-    "Shimmer Mean (Baseline Window)": "§11.4.19",
-    "Shimmer Delta": "§11.4.20",
-    "semantic_p_match": "§11.4.21",
-    "semantic_reason_code": "§11.4.22",
-    "Evaluation Variance": "§11.5.1",
-    "gated_reward": "§11.5.2",
-    "p90_intensity": "§11.5.3",
-    "semantic_gate": "§11.5.4",
-    "n_frames_in_window": "§11.5.5",
-    "au12_baseline_pre": "§11.5.6",
-    "Co-Modulation Index": "§11.5.7",
-    "Physiological Coverage Ratio": "§11.5.8",
-    "soft_reward_candidate": "§11.5.9",
-    "au12_lift_p90": "§11.5.10",
-    "au12_lift_peak": "§11.5.11",
-    "au12_peak_latency_ms": "§11.5.12",
-    "sync_peak_corr": "§11.5.13",
-    "sync_peak_lag": "§11.5.14",
-    "outcome_link_lag_s": "§11.5.15",
-    "attribution_finality": "§11.5.16",
-    "External Context Metadata": "§11.6.1",
-}
+CONTENT_PATH = REPO_ROOT / "docs" / "content.json"
+
+
+def _expected_variable_sections() -> dict[str, str]:
+    content = json.loads(CONTENT_PATH.read_text(encoding="utf-8"))
+    variable_matrix = content["variable_matrix"]
+    refs = {
+        ref["title"].removeprefix("Variable — "): f"§{ref['ref']}"
+        for ref in variable_matrix["spec_refs"]
+        if str(ref.get("title", "")).startswith("Variable — ")
+    }
+    return {row["variable"]: refs[row["variable"]] for row in variable_matrix["variables"]}
+
+
+def _expected_variable_counts() -> dict[str, int]:
+    content = json.loads(CONTENT_PATH.read_text(encoding="utf-8"))
+    return dict(
+        Counter(
+            str(row["source_module"]).removeprefix("Module ")
+            for row in content["variable_matrix"]["variables"]
+        )
+    )
+
+
+EXPECTED_SECTIONS = _expected_variable_sections()
+EXPECTED_COUNTS = _expected_variable_counts()
 
 MODULE_OWNED_SURFACES: tuple[tuple[str, str, str], ...] = (
-    ("A", "services/stream_ingest/entrypoint.sh", "public_output"),
+    ("A", "services/desktop_app/processes/capture_supervisor.py", "public_output"),
     ("B", "services/worker/pipeline/ground_truth.py", "public_output"),
+    ("C", "services/desktop_app/drift.py", "public_output"),
     ("C", "services/worker/pipeline/orchestrator.py", "public_output"),
+    ("C", "services/desktop_app/ipc/shared_buffers.py", "public_output"),
     ("C", "packages/schemas/inference_handoff.py", "schema"),
     ("C", "packages/schemas/physiology.py", "schema"),
     ("D", "services/worker/tasks/inference.py", "public_output"),
@@ -95,6 +60,9 @@ MODULE_OWNED_SURFACES: tuple[tuple[str, str, str], ...] = (
     ("E", "services/worker/pipeline/analytics.py", "persistence"),
     ("E", "packages/ml_core/attribution.py", "public_output"),
     ("E", "packages/schemas/attribution.py", "schema"),
+    ("E", "packages/schemas/cloud.py", "schema"),
+    ("E", "services/desktop_app/processes/analytics_state_worker.py", "public_output"),
+    ("F", "packages/schemas/cloud.py", "schema"),
     ("F", "services/worker/tasks/enrichment.py", "public_output"),
 )
 
@@ -145,7 +113,7 @@ def test_variable_traceability_registry_rows_have_producer_emissions() -> None:
     variables = registry["variables"]
 
     expected = int(registry.get("row_count_expected", 0))
-    assert len(variables) == expected == 60
+    assert len(variables) == expected == len(EXPECTED_SECTIONS)
     assert Counter(row["producer_module"] for row in variables) == EXPECTED_COUNTS
 
     registry_pairs = {(row["variable"], row["producer_module"]) for row in variables}
@@ -632,6 +600,9 @@ def _discover_variable_producers() -> dict[tuple[str, str], list[VariableEvidenc
                 for stmt in node.body:
                     if isinstance(stmt, ast.AnnAssign) and isinstance(stmt.target, ast.Name):
                         identifier = f"{node.name}.{stmt.target.id}"
+                        emission_module = (
+                            "D" if node.name == "ResponseInference" else surface.module
+                        )
                         add_emission(
                             emissions,
                             identifier,
@@ -640,6 +611,7 @@ def _discover_variable_producers() -> dict[tuple[str, str], list[VariableEvidenc
                             if surface.surface == "schema"
                             else "dataclass field",
                             f"{identifier} declared field",
+                            module=emission_module,
                         )
                         alias = field_alias(stmt)
                         if alias:
@@ -649,6 +621,7 @@ def _discover_variable_producers() -> dict[tuple[str, str], list[VariableEvidenc
                                 getattr(stmt, "lineno", surface.line_for(alias)),
                                 "schema/model alias",
                                 f"{identifier} declares alias {alias!r}",
+                                module=emission_module,
                             )
             elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 if node.name in public_helper_evidence or "landmark" in node.name:
@@ -775,6 +748,24 @@ def _discover_variable_producers() -> dict[tuple[str, str], list[VariableEvidenc
                             f"attribution_method emits {keyword.value.value!r}",
                         )
 
+        if surface.path.endswith("capture_supervisor.py"):
+            if "--video-codec=h264" in surface.source and "--record-format=mkv" in surface.source:
+                add_emission(
+                    emissions,
+                    "video_stream",
+                    surface.line_for("--video-codec=h264"),
+                    "scrcpy public stream",
+                    "capture supervisor emits H.264 MKV video stream",
+                )
+            if "--audio-codec=raw" in surface.source and "--record-format=wav" in surface.source:
+                add_emission(
+                    emissions,
+                    "audio_stream",
+                    surface.line_for("--audio-codec=raw"),
+                    "scrcpy public stream",
+                    "capture supervisor emits raw WAV audio stream",
+                )
+
         if surface.surface == "persistence":
             for table, column, line in sql_columns(surface.source, ddl=False):
                 add_emission(
@@ -880,7 +871,8 @@ def _discover_variable_producers() -> dict[tuple[str, str], list[VariableEvidenc
     add_alias(("freshness_s",), "Physiological Freshness")
     add_alias(("is_stale",), "Physiological Staleness Flag")
     add_alias(("transcription", "transcripts.text"), "ASR Transcription")
-    add_alias(("is_match",), "Semantic Match")
+    add_alias(("is_match",), "Delivery Validation Result")
+    add_alias(("semantic_gate",), "delivery_validation_gate")
     add_alias(("confidence_score", "evaluations.confidence"), "semantic_p_match")
     add_alias(("reasoning", "evaluations.reasoning"), "semantic_reason_code")
     add_alias(("f0_valid_measure",), "F0 Validity (Measure Window)")
@@ -901,6 +893,26 @@ def _discover_variable_producers() -> dict[tuple[str, str], list[VariableEvidenc
     add_alias(("coverage_ratio",), "Physiological Coverage Ratio")
     add_alias(("finality",), "attribution_finality")
     add_alias(("lag_s", "event_outcome_link.lag_s"), "outcome_link_lag_s")
+    add_alias(("random_seed",), "Bandit Random Seed")
+    add_alias(("PcmBlockMetadata.name", "SHM_PREFIX"), "SharedMemory Audio Segment Name")
+    add_alias(("PcmBlockMetadata.byte_length",), "SharedMemory Byte Length")
+    add_alias(("PcmBlockMetadata.sha256",), "SharedMemory Checksum")
+    add_alias(("PosteriorDelta.delta_alpha", "PosteriorDelta.delta_beta"), "Posterior Delta")
+    add_alias(("PosteriorDelta.event_id",), "Cloud Event ID")
+    add_alias(("ResponseInference.is_match",), "response_inference.is_match")
+    add_alias(("ResponseInference.confidence_score",), "response_inference.confidence_score")
+    add_alias(("ResponseInference.registration_status",), "response_inference.registration_status")
+    add_alias(
+        ("ResponseInference.response_reason_code",),
+        "response_inference.response_reason_code",
+    )
+    add_alias(
+        ("ResponseInference.matched_response_time",),
+        "response_inference.matched_response_time",
+    )
+    add_alias(("response_registration_status",), "response_inference.registration_status")
+    add_alias(("response_reason_code",), "response_inference.response_reason_code")
+    add_alias(("matched_response_time_utc",), "response_inference.matched_response_time")
     add_alias(("scrape_context", "context.data"), "External Context Metadata")
 
     # Tables that persist upstream-produced values are scanned but not treated as
@@ -923,6 +935,8 @@ def _discover_variable_producers() -> dict[tuple[str, str], list[VariableEvidenc
         "context",
     }
 
+    pass_through = "__pass_through__"
+
     out_of_scope = {
         "id",
         "uniqueid",
@@ -936,6 +950,7 @@ def _discover_variable_producers() -> dict[tuple[str, str], list[VariableEvidenc
         "segment_window_end_utc",
         "timestamp_utc",
         "timestamp_s",
+        "ts_monotonic",
         "window_start_ts",
         "window_end_ts",
         "event_time_utc",
@@ -972,6 +987,7 @@ def _discover_variable_producers() -> dict[tuple[str, str], list[VariableEvidenc
         "streamer",
         "operator",
         "physiological_context",
+        "response_inference",
         "physiology_stale",
         "null_reason",
         "attribution_outcome",
@@ -985,11 +1001,14 @@ def _discover_variable_producers() -> dict[tuple[str, str], list[VariableEvidenc
         "selected_arm_id",
         "candidate_arm_ids",
         "posterior_by_arm",
+        "posterior_copy",
         "sampled_theta_by_arm",
         "posterior_alpha",
         "posterior_beta",
         "alpha_param",
         "beta_param",
+        "alpha",
+        "beta",
         "experiment_id",
         "experiment_code",
         "policy_version",
@@ -998,6 +1017,7 @@ def _discover_variable_producers() -> dict[tuple[str, str], list[VariableEvidenc
         "decision_context_hash",
         "expected_greeting",
         "expected_rule_text_hash",
+        "expected_response_rule_text_hash",
         "reward_path_version",
         "method_version",
         "semantic_method",
@@ -1035,6 +1055,7 @@ def _discover_variable_producers() -> dict[tuple[str, str], list[VariableEvidenc
         "last_segment_completed_at_utc",
         "latest_reward",
         "latest_semantic_gate",
+        "transcription",
         "au12_intensity",
         "semantic_gate",
         "p90_intensity",
@@ -1048,6 +1069,8 @@ def _discover_variable_producers() -> dict[tuple[str, str], list[VariableEvidenc
         "lag_s",
         "semantic_p_match",
         "semantic_reason_code",
+        "response_type",
+        "reason",
         "bandit_decision_snapshot",
         "f0_valid_measure",
         "f0_valid_baseline",
@@ -1119,7 +1142,6 @@ def _discover_variable_producers() -> dict[tuple[str, str], list[VariableEvidenc
         "peak",
         "physiological",
         "pitch",
-        "reason",
         "reward",
         "rmssd",
         "semantic",
@@ -1134,6 +1156,13 @@ def _discover_variable_producers() -> dict[tuple[str, str], list[VariableEvidenc
         "variance",
         "voiced",
         "window",
+        "response",
+        "shared",
+        "memory",
+        "byte",
+        "checksum",
+        "posterior",
+        "cloud",
     }
 
     def canonicalize(
@@ -1142,6 +1171,8 @@ def _discover_variable_producers() -> dict[tuple[str, str], list[VariableEvidenc
         key = norm(identifier)
         table = str(emission.get("table") or "")
         keys = (key, *suffixes(key))
+        if surface.path.endswith("capture_supervisor.py") and key.endswith("drift_offset"):
+            return ()
         if emission.get("kind") in {"SQL insert column", "SQL DDL column"}:
             if table in passthrough_tables:
                 return ()
@@ -1154,6 +1185,10 @@ def _discover_variable_producers() -> dict[tuple[str, str], list[VariableEvidenc
             for variable in canonical_by_key.get(candidate, ()) + aliases.get(candidate, ()):
                 if variable not in matched:
                     matched.append(variable)
+        if key.startswith("responseinference_"):
+            matched = [
+                variable for variable in matched if variable.startswith("response_inference.")
+            ]
         if "rmssd_ms" in keys and "RMSSD (Operator)" not in matched:
             matched.append("RMSSD (Operator)")
         if (
@@ -1204,11 +1239,20 @@ def _discover_variable_producers() -> dict[tuple[str, str], list[VariableEvidenc
                 "outcome_link_lag_s",
             }:
                 continue
+            if surface.path.endswith("packages/schemas/cloud.py"):
+                if surface.module == "E" and variable != "Posterior Delta":
+                    continue
+                if surface.module == "F" and variable != "Cloud Event ID":
+                    continue
+            if surface.path.endswith("analytics_state_worker.py") and variable != "Posterior Delta":
+                continue
             if surface.path.endswith("packages/ml_core/attribution.py") and not produced_in_section(
                 variable, "§11.5"
             ):
                 continue
             filtered.append(variable)
+        if matched and not filtered:
+            return (pass_through,)
         return tuple(filtered)
 
     def clear_out_of_scope(identifier: str, emission: Mapping[str, Any]) -> bool:
@@ -1217,6 +1261,8 @@ def _discover_variable_producers() -> dict[tuple[str, str], list[VariableEvidenc
         if table in passthrough_tables:
             return True
         if key in out_of_scope or any(part in out_of_scope for part in suffixes(key)):
+            return True
+        if key.endswith("drift_offset"):
             return True
         if key.startswith(("_", "test_")):
             return True
@@ -1249,9 +1295,11 @@ def _discover_variable_producers() -> dict[tuple[str, str], list[VariableEvidenc
                     )
                 continue
             for variable in variables:
+                if variable == pass_through:
+                    continue
                 evidence = VariableEvidence(
                     variable=variable,
-                    module=surface.module,
+                    module=str(emission.get("module") or surface.module),
                     path=surface.path,
                     line=int(emission["line"]),
                     surface=surface.surface,
@@ -1276,12 +1324,12 @@ def _collect_module_owned_surfaces() -> list[VariableSurface]:
     surfaces: list[VariableSurface] = []
     surface_specs = (
         *MODULE_OWNED_SURFACES,
-        ("B", "data/sql/01-schema.sql", "persistence"),
-        ("D", "data/sql/01-schema.sql", "persistence"),
-        ("E", "data/sql/01-schema.sql", "persistence"),
-        ("E", "data/sql/03-physiology.sql", "persistence"),
-        ("E", "data/sql/05-attribution.sql", "persistence"),
-        ("F", "data/sql/01-schema.sql", "persistence"),
+        ("B", "services/cloud_api/db/sql/01-schema.sql", "persistence"),
+        ("D", "services/cloud_api/db/sql/01-schema.sql", "persistence"),
+        ("E", "services/cloud_api/db/sql/01-schema.sql", "persistence"),
+        ("E", "services/cloud_api/db/sql/03-physiology.sql", "persistence"),
+        ("E", "services/cloud_api/db/sql/05-attribution.sql", "persistence"),
+        ("F", "services/cloud_api/db/sql/01-schema.sql", "persistence"),
     )
     for module, rel_path, surface_kind in surface_specs:
         source = _read_source(rel_path)

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -12,12 +12,12 @@ from scripts.audit.results import AuditResult
 from scripts.audit.spec_items import Section13Item
 from scripts.audit.verifiers.mechanical import (
     MECHANICAL_VERIFIERS,
+    V4_MECHANICAL_VERIFIERS_BY_TITLE,
     verify_au12_geometry,
     verify_canonical_terminology,
     verify_dependency_pins,
     verify_derived_only_attribution_persistence,
     verify_directory_structure,
-    verify_docker_topology,
     verify_drift_correction,
     verify_ephemeral_vault,
     verify_ffmpeg_resample,
@@ -37,7 +37,7 @@ _FFMPEG_CMD = (
     "-ac",
     "1",
     "-i",
-    "/tmp/ipc/audio_stream.raw",
+    "pipe:0",
     "-ar",
     "16000",
     "-f",
@@ -77,7 +77,6 @@ _SEMANTIC_METHODS = (
 
 _EXPECTED_MECHANICAL_ITEMS = {
     "13.1",
-    "13.2",
     "13.3",
     "13.4",
     "13.5",
@@ -89,6 +88,28 @@ _EXPECTED_MECHANICAL_ITEMS = {
     "13.12",
     "13.15",
     "13.30",
+}
+
+_EXPECTED_V4_MECHANICAL_TITLES = {
+    "Runtime topology",
+    "Import discipline",
+    "Embedded runtime",
+    "Windows subprocess supervision",
+    "SharedMemory IPC",
+    "SharedMemory cleanup",
+    "Gate 0 corpus",
+    "Deterministic segment identity",
+    "ADB drift contract",
+    "Reward pipeline",
+    "Bandit snapshot determinism",
+    "SQLite local state",
+    "Privacy perimeter",
+    "Cloud OAuth",
+    "Signed ExperimentBundle",
+    "Posterior delta exactly-once",
+    "Production hardware floor",
+    "Pascal developer override",
+    "macOS Tier 2 deferral",
 }
 
 
@@ -207,7 +228,7 @@ def _dependency_spec() -> dict[str, Any]:
                 },
                 {
                     "package": "fastapi",
-                    "version": "0.110.x",
+                    "version": "0.136.x",
                     "container_targets": ["api"],
                 },
                 {
@@ -249,13 +270,40 @@ def _reason_spec() -> dict[str, Any]:
     }
 
 
-def _write_ffmpeg_fixture(repo_root: Path, command: Sequence[str]) -> None:
+def _write_ffmpeg_fixture(
+    repo_root: Path,
+    *,
+    pcm_sample_rate_hz: int = 16_000,
+    audio_filename: str = "audio_stream.wav",
+    include_ratecv: bool = True,
+) -> None:
+    ratecv_line = (
+        "    converted, _ = audioop.ratecv(\n"
+        "        mono, AUDIO_SAMPLE_WIDTH_BYTES, PCM_CHANNELS, audio_format.sample_rate_hz,\n"
+        "        PCM_SAMPLE_RATE_HZ, None\n"
+        "    )\n"
+        if include_ratecv
+        else "    converted = mono\n"
+    )
     _write(
         repo_root,
-        "services/worker/pipeline/orchestrator.py",
-        f"FFMPEG_RESAMPLE_CMD = {list(command)!r}\n\n"
-        "def spawn(subprocess):\n"
-        "    return subprocess.Popen(FFMPEG_RESAMPLE_CMD, stdout=-1)\n",
+        "services/desktop_app/processes/module_c_orchestrator.py",
+        "from __future__ import annotations\n\n"
+        "import audioop\n\n"
+        f"PCM_SAMPLE_RATE_HZ = {pcm_sample_rate_hz}\n"
+        "AUDIO_SAMPLE_WIDTH_BYTES = 2\n"
+        "PCM_CHANNELS = 1\n"
+        f"AUDIO_FILENAME = {audio_filename!r}\n\n"
+        "def _source_pcm_to_16k_mono(raw, audio_format):\n"
+        "    mono = audioop.tomono(raw, audio_format.sample_width_bytes, 0.5, 0.5)\n"
+        "    mono = audioop.lin2lin(\n"
+        "        mono, audio_format.sample_width_bytes, AUDIO_SAMPLE_WIDTH_BYTES\n"
+        "    )\n"
+        f"{ratecv_line}"
+        "    return bytes(converted)\n\n"
+        "def run_once(raw_source, audio_format):\n"
+        "    pcm_16k = _source_pcm_to_16k_mono(raw_source, audio_format)\n"
+        "    return pcm_16k\n",
     )
 
 
@@ -323,10 +371,49 @@ def _write_vault_fixture(repo_root: Path, nonce_length: int = 12) -> None:
 
 
 def _write_dependency_fixture(repo_root: Path, numpy_line: str = "numpy==1.26.4") -> None:
-    _write(repo_root, "requirements/base.txt", f"{numpy_line}\n")
-    _write(repo_root, "requirements/worker.txt", "-r base.txt\n")
-    _write(repo_root, "requirements/api.txt", "fastapi==0.110.2\n")
-    _write(repo_root, "requirements/cli.txt", "PySide6>=6.11\n")
+    _write(
+        repo_root,
+        "pyproject.toml",
+        f"""
+[project]
+dependencies = [
+    \"{numpy_line}\",
+    \"fastapi==0.136.0\",
+    \"uvicorn==0.29.0\",
+    \"pydantic>=2.0\",
+    \"PySide6>=6.11\",
+]
+
+[project.optional-dependencies]
+ml_backend = [
+    \"praat-parselmouth==0.4.4\",
+]
+""".lstrip(),
+    )
+    _write(
+        repo_root,
+        "uv.lock",
+        f"""
+version = 1
+revision = 3
+requires-python = \"==3.11.*\"
+
+[[package]]
+name = \"lsie-mlf-desktop\"
+version = \"4.0.0\"
+source = {{ virtual = \".\" }}
+
+[package.metadata]
+requires-dist = [
+    {{ name = \"numpy\", specifier = \"=={numpy_line.split("==", 1)[1]}\" }},
+    {{ name = \"fastapi\", specifier = \"==0.136.0\" }},
+    {{ name = \"uvicorn\", specifier = \"==0.29.0\" }},
+    {{ name = \"pydantic\", specifier = \">=2.0\" }},
+    {{ name = \"pyside6\", specifier = \">=6.11\" }},
+    {{ name = \"praat-parselmouth\", specifier = \"==0.4.4\" }},
+]
+""".lstrip(),
+    )
 
 
 def _write_canonical_scan_fixture(repo_root: Path, retired_line: str | None = None) -> None:
@@ -404,12 +491,13 @@ def _write_reason_fixture(
 class TestMechanicalVerifiers:
     def test_mechanical_registry_keys_are_unit_covered(self) -> None:
         assert set(MECHANICAL_VERIFIERS) == _EXPECTED_MECHANICAL_ITEMS
+        assert set(V4_MECHANICAL_VERIFIERS_BY_TITLE) == _EXPECTED_V4_MECHANICAL_TITLES
 
     def test_spec_extraction_missing_fails_closed(self, tmp_path: Path) -> None:
         cases = []
 
         ffmpeg_root = tmp_path / "ffmpeg_missing_spec"
-        _write_ffmpeg_fixture(ffmpeg_root, _FFMPEG_CMD)
+        _write_ffmpeg_fixture(ffmpeg_root)
         cases.append((verify_ffmpeg_resample, ffmpeg_root, "13.4", "§4.C.2/§13.4"))
 
         au12_root = tmp_path / "au12_missing_spec"
@@ -458,30 +546,31 @@ class TestMechanicalVerifiers:
 
     def test_verify_ffmpeg_resample_pass_and_mismatch(self, tmp_path: Path) -> None:
         pass_root = tmp_path / "pass"
-        _write_ffmpeg_fixture(pass_root, _FFMPEG_CMD)
+        _write_ffmpeg_fixture(pass_root)
 
         pass_result = verify_ffmpeg_resample(_context(pass_root, _ffmpeg_spec()), _item("13.4"))
 
         _assert_pass_evidence(
             pass_result,
             "§4.C.2/§13.4",
-            "services/worker/pipeline/orchestrator.py:1",
-            "pipe:1",
-            "invokes FFMPEG_RESAMPLE_CMD",
+            "services/desktop_app/processes/module_c_orchestrator.py",
+            "PCM_SAMPLE_RATE_HZ=16000",
+            "AUDIO_FILENAME=audio_stream.wav",
+            "audioop.ratecv",
+            "_source_pcm_to_16k_mono",
         )
 
         fail_root = tmp_path / "fail"
-        mismatched_command = list(_FFMPEG_CMD)
-        mismatched_command[4] = "44100"
-        _write_ffmpeg_fixture(fail_root, mismatched_command)
+        _write_ffmpeg_fixture(fail_root, pcm_sample_rate_hz=44_100, include_ratecv=False)
 
         fail_result = verify_ffmpeg_resample(_context(fail_root, _ffmpeg_spec()), _item("13.4"))
 
         _assert_fail_evidence(
             fail_result,
             "§4.C.2/§13.4",
-            "44100",
-            "expected ('ffmpeg', '-f', 's16le', '-ar', '48000'",
+            "PCM_SAMPLE_RATE_HZ=44100",
+            "expected 16000",
+            "audioop.ratecv",
         )
 
     def test_verify_au12_geometry_pass_and_epsilon_mismatch(self, tmp_path: Path) -> None:
@@ -578,11 +667,10 @@ class TestMechanicalVerifiers:
         _assert_pass_evidence(
             pass_result,
             "§10.2/§13.12",
-            "requirements/base.txt:1",
+            "pyproject.toml",
+            "uv.lock",
             "numpy==1.26.4",
-            "requirements/api.txt:1",
-            "fastapi==0.110.2",
-            "requirements/cli.txt:1",
+            "fastapi==0.136.0",
             "PySide6>=6.11",
         )
 
@@ -600,10 +688,73 @@ class TestMechanicalVerifiers:
             "expected numpy 1.26.x",
         )
 
+    def test_verify_dependency_pins_supports_base_target_rows(self, tmp_path: Path) -> None:
+        spec = {
+            "dependency_matrix": {
+                "pinned_packages": [
+                    {
+                        "package": "numpy",
+                        "version": "1.26.x",
+                        "container_targets": ["all_processes"],
+                    }
+                ]
+            }
+        }
+        _write_dependency_fixture(tmp_path)
+
+        result = verify_dependency_pins(_context(tmp_path, spec), _item("13.12"))
+
+        _assert_pass_evidence(
+            result,
+            "§10.2/§13.12",
+            "pyproject.toml",
+            "uv.lock",
+            "numpy==1.26.4",
+        )
+
+    def test_verify_dependency_pins_reads_pyproject_and_uv_lock_for_desktop_targets(
+        self,
+        tmp_path: Path,
+    ) -> None:
+        spec = {
+            "dependency_matrix": {
+                "pinned_packages": [
+                    {
+                        "package": "fastapi",
+                        "version": "0.136.x",
+                        "container_targets": ["ui_api_shell"],
+                    },
+                    {
+                        "package": "uvicorn",
+                        "version": "0.29.x",
+                        "container_targets": ["ui_api_shell"],
+                    },
+                    {
+                        "package": "pydantic",
+                        "version": "2.x",
+                        "container_targets": ["all_processes"],
+                    },
+                ]
+            }
+        }
+        _write_dependency_fixture(tmp_path)
+
+        result = verify_dependency_pins(_context(tmp_path, spec), _item("13.12"))
+
+        _assert_pass_evidence(
+            result,
+            "§10.2/§13.12",
+            "pyproject.toml",
+            "uv.lock",
+            "fastapi==0.136.0",
+            "uvicorn==0.29.0",
+            "pydantic>=2.0",
+        )
+
     def test_verify_canonical_terminology_pass_and_retired_term_match(self, tmp_path: Path) -> None:
         pass_root = tmp_path / "pass"
         _write_canonical_scan_fixture(pass_root)
-        _write(pass_root, "docker-compose.yml", "services:\n  api:\n    image: example\n")
+        _write(pass_root, ".env.example", "LSIE_SAMPLE=1\n")
 
         pass_result = verify_canonical_terminology(
             _context(pass_root, _canonical_spec()), _item("13.15")
@@ -720,11 +871,33 @@ class TestMechanicalVerifiers:
     def test_check_sh_delegates_audit_gate_to_strict_harness(self) -> None:
         check_script = Path("scripts/check.sh").read_text(encoding="utf-8")
         audit_section = check_script.split("── §13 audit harness ──", maxsplit=1)[1]
-        audit_section = audit_section.split("── Docker compose config ──", maxsplit=1)[0]
+        audit_section = audit_section.split("── Schema consistency check ──", maxsplit=1)[0]
 
         assert "python scripts/run_audit.py --strict" in audit_section
         assert "--item" not in audit_section
         assert "grep -R" not in audit_section
+
+    def test_local_check_scripts_drop_stale_docker_gate(self) -> None:
+        check_sh = Path("scripts/check.sh").read_text(encoding="utf-8")
+        check_ps1 = Path("scripts/check.ps1").read_text(encoding="utf-8")
+
+        for script in (check_sh, check_ps1):
+            assert "Canonical terminology audit" in script
+            assert "docker compose config --quiet" not in script
+            assert "LSIE_CHECK_RETAINED_SERVER" not in script
+            assert "retained server/container topology" not in script
+            assert "python scripts/check_schema_consistency.py" in script
+
+    def test_ci_workflow_includes_local_gate_parity_checks(self) -> None:
+        workflow = Path(".github/workflows/ci.yml").read_text(encoding="utf-8")
+
+        assert "name: Schema consistency check" in workflow
+        assert "uv run python scripts/check_schema_consistency.py" in workflow
+        assert "name: Canonical terminology audit" in workflow
+        assert "grep -rnE 'GPU worker|video pipe" in workflow
+        assert "name: Docker compose config" not in workflow
+        assert "docker compose config --quiet" not in workflow
+        assert "Run strict §13 audit harness" in workflow
 
     def test_verify_semantic_reason_codes_fails_mixed_bounded_and_unbounded_fallback_paths(
         self, tmp_path: Path
@@ -772,27 +945,27 @@ class TestMechanicalVerifiers:
                 "directory_hierarchy": [
                     {"path": "/services/api/", "purpose": "API"},
                     {"path": "/packages/schemas/", "purpose": "Schemas"},
-                    {"path": "/docker-compose.yml", "purpose": "Topology"},
+                    {"path": "/scripts/run_audit.py", "purpose": "Audit entrypoint"},
                 ]
             }
         }
         good = tmp_path / "good"
         (good / "services" / "api").mkdir(parents=True)
         (good / "packages" / "schemas").mkdir(parents=True)
-        (good / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
+        _write(good, "scripts/run_audit.py", "print('ok')\n")
 
         result = verify_directory_structure(_context(good, spec), _item("13.1"))
         _assert_pass_evidence(
             result,
             "§3/§13.1: extracted 3 directory_hierarchy entries",
             "services/api directory present",
-            "docker-compose.yml file present",
+            "scripts/run_audit.py file present",
         )
 
         bad = tmp_path / "bad"
         (bad / "services" / "api").mkdir(parents=True)
+        _write(bad, "scripts/run_audit.py", "print('ok')\n")
         # packages/schemas is missing on purpose.
-        (bad / "docker-compose.yml").write_text("services: {}\n", encoding="utf-8")
 
         result_fail = verify_directory_structure(_context(bad, spec), _item("13.1"))
         _assert_fail_evidence(
@@ -805,190 +978,50 @@ class TestMechanicalVerifiers:
         assert result.passed is False
         assert "missing codebase_architecture object" in result.evidence
 
-    # ---- §13.2 — Docker topology --------------------------------------------
-
-    def test_verify_docker_topology_pass_and_missing_service(self, tmp_path: Path) -> None:
-        spec = {
-            "docker_topology": {
-                "containers": [
-                    {
-                        "container_name": "api",
-                        "image_base": "python:3.11-slim",
-                        "network": "appnetwork",
-                        "restart_policy": "unless-stopped",
-                        "depends_on": ["postgres"],
-                        "gpu_required": False,
-                    },
-                    {
-                        "container_name": "worker",
-                        "image_base": "nvidia/cuda:12.2.2-cudnn8-runtime-ubuntu22.04",
-                        "network": "appnetwork",
-                        "restart_policy": "on-failure:5",
-                        "depends_on": ["postgres"],
-                        "gpu_required": True,
-                    },
-                ],
-                "volumes": [
-                    {
-                        "volume_name": "ipc-share",
-                        "mount_path": "/tmp/ipc/",
-                        "container_targets": ["worker"],
-                    }
-                ],
-            }
-        }
-        good_compose = """\
-services:
-  api:
-    image: python:3.11-slim
-    networks:
-      - appnetwork
-    restart: unless-stopped
-    depends_on:
-      - postgres
-  worker:
-    build:
-      context: .
-    networks:
-      - appnetwork
-    restart: on-failure
-    deploy:
-      restart_policy:
-        condition: on-failure
-        max_attempts: 5
-    depends_on:
-      - postgres
-    volumes:
-      - ipc-share:/tmp/ipc/
-volumes:
-  ipc-share: {}
-networks:
-  appnetwork:
-    driver: bridge
-"""
-        good = tmp_path / "good"
-        good.mkdir()
-        (good / "docker-compose.yml").write_text(good_compose, encoding="utf-8")
-
-        result = verify_docker_topology(_context(good, spec), _item("13.2"))
-        _assert_pass_evidence(
-            result,
-            "§9/§13.2: extracted 2 containers and 1 volumes",
-            "service api image='python:3.11-slim' matches spec",
-            "service worker mounts volume 'ipc-share' at '/tmp/ipc/'",
-        )
-
-        bad_compose = good_compose.replace("worker:", "worker_misnamed:")
-        bad = tmp_path / "bad"
-        bad.mkdir()
-        (bad / "docker-compose.yml").write_text(bad_compose, encoding="utf-8")
-
-        result_fail = verify_docker_topology(_context(bad, spec), _item("13.2"))
-        _assert_fail_evidence(
-            result_fail,
-            "service 'worker' is missing from docker-compose.yml",
-        )
-
-    def test_verify_docker_topology_missing_compose_fails_closed(self, tmp_path: Path) -> None:
-        spec = {
-            "docker_topology": {
-                "containers": [
-                    {
-                        "container_name": "api",
-                        "image_base": "python:3.11-slim",
-                        "network": "appnetwork",
-                        "restart_policy": "unless-stopped",
-                        "depends_on": [],
-                    }
-                ],
-                "volumes": [],
-            }
-        }
-        empty = tmp_path / "no_compose"
-        empty.mkdir()
-        result = verify_docker_topology(_context(empty, spec), _item("13.2"))
-        _assert_fail_evidence(result, "docker-compose.yml is missing")
-
     # ---- §13.3 — IPC lifecycle ----------------------------------------------
 
-    def test_verify_ipc_lifecycle_pass_and_missing_token(self, tmp_path: Path) -> None:
-        spec = {
-            "core_modules": {
-                "modules": [
-                    {
-                        "module_id": "A",
-                        "ipc_lifecycle_steps": [
-                            {
-                                "step_number": 1,
-                                "title": "Init",
-                                "description": (
-                                    "<func>setup_pipes()</func> creates "
-                                    "<path>/tmp/ipc/audio_stream.raw</path>."
-                                ),
-                            },
-                            {
-                                "step_number": 2,
-                                "title": "Wait",
-                                "description": (
-                                    "<func>wait_for_device()</func> polls <cmd>adb devices</cmd>."
-                                ),
-                            },
-                        ],
-                    }
-                ]
-            }
-        }
+    def test_verify_ipc_lifecycle_pass_and_missing_capture_supervisor_token(
+        self, tmp_path: Path
+    ) -> None:
         good = tmp_path / "good"
         _write(
             good,
-            "services/stream_ingest/entrypoint.sh",
-            "#!/usr/bin/env bash\n"
-            'AUDIO_PIPE="/tmp/ipc/audio_stream.raw"\n'
-            'setup_pipes() { mkfifo "$AUDIO_PIPE"; }\n'
-            "wait_for_device() { adb devices; }\n",
+            "services/desktop_app/processes/capture_supervisor.py",
+            "capture_supervisor ADB scrcpy FFmpeg SupervisedProcess\n"
+            "IpcChannels.drift_updates cleanup_capture_files record_capture_pid\n",
         )
-        result = verify_ipc_lifecycle(_context(good, spec), _item("13.3"))
+        _write(
+            good,
+            "services/desktop_app/process_graph.py",
+            "capture_supervisor module_c_orchestrator gpu_ml_worker\n",
+        )
+        result = verify_ipc_lifecycle(_context(good, {}), _item("13.3"))
         _assert_pass_evidence(
             result,
-            "§4.A/§13.3: extracted 2 IPC lifecycle steps",
-            "step 1 (Init): all tokens present",
-            "step 2 (Wait): all tokens present",
+            "verified active v4 Module A capture lifecycle evidence",
+            "capture_supervisor.py contains",
+            "process_graph.py contains",
         )
 
         bad = tmp_path / "bad"
         _write(
             bad,
-            "services/stream_ingest/entrypoint.sh",
-            "#!/usr/bin/env bash\nsetup_pipes() { :; }\nwait_for_device() { :; }\n",
+            "services/desktop_app/processes/capture_supervisor.py",
+            "capture_supervisor ADB scrcpy FFmpeg SupervisedProcess\n",
         )
-        result_fail = verify_ipc_lifecycle(_context(bad, spec), _item("13.3"))
+        _write(
+            bad,
+            "services/desktop_app/process_graph.py",
+            "capture_supervisor module_c_orchestrator gpu_ml_worker\n",
+        )
+        result_fail = verify_ipc_lifecycle(_context(bad, {}), _item("13.3"))
         _assert_fail_evidence(
             result_fail,
-            "step 1 (Init): services/stream_ingest/entrypoint.sh missing tokens",
-            "/tmp/ipc/audio_stream.raw",
+            "capture_supervisor.py missing",
+            "IpcChannels.drift_updates",
+            "cleanup_capture_files",
+            "record_capture_pid",
         )
-
-    def test_verify_ipc_lifecycle_missing_entrypoint_fails_closed(self, tmp_path: Path) -> None:
-        spec = {
-            "core_modules": {
-                "modules": [
-                    {
-                        "module_id": "A",
-                        "ipc_lifecycle_steps": [
-                            {
-                                "step_number": 1,
-                                "title": "Init",
-                                "description": "<path>/tmp/x</path>",
-                            }
-                        ],
-                    }
-                ]
-            }
-        }
-        empty = tmp_path / "no_entrypoint"
-        empty.mkdir()
-        result = verify_ipc_lifecycle(_context(empty, spec), _item("13.3"))
-        _assert_fail_evidence(result, "services/stream_ingest/entrypoint.sh is missing")
 
     # ---- §13.5 — Drift correction -------------------------------------------
 
@@ -1155,8 +1188,8 @@ networks:
                     {
                         "module_id": "A",
                         "contract": {
-                            "outputs": "<path>/tmp/ipc/audio_stream.raw</path>",
-                            "failure_modes": "<func>wait_for_device()</func>",
+                            "outputs": "<cmd>capture_supervisor</cmd> emits CaptureStatus.",
+                            "failure_modes": "<cmd>ADB</cmd> loss polls under supervision.",
                         },
                     },
                     {
@@ -1172,8 +1205,13 @@ networks:
         good = tmp_path / "good"
         _write(
             good,
-            "services/stream_ingest/entrypoint.sh",
-            'AUDIO_PIPE="/tmp/ipc/audio_stream.raw"\nwait_for_device() { :; }\n',
+            "services/desktop_app/processes/capture_supervisor.py",
+            "capture_supervisor ADB\n",
+        )
+        _write(
+            good,
+            "services/desktop_app/process_graph.py",
+            "capture_supervisor\n",
         )
         _write(
             good,
@@ -1188,17 +1226,21 @@ networks:
         _assert_pass_evidence(
             result,
             "§4/§13.10: extracted",
-            "module A contract.outputs <path>/tmp/ipc/audio_stream.raw</path>: present",
-            "module A contract.failure_modes <func>wait_for_device()</func>: present",
+            "module A contract.outputs <cmd>capture_supervisor</cmd>: present",
+            "module A contract.failure_modes <cmd>ADB</cmd>: present",
             "module C contract.outputs <class>InferenceHandoffPayload</class>: present",
         )
 
         bad = tmp_path / "bad"
-        # entrypoint.sh missing the audio path.
         _write(
             bad,
-            "services/stream_ingest/entrypoint.sh",
-            "wait_for_device() { :; }\n",
+            "services/desktop_app/processes/capture_supervisor.py",
+            "ADB\n",
+        )
+        _write(
+            bad,
+            "services/desktop_app/process_graph.py",
+            "module_c_orchestrator\n",
         )
         _write(
             bad,
@@ -1211,7 +1253,7 @@ networks:
         result_fail = verify_module_contracts(_context(bad, spec), _item("13.10"))
         _assert_fail_evidence(
             result_fail,
-            "module A contract.outputs <path>/tmp/ipc/audio_stream.raw</path>: MISSING",
+            "module A contract.outputs <cmd>capture_supervisor</cmd>: MISSING",
         )
 
     def test_verify_module_contracts_documents_x_max_carve_out(self, tmp_path: Path) -> None:

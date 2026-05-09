@@ -2,7 +2,9 @@
 
 Operational rules for handling Dependabot pull requests against the LSIE-MLF dependency matrix. These rules are authoritative — Claude Code, the ADO agent, and human reviewers all follow this document. The companion `.claude/skills/dependabot-triage/SKILL.md` describes how Claude Code invokes this process; this file defines the rules.
 
-The Dependabot configuration itself lives in `.github/dependabot.yml` (pip, github-actions, and three docker ecosystems on weekly or monthly cadence with `open-pull-requests-limit: 5` on pip to prevent queue overflow).
+The Dependabot configuration itself lives in `.github/dependabot.yml` (pip and github-actions, with `open-pull-requests-limit: 5` on pip to prevent queue overflow).
+
+The canonical dependency surfaces for this repository are `pyproject.toml` (declared dependencies, extras, and groups) and `uv.lock` (frozen resolution). Dependabot review and impact analysis should treat changes to those files as the authoritative dependency diff.
 
 ---
 
@@ -13,18 +15,17 @@ The Dependabot configuration itself lives in `.github/dependabot.yml` (pip, gith
 A Dependabot PR is auto-mergeable when **every** condition below holds:
 
 1. **Version delta is patch or minor** — `X.Y.Z` → `X.Y.(Z+1)` or `X.Y.Z` → `X.(Y+1).0`. Major version bumps (`X.Y.Z` → `(X+1).Y.Z`) are never auto-merged.
-2. **The package is NOT listed in `docs/SPEC_REFERENCE.md` §10.2** (the dependency matrix). The §10.2 list is spec-governed; any bump there requires a registered SPEC-AMEND entry.
+2. **The package is NOT listed in the signed spec dependency matrix (§10.2 / `dependency_matrix.pinned_packages`)**. The dependency matrix is spec-governed; any bump there requires an updated signed spec/content payload.
 3. **The full CI suite passes**, including:
    - `ruff check` and `ruff format --check` on `packages/`, `services/`, `tests/`
    - `mypy` on `packages/` and `services/` with `--python-version 3.11`
    - `pytest tests/ -x -q` — and explicitly the **mathematical recipe regression tests in `tests/unit/test_v3_math_recipe.py`** must be green. These guard the Thompson Sampling / reward / AU12 mathematical contract; a failure there is never a flake.
-   - `scripts/check_schema_consistency.py` (the four-source schema gate)
-   - `docker compose config --quiet`
+   - `scripts/check_schema_consistency.py` (the schema consistency gate across Pydantic, extracted JSON Schema, and cloud PostgreSQL DDL)
    - The §0.3 canonical-terminology audit
    - The dependency pin check in `scripts/check.sh`
 4. **The PR diff does NOT touch `packages/ml_core/` or `packages/schemas/`**, including via transitive type-stub regeneration. These directories define the ML inference core and the inter-module type contracts — any change there is a contract change, not a maintenance update.
 5. **No co-pending Dependabot PR exists for the same package** (avoids race-condition merges where two transitive bumps land in the wrong order).
-6. **The package is not Python itself, CUDA, cuDNN, scrcpy, or any container base image** — those are governed by SPEC-AMEND-001 / SPEC-AMEND-002 / SPEC-AMEND-004.
+6. **The package is not Python itself, CUDA, cuDNN, scrcpy, or any container base image** — those are governed by the signed runtime/dependency matrix and require an updated signed spec/content payload.
 
 When all six conditions hold, Claude Code approves and enables auto-merge:
 
@@ -43,7 +44,7 @@ The following PRs are **never auto-merged** and require a human reviewer (ML lea
 
 - **Major version bumps** — `(X+1).Y.Z`.
 - **Updates to packages pinned in §10.2** — `faster-whisper`, `mediapipe`, `parselmouth`, `spacy`, `psycopg2-binary`, `pandas`, `celery`, `redis`, `fastapi`, `uvicorn`, `pydantic`, `numpy`, `pycryptodome`, `patchright`, `TikTokLive`.
-- **Updates to `faster-whisper`, `CTranslate2`, `mediapipe`, or `parselmouth`** — these four are explicitly called out because they govern the ML inference path's accuracy and latency contract. Even a patch bump can shift the Whisper transcription output, the MediaPipe landmark indexing, or the Praat acoustic feature extraction in ways that invalidate prior session data. CTranslate2 in particular sits beneath `faster-whisper` and is sensitive to compute_type compatibility (SPEC-AMEND-001 locks `int8`).
+- **Updates to `faster-whisper`, `CTranslate2`, `mediapipe`, or `parselmouth`** — these four are explicitly called out because they govern the ML inference path's accuracy and latency contract. Even a patch bump can shift the Whisper transcription output, the MediaPipe landmark indexing, or the Praat acoustic feature extraction in ways that invalidate prior session data. CTranslate2 in particular sits beneath `faster-whisper` and is sensitive to the signed spec's compute_type compatibility contract.
 - **Any PR where CI fails**, regardless of category. A failing CI gate is never bypassed with `--admin`.
 
 For every PR in this category, **Claude Code produces a short impact analysis** as a single PR comment using `gh pr comment <number> --body-file <path>`. The analysis covers three sections:
@@ -64,16 +65,16 @@ For every PR in this category, **Claude Code produces a short impact analysis** 
  whether its signature or behavior changed in the upstream diff. Pay
  particular attention to packages/ml_core/ and packages/schemas/.>
 
-### Whether the update implies a spec amendment
+### Whether the update implies a signed spec/content update
 <One of:
  - "No — the package is not in §10.2 and behavior is unchanged in the
     surfaces we use."
- - "Yes — package is pinned in §10.2; merging requires a SPEC-AMEND
-    entry. Drafted entry: [text]."
+ - "Yes — package is pinned in §10.2; merging requires an updated signed
+    spec/content payload before the dependency change lands."
  - "Conditional — the upstream changelog notes a behavior change in
-    [surface]; if we adopt the new behavior we should register an
-    amendment, otherwise we must add a regression test that pins the
-    old behavior.">
+    [surface]; if we adopt the new behavior we should update the signed
+    spec/content payload, otherwise we must add a regression test that pins
+    the old behavior.">
 ```
 
 The reviewer uses the analysis to decide merge vs hold vs close. Claude Code does NOT decide merge for Category 2 PRs — the analysis is decision support, not a rubber stamp.
@@ -96,7 +97,7 @@ Dependabot processing runs on a **fixed weekly day** (default: Monday), independ
 ## Hard rules (apply across all three categories)
 
 - Never bypass CI with `--admin` or merge a red PR. If CI is wrong, fix CI first.
-- Never bump a §10.2-pinned package without a registered SPEC-AMEND entry — even if the bump is a patch and CI is green.
+- Never bump a §10.2-pinned package without an updated signed spec/content payload — even if the bump is a patch and CI is green.
 - Never auto-merge a PR that touches `packages/ml_core/` or `packages/schemas/`, even transitively.
 - Never run a Dependabot sweep in parallel with a feature post-merge playbook execution.
 - Never rewrite a Dependabot squash commit in a way that loses the package name and version delta.
@@ -106,8 +107,8 @@ Dependabot processing runs on a **fixed weekly day** (default: Monday), independ
 ## Cross-references
 
 - Dependabot config: `.github/dependabot.yml`
-- Pin list (§10.2): `docs/SPEC_REFERENCE.md`
-- Spec deviation registry: `docs/SPEC_AMENDMENTS.md`
+- Canonical dependency surfaces: `pyproject.toml`, `uv.lock`
+- Pin list (§10.2): `docs/tech-spec-v*.pdf` via `scripts/spec_ref_check.py --resolve 10.2` / embedded `dependency_matrix.pinned_packages`
 - CI gates: `scripts/check.sh`, `.github/workflows/ci.yml`
 - Math recipe regression tests: `tests/unit/test_v3_math_recipe.py`
 - Schema consistency gate: `scripts/check_schema_consistency.py`

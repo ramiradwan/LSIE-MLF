@@ -31,12 +31,12 @@ class HealthTableModel(QAbstractTableModel):
     """Per-subsystem health rollup with recovery-mode column."""
 
     COLUMNS: ClassVar[tuple[str, ...]] = (
-        "Subsystem",
-        "State",
-        "Recovery mode",
+        "Area",
+        "Readiness",
+        "What is happening",
         "Detail",
-        "Last ok (UTC)",
-        "Operator hint",
+        "Last healthy (UTC)",
+        "Next action",
     )
 
     def __init__(self, parent: QObject | None = None) -> None:
@@ -44,8 +44,26 @@ class HealthTableModel(QAbstractTableModel):
         self._rows: list[HealthSubsystemStatus] = []
 
     def set_rows(self, rows: list[HealthSubsystemStatus]) -> None:
+        new_rows = list(rows)
+        # Preserve QTableView selection across health-poll updates by
+        # only resetting the model when the row identities (subsystem
+        # keys + order) actually change. When the structure is stable
+        # we emit `dataChanged` per row instead — the view keeps its
+        # selection because the row indexes stay valid.
+        old_keys = [row.subsystem_key for row in self._rows]
+        new_keys = [row.subsystem_key for row in new_rows]
+        if old_keys == new_keys and new_rows:
+            self._rows = new_rows
+            top_left = self.index(0, 0)
+            bottom_right = self.index(len(new_rows) - 1, len(self.COLUMNS) - 1)
+            self.dataChanged.emit(
+                top_left,
+                bottom_right,
+                [Qt.ItemDataRole.DisplayRole, Qt.ItemDataRole.ToolTipRole],
+            )
+            return
         self.beginResetModel()
-        self._rows = list(rows)
+        self._rows = new_rows
         self.endResetModel()
 
     def row_at(self, row: int) -> HealthSubsystemStatus | None:

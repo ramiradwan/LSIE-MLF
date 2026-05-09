@@ -3,7 +3,7 @@ name: dependabot-triage
 description: Process Dependabot pull requests against the LSIE-MLF dependency matrix on a weekly cadence. Apply the auto-merge eligibility rules, file the impact analysis for PRs that need human review, and keep the queue empty between cycles. Triggers include "dependabot", "dep updates", "triage dep PRs", "auto-merge eligible", or "weekly dep sweep".
 ---
 
-# Dependabot Triage (`requirements/`, §10.2)
+# Dependabot Triage (`pyproject.toml` + `uv.lock`, §10.2)
 
 ## When to invoke
 
@@ -14,18 +14,18 @@ description: Process Dependabot pull requests against the LSIE-MLF dependency ma
 ## Required inputs
 
 1. The list of open Dependabot PRs: `gh pr list --author "app/dependabot" --state open`.
-2. For each PR: title (package + version bump), changed files (`requirements/base.txt`, `requirements/api.txt`, `requirements/worker.txt`, `.github/workflows/*.yml`, etc.), and CI status (`gh pr checks <number>`).
-3. `docs/SPEC_REFERENCE.md` §10.2 dependency pin list — anything pinned there is spec-governed and cannot be auto-merged.
+2. For each PR: title (package + version bump), changed files (`pyproject.toml`, `uv.lock`, `.github/workflows/*.yml`, etc.), and CI status (`gh pr checks <number>`).
+3. Signed spec dependency matrix (§10.2 / `dependency_matrix.pinned_packages`, resolved with `scripts/spec_ref_check.py`) — anything pinned there is spec-governed and cannot be auto-merged.
 
 ## Auto-merge eligibility rules — ALL must be true
 
 A Dependabot PR is eligible for auto-merge ONLY when every condition holds:
 
 1. **Version delta is patch or minor.** Major version bumps (`X.Y.Z` → `(X+1).Y.Z`) always require human review. Inspect the title or run `gh pr view <number>`.
-2. **The package is not pinned in `docs/SPEC_REFERENCE.md` §10.2.** The §10.2 pinned list is authoritative — `faster-whisper==1.2.1`, `mediapipe==0.10.x`, `parselmouth==0.4.4`, `spacy==3.7.x`, `psycopg2-binary==2.9.x`, `pandas==2.2.x`, `celery==5.4.x`, `redis==5.x`, `fastapi==0.110.x`, `uvicorn==0.29.x`, `pydantic==2.x`, `numpy==1.26.x`, `pycryptodome>=3.20.0`, `patchright==1.58.2`, `TikTokLive==5.0.x`. Any bump to one of these requires a SPEC-AMEND entry before merge.
-3. **CI is fully green.** All workflow runs on the PR head must pass — ruff lint, ruff format, mypy, pytest, schema-consistency check, canonical terminology audit, docker compose config, dependency-pin check.
+2. **The package is not pinned in the signed spec dependency matrix (§10.2 / `dependency_matrix.pinned_packages`).** Resolve the current matrix with `scripts/spec_ref_check.py` or the embedded content payload. Any bump to a pinned package requires an updated signed spec/content payload before merge.
+3. **CI is fully green.** All workflow runs on the PR head must pass — ruff lint, ruff format, mypy, pytest, schema-consistency check, canonical terminology audit, and dependency-pin check.
 4. **The PR does NOT modify `packages/ml_core/` or `packages/schemas/`.** These directories are the ML inference core and the inter-module type contracts. A dep bump that touches them via transitive type-stub or generated-code changes is a contract change, not a maintenance update.
-5. **The package is not Python itself, CUDA, cuDNN, scrcpy, or any base image.** Runtime base changes are governed by SPEC-AMEND-001 / SPEC-AMEND-002 / SPEC-AMEND-004 and require explicit amendment.
+5. **The package is not Python itself, CUDA, cuDNN, scrcpy, or any base image.** Runtime base changes are governed by the signed runtime/dependency matrix and require an updated signed spec/content payload.
 6. **No co-pending Dependabot PR for the same package** (avoids race-condition merges where two transitive bumps land in the wrong order).
 
 If all six conditions hold, approve and enable auto-merge:
@@ -53,12 +53,12 @@ Any PR failing one or more eligibility rules gets a comment with this template b
 
 ### Risk summary
 - **Breaking changes in upstream changelog:** <link to release notes; list any breaking entries>
-- **Transitive dependency shifts:** <output of `pip-compile --dry-run` or equivalent; list any other pinned packages whose resolved version would change>
+- **Transitive dependency shifts:** <summarize the `uv.lock` delta or equivalent; list any other pinned packages whose resolved version would change>
 - **API surface changes affecting our usage:** <grep results for the public symbols we import; list any signatures we depend on that changed>
 - **Runtime behavior changes:** <perf regressions, deprecation warnings, default config changes>
 
 ### Required actions before merge
-- [ ] Spec amendment registered in `docs/SPEC_AMENDMENTS.md` (if pinned package)
+- [ ] Signed spec/content payload updated (if pinned package)
 - [ ] Targeted tests added or run for the changed surface (if ml_core/schemas)
 - [ ] Manual smoke test of <module>
 - [ ] Verify performance baseline still within tolerance (if `services/worker/` touched — see Standing Chore #7)
@@ -82,14 +82,13 @@ If the queue is empty, the sweep takes seconds. The point of the cadence is that
 ## Hard rules
 
 - NEVER bypass CI with `--admin` or merge a red PR. If CI is wrong, fix CI first.
-- NEVER bump a §10.2-pinned package without a registered SPEC-AMEND entry — even if the bump is a patch and CI is green. Pinned versions are pinned for a reason.
+- NEVER bump a §10.2-pinned package without an updated signed spec/content payload — even if the bump is a patch and CI is green. Pinned versions are pinned for a reason.
 - NEVER squash a Dependabot PR's commit message into something that loses the package name and version delta — the audit trail depends on `git log --grep` finding bumps later.
 - NEVER auto-merge a PR that touches `packages/ml_core/` or `packages/schemas/`, even transitively via stub regeneration.
 - NEVER process Dependabot PRs in parallel with a feature merge — the auto-merge queue can interleave with the post-merge playbook and produce a confusing main-branch state.
 
 ## Cross-references
 
-- Pin list: `docs/SPEC_REFERENCE.md` §10.2
-- Spec deviation registry: `docs/SPEC_AMENDMENTS.md`
+- Pin list: signed spec §10.2 via `scripts/spec_ref_check.py --resolve 10.2` / `dependency_matrix.pinned_packages`
 - CI gates: `scripts/check.sh`, `.github/workflows/ci.yml`
 - Post-merge follow-up: see the `post-merge-playbook` skill

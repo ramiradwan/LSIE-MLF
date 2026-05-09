@@ -294,12 +294,14 @@ _SELECT_ACTIVE_ARMS_SQL: str = """
     WHERE experiment_id = %(experiment_id)s
       AND COALESCE(enabled, TRUE) = TRUE
       AND end_dated_at IS NULL
+    ORDER BY arm ASC
 """
 
 # Legacy fallback when rollout-safe arm-status columns are not present yet.
 _SELECT_ARMS_SQL: str = """
     SELECT arm, alpha_param, beta_param FROM experiments
     WHERE experiment_id = %(experiment_id)s
+    ORDER BY arm ASC
 """
 
 # Historical-arm lookup for posterior updates. Intentionally unfiltered so a
@@ -824,19 +826,23 @@ class MetricsStore:
             """
     INSERT INTO attribution_event (
         event_id, session_id, segment_id, event_type, event_time_utc,
-        stimulus_time_utc, selected_arm_id, expected_rule_text_hash,
+        stimulus_time_utc, stimulus_id, stimulus_modality,
+        selected_arm_id, expected_rule_text_hash, expected_response_rule_text_hash,
         semantic_method, semantic_method_version, semantic_p_match,
-        semantic_reason_code, reward_path_version,
+        semantic_reason_code, matched_response_time_utc,
+        response_registration_status, response_reason_code, reward_path_version,
         bandit_decision_snapshot, evidence_flags, finality,
         schema_version, created_at
     ) VALUES (
         %(event_id)s, %(session_id)s, %(segment_id)s, %(event_type)s,
-        %(event_time_utc)s, %(stimulus_time_utc)s, %(selected_arm_id)s,
-        %(expected_rule_text_hash)s, %(semantic_method)s,
-        %(semantic_method_version)s, %(semantic_p_match)s,
-        %(semantic_reason_code)s, %(reward_path_version)s,
-        %(bandit_decision_snapshot)s::jsonb, %(evidence_flags)s,
-        %(finality)s, %(schema_version)s, %(created_at)s
+        %(event_time_utc)s, %(stimulus_time_utc)s, %(stimulus_id)s,
+        %(stimulus_modality)s, %(selected_arm_id)s,
+        %(expected_rule_text_hash)s, %(expected_response_rule_text_hash)s,
+        %(semantic_method)s, %(semantic_method_version)s, %(semantic_p_match)s,
+        %(semantic_reason_code)s, %(matched_response_time_utc)s,
+        %(response_registration_status)s, %(response_reason_code)s,
+        %(reward_path_version)s, %(bandit_decision_snapshot)s::jsonb,
+        %(evidence_flags)s, %(finality)s, %(schema_version)s, %(created_at)s
     )
     ON CONFLICT (event_id) DO UPDATE SET
         session_id = EXCLUDED.session_id,
@@ -844,12 +850,18 @@ class MetricsStore:
         event_type = EXCLUDED.event_type,
         event_time_utc = EXCLUDED.event_time_utc,
         stimulus_time_utc = EXCLUDED.stimulus_time_utc,
+        stimulus_id = EXCLUDED.stimulus_id,
+        stimulus_modality = EXCLUDED.stimulus_modality,
         selected_arm_id = EXCLUDED.selected_arm_id,
         expected_rule_text_hash = EXCLUDED.expected_rule_text_hash,
+        expected_response_rule_text_hash = EXCLUDED.expected_response_rule_text_hash,
         semantic_method = EXCLUDED.semantic_method,
         semantic_method_version = EXCLUDED.semantic_method_version,
         semantic_p_match = EXCLUDED.semantic_p_match,
         semantic_reason_code = EXCLUDED.semantic_reason_code,
+        matched_response_time_utc = EXCLUDED.matched_response_time_utc,
+        response_registration_status = EXCLUDED.response_registration_status,
+        response_reason_code = EXCLUDED.response_reason_code,
         reward_path_version = EXCLUDED.reward_path_version,
         bandit_decision_snapshot = EXCLUDED.bandit_decision_snapshot,
         evidence_flags = EXCLUDED.evidence_flags,

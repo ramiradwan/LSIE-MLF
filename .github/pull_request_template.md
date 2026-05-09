@@ -18,7 +18,6 @@ Describe what was implemented or modified.
 
 - [ ] `mypy packages/ services/ --python-version 3.11 --strict` passes
 - [ ] `pytest tests/ -x -q` passes
-- [ ] `docker compose config --quiet` passes
 - [ ] No retired synonyms from §0.3 in changed files
 - [ ] All new functions have full type annotations
 - [ ] All new functions have `from __future__ import annotations`

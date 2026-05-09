@@ -12,15 +12,13 @@ Verifies DriftCorrector, AudioResampler, and Orchestrator against:
 from __future__ import annotations
 
 import asyncio
-import base64
 import hashlib
 import json
 import logging
 import subprocess
-import time
 import uuid
 from collections import deque
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 from unittest.mock import MagicMock, patch
 
@@ -29,8 +27,7 @@ import pytest
 from packages.schemas.inference_handoff import InferenceHandoffPayload
 from packages.schemas.physiology import PhysiologicalChunkEvent, PhysiologicalChunkPayload
 from services.worker.pipeline.orchestrator import (
-    DRIFT_FREEZE_AFTER_FAILURES,
-    DRIFT_RESET_TIMEOUT,
+    BANDIT_POLICY_VERSION,
     FFMPEG_RESAMPLE_CMD,
     LIVE_SESSION_CALIBRATION_FRAMES_REQUIRED,
     LIVE_SESSION_STATE_TTL_S,
@@ -40,7 +37,6 @@ from services.worker.pipeline.orchestrator import (
     PHYSIO_STALENESS_THRESHOLD_S,
     SEGMENT_WINDOW_SECONDS,
     AudioResampler,
-    DriftCorrector,
     Orchestrator,
 )
 
@@ -59,6 +55,45 @@ def _expected_segment_id(payload: dict[str, Any]) -> str:
         )
     )
     return hashlib.sha256(stable_identity.encode("utf-8")).hexdigest()
+
+
+class _FakeMetricsStore:
+    arms: list[dict[str, Any]] = [
+        {
+            "id": 11,
+            "arm": "warm_welcome",
+            "alpha_param": 2.0,
+            "beta_param": 5.0,
+            "greeting_text": "Warm welcome",
+        },
+        {
+            "id": 12,
+            "arm": "direct_question",
+            "alpha_param": 4.0,
+            "beta_param": 3.0,
+            "greeting_text": "Direct question",
+        },
+        {
+            "id": 13,
+            "arm": "simple_hello",
+            "alpha_param": 1.5,
+            "beta_param": 2.5,
+            "greeting_text": "Simple hello",
+        },
+    ]
+
+    def __init__(self) -> None:
+        self.connected = False
+        self.closed = False
+
+    def connect(self) -> None:
+        self.connected = True
+
+    def close(self) -> None:
+        self.closed = True
+
+    def get_experiment_arms(self, _experiment_id: str) -> list[dict[str, Any]]:
+        return [dict(arm) for arm in self.arms]
 
 
 def _physio_chunk_json(
@@ -121,110 +156,10 @@ def _buffer_chunk(
     }
 
 
-class TestDriftCorrector:
-    """§4.C.1 — Temporal drift correction."""
-
-    def test_initial_offset_zero(self) -> None:
-        dc = DriftCorrector()
-        assert dc.drift_offset == 0.0
-
-    def test_poll_success_computes_offset(self) -> None:
-        dc = DriftCorrector()
-        mock_result = MagicMock()
-        mock_result.returncode = 0
-        mock_result.stdout = "1710000000.123456\n"
-
-        with (
-            patch("services.worker.pipeline.orchestrator.subprocess.run", return_value=mock_result),
-            patch("services.worker.pipeline.orchestrator.time.time", return_value=1710000000.5),
-        ):
-            offset = dc.poll()
-
-        expected = 1710000000.5 - 1710000000.123456
-        assert abs(offset - expected) < 1e-6
-        assert dc._consecutive_failures == 0
-        assert not dc._frozen
-
-    def test_poll_failure_increments_counter(self) -> None:
-        dc = DriftCorrector()
-        with patch(
-            "services.worker.pipeline.orchestrator.subprocess.run",
-            side_effect=subprocess.TimeoutExpired("adb", 5),
-        ):
-            dc.poll()
-        assert dc._consecutive_failures == 1
-        assert not dc._frozen
-
-    def test_poll_freezes_after_3_failures(self) -> None:
-        dc = DriftCorrector()
-        dc.drift_offset = 0.5
-
-        with patch(
-            "services.worker.pipeline.orchestrator.subprocess.run",
-            side_effect=RuntimeError("ADB down"),
-        ):
-            for _ in range(DRIFT_FREEZE_AFTER_FAILURES):
-                dc.poll()
-
-        assert dc._frozen
-        assert dc.drift_offset == 0.5
-
-    def test_frozen_returns_cached_offset(self) -> None:
-        dc = DriftCorrector()
-        dc.drift_offset = 1.5
-        dc._frozen = True
-        dc._frozen_at = time.monotonic()
-
-        with patch("services.worker.pipeline.orchestrator.subprocess.run") as mock_run:
-            offset = dc.poll()
-            mock_run.assert_not_called()
-
-        assert offset == 1.5
-
-    def test_frozen_resets_after_5_minutes(self) -> None:
-        dc = DriftCorrector()
-        dc.drift_offset = 2.0
-        dc._frozen = True
-        dc._frozen_at = time.monotonic() - DRIFT_RESET_TIMEOUT - 1
-
-        offset = dc.poll()
-        assert offset == 0.0
-        assert not dc._frozen
-        assert dc._consecutive_failures == 0
-
-    def test_correct_timestamp(self) -> None:
-        dc = DriftCorrector()
-        dc.drift_offset = 0.5
-        assert dc.correct_timestamp(100.0) == 100.5
-
-    def test_success_resets_failure_count(self) -> None:
-        dc = DriftCorrector()
-        dc._consecutive_failures = 2
-
-        mock_result = MagicMock()
-        mock_result.returncode = 0
-        mock_result.stdout = "1710000000.0\n"
-
-        with (
-            patch("services.worker.pipeline.orchestrator.subprocess.run", return_value=mock_result),
-            patch("services.worker.pipeline.orchestrator.time.time", return_value=1710000000.0),
-        ):
-            dc.poll()
-
-        assert dc._consecutive_failures == 0
-
-    def test_nonzero_returncode_is_failure(self) -> None:
-        dc = DriftCorrector()
-        mock_result = MagicMock()
-        mock_result.returncode = 1
-        mock_result.stdout = ""
-
-        with patch(
-            "services.worker.pipeline.orchestrator.subprocess.run", return_value=mock_result
-        ):
-            dc.poll()
-
-        assert dc._consecutive_failures == 1
+# DriftCorrector tests moved to tests/unit/desktop_app/test_drift.py
+# alongside the class itself (services.desktop_app.drift). The
+# orchestrator now only calls correct_timestamp on its corrector
+# instance — the poll loop runs in capture_supervisor.
 
 
 class TestAudioResampler:
@@ -505,6 +440,113 @@ class TestOrchestrator:
 
         assert mock_redis.lpop.call_count == MAX_PHYSIO_DRAIN_PER_CYCLE
 
+    def test_select_experiment_arm_replays_same_arm_and_theta(self) -> None:
+        session_id = "11111111-1111-4111-8111-111111111111"
+        window_start = datetime(2027, 1, 15, 8, 0, 0, tzinfo=UTC)
+
+        def select(store_type: type[_FakeMetricsStore] = _FakeMetricsStore) -> dict[str, Any]:
+            orch = Orchestrator(session_id=session_id, experiment_id="greeting_line_v1")
+            orch._segment_window_anchor_utc = window_start
+            orch._stimulus_time = 1800000000.75
+            with (
+                patch("services.worker.pipeline.analytics.MetricsStore", store_type),
+                patch("services.worker.pipeline.orchestrator.time.time", return_value=1800000003.0),
+            ):
+                orch._select_experiment_arm()
+            assert orch._bandit_decision_snapshot is not None
+            return orch._bandit_decision_snapshot
+
+        first = select()
+        second = select()
+
+        assert second["selected_arm_id"] == first["selected_arm_id"]
+        assert second["sampled_theta_by_arm"] == first["sampled_theta_by_arm"]
+        assert second["decision_context_hash"] == first["decision_context_hash"]
+        assert second["random_seed"] == first["random_seed"]
+
+    def test_select_experiment_arm_replay_ignores_store_arm_order(self) -> None:
+        session_id = "11111111-1111-4111-8111-111111111111"
+        window_start = datetime(2027, 1, 15, 8, 0, 0, tzinfo=UTC)
+
+        class ReversedMetricsStore(_FakeMetricsStore):
+            arms = list(reversed(_FakeMetricsStore.arms))
+
+        def select(store_type: type[_FakeMetricsStore]) -> dict[str, Any]:
+            orch = Orchestrator(session_id=session_id, experiment_id="greeting_line_v1")
+            orch._segment_window_anchor_utc = window_start
+            orch._stimulus_time = 1800000000.75
+            with (
+                patch("services.worker.pipeline.analytics.MetricsStore", store_type),
+                patch("services.worker.pipeline.orchestrator.time.time", return_value=1800000003.0),
+            ):
+                orch._select_experiment_arm()
+            assert orch._bandit_decision_snapshot is not None
+            return orch._bandit_decision_snapshot
+
+        first = select(_FakeMetricsStore)
+        second = select(ReversedMetricsStore)
+
+        assert second["selected_arm_id"] == first["selected_arm_id"]
+        assert second["candidate_arm_ids"] == first["candidate_arm_ids"]
+        assert second["sampled_theta_by_arm"] == first["sampled_theta_by_arm"]
+        assert second["decision_context_hash"] == first["decision_context_hash"]
+        assert second["random_seed"] == first["random_seed"]
+
+    def test_changed_seed_input_changes_random_seed(self) -> None:
+        session_id = "22222222-2222-4222-8222-222222222222"
+        window_start = datetime(2027, 1, 15, 8, 0, 0, tzinfo=UTC)
+        orch = Orchestrator(session_id=session_id, experiment_id="greeting_line_v1")
+
+        base_seed = orch._bandit_random_seed(
+            segment_window_start_utc=window_start,
+            stimulus_time=1800000000.75,
+        )
+        changed_window_seed = orch._bandit_random_seed(
+            segment_window_start_utc=window_start + timedelta(seconds=SEGMENT_WINDOW_SECONDS),
+            stimulus_time=1800000000.75,
+        )
+        changed_stimulus_seed = orch._bandit_random_seed(
+            segment_window_start_utc=window_start,
+            stimulus_time=1800000001.75,
+        )
+
+        expected_material = "".join(
+            (
+                f"{uuid.UUID(session_id)}",
+                window_start.isoformat().replace("+00:00", "Z"),
+                "1800000000.75",
+                BANDIT_POLICY_VERSION,
+            )
+        )
+        expected_seed = int.from_bytes(
+            hashlib.sha256(expected_material.encode("utf-8")).digest()[:8],
+            "big",
+        )
+        assert base_seed == expected_seed
+        assert changed_window_seed != base_seed
+        assert changed_stimulus_seed != base_seed
+
+    def test_fallback_snapshot_includes_required_replay_fields(self) -> None:
+        selection_time = datetime(2027, 1, 15, 8, 0, 3, tzinfo=UTC)
+        orch = Orchestrator(session_id="33333333-3333-4333-8333-333333333333")
+        orch._segment_window_anchor_utc = datetime(2027, 1, 15, 8, 0, 0, tzinfo=UTC)
+        orch._stimulus_time = 1800000000.75
+
+        orch._ensure_bandit_decision_snapshot(
+            selection_time_utc=selection_time,
+            segment_window_start_utc=orch._segment_window_anchor_utc,
+        )
+
+        snapshot = orch._bandit_decision_snapshot
+        assert snapshot is not None
+        assert snapshot["decision_context_hash"]
+        assert len(snapshot["decision_context_hash"]) == 64
+        assert isinstance(snapshot["random_seed"], int)
+        assert snapshot["random_seed"] == orch._bandit_random_seed(
+            segment_window_start_utc=orch._segment_window_anchor_utc,
+            stimulus_time=orch._stimulus_time,
+        )
+
     def test_assemble_segment_validates_payload(self) -> None:
         orch = Orchestrator(stream_url="https://example.com/stream")
         audio = b"\x00" * 960000
@@ -527,7 +569,9 @@ class TestOrchestrator:
         assert payload["segment_id"] == _expected_segment_id(payload)
         assert payload["_experiment_id"] == 0
         assert payload["_bandit_decision_snapshot"]["experiment_id"] == 0
-        assert base64.b64decode(payload["_audio_data"]) == audio
+        # WS3 P2: assemble_segment no longer base64-encodes _audio_data;
+        # the desktop IPC path moves audio through SharedMemory.
+        assert payload["_audio_data"] == audio
 
     def test_assemble_segment_prefers_ibi_over_session(self) -> None:
         orch = Orchestrator()
@@ -1071,12 +1115,13 @@ class TestOrchestrator:
         assert first_payload["timestamp_utc"] != second_payload["timestamp_utc"]
 
     @pytest.mark.audit_item("13.26")
-    def test_bandit_snapshot_copies_pre_update_state_and_omits_absent_optionals(self) -> None:
+    def test_bandit_snapshot_copies_pre_update_state_and_keeps_empty_sample_map(self) -> None:
         orch = Orchestrator(session_id="77777777-7777-4777-8777-777777777777")
         orch._active_arm = "arm_a"
         orch._expected_greeting = "hello before update"
         orch._experiment_row_id = 17
         selection_time = datetime(2026, 3, 13, 12, 0, 0, tzinfo=UTC)
+        segment_window_start = datetime(2026, 3, 13, 11, 59, 30, tzinfo=UTC)
         candidate_arm_ids = ["arm_a", "arm_b"]
         posterior_by_arm = {
             "arm_a": {"alpha": 2.0, "beta": 3.0},
@@ -1085,6 +1130,7 @@ class TestOrchestrator:
 
         orch._capture_bandit_decision_snapshot(
             selection_time_utc=selection_time,
+            segment_window_start_utc=segment_window_start,
             candidate_arm_ids=candidate_arm_ids,
             posterior_by_arm=posterior_by_arm,
             sampled_theta_by_arm=None,
@@ -1103,33 +1149,58 @@ class TestOrchestrator:
         assert snapshot["posterior_by_arm"]["arm_a"] == {"alpha": 2.0, "beta": 3.0}
         assert snapshot["expected_greeting"] == "hello before update"
         assert len(snapshot["decision_context_hash"]) == 64
-        assert "sampled_theta_by_arm" not in snapshot
-        assert "random_seed" not in snapshot
+        assert isinstance(snapshot["random_seed"], int)
+        assert snapshot["sampled_theta_by_arm"] == {}
 
         payload = orch.assemble_segment(b"\x00", [])
         payload_snapshot = payload["_bandit_decision_snapshot"]
         assert payload_snapshot["posterior_by_arm"]["arm_a"] == {"alpha": 2.0, "beta": 3.0}
-        assert "sampled_theta_by_arm" not in payload_snapshot
-        assert "random_seed" not in payload_snapshot
+        assert payload_snapshot["sampled_theta_by_arm"] == {}
+        assert isinstance(payload_snapshot["random_seed"], int)
 
     def test_dispatch_payload_validates_model_and_omits_ineligible_physio(self) -> None:
-        orch = Orchestrator(session_id="88888888-8888-4888-8888-888888888888")
-        payload = orch.assemble_segment(b"\x01\x02", [])
-        payload["_physiological_context"] = {"streamer": None, "operator": None}
-        mock_task = MagicMock()
+        """WS3 P2: dispatch validates handoff and pushes IPC control message.
 
-        with patch("services.worker.tasks.inference.process_segment", mock_task):
+        The v3.4 Celery + base64 path is retired; the segment now travels
+        as a SharedMemory PCM block plus an ``InferenceControlMessage``.
+        ``_physiological_context`` with all-None roles is still pruned by
+        ``sanitize_json_payload``.
+        """
+        from queue import Queue as ThreadQueue
+
+        from services.desktop_app.ipc.control_messages import InferenceControlMessage
+        from services.desktop_app.ipc.shared_buffers import (
+            PcmBlockMetadata,
+            read_pcm_block,
+        )
+
+        ipc_queue: ThreadQueue[Any] = ThreadQueue()
+        orch = Orchestrator(
+            session_id="88888888-8888-4888-8888-888888888888",
+            ipc_queue=ipc_queue,
+        )
+        try:
+            payload = orch.assemble_segment(b"\x01\x02", [])
+            payload["_physiological_context"] = {"streamer": None, "operator": None}
+
             orch._dispatch_payload(payload)
 
-        mock_task.delay.assert_called_once()
-        dispatched = mock_task.delay.call_args.args[0]
-        handoff_fields = {
-            key: value
-            for key, value in dispatched.items()
-            if key not in {"_audio_data", "_frame_data", "_experiment_code"}
-        }
-        InferenceHandoffPayload.model_validate(handoff_fields)
-        assert "_physiological_context" not in dispatched
-        assert "sampled_theta_by_arm" not in dispatched["_bandit_decision_snapshot"]
-        assert "random_seed" not in dispatched["_bandit_decision_snapshot"]
-        assert base64.b64decode(dispatched["_audio_data"]) == b"\x01\x02"
+            assert ipc_queue.qsize() == 1
+            raw = ipc_queue.get_nowait()
+            msg = InferenceControlMessage.model_validate(raw)
+
+            InferenceHandoffPayload.model_validate(msg.handoff)
+            assert "_physiological_context" not in msg.handoff
+            assert msg.handoff["_bandit_decision_snapshot"]["sampled_theta_by_arm"] == {}
+            assert isinstance(msg.handoff["_bandit_decision_snapshot"]["random_seed"], int)
+
+            recovered = read_pcm_block(
+                PcmBlockMetadata(
+                    name=msg.audio.name,
+                    byte_length=msg.audio.byte_length,
+                    sha256=msg.audio.sha256,
+                )
+            )
+            assert recovered == b"\x01\x02"
+        finally:
+            orch.close_inflight_blocks()

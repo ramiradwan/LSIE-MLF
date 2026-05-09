@@ -184,7 +184,8 @@ def test_run_audit_honors_pre_registered_shared_verifier(
         "Synthetic shared-verifier item",
         "Body text routed to a pre-registered verifier.",
     )
-    assert fresh_default_audit_registry.item_ids == ("13.98", "13.99")
+    assert "13.98" in fresh_default_audit_registry.item_ids
+    assert "13.99" in fresh_default_audit_registry.item_ids
     assert (
         "| 13.98 | Synthetic shared-verifier item | PASS | real shared verifier executed | — |"
         in captured.out

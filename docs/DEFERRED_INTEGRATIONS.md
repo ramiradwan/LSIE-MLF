@@ -26,7 +26,7 @@ This file inventories code that is **implemented in the repository but not wired
 | Field | Value |
 |---|---|
 | **Files** | `services/worker/pipeline/reward.py` (current AU12-only `compute_reward()` signature would need an RMSSD parameter), `services/worker/pipeline/orchestrator.py` (assemble_segment already injects `_physiological_context` into the payload — the data is available downstream), `services/worker/tasks/inference.py` (the persist dispatch already forwards `_physiological_context`), `packages/schemas/physiology.py` (`PhysiologicalSnapshot.rmssd_ms` is the input field) |
-| **Gating dependency** | A future amendment to spec §7B (Thompson Sampling) explicitly permitting RMSSD to enter the gated reward computation. The current §7B reward formula is `r_t = P90_AU12 × G_semantic` and contains no physiology term. SPEC-AMEND-007 added the *transport* of physiological context through Modules C/D/E and the *persistence* of co-modulation analytics, but explicitly stopped short of modifying the reward path. |
+| **Gating dependency** | A future signed spec/content update to §7B (Thompson Sampling) explicitly permitting RMSSD to enter the gated reward computation. The current §7B reward formula is `r_t = P90_AU12 × G_semantic` and contains no physiology term. The signed spec permits the *transport* of physiological context through Modules C/D/E and the *persistence* of co-modulation analytics, but explicitly stops short of modifying the reward path. |
 | **Deferred since** | 2026-04-16 (physiology merge, PR 91 commit `60be7ec`) |
 | **Justification** | The full physiological data path now reaches the persistence layer (`physiology_log`, `comodulation_log`) and the per-segment `_physiological_context` dict is present in the InferenceHandoffPayload at the point where `reward.compute_reward()` is called. Adding RMSSD as a multiplicative or additive term to the gated reward would change the Thompson Sampling posterior update semantics for every prior arm in the `experiments` table — a change that must be governed by a written spec amendment so that the review agent treats it as accepted rather than a violation. Until that amendment exists, `compute_reward()` must remain AU12 + semantic-gate only. |
 
@@ -57,6 +57,15 @@ This file inventories code that is **implemented in the repository but not wired
 | **Deferred since** | 2026-04-29 (attribution ledger/backfill support, introduced during the baseline-cleanup merge train and first inventoried in this post-cleanup refresh) |
 | **Justification** | The online attribution ledger path is wired from `persist_metrics()` through `build_attribution_ledger_records()` into `MetricsStore.persist_attribution_ledger()`, but it uses the builder default `online_provisional`. The schemas, SQL constraints, deterministic IDs, and upsert implementation already support the §7E `online_provisional` → `offline_final` lifecycle after attribution horizons close. The missing surface is the runtime finalization/replay driver that decides when horizons are closed and feeds finalized records back through the upsert path. Wiring finalization without that horizon scan and replay contract would either mark records final too early or leave analytics consumers unable to distinguish provisional data from closed-horizon attribution. |
 
+### 6. Desktop Cloud Sync Producers and Interactive Auth Activation
+
+| Field | Value |
+|---|---|
+| **Files** | `services/desktop_app/cloud/outbox.py` (`CloudOutbox.enqueue_inference_handoff`, `enqueue_attribution_event`, `enqueue_posterior_delta`), `services/desktop_app/cloud/auth_flow.py` (`DesktopAuthFlow` PKCE loopback client), `services/desktop_app/cloud/experiment_bundle.py` (`ExperimentBundleClient`, `ExperimentBundleStore`), `services/desktop_app/processes/cloud_sync_worker.py` (registered drain worker), `services/desktop_app/ipc/__init__.py` (future `analytics_state_worker` → `cloud_sync_worker` channel noted but not present) |
+| **Gating dependency** | WS5 P4 desktop analytics-inbox wiring. The current `analytics_state_worker` explicitly idles until WS5 P4 and does not yet receive the `InferenceHandoffPayload` / attribution / posterior-delta DTOs that would be safe to enqueue. Operator-facing interactive cloud sign-in also needs a UI action surface before launching browser auth from the desktop shell. |
+| **Deferred since** | 2026-05-02 (WS5 P2 desktop cloud-sync/offline-cache cycle) |
+| **Justification** | The `cloud_sync_worker` is registered in `ProcessGraph` and can drain `pending_uploads`, but no production desktop process currently constructs the cloud upload DTOs. Forcing producer wiring before the WS5 P4 analytics pipeline lands would require fabricating data from partial SQLite rows or changing the IPC graph ahead of its planned phase. The PKCE and bundle clients are importable and tested, but launching browser auth or replacing local experiment seeds requires an operator-triggered sign-in/sync lifecycle that is not present in the current Operator Console shell. Activation requires WS5 P4 to deliver real analytics DTOs and a desktop UI/API command path for cloud authentication and bundle refresh. |
+
 ---
 
 ## Searched-But-Not-Deferred (negative findings)
@@ -69,7 +78,7 @@ The following were considered during the deferral scan and rejected as **not** d
 - **Semantic shadow mode** — §8 / §13.27 define a parallel scorer that records candidate outputs without changing live `is_match`, `confidence_score`, reward, or Thompson Sampling updates. The in-process `SemanticEvaluator` shadow sidecar is wired for observational evaluation; no external service, persistence, or promotion workflow is treated as dormant integration here.
 - **PySide6 Debug Studio** (`scripts/debug_studio.py`) — intentionally launched manually by operators per §4.E.1. Operator tooling, not deferred integration. Supersedes the retired Streamlit operator tooling surface (`services/worker/dashboard.py`, deleted 2026-04-17).
 - **Operator CLI** (`scripts/lsie_cli.py`) — same reasoning as Debug Studio.
-- **`SPEC-AMEND-001` / `SPEC-AMEND-002` references in production code** — these are *accepted* amendments documented in `docs/SPEC_AMENDMENTS.md`. Not pending; not deferred.
+- **Historical hardware/runtime references in production code** — these are accepted historical requirements folded into the governing signed spec context. Not pending; not deferred.
 
 ## Search methodology
 

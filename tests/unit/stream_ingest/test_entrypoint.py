@@ -1,133 +1,86 @@
-"""
-Tests for services/stream_ingest/entrypoint.sh — Phase 5.1 validation.
-
-Validates entrypoint script structure against §4.A.1 IPC pipe lifecycle
-and §12 error handling. Uses static analysis since the script requires
-a real Android USB device to run.
-"""
+"""Static Module A capture-supervisor contract checks."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
+from services.desktop_app.processes import capture_supervisor
+from services.desktop_app.processes.capture_supervisor import (
+    AUDIO_SCRCPY_PORT_RANGE,
+    DEVICE_POLL_INTERVAL_S,
+    DEVICE_POLL_TIMEOUT_S,
+    RESTART_BACKOFF_S,
+    VIDEO_SCRCPY_PORT_RANGE,
+    CaptureLayout,
+    _build_audio_scrcpy_args,
+    _build_video_scrcpy_args,
+)
 
-ENTRYPOINT_PATH = Path("services/stream_ingest/entrypoint.sh")
-DOCKERFILE_PATH = Path("services/stream_ingest/Dockerfile")
-
-
-@pytest.fixture()
-def entrypoint_content() -> str:
-    """Read entrypoint.sh content."""
-    return ENTRYPOINT_PATH.read_text(encoding="utf-8")
-
-
-@pytest.fixture()
-def dockerfile_content() -> str:
-    """Read Dockerfile content."""
-    return DOCKERFILE_PATH.read_text(encoding="utf-8")
+CAPTURE_SUPERVISOR_PATH = Path("services/desktop_app/processes/capture_supervisor.py")
 
 
-class TestEntrypointStructure:
-    """§4.A.1 — IPC pipe lifecycle validation."""
-
-    def test_shebang(self, entrypoint_content: str) -> None:
-        """Script has proper bash shebang."""
-        assert entrypoint_content.startswith("#!/usr/bin/env bash")
-
-    def test_set_euo_pipefail(self, entrypoint_content: str) -> None:
-        """Script uses strict error handling."""
-        assert "set -euo pipefail" in entrypoint_content
-
-    def test_ipc_pipe_path(self, entrypoint_content: str) -> None:
-        """§4.A.1 — Dual IPC Pipes for Audio and Video."""
-        assert 'AUDIO_PIPE="$IPC_DIR/audio_stream.raw"' in entrypoint_content
-        assert 'VIDEO_PIPE="$IPC_DIR/video_stream.mkv"' in entrypoint_content
-
-    def test_mkfifo_creates_pipe(self, entrypoint_content: str) -> None:
-        """§4.A.1 step 1 — Creates named pipe with mkfifo."""
-        assert "mkfifo" in entrypoint_content
-
-    def test_fd3_open(self, entrypoint_content: str) -> None:
-        """§4.A.1 step 2 — Non-blocking open with exec 3<> for AUDIO_PIPE."""
-        assert 'exec 3<> "$AUDIO_PIPE"' in entrypoint_content
-
-    def test_scrcpy_audio_codec_raw(self, entrypoint_content: str) -> None:
-        """§4.A.1 — scrcpy uses --audio-codec=raw for PCM s16le 48kHz."""
-        assert "--audio-codec=raw" in entrypoint_content
-
-    def test_scrcpy_audio_buffer(self, entrypoint_content: str) -> None:
-        """§4.A.1 — scrcpy uses --audio-buffer=30 (30ms)."""
-        assert "--audio-buffer=" in entrypoint_content
-
-    def test_scrcpy_no_video_audio_split(self, entrypoint_content: str) -> None:
-        """§4.A.1 — Dual-sink: --no-video for audio instance, --no-audio for video."""
-        assert "--no-video" in entrypoint_content
-        assert "--no-audio" in entrypoint_content
-
-    def test_scrcpy_no_playback(self, entrypoint_content: str) -> None:
-        """§4.A.1 — scrcpy uses --no-playback for headless mode (v3.3.4)."""
-        assert "--no-playback" in entrypoint_content
-
-    def test_scrcpy_records_directly(self, entrypoint_content: str) -> None:
-        """§4.A.1 steps 3–4 — scrcpy writes directly to named pipes (bypassing dd)."""
-        assert '--record="$AUDIO_PIPE"' in entrypoint_content
-        assert '--record="$VIDEO_PIPE"' in entrypoint_content
-
-    def test_cleanup_removes_pipe(self, entrypoint_content: str) -> None:
-        """§4.A.1 step 4 — Setup cleans up old pipe files."""
-        assert 'rm -f "$VIDEO_PIPE" "$AUDIO_PIPE"' in entrypoint_content
+def _layout(tmp_path: Path) -> CaptureLayout:
+    return CaptureLayout(
+        capture_dir=tmp_path,
+        audio_path=tmp_path / "audio_stream.wav",
+        video_path=tmp_path / "video_stream.mkv",
+    )
 
 
-class TestEntrypointErrorHandling:
-    """§12 — Error handling for Module A."""
+def test_capture_supervisor_is_current_module_a_surface() -> None:
+    source = CAPTURE_SUPERVISOR_PATH.read_text(encoding="utf-8")
 
-    def test_usb_poll_interval(self, entrypoint_content: str) -> None:
-        """§12 Hardware loss A — poll every 2 seconds."""
-        assert "sleep 2" in entrypoint_content
-
-    def test_usb_poll_max(self, entrypoint_content: str) -> None:
-        """§12 Hardware loss A — poll for 60 seconds max."""
-        assert "timeout=60" in entrypoint_content
-
-    def test_reconnect_loop(self, entrypoint_content: str) -> None:
-        """§12 Hardware loss A — Restart capture after USB reconnection."""
-        assert "wait_for_device" in entrypoint_content
-
-    def test_scrcpy_pids_tracked(self, entrypoint_content: str) -> None:
-        """Scrcpy PIDs tracked for cleanup (dual-sink: audio + video)."""
-        assert "AUDIO_PID" in entrypoint_content
-        assert "VIDEO_PID" in entrypoint_content
+    assert "Owns the desktop capture lifecycle" in source
+    assert "§9.1, §9.3, and §12" in source
+    assert "cleanup_capture_files(layout.capture_dir)" in source
+    assert "record_capture_pid" in source
 
 
-class TestDockerfile:
-    """§9.1 — Capture Container image validation."""
+def test_hardware_device_loss_cadence_matches_section_12() -> None:
+    assert DEVICE_POLL_INTERVAL_S == 2.0
+    assert DEVICE_POLL_TIMEOUT_S == 60.0
+    assert RESTART_BACKOFF_S == 2.0
 
-    def test_base_image(self, dockerfile_content: str) -> None:
-        """§9.1 — Ubuntu 24.04 base image (SPEC-AMEND-002: GLIBC 2.38+ for scrcpy v3.1)."""
-        assert "FROM ubuntu:24.04" in dockerfile_content
 
-    def test_adb_installed(self, dockerfile_content: str) -> None:
-        """adb required for USB device communication."""
-        assert "adb" in dockerfile_content
+def test_audio_scrcpy_args_are_headless_raw_wav(tmp_path: Path) -> None:
+    args = _build_audio_scrcpy_args("scrcpy", _layout(tmp_path))
 
-    def test_scrcpy_installed(self, dockerfile_content: str) -> None:
-        """§9.1 — scrcpy installed from official release."""
-        assert "scrcpy" in dockerfile_content
-        assert "Genymobile/scrcpy" in dockerfile_content
+    assert args[0] == "scrcpy"
+    assert "--no-video" in args
+    assert "--no-playback" in args
+    assert "--no-window" in args
+    assert "--audio-codec=raw" in args
+    assert "--audio-buffer=30" in args
+    assert "--audio-dup" not in args
+    assert "--record-format=wav" in args
+    assert f"--port={AUDIO_SCRCPY_PORT_RANGE}" in args
+    assert f"--record={tmp_path / 'audio_stream.wav'}" in args
 
-    def test_ipc_directory(self, dockerfile_content: str) -> None:
-        """§4.A.1 — /tmp/ipc directory created."""
-        assert "mkdir -p /tmp/ipc" in dockerfile_content
 
-    def test_entrypoint_set(self, dockerfile_content: str) -> None:
-        """Entrypoint is the shell script."""
-        assert 'ENTRYPOINT ["/entrypoint.sh"]' in dockerfile_content
+def test_video_scrcpy_args_are_headless_h264_mkv(tmp_path: Path) -> None:
+    args = _build_video_scrcpy_args("scrcpy", _layout(tmp_path))
 
-    def test_entrypoint_copied(self, dockerfile_content: str) -> None:
-        """§3.2 — Build context is monorepo root."""
-        assert "COPY services/stream_ingest/entrypoint.sh" in dockerfile_content
+    assert args[0] == "scrcpy"
+    assert "--no-audio" in args
+    assert "--no-playback" in args
+    assert "--no-window" in args
+    assert "--video-codec=h264" in args
+    assert "--max-fps=30" in args
+    assert "--record-format=mkv" in args
+    assert f"--port={VIDEO_SCRCPY_PORT_RANGE}" in args
+    assert f"--record={tmp_path / 'video_stream.mkv'}" in args
 
-    def test_entrypoint_executable(self, dockerfile_content: str) -> None:
-        """Entrypoint has execute permission."""
-        assert "chmod +x /entrypoint.sh" in dockerfile_content
+
+def test_capture_supervisor_uses_interruptible_shutdown_waits() -> None:
+    source = CAPTURE_SUPERVISOR_PATH.read_text(encoding="utf-8")
+
+    assert "shutdown_event.wait(timeout=SCRCPY_STAGGER_S)" in source
+    assert "shutdown_event.wait(timeout=RESTART_BACKOFF_S)" in source
+    assert "shutdown_event.wait(timeout=0.5)" in source
+    assert "while not shutdown_event.is_set()" in source
+
+
+def test_capture_supervisor_exports_expected_runtime_symbols() -> None:
+    assert capture_supervisor.SQLITE_FILENAME == "desktop.sqlite"
+    assert capture_supervisor.AUDIO_SCRCPY_PORT_RANGE == "27100:27199"
+    assert capture_supervisor.VIDEO_SCRCPY_PORT_RANGE == "27200:27299"

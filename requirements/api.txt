@@ -1,7 +1,0 @@
-# LSIE-MLF API Server Requirements — §10.2
-
--r base.txt
-fastapi==0.110.*
-uvicorn==0.29.*
-psycopg2-binary==2.9.*
-redis==5.0.*

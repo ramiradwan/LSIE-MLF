@@ -1,9 +1,0 @@
-# LSIE-MLF Base Requirements — §10.2
-# Shared across all Python containers
-
-pydantic==2.*
-celery==5.4.*
-redis==5.*
-numpy==1.26.*
-python-dotenv==1.2.*
-async-timeout==4.0.3

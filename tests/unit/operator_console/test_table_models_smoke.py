@@ -61,6 +61,15 @@ def test_experiments_model_shape_and_lookup() -> None:
     model.set_rows([_arm("a"), _arm("b")])
     assert model.rowCount() == 2
     assert model.columnCount() == len(ExperimentsTableModel.COLUMNS)
+    assert model.headerData(1, Qt.Orientation.Horizontal, Qt.ItemDataRole.DisplayRole) == (
+        "Confirmation text"
+    )
+    assert model.headerData(8, Qt.Orientation.Horizontal, Qt.ItemDataRole.DisplayRole) == (
+        "Recent stimulus confirmed"
+    )
+    assert model.data(model.index(0, 1), Qt.ItemDataRole.ToolTipRole) == (
+        "Double-click or press F2/Enter to edit confirmation text."
+    )
     assert model.arm_by_id("a") is not None
     assert model.arm_by_id("missing") is None
 

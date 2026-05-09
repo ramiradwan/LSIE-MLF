@@ -3,7 +3,8 @@
 # LSIE-MLF Local CI Check
 #
 # Mirrors .github/workflows/ci.yml for local pre-push validation.
-# Run from the project root with the virtualenv activated.
+# Run from the project root. Uses `uv run` so the active shell does not
+# need to have the venv pre-activated.
 # Usage: bash scripts/check.sh
 # =============================================================================
 
@@ -30,7 +31,7 @@ echo ""
 
 # 1. Ruff lint
 echo "── Ruff lint ──"
-if ruff check packages/ services/ tests/; then
+if uv run ruff check packages/ services/ tests/; then
     pass "Ruff lint"
 else
     fail "Ruff lint"
@@ -39,7 +40,7 @@ echo ""
 
 # 2. Ruff format
 echo "── Ruff format ──"
-if ruff format --check packages/ services/ tests/; then
+if uv run ruff format --check packages/ services/ tests/; then
     pass "Ruff format"
 else
     fail "Ruff format"
@@ -47,12 +48,8 @@ fi
 echo ""
 
 # 3. Mypy — scope and flags MUST match ci.yml lint-and-typecheck job.
-# The local venv must also have PySide6 installed (via requirements/cli.txt
-# or `pip install PySide6`); without it, every QObject/QWidget subclass in
-# services/operator_console resolves to Any and mypy fails the same way CI
-# would. CI installs PySide6 explicitly in the lint-and-typecheck job.
 echo "── Mypy type check ──"
-if mypy packages/ services/ tests/ --python-version 3.11 --ignore-missing-imports --explicit-package-bases; then
+if uv run mypy packages/ services/ tests/ --python-version 3.11 --ignore-missing-imports --explicit-package-bases; then
     pass "Mypy type check"
 else
     fail "Mypy type check"
@@ -61,7 +58,7 @@ echo ""
 
 # 4. Pytest
 echo "── Pytest ──"
-if python -m pytest tests/ -x -q --tb=short; then
+if uv run pytest tests/ -x -q --tb=short; then
     pass "Pytest"
 else
     fail "Pytest"
@@ -70,25 +67,32 @@ echo ""
 
 # 5. Strict §13 audit harness — mirrors the first-class CI audit job.
 echo "── §13 audit harness ──"
-if python scripts/run_audit.py --strict; then
+if uv run python scripts/run_audit.py --strict; then
     pass "§13 audit harness"
 else
     fail "§13 audit harness"
 fi
 echo ""
 
-# 6. Docker compose validation
-echo "── Docker compose config ──"
-if docker compose config --quiet 2>/dev/null; then
-    pass "Docker compose config"
+# 6. Canonical terminology audit
+echo "── Canonical terminology audit ──"
+if grep -rnE \
+    --exclude='check.sh' \
+    --exclude='check.ps1' \
+    --exclude='mechanical.py' \
+    --exclude='*.pyc' \
+    --exclude-dir='__pycache__' \
+    'GPU worker|video pipe|free-form rationale|free-form rationales|free-form semantic rationale|free-form semantic rationales|x[_-]?max[- ]normalized reward|x[_-]?max as reward input|x[_-]?max reward input|\bpitch_f0\b|legacy acoustic scalar|scalar-only acoustic|\[0\.0, 5\.0\].*AU12|AU12.*\[0\.0, 5\.0\]|AU12 clamp.*5\.0|clamp.*AU12.*5\.0' \
+    services/ packages/ scripts/; then
+    fail "Canonical terminology audit"
 else
-    warn "Docker compose config failed (Docker may not be running)"
+    pass "Canonical terminology audit"
 fi
 echo ""
 
-# 7. Schema consistency check (Pydantic vs SQL files vs Python DDL string vs content.json)
+# 7. Schema consistency check (Pydantic vs extracted JSON Schema vs cloud PostgreSQL DDL)
 echo "── Schema consistency check ──"
-if python scripts/check_schema_consistency.py; then
+if uv run python scripts/check_schema_consistency.py; then
     pass "Schema consistency check"
 else
     fail "Schema consistency check"

@@ -27,6 +27,10 @@ def test_setters_propagate() -> None:
     card.set_status(UiStatusKind.OK, "ok")
     assert card._secondary.isHidden() is False  # type: ignore[attr-defined]
     assert card._status.isHidden() is False  # type: ignore[attr-defined]
+    assert card.minimumHeight() >= 132
+    assert card.accessibleName() == "Active Session"
+    assert "session abc" in card.accessibleDescription()
+    assert "arm: greeting_v1" in card.accessibleDescription()
 
 
 def test_set_status_none_hides_pill() -> None:
@@ -47,3 +51,8 @@ def test_clicked_signal_only_when_clickable() -> None:
     card.set_clickable(True)
     _press(card)
     assert clicks == [1]
+    assert card.focusPolicy() is Qt.FocusPolicy.StrongFocus
+    assert card.toolTip() == "Open Overview"
+
+    QTest.keyClick(card, Qt.Key.Key_Return)
+    assert clicks == [1, 1]

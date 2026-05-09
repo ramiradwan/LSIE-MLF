@@ -21,6 +21,7 @@ Spec references:
 from __future__ import annotations
 
 from PySide6.QtCore import QModelIndex, Qt, Slot
+from PySide6.QtGui import QResizeEvent
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QFrame,
@@ -28,6 +29,9 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QMessageBox,
+    QPushButton,
+    QScrollArea,
     QTableView,
     QVBoxLayout,
     QWidget,
@@ -54,6 +58,18 @@ from services.operator_console.widgets.alert_banner import AlertBanner
 from services.operator_console.widgets.empty_state import EmptyStateWidget
 from services.operator_console.widgets.event_timeline import EventTimelineWidget
 from services.operator_console.widgets.metric_card import MetricCard
+from services.operator_console.widgets.probe_sparkline import (
+    ProbeSparkline,
+    ProbeSparklineCell,
+)
+from services.operator_console.widgets.responsive_layout import (
+    MetricGridColumns,
+    ResponsiveBreakpoints,
+    ResponsiveMetricGrid,
+    ResponsiveWidthBand,
+    TableColumnPolicy,
+    apply_table_column_policies,
+)
 from services.operator_console.widgets.section_header import SectionHeader
 from services.operator_console.widgets.status_pill import StatusPill
 
@@ -72,9 +88,81 @@ _PROBE_STATUS: dict[HealthProbeState, UiStatusKind] = {
     HealthProbeState.OK: UiStatusKind.OK,
     HealthProbeState.ERROR: UiStatusKind.ERROR,
     HealthProbeState.TIMEOUT: UiStatusKind.ERROR,
-    HealthProbeState.NOT_CONFIGURED: UiStatusKind.NEUTRAL,
+    HealthProbeState.NOT_CONFIGURED: UiStatusKind.MUTED,
     HealthProbeState.UNKNOWN: UiStatusKind.NEUTRAL,
 }
+
+_HEALTH_BREAKPOINTS = ResponsiveBreakpoints(medium_min_width=760, wide_min_width=1120)
+
+_SUBSYSTEM_TABLE_POLICIES: tuple[TableColumnPolicy, ...] = (
+    TableColumnPolicy(
+        column=0,
+        resize_modes={
+            ResponsiveWidthBand.NARROW: QHeaderView.ResizeMode.ResizeToContents,
+            ResponsiveWidthBand.MEDIUM: QHeaderView.ResizeMode.ResizeToContents,
+        },
+        widths={ResponsiveWidthBand.WIDE: 180},
+    ),
+    TableColumnPolicy(
+        column=1,
+        resize_mode=QHeaderView.ResizeMode.ResizeToContents,
+        widths={ResponsiveWidthBand.WIDE: 120},
+    ),
+    TableColumnPolicy(
+        column=2,
+        visible_in=frozenset({ResponsiveWidthBand.MEDIUM, ResponsiveWidthBand.WIDE}),
+        resize_mode=QHeaderView.ResizeMode.ResizeToContents,
+        widths={ResponsiveWidthBand.WIDE: 150},
+    ),
+    TableColumnPolicy(
+        column=3,
+        resize_mode=QHeaderView.ResizeMode.Stretch,
+    ),
+    TableColumnPolicy(
+        column=4,
+        visible_in=frozenset({ResponsiveWidthBand.WIDE}),
+        resize_mode=QHeaderView.ResizeMode.ResizeToContents,
+        widths={ResponsiveWidthBand.WIDE: 170},
+    ),
+    TableColumnPolicy(
+        column=5,
+        visible_in=frozenset({ResponsiveWidthBand.WIDE}),
+        resize_mode=QHeaderView.ResizeMode.Stretch,
+    ),
+)
+
+_ALERT_TIMELINE_POLICIES: tuple[TableColumnPolicy, ...] = (
+    TableColumnPolicy(
+        column=0,
+        resize_mode=QHeaderView.ResizeMode.ResizeToContents,
+        widths={ResponsiveWidthBand.WIDE: 165},
+    ),
+    TableColumnPolicy(
+        column=1,
+        visible_in=frozenset({ResponsiveWidthBand.MEDIUM, ResponsiveWidthBand.WIDE}),
+        resize_mode=QHeaderView.ResizeMode.ResizeToContents,
+        widths={ResponsiveWidthBand.WIDE: 100},
+    ),
+    TableColumnPolicy(
+        column=2,
+        visible_in=frozenset({ResponsiveWidthBand.WIDE}),
+        resize_mode=QHeaderView.ResizeMode.ResizeToContents,
+        widths={ResponsiveWidthBand.WIDE: 150},
+    ),
+    TableColumnPolicy(
+        column=3,
+        visible_in=frozenset({ResponsiveWidthBand.WIDE}),
+        resize_mode=QHeaderView.ResizeMode.ResizeToContents,
+        widths={ResponsiveWidthBand.WIDE: 160},
+    ),
+    TableColumnPolicy(column=4, resize_mode=QHeaderView.ResizeMode.Stretch),
+    TableColumnPolicy(
+        column=5,
+        visible_in=frozenset({ResponsiveWidthBand.WIDE}),
+        resize_mode=QHeaderView.ResizeMode.ResizeToContents,
+        widths={ResponsiveWidthBand.WIDE: 70},
+    ),
+)
 
 
 class HealthView(QWidget):
@@ -91,43 +179,69 @@ class HealthView(QWidget):
 
         self._header = SectionHeader(
             "Health",
-            "Subsystem rollup — degraded, recovering, and error states kept distinct.",
+            "Readiness summary with the next action for anything that needs attention.",
             self,
+            level="page",
         )
+        self._repair_button = QPushButton("Repair install", self)
+        self._repair_button.setObjectName("RepairInstallButton")
+        self._repair_button.setAccessibleName("Repair install")
+        self._repair_button.setAccessibleDescription(
+            "Rebuilds the local runtime without touching desktop.sqlite."
+        )
+        self._repair_button.setToolTip("Rebuild the local runtime without touching desktop.sqlite.")
+        self._repair_button.setEnabled(False)
+        self._repair_button.clicked.connect(self._on_repair_clicked)
+        self._repair_status = QLabel("", self)
+        self._repair_status.setObjectName("PanelSubtitle")
+        self._repair_status.setAccessibleName("Repair status")
+        self._repair_status.setAccessibleDescription("No repair requested.")
+        self._repair_status.setVisible(False)
         self._error_banner = AlertBanner(self)
         self._empty_state = EmptyStateWidget(self)
         self._empty_state.set_title("No health snapshot")
         self._empty_state.set_message(
-            "Health data will appear once the API Server reports its first rollup."
+            "Health data will appear once the app reports its first readiness update."
         )
 
         self._overall_card = MetricCard("Overall", self)
-        self._degraded_card = MetricCard("Degraded", self)
-        self._recovering_card = MetricCard("Recovering", self)
+        self._degraded_card = MetricCard("Needs attention", self)
+        self._recovering_card = MetricCard("Getting ready", self)
         self._error_card = MetricCard("Error", self)
 
-        cards = QHBoxLayout()
-        cards.setContentsMargins(0, 0, 0, 0)
-        cards.setSpacing(14)
-        cards.addWidget(self._overall_card, 1)
-        cards.addWidget(self._degraded_card, 1)
-        cards.addWidget(self._recovering_card, 1)
-        cards.addWidget(self._error_card, 1)
+        self._cards_grid = ResponsiveMetricGrid(
+            breakpoints=_HEALTH_BREAKPOINTS,
+            columns=MetricGridColumns(wide=4, medium=2, narrow=1),
+            parent=self,
+        )
+        self._cards_grid.set_widgets(
+            [
+                self._overall_card,
+                self._degraded_card,
+                self._recovering_card,
+                self._error_card,
+            ]
+        )
 
-        self._probe_matrix = _ProbeMatrix(self)
+        self._probe_matrix = _ProbeMatrix(self._vm, self)
         self._subsystem_table = self._build_subsystem_table()
         self._alerts_timeline = EventTimelineWidget(self)
         self._alerts_timeline.set_model(self._vm.alerts_model())
+        self._alerts_timeline.set_column_policies(
+            _ALERT_TIMELINE_POLICIES,
+            breakpoints=_HEALTH_BREAKPOINTS,
+            default_resize_mode=QHeaderView.ResizeMode.Stretch,
+        )
 
         self._probe_panel = _TablePanel(
-            "Subsystem probes",
-            "Bounded read-only diagnostics; not configured is distinct from error.",
+            "Readiness checks",
+            "Read-only checks; not configured is distinct from error.",
             self._probe_matrix,
             self,
         )
         self._subsystem_panel = _TablePanel(
-            "Subsystems",
-            "Recovery mode and operator hints stay distinct from the detail column.",
+            "Readiness details",
+            "Each row shows what is happening and the next operator action.",
             self._subsystem_table,
             self,
         )
@@ -141,25 +255,41 @@ class HealthView(QWidget):
         body = QVBoxLayout()
         body.setContentsMargins(0, 0, 0, 0)
         body.setSpacing(14)
-        body.addLayout(cards)
-        body.addWidget(self._probe_panel, 1)
-        body.addWidget(self._subsystem_panel, 2)
-        body.addWidget(self._alerts_panel, 2)
+        body.addWidget(self._cards_grid)
+        body.addWidget(self._probe_panel)
+        body.addWidget(self._subsystem_panel)
+        body.addWidget(self._alerts_panel)
+        body.addStretch(1)
 
         self._body_container = QWidget(self)
         self._body_container.setLayout(body)
 
+        self._scroll = QScrollArea(self)
+        self._scroll.setObjectName("HealthScrollArea")
+        self._scroll.setWidgetResizable(True)
+        self._scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._scroll.setWidget(self._body_container)
+
+        header_row = QHBoxLayout()
+        header_row.setContentsMargins(0, 0, 0, 0)
+        header_row.setSpacing(14)
+        header_row.addWidget(self._header, 1)
+        header_row.addWidget(self._repair_status)
+        header_row.addWidget(self._repair_button)
+
         layout = QVBoxLayout(self)
         layout.setContentsMargins(24, 24, 24, 24)
         layout.setSpacing(14)
-        layout.addWidget(self._header)
+        layout.addLayout(header_row)
         layout.addWidget(self._error_banner)
         layout.addWidget(self._empty_state)
-        layout.addWidget(self._body_container, 1)
+        layout.addWidget(self._scroll, 1)
         layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
         self._vm.changed.connect(self._refresh)
         self._vm.error_changed.connect(self._on_error_changed)
+        self._vm.repair_requested.connect(self._on_repair_started)
         # Keep the alert timeline auto-scrolled to the latest event when
         # new rows land — operators watch the tail.
         self._vm.alerts_model().rowsInserted.connect(self._on_alerts_rows_inserted)
@@ -177,6 +307,10 @@ class HealthView(QWidget):
     def on_deactivated(self) -> None:
         return None
 
+    def resizeEvent(self, event: QResizeEvent) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self._apply_responsive_layout()
+
     # ------------------------------------------------------------------
     # Construction helpers
     # ------------------------------------------------------------------
@@ -184,11 +318,17 @@ class HealthView(QWidget):
     def _build_subsystem_table(self) -> QTableView:
         table = QTableView(self)
         table.setObjectName("HealthSubsystemTable")
+        table.setAccessibleName("Readiness details table")
+        table.setAccessibleDescription(
+            "Subsystem readiness details with recovery mode, status, and next operator action."
+        )
+        table.setToolTip("Subsystem readiness details and next operator actions.")
         table.setModel(self._vm.health_model())
         table.setAlternatingRowColors(True)
         table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        table.setWordWrap(True)
         vertical = table.verticalHeader()
         if vertical is not None:
             vertical.setVisible(False)
@@ -203,16 +343,25 @@ class HealthView(QWidget):
 
     def _refresh(self) -> None:
         snapshot = self._vm.snapshot()
+        self._repair_button.setEnabled(self._vm.repair_available())
+        if self._vm.repair_in_progress():
+            self._repair_button.setText("Installing…")
+        else:
+            self._repair_button.setText("Repair install")
+            installing = self._repair_status.text() == "Installing runtime…"
+            if self._repair_status.isVisible() and installing:
+                self._repair_status.setText("Repair completed")
         if snapshot is None:
             self._empty_state.setVisible(True)
-            self._body_container.setVisible(False)
+            self._scroll.setVisible(False)
             return
         self._empty_state.setVisible(False)
-        self._body_container.setVisible(True)
+        self._scroll.setVisible(True)
 
         self._render_overall(snapshot)
         self._render_counts(snapshot)
         self._probe_matrix.set_probes(self._vm.subsystem_probes())
+        self._apply_responsive_layout()
 
     def _render_overall(self, snapshot: HealthSnapshot) -> None:
         kind = _HEALTH_STATUS[snapshot.overall_state]
@@ -225,7 +374,7 @@ class HealthView(QWidget):
     def _render_counts(self, snapshot: HealthSnapshot) -> None:
         self._degraded_card.set_primary_text(str(snapshot.degraded_count))
         self._degraded_card.set_secondary_text(
-            "impaired but stable" if snapshot.degraded_count else "none"
+            "check the next action" if snapshot.degraded_count else "none"
         )
         self._degraded_card.set_status(
             UiStatusKind.WARN if snapshot.degraded_count else UiStatusKind.NEUTRAL,
@@ -234,7 +383,7 @@ class HealthView(QWidget):
 
         self._recovering_card.set_primary_text(str(snapshot.recovering_count))
         self._recovering_card.set_secondary_text(
-            "self-healing in flight" if snapshot.recovering_count else "none"
+            "wait for startup" if snapshot.recovering_count else "none"
         )
         self._recovering_card.set_status(
             UiStatusKind.PROGRESS if snapshot.recovering_count else UiStatusKind.NEUTRAL,
@@ -250,6 +399,22 @@ class HealthView(QWidget):
             "error" if snapshot.error_count else None,
         )
 
+    def _apply_responsive_layout(self) -> None:
+        viewport_width = self._scroll.viewport().width()
+        width = viewport_width if viewport_width >= 320 else self.width()
+        band = _HEALTH_BREAKPOINTS.band_for_width(width)
+        self._probe_matrix.set_width_band(band)
+        apply_table_column_policies(
+            self._subsystem_table,
+            _SUBSYSTEM_TABLE_POLICIES,
+            width=width,
+            breakpoints=_HEALTH_BREAKPOINTS,
+            default_resize_mode=QHeaderView.ResizeMode.Stretch,
+        )
+        self._subsystem_panel.set_compact(band is ResponsiveWidthBand.NARROW)
+        self._alerts_panel.set_compact(band is ResponsiveWidthBand.NARROW)
+        self._probe_panel.set_compact(band is ResponsiveWidthBand.NARROW)
+
     # ------------------------------------------------------------------
     # Slots
     # ------------------------------------------------------------------
@@ -259,6 +424,37 @@ class HealthView(QWidget):
             self._error_banner.set_alert(AlertSeverity.WARNING, message)
         else:
             self._error_banner.set_alert(None, None)
+
+    def _on_repair_clicked(self) -> None:
+        # Repair install rebuilds the runtime; treat it as deliberate
+        # rather than as a one-tap action by confirming the consequence
+        # before letting the VM dispatch.
+        confirmation = QMessageBox(self)
+        confirmation.setIcon(QMessageBox.Icon.Warning)
+        confirmation.setWindowTitle("Repair install")
+        confirmation.setText("Rebuild the local runtime?")
+        confirmation.setInformativeText(
+            "This will reinstall the local runtime without touching desktop.sqlite. "
+            "The active session keeps running but readiness will dip while the "
+            "subsystem comes back up. Continue?"
+        )
+        confirmation.setStandardButtons(
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel
+        )
+        confirmation.setDefaultButton(QMessageBox.StandardButton.Cancel)
+        if confirmation.exec() != QMessageBox.StandardButton.Yes:
+            return
+        if not self._vm.request_repair():
+            return
+
+    def _on_repair_started(self) -> None:
+        self._repair_status.setText("Installing runtime…")
+        self._repair_status.setAccessibleDescription(
+            "Repair install in progress; subsystem rows will reflect recovery state."
+        )
+        self._repair_status.setVisible(True)
+        self._repair_button.setEnabled(False)
+        self._repair_button.setText("Installing…")
 
     @Slot(QModelIndex, int, int)
     def _on_alerts_rows_inserted(
@@ -279,10 +475,19 @@ class HealthView(QWidget):
 
 
 class _ProbeMatrix(QFrame):
-    """Compact three-column matrix for bounded subsystem probes."""
+    """Row-per-subsystem probe matrix with a 60-cell history sparkline.
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    Each row pairs the current pill + latency with a sparkline of the
+    last 60 probe samples for that subsystem, so flapping reads as a
+    visible pattern without bouncing between the matrix and the alert
+    timeline.
+    """
+
+    _HEADERS: tuple[str, ...] = ("Subsystem", "State", "Latency", "Last 60 probes")
+
+    def __init__(self, vm: HealthViewModel, parent: QWidget | None = None) -> None:
         super().__init__(parent)
+        self._vm = vm
         self.setObjectName("HealthProbeMatrix")
         self.setFrameShape(QFrame.Shape.NoFrame)
         self._grid = QGridLayout(self)
@@ -291,57 +496,164 @@ class _ProbeMatrix(QFrame):
         self._grid.setVerticalSpacing(8)
         self._state_pills: list[StatusPill] = []
         self._latency_labels: list[QLabel] = []
-        self._empty_label = QLabel("No bounded probes reported", self)
-        self._empty_label.setObjectName("PanelSubtitle")
-        self._render_headers()
-        self._show_empty()
+        self._name_labels: list[QLabel] = []
+        self._sparklines: list[ProbeSparkline] = []
+        self._header_labels: list[QLabel] = []
+        self._probes: list[HealthSubsystemProbe] = []
+        self._width_band = ResponsiveWidthBand.WIDE
+        self._empty_label: QLabel | None = None
+        self._rebuild()
 
     def set_probes(self, probes: list[HealthSubsystemProbe]) -> None:
-        self._clear_rows()
-        if not probes:
-            self._show_empty()
+        new_probes = list(probes)
+        # Refresh in place when the probe identity + state hasn't changed —
+        # only the rolling sparkline cells are new every poll. Rebuilding
+        # the entire grid every poll tore down hover state and queued
+        # deleteLater() faster than the event loop could drain, which
+        # surfaced as a flicker of small floating widgets on the Health
+        # page during normal hover.
+        if self._can_refresh_in_place(new_probes):
+            self._probes = new_probes
+            self._refresh_in_place()
             return
-        self._empty_label.setVisible(False)
-        for row_index, probe in enumerate(probes, start=1):
+        self._probes = new_probes
+        self._rebuild()
+
+    def set_width_band(self, band: ResponsiveWidthBand) -> None:
+        if band is self._width_band:
+            return
+        self._width_band = band
+        self._rebuild()
+
+    def _can_refresh_in_place(self, new_probes: list[HealthSubsystemProbe]) -> bool:
+        if len(new_probes) != len(self._probes):
+            return False
+        if len(new_probes) != len(self._sparklines):
+            return False
+        for old, new in zip(self._probes, new_probes, strict=True):
+            if old.subsystem_key != new.subsystem_key:
+                return False
+            if old.state is not new.state:
+                return False
+            if old.latency_ms != new.latency_ms:
+                return False
+        return True
+
+    def _refresh_in_place(self) -> None:
+        """Update sparkline cells without tearing the grid down.
+
+        Probe identities + state are unchanged, so we only push the
+        latest rolling history into each sparkline. Headers, pills,
+        and labels keep their hover state and don't churn through
+        `deleteLater()`.
+        """
+
+        for probe, sparkline in zip(self._probes, self._sparklines, strict=True):
+            history = list(self._vm.probe_history(probe.subsystem_key))
+            sparkline.set_cells(history)
+
+    def _rebuild(self) -> None:
+        """Repopulate the grid from `self._probes` end-to-end.
+
+        Every widget owned by the matrix is removed and re-created.
+        Surgically swapping rows produced phantom column widths from
+        leftover layout state — easier and safer to lay it out fresh
+        each time (≤4 rows + headers, so the cost is negligible).
+        """
+
+        # Detach every existing widget from the grid and queue it for
+        # deletion. The grid itself stays so we don't have to wrestle
+        # `QWidget.setLayout` with a previously-installed layout.
+        while self._grid.count() > 0:
+            item = self._grid.takeAt(0)
+            if item is None:
+                continue
+            widget = item.widget()
+            if widget is not None:
+                widget.setParent(None)
+                widget.deleteLater()
+        # Reset column stretch caches that QGridLayout would otherwise
+        # remember from the prior population.
+        for column in range(len(self._HEADERS) + 1):
+            self._grid.setColumnStretch(column, 0)
+            self._grid.setColumnMinimumWidth(column, 0)
+        self._header_labels.clear()
+        self._state_pills.clear()
+        self._latency_labels.clear()
+        self._name_labels.clear()
+        self._sparklines.clear()
+        self._empty_label = None
+
+        compact = self._width_band is ResponsiveWidthBand.NARROW
+
+        # Headers are always added so legacy callers/tests can introspect
+        # `_header_labels`; we hide them in compact mode so they don't
+        # take up visual space when the row layout collapses.
+        for column, title in enumerate(self._HEADERS):
+            label = QLabel(title, self)
+            label.setObjectName("PanelSubtitle")
+            self._grid.addWidget(label, 0, column)
+            label.setVisible(not compact)
+            self._header_labels.append(label)
+        if not compact:
+            self._grid.setColumnStretch(3, 1)  # sparkline column absorbs slack
+
+        if not self._probes:
+            empty = QLabel("No bounded probes reported", self)
+            empty.setObjectName("PanelSubtitle")
+            self._grid.addWidget(empty, 1, 0, 1, len(self._HEADERS))
+            self._empty_label = empty
+            return
+
+        for index, probe in enumerate(self._probes):
+            detail = build_health_probe_detail(probe)
             name = QLabel(probe.label or probe.subsystem_key, self)
             name.setObjectName("MetricCardSecondary")
-            name.setToolTip(build_health_probe_detail(probe))
+            name.setToolTip(detail)
+            name.setWordWrap(True)
 
             pill = StatusPill(self)
             pill.set_kind(_PROBE_STATUS[probe.state])
             pill.set_text(format_health_probe_state(probe.state))
-            pill.setToolTip(build_health_probe_detail(probe))
+            pill.setToolTip(detail)
 
             latency = QLabel(format_latency_ms(probe.latency_ms), self)
             latency.setObjectName("MetricCardSecondary")
-            latency.setToolTip(build_health_probe_detail(probe))
+            latency.setToolTip(detail)
 
-            self._grid.addWidget(name, row_index, 0)
-            self._grid.addWidget(pill, row_index, 1)
-            self._grid.addWidget(latency, row_index, 2)
+            sparkline = ProbeSparkline(
+                capacity=self._vm.probe_history_capacity(),
+                parent=self,
+            )
+            history: list[ProbeSparklineCell] = list(self._vm.probe_history(probe.subsystem_key))
+            sparkline.set_cells(history)
+            sparkline.setToolTip(
+                f"Last {self._vm.probe_history_capacity()} probe samples for "
+                f"{probe.label or probe.subsystem_key}."
+            )
+
+            self._name_labels.append(name)
             self._state_pills.append(pill)
             self._latency_labels.append(latency)
+            self._sparklines.append(sparkline)
 
-    def _render_headers(self) -> None:
-        for column, title in enumerate(("Subsystem", "State", "Latency")):
-            label = QLabel(title, self)
-            label.setObjectName("PanelSubtitle")
-            self._grid.addWidget(label, 0, column)
-
-    def _show_empty(self) -> None:
-        self._empty_label.setVisible(True)
-        self._grid.addWidget(self._empty_label, 1, 0, 1, 3)
-
-    def _clear_rows(self) -> None:
-        self._state_pills.clear()
-        self._latency_labels.clear()
-        while self._grid.count() > 3:
-            item = self._grid.takeAt(3)
-            widget = item.widget() if item is not None else None
-            if widget is self._empty_label:
-                widget.setVisible(False)
-            elif widget is not None:
-                widget.deleteLater()
+            if compact:
+                # Compact: name spans 2 cols on the first sub-row, pill +
+                # latency on the right; sparkline on its own sub-row
+                # underneath. Two grid rows per probe (offset by 1 for
+                # the always-present header row) so a sparkline never
+                # collides with the next probe's name.
+                base = 1 + index * 2
+                self._grid.addWidget(name, base, 0, 1, 2)
+                self._grid.addWidget(pill, base, 2)
+                self._grid.addWidget(latency, base, 3)
+                self._grid.addWidget(sparkline, base + 1, 0, 1, 4)
+            else:
+                row = index + 1  # row 0 is the header row
+                self._grid.addWidget(name, row, 0)
+                self._grid.addWidget(pill, row, 1)
+                self._grid.addWidget(latency, row, 2)
+                self._grid.addWidget(sparkline, row, 3)
 
 
 class _TablePanel(QFrame):
@@ -367,13 +679,19 @@ class _TablePanel(QFrame):
         self._subtitle = QLabel(subtitle, self)
         self._subtitle.setObjectName("PanelSubtitle")
         self._subtitle.setWordWrap(True)
+        self._inner = inner
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 12, 16, 12)
-        layout.setSpacing(6)
-        layout.addWidget(self._title)
-        layout.addWidget(self._subtitle)
-        layout.addWidget(inner, 1)
+        self._layout = QVBoxLayout(self)
+        self._layout.setContentsMargins(16, 12, 16, 12)
+        self._layout.setSpacing(6)
+        self._layout.addWidget(self._title)
+        self._layout.addWidget(self._subtitle)
+        self._layout.addWidget(inner, 1)
+
+    def set_compact(self, compact: bool) -> None:
+        self._layout.setContentsMargins(12, 10, 12, 10 if compact else 12)
+        self._layout.setSpacing(4 if compact else 6)
+        self._subtitle.setVisible(not compact)
 
 
 def _describe_error_hint(snapshot: HealthSnapshot) -> str:

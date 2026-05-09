@@ -24,10 +24,7 @@ class AuditResult:
 
 def _markdown_cell(value: object) -> str:
     """Render a stable, single-line Markdown table cell."""
-    if value is None:
-        text = "—"
-    else:
-        text = str(value)
+    text = "—" if value is None else str(value)
     return text.replace("|", r"\|").replace("\r\n", "\n").replace("\r", "\n").replace("\n", "<br>")
 
 

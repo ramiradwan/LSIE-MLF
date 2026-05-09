@@ -15,11 +15,13 @@ from __future__ import annotations
 import math
 from datetime import datetime
 from enum import StrEnum
-from typing import Literal
+from typing import Literal, TypeAlias
 from uuid import UUID
 
+from pydantic import AnyUrl, ConfigDict, Field, TypeAdapter, field_validator
 from pydantic import BaseModel as PydanticBaseModel
-from pydantic import ConfigDict, Field, field_validator
+
+_STREAM_URL_ADAPTER = TypeAdapter(AnyUrl)
 
 # ----------------------------------------------------------------------
 # Enums
@@ -31,6 +33,11 @@ class UiStatusKind(StrEnum):
 
     Maps subsystem/encounter/stimulus state into a small set of palette
     buckets. Widgets read the enum; the palette lookup is theme-side.
+
+    `MUTED` is reserved for explicitly unconfigured surfaces — the
+    operator should read it as "the system isn't expected to report
+    here", visually distinct from `NEUTRAL` ("nothing to say yet") and
+    from `WARN`/`ERROR` ("something is wrong").
     """
 
     OK = "ok"
@@ -39,6 +46,7 @@ class UiStatusKind(StrEnum):
     ERROR = "error"
     NEUTRAL = "neutral"
     PROGRESS = "progress"
+    MUTED = "muted"
 
 
 class AlertSeverity(StrEnum):
@@ -287,6 +295,7 @@ class EncounterSummary(OperatorConsoleModel):
     stimulus_time_utc: datetime | None = None
     semantic_gate: int | None = Field(default=None, ge=0, le=1)
     semantic_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+    transcription: str | None = None
     p90_intensity: float | None = None
     gated_reward: float | None = None
     n_frames_in_window: int | None = Field(default=None, ge=0)
@@ -606,6 +615,66 @@ class OverviewSnapshot(OperatorConsoleModel):
         return validated
 
 
+OperatorEventType: TypeAlias = Literal[
+    "overview",
+    "sessions",
+    "live_session",
+    "encounters",
+    "experiment_summaries",
+    "experiment",
+    "physiology",
+    "health",
+    "alerts",
+]
+
+OperatorEventPayload: TypeAlias = (
+    OverviewSnapshot
+    | list[SessionSummary]
+    | SessionSummary
+    | list[EncounterSummary]
+    | list[ExperimentSummary]
+    | ExperimentDetail
+    | SessionPhysiologySnapshot
+    | HealthSnapshot
+    | list[AlertEvent]
+)
+
+
+class OperatorStateBootstrap(OperatorConsoleModel):
+    generated_at_utc: datetime
+    overview: OverviewSnapshot
+    sessions: list[SessionSummary] = Field(default_factory=list)
+    live_session: SessionSummary | None = None
+    encounters: list[EncounterSummary] = Field(default_factory=list)
+    experiment_summaries: list[ExperimentSummary] = Field(default_factory=list)
+    experiment: ExperimentDetail | None = None
+    physiology: SessionPhysiologySnapshot | None = None
+    health: HealthSnapshot
+    alerts: list[AlertEvent] = Field(default_factory=list)
+
+    @field_validator("generated_at_utc")
+    @classmethod
+    def _utc_only(cls, value: datetime) -> datetime:
+        validated = _require_utc(value)
+        assert validated is not None
+        return validated
+
+
+class OperatorEventEnvelope(OperatorConsoleModel):
+    event_id: str = Field(..., min_length=1)
+    event_type: OperatorEventType
+    cursor: str = Field(..., min_length=1)
+    generated_at_utc: datetime
+    payload: OperatorEventPayload
+
+    @field_validator("generated_at_utc")
+    @classmethod
+    def _utc_only(cls, value: datetime) -> datetime:
+        validated = _require_utc(value)
+        assert validated is not None
+        return validated
+
+
 # ----------------------------------------------------------------------
 # Stimulus action DTOs (§4.C)
 # ----------------------------------------------------------------------
@@ -625,25 +694,19 @@ class StimulusRequest(OperatorConsoleModel):
 
 
 class StimulusAccepted(OperatorConsoleModel):
-    """API Server acknowledgment of a stimulus submission.
-
-    `received_at_utc` is the API Server's receive time for audit only;
-    the pipeline-authoritative `stimulus_time` that defines the §7B
-    measurement window is surfaced later via the encounter readback.
-    """
+    """API Server acknowledgment of a stimulus submission."""
 
     session_id: UUID
     client_action_id: UUID
     accepted: bool
     received_at_utc: datetime
+    stimulus_time_utc: datetime | None = None
     message: str | None = None
 
-    @field_validator("received_at_utc")
+    @field_validator("received_at_utc", "stimulus_time_utc")
     @classmethod
-    def _utc_only(cls, value: datetime) -> datetime:
-        validated = _require_utc(value)
-        assert validated is not None
-        return validated
+    def _utc_only(cls, value: datetime | None) -> datetime | None:
+        return _require_utc(value)
 
 
 class SessionCreateRequest(OperatorConsoleModel):
@@ -651,14 +714,23 @@ class SessionCreateRequest(OperatorConsoleModel):
 
     The API Server generates/publishes the session identifier and the
     orchestrator remains the sole owner of authoritative `started_at`.
-    `client_action_id` is the Redis SETNX idempotency key.
+    `client_action_id` is the API idempotency key for duplicate submits.
     """
 
     stream_url: str = Field(..., min_length=1)
     experiment_id: str = Field(..., min_length=1)
     client_action_id: UUID
 
-    @field_validator("stream_url", "experiment_id")
+    @field_validator("stream_url")
+    @classmethod
+    def _valid_stream_url(cls, value: str) -> str:
+        stripped = value.strip()
+        if not stripped:
+            raise ValueError("value must not be blank")
+        _STREAM_URL_ADAPTER.validate_python(stripped)
+        return stripped
+
+    @field_validator("experiment_id")
     @classmethod
     def _non_blank(cls, value: str) -> str:
         stripped = value.strip()

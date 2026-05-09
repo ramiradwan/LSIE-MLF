@@ -105,9 +105,15 @@ def test_overview_view_renders_seeded_store_end_to_end() -> None:
 
     session_id = _seed(store)
 
-    # Active session card binds to the seeded session id + active arm.
-    assert str(session_id) in view._active_session_card._primary.text()  # type: ignore[attr-defined]
-    assert "greeting_v2" in view._active_session_card._secondary.text()  # type: ignore[attr-defined]
+    # Active session card shows a compact id while preserving the full id in detail.
+    primary = view._active_session_card._primary.text()  # type: ignore[attr-defined]
+    secondary = view._active_session_card._secondary.text()  # type: ignore[attr-defined]
+    assert str(session_id) not in primary
+    assert primary.startswith(str(session_id)[:8])
+    assert primary.endswith(str(session_id)[-4:])
+    assert str(session_id) in secondary
+    assert "stimulus strategy greeting_v2" in secondary
+    assert "expected response “hei rakas”" in secondary
     # Experiment card binds to the experiment label.
     assert "greeting line v2" in view._experiment_card._primary.text()  # type: ignore[attr-defined]
     # Health card binds to the overall OK state.
@@ -115,7 +121,7 @@ def test_overview_view_renders_seeded_store_end_to_end() -> None:
     # Latest encounter card surfaces the §7B gated reward.
     assert "reward" in view._latest_encounter_card._primary.text()  # type: ignore[attr-defined]
     # Physiology card reads live when an RMSSD value is present.
-    assert view._physiology_card._primary.text() == "Live"  # type: ignore[attr-defined]
+    assert view._physiology_card._primary.text() == "Live heart data"  # type: ignore[attr-defined]
 
 
 def test_overview_view_active_session_click_round_trips_session_id() -> None:

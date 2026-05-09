@@ -236,6 +236,7 @@ class _IndexEntry:
 
 _ROOT_KEY_TO_SECTION: dict[str, str] = {
     "document_control": "0",
+    "conformance_gates": "0.5",
     "system_philosophy": "1",
     "data_flow_pipeline": "2",
     "codebase_architecture": "3",
@@ -245,10 +246,12 @@ _ROOT_KEY_TO_SECTION: dict[str, str] = {
     "math_specifications": "7",
     "llm_prompt": "8",
     "docker_topology": "9",
+    "runtime_topology": "9",
     "dependency_matrix": "10",
     "variable_matrix": "11",
     "error_handling": "12",
     "audit_checklist": "13",
+    "cloud_control_plane": "14",
 }
 
 _SUBSECTION_CONVENTIONS: dict[str, list[tuple[str, str]]] = {
@@ -257,7 +260,6 @@ _SUBSECTION_CONVENTIONS: dict[str, list[tuple[str, str]]] = {
         ("normative_terms", "0.2"),
         ("canonical_terms", "0.3"),
         ("version_history", "0.4"),
-        ("amendments", "0.5"),
     ],
     "codebase_architecture": [
         ("directory_hierarchy", "3.1"),
@@ -282,6 +284,14 @@ _SUBSECTION_CONVENTIONS: dict[str, list[tuple[str, str]]] = {
         ("network_prose", "9.5"),
         ("startup_order", "9.6"),
     ],
+    "runtime_topology": [
+        ("processes", "9.1"),
+        ("ipc_contract", "9.2"),
+        ("native_subprocess_supervision", "9.3"),
+        ("runtime_base", "9.4"),
+        ("startup_sequence", "9.5"),
+        ("tier2_design_intent", "9.6"),
+    ],
     "dependency_matrix": [
         ("system_requirements", "10.1"),
         ("pinned_packages", "10.2"),
@@ -294,6 +304,61 @@ _MATH_TOPIC_LETTER: dict[str, str] = {
     "au12": "A",
     "thompson_sampling": "B",
     "comodulation": "C",
+}
+
+_LEGACY_DATA_GOVERNANCE_ALIASES: dict[str, tuple[str, str]] = {
+    "5.1.6": ("Vault parameter — Key storage location", "data_governance.secret_storage_rule"),
+    "5.1.7": ("Vault parameter — Key lifecycle", "data_governance.volatile_memory_controls"),
+    "5.1.8": ("Vault parameter — Secure deletion method", "data_governance.volatile_memory_controls"),
+    "5.1.9": ("Vault parameter — Retention period", "data_governance.vault_parameters"),
+}
+
+_LEGACY_ERROR_HANDLING_ALIASES: dict[str, tuple[str, str]] = {
+    "12.1": ("Legacy Module A failure handling alias", "error_handling.matrix"),
+    "12.1.1": ("Legacy Module A — Network Disconnection alias", "error_handling.matrix"),
+    "12.1.2": ("Legacy Module A — Hardware Device Loss alias", "error_handling.matrix[0]"),
+    "12.1.3": ("Legacy Module A — Worker Process Crash alias", "error_handling.matrix[1]"),
+    "12.1.4": ("Legacy Module A — Queue Overload alias", "error_handling.matrix"),
+    "12.2": ("Legacy Module B failure handling alias", "error_handling.matrix"),
+    "12.2.1": ("Legacy Module B — Network Disconnection alias", "error_handling.matrix"),
+    "12.2.2": ("Legacy Module B — Hardware Device Loss alias", "error_handling.matrix"),
+    "12.2.3": ("Legacy Module B — Worker Process Crash alias", "error_handling.matrix"),
+    "12.2.4": ("Legacy Module B — Queue Overload alias", "error_handling.matrix"),
+    "12.3": ("Legacy Module C failure handling alias", "error_handling.matrix[module=module_c_orchestrator]"),
+    "12.3.1": ("Legacy Module C — Network Disconnection alias", "error_handling.matrix[module=module_c_orchestrator]"),
+    "12.3.2": ("Legacy Module C — Hardware Device Loss alias", "error_handling.matrix[module=module_c_orchestrator]"),
+    "12.3.3": ("Legacy Module C — Worker Process Crash alias", "error_handling.matrix[module=module_c_orchestrator]"),
+    "12.3.4": ("Legacy Module C — Queue Overload alias", "error_handling.matrix[module=module_c_orchestrator]"),
+    "12.4": ("Legacy Module D failure handling alias", "error_handling.matrix[module=gpu_ml_worker]"),
+    "12.4.1": ("Legacy Module D — Network Disconnection alias", "error_handling.matrix[module=gpu_ml_worker]"),
+    "12.4.2": ("Legacy Module D — Hardware Device Loss alias", "error_handling.matrix[module=gpu_ml_worker]"),
+    "12.4.3": ("Legacy Module D — Worker Process Crash alias", "error_handling.matrix[module=gpu_ml_worker]"),
+    "12.4.4": ("Legacy Module D — Queue Overload alias", "error_handling.matrix[module=gpu_ml_worker]"),
+    "12.5": ("Legacy Module E failure handling alias", "error_handling.matrix[module=analytics_state_worker]"),
+    "12.5.1": ("Legacy Module E — Network Disconnection alias", "error_handling.matrix[module=analytics_state_worker]"),
+    "12.5.2": ("Legacy Module E — Hardware Device Loss alias", "error_handling.matrix[module=analytics_state_worker]"),
+    "12.5.3": ("Legacy Module E — Worker Process Crash alias", "error_handling.matrix[module=analytics_state_worker]"),
+    "12.5.4": ("Legacy Module E — Queue Overload alias", "error_handling.matrix[module=analytics_state_worker]"),
+    "12.6": ("Legacy Module F failure handling alias", "error_handling.matrix[module=cloud_sync_worker]"),
+    "12.6.1": ("Legacy Module F — Network Disconnection alias", "error_handling.matrix[module=cloud_sync_worker]"),
+    "12.6.2": ("Legacy Module F — Hardware Device Loss alias", "error_handling.matrix[module=cloud_sync_worker]"),
+    "12.6.3": ("Legacy Module F — Worker Process Crash alias", "error_handling.matrix[module=cloud_sync_worker]"),
+    "12.6.4": ("Legacy Module F — Queue Overload alias", "error_handling.matrix[module=cloud_sync_worker]"),
+}
+
+_LEGACY_AUDIT_ALIASES: dict[str, tuple[str, str]] = {
+    "13.20": ("Co-modulation determinism", "math_specifications.topics[2]"),
+    "13.21": ("Reward pipeline invariance", "math_specifications.topics[1]"),
+    "13.22": ("Observational acoustic validity contract", "math_specifications.topics[3]"),
+    "13.23": ("Observational acoustic payload/storage conformance", "data_governance.local_state.forbidden_content"),
+    "13.24": ("Attribution ledger schema conformance", "interface_contracts.attribution_event_schema"),
+    "13.25": ("Stable segment identity", "interface_contracts.schema_definition"),
+    "13.26": ("Bandit decision snapshot capture", "interface_contracts.bandit_decision_snapshot_schema"),
+    "13.27": ("Semantic scorer shadow/primary separation", "llm_prompt.intro_paragraphs"),
+    "13.28": ("Attribution backfill idempotency", "math_specifications.topics[4].derivation_steps[5]"),
+    "13.29": ("Outcome linker determinism", "math_specifications.topics[4].derivation_steps[1]"),
+    "13.30": ("Derived-only attribution persistence compliance", "data_governance.local_state.forbidden_content"),
+    "13.31": ("Attribution reward-path invariance", "math_specifications.topics[4]"),
 }
 
 
@@ -346,6 +411,7 @@ def build_index(spec: dict[str, Any]) -> dict[str, _IndexEntry]:
     _index_error_handling(spec, index)
     _index_data_flow_stages(spec, index)
     _overlay_explicit_refs(spec, index)
+    _add_legacy_aliases(index)
 
     return index
 
@@ -504,6 +570,33 @@ def _overlay_explicit_refs(spec: dict[str, Any], index: dict[str, _IndexEntry]) 
                 preview=ref_obj.get("title", ""),
                 explicit=True,
             )
+
+
+def _add_legacy_aliases(index: dict[str, _IndexEntry]) -> None:
+    for ref, (title, content_path) in _LEGACY_DATA_GOVERNANCE_ALIASES.items():
+        index[ref] = _IndexEntry(
+            title=f"§{ref} — {title}",
+            content_path=content_path,
+            content_type="SpecRef (legacy alias)",
+            preview=title,
+            explicit=True,
+        )
+    for ref, (title, content_path) in _LEGACY_ERROR_HANDLING_ALIASES.items():
+        index[ref] = _IndexEntry(
+            title=f"§{ref} — {title}",
+            content_path=content_path,
+            content_type="SpecRef (legacy alias)",
+            preview=title,
+            explicit=True,
+        )
+    for ref, (title, content_path) in _LEGACY_AUDIT_ALIASES.items():
+        index[ref] = _IndexEntry(
+            title=f"§{ref} — {title}",
+            content_path=content_path,
+            content_type="SpecRef (legacy alias)",
+            preview=title,
+            explicit=True,
+        )
 
 
 # =====================================================================
@@ -684,6 +777,9 @@ SCAN_EXCLUDE_DIRS = {
     ".venv",
     "data",
 }
+SCAN_EXCLUDE_FILES = {
+    Path("docs/V4_SPEC_DRAFTS.md"),
+}
 
 
 def expand_ref_range(start: str, end: str) -> list[str]:
@@ -727,6 +823,8 @@ def scan_project_refs(repo_root: Path) -> list[dict[str, Any]]:
     for glob_pattern in SCAN_GLOBS:
         for filepath in repo_root.glob(glob_pattern):
             if any(part in SCAN_EXCLUDE_DIRS for part in filepath.parts):
+                continue
+            if filepath.relative_to(repo_root) in SCAN_EXCLUDE_FILES:
                 continue
             try:
                 text = filepath.read_text(encoding="utf-8", errors="ignore")

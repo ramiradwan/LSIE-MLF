@@ -42,6 +42,41 @@ SEMANTIC_METHODS: tuple[str, ...] = (
     "azure_llm_legacy",
 )
 
+ResponseRegistrationStatus = Literal[
+    "observable_response",
+    "no_observable_response",
+    "ambiguous_response",
+    "invalid_trigger",
+    "pending",
+]
+
+ResponseReasonCode = Literal[
+    "response_read_aloud",
+    "response_direct_answer",
+    "response_username_ack",
+    "response_semantic_ack",
+    "response_chat_reply",
+    "response_positive_affect_only",
+    "response_timeout",
+    "no_observable_response",
+    "ambiguous_response",
+    "invalid_trigger",
+]
+
+StimulusModality = Literal[
+    "spoken_greeting",
+    "written_comment",
+    "gift",
+    "follow",
+    "question",
+    "cta",
+    "product_pitch",
+    "discount_offer",
+    "profile_interaction",
+    "dm_follow_up",
+    "other",
+]
+
 
 class SemanticEvaluationResult(BaseModel):
     """

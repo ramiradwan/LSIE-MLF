@@ -28,6 +28,7 @@ from packages.schemas.operator_console import (
     SemanticEvaluationSummary,
     SessionPhysiologySnapshot,
     SessionSummary,
+    UiStatusKind,
 )
 from services.operator_console.state import OperatorStore
 from services.operator_console.viewmodels.overview_vm import OverviewViewModel
@@ -120,18 +121,37 @@ def test_overview_view_populates_all_cards_from_snapshot() -> None:
     session = _session()
     store.set_overview(_snap_with_session(session))
 
-    assert str(session.session_id) in view._active_session_card._primary.text()  # type: ignore[attr-defined]
-    assert "greeting_v1" in view._active_session_card._secondary.text()  # type: ignore[attr-defined]
+    active_primary = view._active_session_card._primary.text()  # type: ignore[attr-defined]
+    assert str(session.session_id) not in active_primary
+    assert active_primary.startswith(str(session.session_id)[:8])
+    assert active_primary.endswith(str(session.session_id)[-4:])
+    active_secondary = view._active_session_card._secondary.text()  # type: ignore[attr-defined]
+    assert str(session.session_id) in active_secondary
+    assert "stimulus strategy greeting_v1" in active_secondary
+    assert "expected response" in active_secondary
+    assert "active strategy" not in view._experiment_card._secondary.text()  # type: ignore[attr-defined]
     assert "greeting line v1" in view._experiment_card._primary.text()  # type: ignore[attr-defined]
     assert "ok" in view._health_card._primary.text()  # type: ignore[attr-defined]
-    # Physiology card reads live when an RMSSD value is present.
-    assert view._physiology_card._primary.text() == "Live"  # type: ignore[attr-defined]
-    # Latest encounter card surfaces the gated reward plus compact §8/§7E summary.
+    # Physiology card reads live when heart variability is present.
+    assert view._physiology_card._primary.text() == "Live heart data"  # type: ignore[attr-defined]
+    # Latest encounter card surfaces the reward plus compact confirmation/follow-up summary.
     latest_secondary = view._latest_encounter_card._secondary.text()  # type: ignore[attr-defined]
     assert "reward" in view._latest_encounter_card._primary.text()  # type: ignore[attr-defined]
-    assert "semantic match" in latest_secondary
-    assert "p_match 91%" in latest_secondary
-    assert "attribution online provisional" in latest_secondary
+    assert "Stimulus confirmed? yes" in latest_secondary
+    assert "stimulus confirmation" in latest_secondary
+    assert "stimulus confirmation confidence 91%" in latest_secondary
+    assert "follow-up signals online provisional" in latest_secondary
+
+
+def test_overview_view_marks_active_conflict_as_error() -> None:
+    store = OperatorStore()
+    vm = OverviewViewModel(store)
+    view = OverviewView(vm)
+    session = _session().model_copy(update={"status": "active conflict"})
+    store.set_overview(_snap_with_session(session))
+
+    assert view._active_session_card._status._kind is UiStatusKind.ERROR  # type: ignore[attr-defined]
+    assert view._active_session_card._status._label.text() == "active conflict"  # type: ignore[attr-defined]
 
 
 def test_overview_view_attention_card_counts_alerts() -> None:

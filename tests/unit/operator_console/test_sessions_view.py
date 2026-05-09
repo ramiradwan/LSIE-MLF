@@ -12,6 +12,8 @@ from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 import pytest
+from PySide6.QtCore import Qt
+from PySide6.QtTest import QTest
 
 from packages.schemas.operator_console import SessionSummary
 from services.operator_console.state import OperatorStore
@@ -59,6 +61,8 @@ def test_sessions_view_table_binds_to_shared_model() -> None:
     # The shared model drives the table — row count must match.
     assert view._table.model().rowCount() == len(sessions)  # type: ignore[attr-defined]
     assert view._empty_state.isHidden() is True  # type: ignore[attr-defined]
+    assert "press Enter" in view._header.accessibleDescription()  # type: ignore[attr-defined]
+    assert view._table.accessibleName() == "Sessions table"  # type: ignore[attr-defined]
 
 
 def test_sessions_vm_select_session_writes_store_and_emits() -> None:
@@ -82,6 +86,19 @@ def test_sessions_view_forwards_vm_signal_to_shell() -> None:
     view.session_selected.connect(lambda sid: received.append(sid))
     target = uuid4()
     vm.select_session(target)
+    assert received == [target]
+
+
+def test_sessions_view_enter_opens_selected_session() -> None:
+    view, store, _vm = _view()
+    target = uuid4()
+    store.set_sessions([_session(target)])
+    received: list[UUID] = []
+    view.session_selected.connect(lambda sid: received.append(sid))
+
+    view._table.selectRow(0)  # type: ignore[attr-defined]
+    QTest.keyClick(view._table, Qt.Key.Key_Return)  # type: ignore[attr-defined]
+
     assert received == [target]
 
 

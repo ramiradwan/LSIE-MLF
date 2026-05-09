@@ -181,22 +181,22 @@ class TestSanitizeJsonPayload:
         assert context["streamer"] is None
         assert context["operator"]["heart_rate_bpm"] == 70
 
-    def test_absent_bandit_optionals_are_pruned(self) -> None:
+    def test_bandit_sample_map_is_preserved(self) -> None:
         payload: dict[str, Any] = {
             "_bandit_decision_snapshot": {
                 "selection_method": "thompson_sampling",
-                "sampled_theta_by_arm": None,
+                "sampled_theta_by_arm": {},
                 "decision_context_hash": "a" * 64,
-                "random_seed": None,
+                "random_seed": 42,
             }
         }
 
         sanitize_json_payload(payload)
 
         snapshot = payload["_bandit_decision_snapshot"]
-        assert "sampled_theta_by_arm" not in snapshot
+        assert snapshot["sampled_theta_by_arm"] == {}
         assert snapshot["decision_context_hash"] == "a" * 64
-        assert "random_seed" not in snapshot
+        assert snapshot["random_seed"] == 42
 
 
 class TestRoundTrip:

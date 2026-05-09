@@ -695,14 +695,13 @@ class AcousticAnalyzer:
             if relative_end_s <= relative_start_s:
                 return None
 
-            periodic_peaks = praat_call(
-                point_process,
-                "Get number of points",
-                relative_start_s,
-                relative_end_s,
-            )
+            first_peak = praat_call(point_process, "Get low index", relative_start_s)
+            last_peak = praat_call(point_process, "Get high index", relative_end_s)
             try:
-                periodic_peak_count = int(round(float(periodic_peaks)))
+                periodic_peak_count = max(
+                    0,
+                    int(round(float(last_peak))) - int(round(float(first_peak))) + 1,
+                )
             except (TypeError, ValueError):
                 return None
 

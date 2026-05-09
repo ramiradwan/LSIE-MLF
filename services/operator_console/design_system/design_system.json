@@ -1,0 +1,167 @@
+{
+  "$schema": "./design_system.schema.json",
+  "version": "0.1.0",
+  "source_audit": "../../../docs/artifacts/OPERATOR_CONSOLE_UI_UX_AUDIT.md",
+  "spec_refs": [
+    "§4.E.1",
+    "§7B",
+    "§12"
+  ],
+  "tokens_file": "tokens.json",
+  "shells": [
+    {
+      "name": "SidebarStackShell",
+      "routes": [
+        "overview",
+        "live_session",
+        "experiments",
+        "physiology",
+        "health",
+        "sessions"
+      ],
+      "regions": [
+        "sidebar",
+        "stack",
+        "action_bar",
+        "status_bar"
+      ],
+      "description": "Primary shell with sidebar navigation, stacked content, persistent ActionBar, and environment/API readback."
+    },
+    {
+      "name": "MetricGridPlusTimelineShell",
+      "routes": [
+        "overview",
+        "live_session",
+        "physiology",
+        "health"
+      ],
+      "regions": [
+        "header",
+        "summary_grid",
+        "timeline_or_followup"
+      ],
+      "description": "Monitoring shell combining card summaries with timeline or follow-up explanation regions."
+    },
+    {
+      "name": "TableWithDrillDownShell",
+      "routes": [
+        "live_session",
+        "experiments",
+        "sessions"
+      ],
+      "regions": [
+        "header",
+        "table",
+        "detail_or_manage"
+      ],
+      "description": "Readback shell keeping a table or list adjacent to detail or management UI."
+    }
+  ],
+  "primitives": [
+    {
+      "name": "MetricCard",
+      "object_names": [
+        "MetricCard",
+        "MetricCardTitle",
+        "MetricCardPrimary",
+        "MetricCardSecondary",
+        "MetricCardChevron"
+      ],
+      "description": "Summary card with title, primary value, optional secondary explanation, optional status pill, and an optional chevron affordance when clickable."
+    },
+    {
+      "name": "StatusPill",
+      "object_names": [
+        "StatusPill",
+        "StatusPillLabel"
+      ],
+      "description": "Colored dot plus text label keyed from UiStatusKind."
+    },
+    {
+      "name": "AlertBanner",
+      "object_names": [
+        "AlertBanner",
+        "AlertBannerInfo",
+        "AlertBannerWarning",
+        "AlertBannerCritical",
+        "AlertBannerGlyph",
+        "AlertBannerMessage"
+      ],
+      "description": "Severity-coded page feedback banner."
+    },
+    {
+      "name": "EmptyStateWidget",
+      "object_names": [
+        "EmptyState",
+        "EmptyStateTitle",
+        "EmptyStateMessage"
+      ],
+      "description": "Centered empty-state placeholder."
+    },
+    {
+      "name": "EventTimelineWidget",
+      "object_names": [
+        "EventTimeline",
+        "EventTimelineTable"
+      ],
+      "description": "Responsive timeline wrapper around QTableView."
+    },
+    {
+      "name": "SectionHeader",
+      "object_names": [
+        "SectionHeader",
+        "SectionHeaderTitle",
+        "SectionHeaderSubtitle"
+      ],
+      "description": "Page and section heading block. The title carries a `level` property (`page`, `panel`, `sub`) so the same widget renders at three sizes."
+    },
+    {
+      "name": "ResponsiveMetricGrid",
+      "object_names": [],
+      "description": "Width-band-aware layout helper for summary cards."
+    }
+  ],
+  "compounds": [
+    {
+      "name": "ActionBar",
+      "object_names": [
+        "ActionBar",
+        "ActionBarSession",
+        "ActionBarGreeting",
+        "ActionBarNote",
+        "ActionBarSubmit",
+        "ActionBarCountdown",
+        "ActionBarMessage",
+        "ActionBarNoteToggle",
+        "ActionBarProgress"
+      ],
+      "description": "Persistent shell-level stimulus rail. Includes the optional countdown progress strip pinned to the bottom edge and the compact-mode note toggle."
+    }
+  ],
+  "selectors": [
+    {"object_name": "ContentSurface", "kind": "surface"},
+    {"object_name": "SidebarNav", "kind": "shell"},
+    {"object_name": "SidebarTitle", "kind": "shell"},
+    {"object_name": "SidebarSubtitle", "kind": "shell"},
+    {"object_name": "NavButton", "kind": "shell"},
+    {"object_name": "Panel", "kind": "surface"},
+    {"object_name": "PanelTitle", "kind": "surface"},
+    {"object_name": "PanelSubtitle", "kind": "surface"},
+    {"object_name": "StatusBarLabel", "kind": "shell"},
+    {"object_name": "HealthRowOk", "kind": "status"},
+    {"object_name": "HealthRowWarn", "kind": "status"},
+    {"object_name": "HealthRowBad", "kind": "status"},
+    {"object_name": "HealthRowDegraded", "kind": "status"},
+    {"object_name": "HealthRowRecovering", "kind": "status"},
+    {"object_name": "HealthRowMuted", "kind": "status"},
+    {"object_name": "LiveSessionReadinessStrip", "kind": "surface"},
+    {"object_name": "EncounterVerdictHeadline", "kind": "surface"},
+    {"object_name": "EncounterVerdictReason", "kind": "surface"},
+    {"object_name": "EncounterInputsLabel", "kind": "surface"},
+    {"object_name": "NullValidPill", "kind": "status"},
+    {"object_name": "SessionsFilterInput", "kind": "surface"},
+    {"object_name": "ExperimentsSlideOver", "kind": "surface"},
+    {"object_name": "ExperimentsSlideOverScrim", "kind": "surface"},
+    {"object_name": "ProbeSparkline", "kind": "surface"}
+  ]
+}

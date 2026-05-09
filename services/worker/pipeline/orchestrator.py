@@ -33,12 +33,30 @@ from packages.schemas.data_tiers import DataTier, mark_data_tier
 
 logger = logging.getLogger(__name__)
 
-# §4.C.1 Drift polling specification
-DRIFT_POLL_INTERVAL: int = 30  # seconds
-MAX_TOLERATED_DRIFT_MS: int = 150  # milliseconds
-ADB_COMMAND: str = "adb shell 'echo $EPOCHREALTIME'"
-DRIFT_FREEZE_AFTER_FAILURES: int = 3
-DRIFT_RESET_TIMEOUT: int = 300  # 5 minutes in seconds
+# §4.C.1 drift correction now lives in services.desktop_app.drift; it is
+# polled by services.desktop_app.processes.capture_supervisor (WS3 P3)
+# and the offset is shipped to module_c_orchestrator over the IPC
+# drift_updates channel. Orchestrator keeps a DriftCorrector instance
+# only for the apply-side correct_timestamp() call.
+from services.desktop_app.drift import (  # noqa: E402
+    ADB_COMMAND,
+    DRIFT_FREEZE_AFTER_FAILURES,
+    DRIFT_POLL_INTERVAL,
+    DRIFT_RESET_TIMEOUT,
+    MAX_TOLERATED_DRIFT_MS,
+    DriftCorrector,
+)
+
+# Re-export the symbols above for backwards compatibility with the v3.4
+# test suite that imports them from this module.
+__all__ = [
+    "ADB_COMMAND",
+    "DRIFT_FREEZE_AFTER_FAILURES",
+    "DRIFT_POLL_INTERVAL",
+    "DRIFT_RESET_TIMEOUT",
+    "MAX_TOLERATED_DRIFT_MS",
+    "DriftCorrector",
+]
 
 # §4.C.2 FFmpeg resampling command
 FFMPEG_RESAMPLE_CMD: list[str] = [
@@ -106,94 +124,6 @@ def _live_session_state_key(session_id: str) -> str:
     return f"{LIVE_SESSION_STATE_KEY_PREFIX}{session_id}"
 
 
-class DriftCorrector:
-    """
-    Maintain drift-corrected UTC timestamps for Module C.
-
-    Accepts host time and Android epoch readings from the configured ADB poll,
-    produces the current seconds offset, and applies it to media/event
-    timestamps. It freezes the last offset after repeated poll failures and
-    resets after the configured timeout (§13.5); it does not block segment
-    assembly on ADB loss or persist drift history.
-    """
-
-    def __init__(self) -> None:
-        self.drift_offset: float = 0.0
-        self._consecutive_failures: int = 0
-        self._frozen: bool = False
-        self._frozen_at: float = 0.0
-
-    def poll(self) -> float:
-        """
-        Execute ADB epoch poll and update drift_offset.
-
-        §4.C.1 — drift_offset = host_utc - android_epoch.
-        §12 Hardware loss C: freeze drift after 3 failures; reset to
-        zero after 5 minutes of frozen state.
-
-        Returns:
-            Current drift_offset in seconds.
-        """
-        # §12 Hardware loss C — check if frozen drift should reset
-        if self._frozen:
-            elapsed = time.monotonic() - self._frozen_at
-            if elapsed >= DRIFT_RESET_TIMEOUT:
-                # §12 — reset to zero after 5 minutes
-                logger.warning("Drift frozen for %ds, resetting to zero", int(elapsed))
-                self.drift_offset = 0.0
-                self._frozen = False
-                self._consecutive_failures = 0
-            return self.drift_offset
-
-        try:
-            # §4.C.1 — Execute ADB epoch command
-            host_utc = time.time()
-            result = subprocess.run(
-                ADB_COMMAND,
-                shell=True,
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
-            if result.returncode != 0:
-                raise RuntimeError(f"ADB returned code {result.returncode}")
-
-            android_epoch = float(result.stdout.strip())
-
-            # §4.C.1 — drift_offset = host_utc - android_epoch
-            self.drift_offset = host_utc - android_epoch
-            self._consecutive_failures = 0
-
-            drift_ms = abs(self.drift_offset * 1000)
-            if drift_ms > MAX_TOLERATED_DRIFT_MS:
-                logger.warning(
-                    "Drift %.1fms exceeds %dms tolerance",
-                    drift_ms,
-                    MAX_TOLERATED_DRIFT_MS,
-                )
-
-        except Exception as exc:
-            self._consecutive_failures += 1
-            logger.error(
-                "ADB poll failed (%d/%d): %s",
-                self._consecutive_failures,
-                DRIFT_FREEZE_AFTER_FAILURES,
-                exc,
-            )
-
-            # §12 Hardware loss C — freeze after 3 failures
-            if self._consecutive_failures >= DRIFT_FREEZE_AFTER_FAILURES and not self._frozen:
-                logger.warning("Freezing drift at %.6f", self.drift_offset)
-                self._frozen = True
-                self._frozen_at = time.monotonic()
-
-        return self.drift_offset
-
-    def correct_timestamp(self, original_ts: float) -> float:
-        """Apply drift correction: corrected_ts = original_ts + drift_offset."""
-        return original_ts + self.drift_offset
-
-
 class AudioResampler:
     """
     Manage the persistent FFmpeg resampling pipe for audio handoff.
@@ -213,12 +143,7 @@ class AudioResampler:
         return self._process is not None and self._process.poll() is None
 
     def start(self) -> None:
-        """
-        Launch FFmpeg resampling subprocess.
-
-        §4.C.2 — Exact command from spec: ffmpeg -f s16le -ar 48000 -ac 1
-        -i /tmp/ipc/audio_stream.raw -ar 16000 -f s16le -ac 1 pipe:1
-        """
+        """Launch the retained FFmpeg resampling subprocess."""
         if self.is_running:
             return
 
@@ -278,7 +203,7 @@ class AudioResampler:
             except (subprocess.TimeoutExpired, OSError):
                 self._process.kill()
             finally:
-                self._process = None  # type: ignore[assignment]
+                self._process = None
             logger.info("FFmpeg resampler stopped")
 
 
@@ -300,6 +225,7 @@ class Orchestrator:
         stream_url: str = "",
         session_id: str | None = None,
         experiment_id: str = "greeting_line_v1",
+        ipc_queue: Any = None,
     ) -> None:
         """
         Initialize orchestrator with session, experiment, video, and AU12 state.
@@ -308,6 +234,12 @@ class Orchestrator:
             stream_url: TikTok stream URL for this session.
             session_id: UUID for this session (auto-generated if None).
             experiment_id: Thompson Sampling experiment ID (§4.E.1).
+            ipc_queue: ``multiprocessing.Queue``-like sink for v4.0 desktop
+                IPC dispatch. When ``None``, ``_dispatch_payload`` logs a
+                warning and discards the segment — useful for unit tests
+                that exercise other parts of the pipeline. The v4.0
+                ``module_c_orchestrator`` process supplies the real queue
+                via ``IpcChannels.ml_inbox``.
         """
         self.drift_corrector = DriftCorrector()
         replay_fixture = os.environ.get("REPLAY_CAPTURE_FIXTURE")
@@ -342,6 +274,14 @@ class Orchestrator:
         self._expected_greeting: str = ""
         self._bandit_decision_snapshot: dict[str, Any] | None = None
         self._segment_window_anchor_utc: datetime | None = None
+
+        # WS3 P2 — IPC dispatch state. The orchestrator keeps the most
+        # recent N PcmBlock handles alive so consumers (gpu_ml_worker)
+        # can attach to them; the kernel auto-reclaims older blocks
+        # when they fall out of the bounded buffer. N=8 covers ~4 min
+        # of 30-second segments, far longer than ML inference latency.
+        self._ipc_queue: Any = ipc_queue
+        self._inflight_blocks: deque[Any] = deque(maxlen=8)
 
         # Video capture (lazy-init in run() for live capture).
         # Replay mode binds the same source to the video and audio surfaces.
@@ -828,10 +768,27 @@ class Orchestrator:
         encoded = json.dumps(context, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
+    def _bandit_random_seed(
+        self,
+        *,
+        segment_window_start_utc: datetime,
+        stimulus_time: float | None,
+    ) -> int:
+        seed_material = "".join(
+            (
+                f"{uuid.UUID(self._session_id)}",
+                self._canonical_utc_timestamp(segment_window_start_utc),
+                str(stimulus_time),
+                BANDIT_POLICY_VERSION,
+            )
+        )
+        return int.from_bytes(hashlib.sha256(seed_material.encode("utf-8")).digest()[:8], "big")
+
     def _capture_bandit_decision_snapshot(
         self,
         *,
         selection_time_utc: datetime,
+        segment_window_start_utc: datetime,
         candidate_arm_ids: list[str],
         posterior_by_arm: dict[str, dict[str, float]],
         sampled_theta_by_arm: dict[str, float] | None,
@@ -865,6 +822,17 @@ class Orchestrator:
         if self._active_arm not in posterior_copy:
             posterior_copy[self._active_arm] = {"alpha": 1.0, "beta": 1.0}
 
+        resolved_random_seed = random_seed
+        if resolved_random_seed is None:
+            resolved_random_seed = self._bandit_random_seed(
+                segment_window_start_utc=segment_window_start_utc,
+                stimulus_time=self._stimulus_time,
+            )
+
+        normalized_sampled_theta_by_arm = {
+            str(arm_id): float(theta) for arm_id, theta in (sampled_theta_by_arm or {}).items()
+        }
+
         snapshot: dict[str, Any] = {
             "selection_method": "thompson_sampling",
             "selection_time_utc": selection_time_utc,
@@ -873,25 +841,35 @@ class Orchestrator:
             "selected_arm_id": self._active_arm,
             "candidate_arm_ids": normalized_candidates,
             "posterior_by_arm": posterior_copy,
+            "sampled_theta_by_arm": normalized_sampled_theta_by_arm,
             "expected_greeting": self._expected_greeting,
             "decision_context_hash": self._decision_context_hash(
                 candidate_arm_ids=normalized_candidates,
                 posterior_by_arm=posterior_copy,
                 selected_arm_id=self._active_arm,
             ),
+            "random_seed": int(resolved_random_seed),
         }
-        if sampled_theta_by_arm is not None:
-            snapshot["sampled_theta_by_arm"] = {
-                str(arm_id): float(theta) for arm_id, theta in sampled_theta_by_arm.items()
-            }
-        if random_seed is not None:
-            snapshot["random_seed"] = int(random_seed)
 
         self._bandit_decision_snapshot = snapshot
 
-    def _ensure_bandit_decision_snapshot(self, selection_time_utc: datetime) -> None:
+    def _ensure_bandit_decision_snapshot(
+        self,
+        *,
+        selection_time_utc: datetime,
+        segment_window_start_utc: datetime,
+    ) -> None:
         """Populate a fallback snapshot when tests assemble without live arm selection."""
         if self._bandit_decision_snapshot is not None:
+            self._bandit_decision_snapshot = {
+                **self._bandit_decision_snapshot,
+                "sampled_theta_by_arm": {
+                    str(arm_id): float(theta)
+                    for arm_id, theta in (
+                        self._bandit_decision_snapshot.get("sampled_theta_by_arm") or {}
+                    ).items()
+                },
+            }
             return
         fallback_arm = self._active_arm or "simple_hello"
         self._active_arm = fallback_arm
@@ -901,6 +879,7 @@ class Orchestrator:
         )
         self._capture_bandit_decision_snapshot(
             selection_time_utc=selection_time_utc,
+            segment_window_start_utc=segment_window_start_utc,
             candidate_arm_ids=[fallback_arm],
             posterior_by_arm={fallback_arm: {"alpha": 1.0, "beta": 1.0}},
             sampled_theta_by_arm=None,
@@ -919,10 +898,7 @@ class Orchestrator:
         §7E/§11.3 — Stable segment_id = SHA-256 over session/window identity.
         """
         from packages.schemas.inference_handoff import InferenceHandoffPayload
-        from services.worker.pipeline.serialization import (
-            encode_bytes_fields,
-            sanitize_json_payload,
-        )
+        from services.worker.pipeline.serialization import sanitize_json_payload
 
         assembly_started = time.perf_counter()
         self._segment_counter += 1
@@ -979,7 +955,10 @@ class Orchestrator:
             except Exception:
                 logger.warning("Assemble segment frame extraction failed", exc_info=True)
 
-        self._ensure_bandit_decision_snapshot(selection_time_utc=timestamp)
+        self._ensure_bandit_decision_snapshot(
+            selection_time_utc=timestamp,
+            segment_window_start_utc=segment_window_start_utc,
+        )
 
         physiological_context: dict[str, Any] | None = None
         now_wall = time.time()
@@ -1023,7 +1002,11 @@ class Orchestrator:
         result["_experiment_code"] = self._experiment_id
 
         result = sanitize_json_payload(result)
-        result = encode_bytes_fields(result, ["_audio_data", "_frame_data"])
+        # WS3 P2: the v3.4 base64 round-trip on _audio_data / _frame_data is
+        # retired. The desktop IPC path moves audio through SharedMemory
+        # (services.desktop_app.ipc.shared_buffers) and frames stay
+        # process-local per the v4.0 §9 invariant that decoded video
+        # frames never cross a process boundary.
         logger.info(
             "BENCHMARK segment_assembly_ms=%.3f segment_id=%s",
             (time.perf_counter() - assembly_started) * 1000.0,
@@ -1033,14 +1016,25 @@ class Orchestrator:
         return result
 
     def _dispatch_payload(self, payload: dict[str, Any]) -> None:
-        """Validate the typed handoff surface and dispatch it to Module D."""
+        """Validate the typed handoff and dispatch via v4.0 IPC.
+
+        WS3 P2 retires the v3.4 Celery + Redis dispatch path. The 30 s
+        PCM window travels via ``shared_buffers.write_pcm_block``; its
+        SharedMemory metadata is wrapped into an
+        ``InferenceControlMessage`` and pushed onto the IPC queue. The
+        ``_audio_data`` base64 round-trip is dropped on the desktop
+        path; ``sanitize_json_payload`` is retained because it also
+        prunes empty ``_physiological_context`` and absent
+        ``_bandit_decision_snapshot`` optionals.
+        """
         try:
             from packages.schemas.inference_handoff import InferenceHandoffPayload
-            from services.worker.pipeline.serialization import (
-                encode_bytes_fields,
-                sanitize_json_payload,
+            from services.desktop_app.ipc.control_messages import (
+                AudioBlockRef,
+                InferenceControlMessage,
             )
-            from services.worker.tasks.inference import process_segment
+            from services.desktop_app.ipc.shared_buffers import write_pcm_block
+            from services.worker.pipeline.serialization import sanitize_json_payload
 
             transport_fields = ("_audio_data", "_frame_data", "_experiment_code")
             transport_payload = {key: payload[key] for key in transport_fields if key in payload}
@@ -1049,17 +1043,63 @@ class Orchestrator:
             }
 
             validated = InferenceHandoffPayload.model_validate(sanitize_json_payload(handoff_data))
-            dispatch_payload: dict[str, Any] = validated.model_dump(mode="json", by_alias=True)
-            dispatch_payload = sanitize_json_payload(dispatch_payload)
-            dispatch_payload.update(transport_payload)
-            dispatch_payload = encode_bytes_fields(
-                dispatch_payload,
-                ["_audio_data", "_frame_data"],
+            handoff_dump: dict[str, Any] = sanitize_json_payload(
+                validated.model_dump(mode="json", by_alias=True)
             )
 
-            process_segment.delay(dispatch_payload)
+            audio = transport_payload.pop("_audio_data", None)
+            # WS3 P2 / v4.0 §9 invariant: decoded video frames never cross
+            # a process boundary. Drop _frame_data unconditionally — it
+            # was a v3.4 Celery-path artifact and is observed nowhere on
+            # the desktop graph.
+            transport_payload.pop("_frame_data", None)
+            if not isinstance(audio, bytes | bytearray) or not audio:
+                logger.warning(
+                    "dispatch skipped: missing or empty _audio_data on segment %s",
+                    handoff_dump.get("segment_id"),
+                )
+                return
+
+            if self._ipc_queue is None:
+                logger.warning(
+                    "dispatch skipped: no IPC queue configured on Orchestrator (segment_id=%s)",
+                    handoff_dump.get("segment_id"),
+                )
+                return
+
+            block = write_pcm_block(bytes(audio))
+            evicted = self._track_block(block)
+            if evicted is not None:
+                evicted.close_and_unlink()
+
+            msg = InferenceControlMessage(
+                handoff=handoff_dump,
+                audio=AudioBlockRef.from_metadata(block.metadata),
+                forward_fields=transport_payload,
+            )
+            self._ipc_queue.put(msg.model_dump(mode="json"))
         except Exception as exc:
-            logger.error("Failed to dispatch segment: %s", exc)
+            logger.error("Failed to dispatch segment via IPC: %s", exc)
+
+    def _track_block(self, block: Any) -> Any | None:
+        """Append ``block`` to the bounded inflight buffer; return any eviction."""
+        evicted: Any | None = None
+        if (
+            self._inflight_blocks.maxlen is not None
+            and len(self._inflight_blocks) == self._inflight_blocks.maxlen
+        ):
+            evicted = self._inflight_blocks[0]
+        self._inflight_blocks.append(block)
+        return evicted
+
+    def close_inflight_blocks(self) -> None:
+        """Release every retained PcmBlock handle. Idempotent."""
+        while self._inflight_blocks:
+            block = self._inflight_blocks.popleft()
+            try:
+                block.close_and_unlink()
+            except Exception:  # noqa: BLE001
+                logger.debug("inflight block cleanup failed", exc_info=True)
 
     def _drain_event_buffer(self) -> list[dict[str, Any]]:
         """Drain queued ground-truth events into the current segment payload."""
@@ -1248,7 +1288,7 @@ class Orchestrator:
             try:
                 import redis
 
-                client = redis.from_url(  # type: ignore[no-untyped-call]
+                client = redis.from_url(
                     redis_url,
                     decode_responses=True,
                 )
@@ -1381,18 +1421,18 @@ class Orchestrator:
         # Read audio in 1/30th second chunks to match 30 FPS video
         chunk_size = int(bytes_per_second / 30)
 
-        last_drift_poll = 0.0
-
         while self._running:
             self._drain_session_lifecycle_intents()
             now = time.monotonic()
             self._publish_orchestrator_heartbeat_if_due(now)
 
-            # §4.C.1 — Poll drift at configured interval. Replay mode keeps the
-            # zero/cached offset and intentionally avoids ADB/USB dependencies.
-            if not self._using_replay_capture and now - last_drift_poll >= DRIFT_POLL_INTERVAL:
-                self.drift_corrector.poll()
-                last_drift_poll = now
+            # §4.C.1 / WS3 P3 — Drift correction is polled by
+            # services.desktop_app.processes.capture_supervisor and
+            # delivered to this process over IpcChannels.drift_updates;
+            # module_c_orchestrator drains the queue and updates
+            # self.drift_corrector.drift_offset directly. In replay
+            # mode this loop runs in a unit-test process without a
+            # supervisor, so the offset stays at its zero default.
 
             # §4.C.2 — Read resampled audio chunk. When no session is active we
             # still drain the pipe, but intentionally discard the bytes so a later
@@ -1540,16 +1580,27 @@ class Orchestrator:
             self.drift_corrector.correct_timestamp(time.time()),
             tz=UTC,
         )
+        segment_window_start_utc = self._segment_window_anchor_utc or selection_time
+        if segment_window_start_utc.tzinfo is None:
+            segment_window_start_utc = segment_window_start_utc.replace(tzinfo=UTC)
+        segment_window_start_utc = segment_window_start_utc.astimezone(UTC)
+        random_seed = self._bandit_random_seed(
+            segment_window_start_utc=segment_window_start_utc,
+            stimulus_time=self._stimulus_time,
+        )
 
         try:
-            from scipy.stats import beta as beta_dist
+            import numpy as np
 
             from services.worker.pipeline.analytics import MetricsStore
 
             store = MetricsStore()
             store.connect()
             try:
-                arms = store.get_experiment_arms(self._experiment_id)
+                arms = sorted(
+                    store.get_experiment_arms(self._experiment_id),
+                    key=lambda arm_data: str(arm_data["arm"]),
+                )
                 if not arms:
                     raise ValueError(f"No arms found for experiment '{self._experiment_id}'")
 
@@ -1557,13 +1608,14 @@ class Orchestrator:
                 sampled_theta_by_arm: dict[str, float] = {}
                 selected_arm_data: dict[str, Any] | None = None
                 best_sample = -1.0
+                rng = np.random.Generator(np.random.PCG64(random_seed))
 
                 for arm_data in arms:
                     arm_id = str(arm_data["arm"])
                     alpha = float(arm_data["alpha_param"])
                     beta_param = float(arm_data["beta_param"])
                     posterior_by_arm[arm_id] = {"alpha": alpha, "beta": beta_param}
-                    sample = float(beta_dist.rvs(alpha, beta_param))
+                    sample = float(rng.beta(alpha, beta_param))
                     sampled_theta_by_arm[arm_id] = sample
                     if sample > best_sample:
                         best_sample = sample
@@ -1589,9 +1641,11 @@ class Orchestrator:
                 candidate_arm_ids = list(posterior_by_arm)
                 self._capture_bandit_decision_snapshot(
                     selection_time_utc=selection_time,
+                    segment_window_start_utc=segment_window_start_utc,
                     candidate_arm_ids=candidate_arm_ids,
                     posterior_by_arm=posterior_by_arm,
                     sampled_theta_by_arm=sampled_theta_by_arm,
+                    random_seed=random_seed,
                 )
 
                 logger.info(
@@ -1609,9 +1663,11 @@ class Orchestrator:
             self._experiment_row_id = DEFAULT_EXPERIMENT_ROW_ID
             self._capture_bandit_decision_snapshot(
                 selection_time_utc=selection_time,
+                segment_window_start_utc=segment_window_start_utc,
                 candidate_arm_ids=[self._active_arm],
                 posterior_by_arm={self._active_arm: {"alpha": 1.0, "beta": 1.0}},
                 sampled_theta_by_arm=None,
+                random_seed=random_seed,
             )
             logger.warning(
                 "Thompson Sampling unavailable, using fallback arm: %s",

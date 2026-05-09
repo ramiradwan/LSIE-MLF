@@ -15,7 +15,7 @@ The playbook is operator-facing: each chore should be runnable from a clean chec
 
 **Purpose.** Enforce §0.3 of the spec: only the canonical identifiers listed in `CLAUDE.md` (IPC Pipe, Ephemeral Vault, InferenceHandoffPayload, ML Worker, API Server, Message Broker, Persistent Store, Capture Container, PhysiologicalChunkEvent, Physiological Context, Physiological State Buffer, subject_role, Co-Modulation Index) may appear in code and docstrings. Retired synonyms (Celery node, GPU worker, FIFO, named pipe, 24-hour vault, handoff schema, FastAPI server, etc.) erode shared vocabulary and confuse the ADO agent's refactor planner.
 
-**Inputs.** The retired-synonym grep from `CLAUDE.md`, run against `services/`, `packages/`, and `docker-compose.yml`. The executable §13 audit harness in Chore #8 is the authoritative automated gate for canonical-name verifier results.
+**Inputs.** The retired-synonym grep from `CLAUDE.md`, run against `services/`, `packages/`, and `scripts/`. The executable §13 audit harness in Chore #8 is the authoritative automated gate for canonical-name verifier results. There is no active `docker-compose.yml` input for the v4 desktop runtime.
 
 **Outputs.** Either a clean (zero-match) report committed to the merge cycle log, or a follow-up commit that renames the offenders. README narrative prose is exempt; code, comments, and docstrings are not.
 
@@ -23,13 +23,13 @@ The playbook is operator-facing: each chore should be runnable from a clean chec
 
 ### 2. Documentation Reconciliation
 
-**Purpose.** Keep `README.md`, `.claude/skills/*/SKILL.md`, `CLAUDE.md`, and `docs/SPEC_REFERENCE.md` aligned with what the merged code actually does. The ADO agent's workspace-server loads these files as ground truth; drift here causes the agent to generate code against a fictional baseline.
+**Purpose.** Keep `README.md`, `.claude/skills/*/SKILL.md`, `CLAUDE.md`, and the signed spec PDF/content-index workflow aligned with what the merged code actually does. The ADO agent's workspace-server loads these files as ground truth; drift here causes the agent to generate code against a fictional baseline.
 
-**Inputs.** The merge diff, the current contents of all skill files, the README topology table and data-flow diagram, and `docs/SPEC_AMENDMENTS.md`.
+**Inputs.** The merge diff, the current contents of all skill files, the README topology table and data-flow diagram, and spec references resolved with `scripts/spec_ref_check.py` against `docs/tech-spec-v*.pdf`.
 
-**Outputs.** Updated docs in the same merge or a fast-follow doc-only PR. Any new amendment to the signed spec (`docs/tech-spec-v*.pdf`) must be registered in `docs/SPEC_AMENDMENTS.md` with ID, section, original text, new behavior, rationale, and affected files.
+**Outputs.** Updated docs in the same merge or a fast-follow doc-only PR. Any change that alters the governed spec contract must land in the signed spec PDF/content payload rather than a local amendment registry.
 
-**Success.** Every container, env var, port, schema field, and Redis key referenced in the merged code is described in at least one of the four doc surfaces. **Failure.** Any new artifact that exists in code but is invisible to the workspace-server, or any spec deviation not registered in `SPEC_AMENDMENTS.md`.
+**Success.** Every desktop process, env var, port, schema field, local SQLite table, IPC channel, and retained/server key referenced in the merged code is described in the signed spec payload or one project-facing doc surface. Container manifests are expected only if a future signed spec change reintroduces them. **Failure.** Any new artifact that exists in code but is invisible to the workspace-server, or any spec deviation not reflected in the signed spec/content payload.
 
 ### 3. Schema-Code Consistency Verification
 
@@ -73,13 +73,13 @@ The playbook is operator-facing: each chore should be runnable from a clean chec
 
 ### 7. Performance Baseline Refresh
 
-**Purpose.** Re-establish the latency and throughput numbers that the spec's 30 ms ML latency target and Module D segment cadence depend on. Merges that touch `orchestrator.py`, `inference.py`, `analytics.py`, `transcription.py`, `face_mesh.py`, or any IPC path can shift the baseline silently.
+**Purpose.** Re-establish deterministic v4 desktop latency numbers for Module C dispatch, shared-memory IPC handoff, `gpu_ml_worker` analytics publication, and `analytics_state_worker` SQLite persistence. Merges that touch `services/desktop_app/processes/module_c_orchestrator.py`, `services/desktop_app/processes/gpu_ml_worker.py`, `services/desktop_app/processes/analytics_state_worker.py`, `services/desktop_app/ipc/`, or Operator Console read paths can shift the baseline silently.
 
-**Inputs.** The standard 30 s segment benchmark, the Whisper INT8 inference timer in `services/worker/tasks/inference.py`, the AU12 per-frame timer, and the orchestrator's segment-assembly wall-clock log line. If physiology persistence was touched, also the Co-Modulation Index window-compute timer.
+**Inputs.** Run `uv run python scripts/run_fixture_benchmark.py <fixture_path> --segments 3` against the checked-in deterministic capture fixture or an explicitly generated deterministic fixture. The benchmark is fixture-driven and does not use live Android, ADB, scrcpy, retained worker paths, brokers, or cloud services.
 
-**Outputs.** A small markdown row appended to `docs/artifacts/performance_baseline.md` (create if absent) with date, commit SHA, segment-assembly p50/p95, ML inference p50/p95, AU12 per-frame p50, and any physiology-window compute time. Regressions >20% versus the previous row are flagged for investigation before the cycle is closed.
+**Outputs.** A small markdown row appended to `docs/artifacts/performance_baseline.md` with date, commit SHA, scenario, segment count, dispatch p50/p95, ML publish p50/p95, analytics-state p50/p95, visual AU12 tick p50, and end-to-end p95. Regressions >20% versus the previous `v4-fixture:@` row are flagged for investigation before the cycle is closed.
 
-**Success.** New baseline row recorded and within tolerance of the previous row, OR a regression is filed as an ADO work item with reproduction steps. **Failure.** No baseline run executed, or a regression silently accepted.
+**Success.** New v4 baseline row recorded and within tolerance of the previous row, OR a regression is filed as an ADO work item with reproduction steps. **Failure.** No baseline run executed, or a regression silently accepted.
 
 ### 8. §13 Audit Checklist Execution
 
@@ -90,15 +90,15 @@ The playbook is operator-facing: each chore should be runnable from a clean chec
 **Run.** Capture the harness-generated Markdown report from stdout and append it verbatim to the merge cycle log:
 
 ```bash
-python scripts/run_audit.py --strict > /tmp/section13-audit.md
-cat /tmp/section13-audit.md >> docs/artifacts/<cycle-log>.md
+python scripts/run_audit.py --strict > section13-audit.md
+cat section13-audit.md >> docs/artifacts/<cycle-log>.md
 ```
 
 The harness renders a deterministic Markdown table in runtime-enumerated spec order with stable single-line cells, so adjacent cycle logs should produce meaningful diffs when the spec, verifiers, or evidence changes.
 
-**Outputs.** The appended harness Markdown report for every current §13 audit item. Any fail must point to either a follow-up commit or a SPEC-AMEND entry that justifies the deviation.
+**Outputs.** The appended harness Markdown report for every current §13 audit item. Any fail must point to either a follow-up commit or a signed-spec/content update that justifies the deviation.
 
-**Success.** All current §13 items pass, OR every fail is justified by a registered amendment. **Failure.** Any unjustified fail, or the audit was not run.
+**Success.** All current §13 items pass, OR every fail is justified by the signed spec/content payload. **Failure.** Any unjustified fail, or the audit was not run.
 
 ---
 
@@ -106,11 +106,11 @@ The harness renders a deterministic Markdown table in runtime-enumerated spec or
 
 > **Cycle:** _Awaiting next merge._ The previous cycle (PR 166, `feature/audit-as-code`, commit `8874737`, closed 2026-04-30) is complete. The cycle's M-chores were:
 >
-> - **M1 — §13 audit-harness placeholder verifiers (resolved).** PR 166 shipped the executable §13 audit harness with `--strict` wired into CI (`.github/workflows/ci.yml` `audit` job) and Standing Chore #8, but six items (§13.1, §13.2, §13.3, §13.5, §13.9, §13.10) initially landed backed by `register_placeholder_verifiers()` and kept `--strict` red on `main`. Resolved by adding concrete verifiers in `scripts/audit/verifiers/mechanical.py`: `verify_directory_structure` checks every `codebase_architecture.directory_hierarchy` path exists; `verify_docker_topology` parses `docker-compose.yml` and matches each spec container's image / network / restart policy / depends_on plus every spec volume's mount; `verify_ipc_lifecycle` greps Module A's spec lifecycle-step `<func>`/`<path>`/`<env>`/`<cmd>` tokens against `services/stream_ingest/entrypoint.sh` after expanding shell variable assignments so `$AUDIO_PIPE` resolves to its literal `/tmp/ipc/audio_stream.raw` path; `verify_drift_correction` AST-parses `services/worker/pipeline/orchestrator.py` and matches each `DRIFT_*` constant plus the `drift_offset = host_utc - android_epoch` formula; `verify_schema_validation` AST-parses `packages/schemas/inference_handoff.py`, asserts the `InferenceHandoffPayload(BaseModel)` declaration covers every spec-required field (carving out `_x_max` and any other field whose description is marked `diagnostic` / `calibration telemetry` / `compatibility` / `does not divide`), confirms `extra="forbid"`, and confirms `services/worker/` invokes the model at a dispatch boundary; `verify_module_contracts` extracts the structured `<path>`/`<func>`/`<env>`/`<class>`/`<cmd>`/`<flag>`/`<field>` tokens from each Module A–F `contract.{inputs,outputs,dependencies,side_effects,failure_modes}` and resolves them against module-specific search roots, with the same `_x_max` carve-out and a separate carve-out for deployment-only env vars (`SDL_VIDEODRIVER`, `XDG_RUNTIME_DIR`, `ADB_SERVER_SOCKET`) so they can resolve in `docker-compose.yml` / `.env.example` instead of Python source. Each verifier extracts its expected surface from `spec_content` and is unit-tested under `tests/unit/scripts/audit/test_mechanical_verifiers.py`. `python scripts/run_audit.py --strict` now exits 0 with 31/31 §13 items PASS.
+> - **M1 — §13 audit-harness placeholder verifiers (resolved).** PR 166 shipped the executable §13 audit harness with `--strict` wired into CI (`.github/workflows/ci.yml` `audit` job) and Standing Chore #8, but six items initially landed backed by placeholder verifiers and kept `--strict` red on `main`. Resolved by adding concrete verifiers in `scripts/audit/verifiers/mechanical.py` for directory structure, retained deployment topology where spec-scoped, active desktop IPC/capture lifecycle evidence, drift correction, schema validation, and module contracts. Each verifier extracts its expected surface from `spec_content` and is unit-tested under `tests/unit/scripts/audit/test_mechanical_verifiers.py`. `python scripts/run_audit.py --strict` now exits 0 with 31/31 §13 items PASS.
 > - **M2 — §13.13 `mark_data_tier` dict-literal emissions (resolved).** The new `services/worker/pipeline/analytics.py` `_evaluation_insert_params` / `_physiology_insert_params` helpers wrap dict literals in `mark_data_tier(...)`; the variable-traceability AST verifier walked those keys as `mark_data_tier.<key>` emissions and reported them unmapped after the analytics surface filter stripped the canonical match. Resolved by adding `is_match`, `source_kind`, `window_s`, `validity_ratio`, `is_valid` to the `out_of_scope` set in `tests/integration/test_variable_traceability.py` (alongside the existing `freshness_s` / `is_stale` / `rmssd_ms` passthrough entries) so the analytics persistence surface is treated as a sink for upstream-produced variables.
-> - **M3 — §13.15 retired-synonym matches (resolved).** PR 166's analytics persistence wrapping introduced four `purpose=` strings containing `attribution event` / `outcome row` / `attribution link` / `score row` — all retired §0.3 synonyms. The Module A capture loop comment also still said `kernel pipe`. Resolved by replacing the four `mark_data_tier(..., purpose=...)` strings in `services/worker/pipeline/analytics.py` with the canonical `AttributionEvent` / `OutcomeEvent` / `EventOutcomeLink` / `AttributionScore` row labels and updating `services/stream_ingest/entrypoint.sh` to say `IPC Pipe`.
+> - **M3 — §13.15 retired-synonym matches (resolved).** PR 166's analytics persistence wrapping introduced four `purpose=` strings containing `attribution event` / `outcome row` / `attribution link` / `score row` — all retired §0.3 synonyms. The Module A capture loop comment also still used stale IPC wording. Resolved by replacing the four `mark_data_tier(..., purpose=...)` strings in `services/worker/pipeline/analytics.py` with the canonical `AttributionEvent` / `OutcomeEvent` / `EventOutcomeLink` / `AttributionScore` row labels and updating the capture-loop wording.
 > - **M4 — Windows-portable canonical-terminology verifier output (resolved).** `scripts/audit/verifiers/mechanical.py` renders the `§13.15` mismatch lines as `f"§0.3/§13.15 {rel_path}:{line_number} matched ..."`; on Windows `rel_path` interpolates with `\` separators, so the unit-test assertions for the Ubuntu-style `services/bad.py:1` evidence broke for any developer running the local suite on Windows. Resolved by emitting `rel_path.as_posix()` so evidence is identical across platforms.
-> - **M5 — `DataTier` annotation surface documentation (deferred).** The new `packages/schemas/data_tiers.py` exports (`DataTier`, `DataTierAnnotation`, `mark_data_tier`, `data_tier`, `data_tier_context`, `get_data_tier_annotation`) are reachable through every persistence INSERT call site in `services/` and audited by `scripts/audit/verifiers/data_classification.py` / §13.14, but they are not described in `README.md`, `CLAUDE.md`, `docs/SPEC_REFERENCE.md`, or any `.claude/skills/*/SKILL.md`. Follow-up cycle should add the §5.2 data-tier annotation surface to one of those doc surfaces (preferred location: a new section inside `docs/SPEC_REFERENCE.md` near the §5.2 references, plus a brief mention in the canonical-names list in `CLAUDE.md`).
+> - **M5 — `DataTier` annotation surface documentation (deferred).** The new `packages/schemas/data_tiers.py` exports (`DataTier`, `DataTierAnnotation`, `mark_data_tier`, `data_tier`, `data_tier_context`, `get_data_tier_annotation`) are reachable through every persistence INSERT call site in `services/` and audited by `scripts/audit/verifiers/data_classification.py` / §13.14, but they are not described in `README.md`, `CLAUDE.md`, the signed spec/content payload, or any `.claude/skills/*/SKILL.md`. Follow-up cycle should add the §5.2 data-tier annotation surface to a project-facing doc surface and ensure the next signed spec/content payload reflects it.
 >
 > When the next feature branch merges into `main`, replace this block in its entirety with a new `> **Cycle:** PR <n> — <branch> → main (commit <sha>, <date>)` header and a fresh set of **M1…Mk** chores derived from that merge's diff. Each M-chore must be self-contained, runnable from a clean checkout, and scoped to exactly what was introduced by the merge (do not restate Standing chores 1–8 here).
 >
@@ -120,7 +120,7 @@ The harness renders a deterministic Markdown table in runtime-enumerated spec or
 > - New Redis keys, queues, or pub/sub channels → confirm producer/consumer pairing and bounded drain semantics.
 > - New SQL tables or columns → column-by-column reconciliation against Pydantic + Python insert layer (this overlaps Standing chore #3 but goes deeper on the new table).
 > - New Celery tasks → confirm the worker `-I` include list loads them and that a producer exists.
-> - New SPEC-AMEND entries → cross-check affected-files lists against the actual merge scope.
+> - Signed-spec/content updates → cross-check the governed references against the actual merge scope.
 > - Any hard-rule surface touched (no raw biometric persistence, API/worker image separation, `from __future__ import annotations`, canonical names) → a targeted check scoped to the merge's new code paths.
 >
 > Keep each chore tight: one paragraph describing the risk, the file(s) to inspect, the success criterion, and where the test lives (or should live). When every M-chore has passed or been converted into a follow-up commit / ADO work item, close the cycle and leave this block reset for the merge after next.

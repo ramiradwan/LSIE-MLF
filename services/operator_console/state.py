@@ -43,6 +43,7 @@ from packages.schemas.operator_console import (
     AlertEvent,
     EncounterSummary,
     ExperimentDetail,
+    ExperimentSummary,
     HealthSnapshot,
     OverviewSnapshot,
     SessionPhysiologySnapshot,
@@ -104,6 +105,7 @@ class OperatorStore(QObject):
     live_session_changed       = Signal(object)
     encounters_changed         = Signal(object)
     experiment_changed         = Signal(object)
+    experiment_summaries_changed = Signal(object)
     physiology_changed         = Signal(object)
     health_changed             = Signal(object)
     alerts_changed             = Signal(object)
@@ -122,6 +124,7 @@ class OperatorStore(QObject):
         self._live_session: SessionSummary | None = None
         self._encounters: list[EncounterSummary] = []
         self._experiment: ExperimentDetail | None = None
+        self._experiment_summaries: list[ExperimentSummary] = []
         self._physiology: SessionPhysiologySnapshot | None = None
         self._health: HealthSnapshot | None = None
         self._alerts: list[AlertEvent] = []
@@ -209,8 +212,18 @@ class OperatorStore(QObject):
     def set_experiment(self, detail: ExperimentDetail | None) -> None:
         if detail is not None:
             self.set_managed_experiment_id(detail.experiment_id)
+        self.set_experiment_readback(detail)
+
+    def set_experiment_readback(self, detail: ExperimentDetail | None) -> None:
         self._experiment = detail
         self.experiment_changed.emit(detail)
+
+    def experiment_summaries(self) -> list[ExperimentSummary]:
+        return list(self._experiment_summaries)
+
+    def set_experiment_summaries(self, summaries: list[ExperimentSummary]) -> None:
+        self._experiment_summaries = list(summaries)
+        self.experiment_summaries_changed.emit(list(self._experiment_summaries))
 
     # ---- physiology ----------------------------------------------------
 

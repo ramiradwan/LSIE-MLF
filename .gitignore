@@ -6,7 +6,10 @@ __pycache__/
 *.egg-info/
 .eggs/
 dist/
-build/
+build/*
+!build/
+!build/sign_windows.ps1
+!build/MACOS_DEFERRED.md
 .venv/
 venv/
 
@@ -47,7 +50,6 @@ docs/artifacts/*
 # are frozen historical records worth tracking (point-in-time snapshots that
 # don't change) or append-only logs maintained by the playbook.
 !docs/artifacts/performance_baseline.md
-!docs/artifacts/HARDENING_SUMMARY.md
 
 # docs/content.json is regenerated from the single docs/tech-spec-v*.pdf via
 # scripts/spec_ref_check.py --extract. Source of truth is the signed PDF.

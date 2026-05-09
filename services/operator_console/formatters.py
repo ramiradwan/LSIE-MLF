@@ -35,11 +35,15 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from typing import Literal
+from uuid import UUID
 
 from packages.schemas.operator_console import (
+    ArmSummary,
     AttributionSummary,
     CoModulationSummary,
     EncounterSummary,
+    ExperimentDetail,
     HealthProbeState,
     HealthState,
     HealthSubsystemProbe,
@@ -50,18 +54,18 @@ from packages.schemas.operator_console import (
     SemanticEvaluationSummary,
     SessionPhysiologySnapshot,
     SessionSummary,
+    StimulusActionState,
     UiStatusKind,
 )
 
 _EM_DASH = "—"
-_ACOUSTIC_SECTION_TITLE = "Observational Acoustics (§7D)"
-_ACOUSTIC_EMPTY_TEXT = "No acoustic analytics for this segment"
-_SEMANTIC_ATTRIBUTION_SECTION_TITLE = "Semantic & Attribution (§8 / §7E)"
-_SEMANTIC_ATTRIBUTION_EMPTY_TEXT = "No semantic/attribution diagnostics for this encounter"
-_SEMANTIC_ATTRIBUTION_ATTRIBUTION_EMPTY_TEXT = "Attribution analytics absent for this encounter"
+_ACOUSTIC_SECTION_TITLE = "Voice signal details"
+_ACOUSTIC_EMPTY_TEXT = "No voice signal details for this segment"
+_SEMANTIC_ATTRIBUTION_SECTION_TITLE = "Stimulus confirmation and follow-up signals"
+_SEMANTIC_ATTRIBUTION_EMPTY_TEXT = "No stimulus-confirmation details for this encounter"
+_SEMANTIC_ATTRIBUTION_ATTRIBUTION_EMPTY_TEXT = "No follow-up signal details for this encounter"
 _SEMANTIC_ATTRIBUTION_OBSERVATIONAL_NOTE = (
-    "Observational only under the §7B reward-path invariance rule; "
-    "no reward-path effect — §7B reward path unchanged."
+    "Shown for transparency only; these details do not change the reward."
 )
 _DEGREE_OF_FRESHNESS_STALE_S = 60.0  # §4.C.4 default — UI-side fallback
 
@@ -138,6 +142,128 @@ class SemanticAttributionDiagnosticsDisplay:
     outcome_link_lag: str
     compact_summary: str
     observational_note: str
+
+
+@dataclass(frozen=True)
+class RewardDetailLabels:
+    """Static labels for the §7B reward readback cards."""
+
+    p90_title: str
+    gate_title: str
+    reward_title: str
+    frames_title: str
+    baseline_title: str
+    physiology_title: str
+    reward_formula: str
+
+
+@dataclass(frozen=True)
+class ActionBarSessionDisplay:
+    """Preformatted session context for the persistent stimulus rail."""
+
+    session_text: str
+    expected_response_text: str | None
+
+
+@dataclass(frozen=True)
+class PhysiologyLabels:
+    """Static labels for physiology and co-modulation cards."""
+
+    rmssd_title: str
+    rmssd_explanation: str
+    no_rmssd_summary: str
+    no_rmssd_detail: str
+    comodulation_title: str
+    comodulation_subtitle: str
+    comodulation_null_status: str
+    observations_detail: str
+    coverage_detail: str
+
+
+@dataclass(frozen=True)
+class ReadinessDisplay:
+    """Pre-stimulus next-step copy for the Live Session readiness panel."""
+
+    status: UiStatusKind
+    title: str
+    primary: str
+    detail: str
+
+
+@dataclass(frozen=True)
+class LiveTelemetryDisplay:
+    """Compact live telemetry ticker payload assembled by viewmodels."""
+
+    status: UiStatusKind
+    headline: str
+    detail: str
+    response_signal: str
+
+
+@dataclass(frozen=True)
+class CauseEffectDisplay:
+    """Operator-first summary for one completed or terminal encounter."""
+
+    status: UiStatusKind
+    headline: str
+    detail: str
+    response_summary: str
+    voice_summary: str
+    technical_summary: str
+
+
+@dataclass(frozen=True)
+class StrategyEvidenceDisplay:
+    """Plain-language Thompson Sampling arm readback for strategy panels."""
+
+    arm_id: str
+    greeting_text: str
+    status: UiStatusKind
+    label: str
+    evidence: str
+    outcome: str
+    is_active: bool
+    is_enabled: bool
+
+
+@dataclass(frozen=True)
+class CoModulationDisplay:
+    """Display contract for §7C co-modulation readbacks.
+
+    `kind` distinguishes the three legitimate states so the view can pick
+    a presentation per outcome — a numeric index, a §7C null-valid pill
+    with the reason as primary text, or a fully absent placeholder.
+    """
+
+    status: UiStatusKind
+    title: str
+    primary: str
+    secondary: str
+    detail: str
+    kind: Literal["numeric", "null_valid", "absent"] = "numeric"
+    null_reason: str | None = None
+
+
+@dataclass(frozen=True)
+class PhonePreviewStatusDisplay:
+    """Two-line phone preview readback — affirmative primary + caveat."""
+
+    primary: str
+    caveat: str
+
+
+@dataclass(frozen=True)
+class EncounterVerdictDisplay:
+    """Verdict-led encounter detail summary.
+
+    `headline` is the single-sentence answer to "did this count?" and
+    `reason` follows the same readback principle the rest of the console
+    uses — name the gating field rather than restate the verdict.
+    """
+
+    status: UiStatusKind
+    headline: str
+    reason: str
 
 
 # ----------------------------------------------------------------------
@@ -233,9 +359,41 @@ def acoustic_section_labels() -> AcousticSectionLabels:
     return AcousticSectionLabels(
         section_title=_ACOUSTIC_SECTION_TITLE,
         empty_text=_ACOUSTIC_EMPTY_TEXT,
-        f0_metric_title="F0 mean",
-        jitter_metric_title="Jitter mean",
-        shimmer_metric_title="Shimmer mean",
+        f0_metric_title="Pitch level",
+        jitter_metric_title="Pitch steadiness",
+        shimmer_metric_title="Volume steadiness",
+    )
+
+
+def reward_detail_labels() -> RewardDetailLabels:
+    """Operator-facing static labels for the reward detail grid."""
+
+    return RewardDetailLabels(
+        p90_title="Strongest response signal",
+        gate_title="Stimulus confirmed?",
+        reward_title="Reward used",
+        frames_title="Face frames in response window",
+        baseline_title="Before-stimulus response level",
+        physiology_title="Physiology data",
+        reward_formula="Response signal × stimulus confirmation",
+    )
+
+
+def physiology_labels() -> PhysiologyLabels:
+    """Operator-facing static labels for physiology cards."""
+
+    return PhysiologyLabels(
+        rmssd_title="Heart-rate variability",
+        rmssd_explanation="beat-to-beat variation; higher often means more recovery",
+        no_rmssd_summary="No heart-rate variability yet",
+        no_rmssd_detail="heart-rate variability not in this snapshot",
+        comodulation_title="Shared stress/recovery movement",
+        comodulation_subtitle=(
+            "Shows whether streamer and operator heart-rate variability moved together."
+        ),
+        comodulation_null_status="not enough data yet",
+        observations_detail="matched fresh data points",
+        coverage_detail="share of the time window with usable data",
     )
 
 
@@ -263,7 +421,7 @@ def format_acoustic_voiced_coverage(
     """Render the paired §7D voiced-coverage windows for operator detail panes."""
 
     return (
-        "Voiced coverage: "
+        "Voiced speech needed: at least 1.00s in each window · "
         f"measure {format_acoustic_seconds(measure_s)} · "
         f"baseline {format_acoustic_seconds(baseline_s)}"
     )
@@ -385,13 +543,32 @@ def format_semantic_gate(gate: int | None) -> str:
     if gate is None:
         return _EM_DASH
     if gate == 1:
-        return "open (reward admitted)"
-    return "closed (reward suppressed)"
+        return "yes — reward can count"
+    return "no — reward held back"
 
 
 def format_semantic_confidence(confidence: float | None) -> str:
     """Confidence ∈ [0,1], rendered as a percentage. `—` when absent."""
     return format_percentage(confidence, digits=0)
+
+
+def _semantic_is_closed(encounter: EncounterSummary) -> bool:
+    semantic_match = None
+    if encounter.semantic_evaluation is not None:
+        semantic_match = encounter.semantic_evaluation.is_match
+    return encounter.semantic_gate == 0 or semantic_match is False
+
+
+def semantic_confidence_for_encounter(encounter: EncounterSummary | None) -> float | None:
+    """Return nested semantic confidence first, then the legacy row field."""
+
+    if encounter is None:
+        return None
+    if encounter.semantic_evaluation is not None:
+        confidence = encounter.semantic_evaluation.confidence_score
+        if confidence is not None:
+            return confidence
+    return encounter.semantic_confidence
 
 
 def format_semantic_method_label(
@@ -408,8 +585,8 @@ def format_semantic_method_label(
     if semantic_method is None:
         return _EM_DASH
     mapping = {
-        "cross_encoder": "local cross-encoder",
-        "llm_gray_band": "LLM gray-band fallback",
+        "cross_encoder": "local stimulus confirmation checker",
+        "llm_gray_band": "backup stimulus confirmation checker",
     }
     label = mapping.get(semantic_method, _clean_code_label(semantic_method))
     if semantic_method_version:
@@ -428,13 +605,13 @@ def format_bounded_reason_code_label(reason_code: str | None) -> str:
     if reason_code is None:
         return _EM_DASH
     mapping = {
-        "cross_encoder_high_match": "Cross-encoder high-confidence match",
-        "cross_encoder_high_nonmatch": "Cross-encoder high-confidence non-match",
-        "gray_band_llm_match": "Gray-band fallback match",
-        "gray_band_llm_nonmatch": "Gray-band fallback non-match",
-        "semantic_local_failure_fallback": "Local scorer failure fallback",
-        "semantic_timeout": "Semantic timeout",
-        "semantic_error": "Semantic error",
+        "cross_encoder_high_match": "Stimulus was clearly confirmed",
+        "cross_encoder_high_nonmatch": "Stimulus was not confirmed",
+        "gray_band_llm_match": "Backup checker confirmed the stimulus",
+        "gray_band_llm_nonmatch": "Backup checker did not confirm the stimulus",
+        "semantic_local_failure_fallback": "Stimulus checker used its safe fallback",
+        "semantic_timeout": "Stimulus confirmation timed out",
+        "semantic_error": "Stimulus confirmation error",
     }
     return mapping.get(reason_code, _clean_code_label(reason_code))
 
@@ -444,7 +621,7 @@ def format_probability_confidence(confidence_score: float | None) -> str:
 
     if confidence_score is None:
         return _EM_DASH
-    return f"p_match {format_percentage(confidence_score, digits=0)}"
+    return format_percentage(confidence_score, digits=0)
 
 
 def format_semantic_match_label(is_match: bool | None) -> str:
@@ -472,7 +649,7 @@ def format_soft_reward_candidate(value: float | None) -> str:
 
     if value is None:
         return _EM_DASH
-    return f"r_t^soft {format_reward(value)}"
+    return f"possible follow-up reward {format_reward(value)}"
 
 
 def format_au12_lift_metrics(attribution: AttributionSummary | None) -> str:
@@ -482,11 +659,11 @@ def format_au12_lift_metrics(attribution: AttributionSummary | None) -> str:
         return _EM_DASH
     parts: list[str] = []
     if attribution.au12_baseline_pre is not None:
-        parts.append(f"pre baseline {format_reward(attribution.au12_baseline_pre)}")
+        parts.append(f"before stimulus {format_reward(attribution.au12_baseline_pre)}")
     if attribution.au12_lift_p90 is not None:
-        parts.append(f"P90 lift {format_reward(attribution.au12_lift_p90)}")
+        parts.append(f"strong response lift {format_reward(attribution.au12_lift_p90)}")
     if attribution.au12_lift_peak is not None:
-        parts.append(f"peak lift {format_reward(attribution.au12_lift_peak)}")
+        parts.append(f"peak response lift {format_reward(attribution.au12_lift_peak)}")
     return " · ".join(parts) if parts else _EM_DASH
 
 
@@ -505,9 +682,9 @@ def format_synchrony_metrics(attribution: AttributionSummary | None) -> str:
         return _EM_DASH
     parts: list[str] = []
     if attribution.sync_peak_corr is not None:
-        parts.append(f"peak corr {attribution.sync_peak_corr:+.3f}")
+        parts.append(f"movement together {attribution.sync_peak_corr:+.3f}")
     if attribution.sync_peak_lag is not None:
-        parts.append(f"peak lag {attribution.sync_peak_lag}")
+        parts.append(f"lag {attribution.sync_peak_lag}")
     return " · ".join(parts) if parts else _EM_DASH
 
 
@@ -516,7 +693,7 @@ def format_outcome_link_lag(lag_s: float | None) -> str:
 
     if lag_s is None or not math.isfinite(lag_s):
         return _EM_DASH
-    return f"lag_s {lag_s:.1f}s"
+    return f"after {lag_s:.1f}s"
 
 
 def format_semantic_attribution_compact_summary(
@@ -527,16 +704,17 @@ def format_semantic_attribution_compact_summary(
 
     parts: list[str] = []
     if semantic is not None:
-        parts.append(f"semantic {format_semantic_match_label(semantic.is_match)}")
+        parts.append(f"stimulus confirmation {format_semantic_match_label(semantic.is_match)}")
         if semantic.confidence_score is not None:
-            parts.append(format_probability_confidence(semantic.confidence_score))
+            confidence = format_probability_confidence(semantic.confidence_score)
+            parts.append(f"stimulus confirmation confidence {confidence}")
     else:
-        parts.append("semantic absent")
+        parts.append("stimulus confirmation absent")
 
     if attribution is not None:
-        parts.append(f"attribution {format_attribution_finality_label(attribution.finality)}")
+        parts.append(f"follow-up signals {format_attribution_finality_label(attribution.finality)}")
     else:
-        parts.append("attribution absent")
+        parts.append("follow-up signals absent")
     return " · ".join(parts)
 
 
@@ -681,37 +859,108 @@ def operator_ready_for_submit(snapshot: SessionSummary | None) -> bool:
         return True
     accumulated = snapshot.calibration_frames_accumulated
     required = snapshot.calibration_frames_required
-    return accumulated is not None and required is not None and accumulated >= required
+    if accumulated is None or required is None:
+        return True
+    return accumulated >= required
 
 
 def format_calibration_status(snapshot: SessionSummary | None) -> tuple[UiStatusKind, str]:
     """Operator pill text for live-session calibration readiness."""
 
     if snapshot is None:
-        return UiStatusKind.NEUTRAL, "No session"
+        return UiStatusKind.NEUTRAL, "Setup not ready"
     if operator_ready_for_submit(snapshot):
-        return UiStatusKind.OK, "Ready"
+        return UiStatusKind.OK, "Healthy"
     accumulated = snapshot.calibration_frames_accumulated
     required = snapshot.calibration_frames_required
     if accumulated is None or required is None:
-        return UiStatusKind.PROGRESS, "Calibrating"
+        return UiStatusKind.OK, "Healthy"
     current = min(max(accumulated, 0), required)
-    return UiStatusKind.PROGRESS, f"Calibrating · {current}/{required} frames"
+    return UiStatusKind.PROGRESS, f"Preparing response baseline · {current}/{required} face frames"
+
+
+def format_stimulus_progress_message(
+    state: StimulusActionState,
+    *,
+    accepted_message: str | None = None,
+    ready_for_submit: bool,
+    countdown_seconds: float | None = None,
+) -> str:
+    """Plain-language next step for the persistent stimulus surfaces."""
+
+    if state is StimulusActionState.SUBMITTING:
+        return "Sending the stimulus now."
+    if state is StimulusActionState.ACCEPTED:
+        return accepted_message or "Stimulus accepted. Waiting for the next result."
+    if state is StimulusActionState.MEASURING:
+        if countdown_seconds is None or countdown_seconds <= 0:
+            return "Response window closed. Analyzing the next result now."
+        total = int(countdown_seconds)
+        minutes, seconds = divmod(total, 60)
+        return (
+            "Measuring the response window now. "
+            f"About {minutes:02d}:{seconds:02d} left before analysis starts."
+        )
+    if state is StimulusActionState.COMPLETED:
+        if ready_for_submit:
+            return "Result ready. You can send the next stimulus when needed."
+        return "Result ready. Keep the face visible until the system is ready again."
+    if state is StimulusActionState.FAILED:
+        return accepted_message or "Stimulus failed. Please try again."
+    if ready_for_submit:
+        return "Send one stimulus and wait for the observed response."
+    return "Keep a clearly visible face on the phone screen until live analysis is ready."
 
 
 def truncate_expected_greeting(greeting: str | None, *, limit: int = 60) -> str:
-    """Short-form expected greeting for compact table cells.
-
-    A greeting often runs several sentences; the action bar shows the
-    full text, but cards/tables truncate with an ellipsis so layout
-    does not break.
-    """
+    """Short-form stimulus-confirmation text for compact table cells."""
     if greeting is None:
         return _EM_DASH
     stripped = greeting.strip()
     if len(stripped) <= limit:
         return stripped
     return stripped[: max(0, limit - 1)] + "…"
+
+
+def format_active_session_readback(session: SessionSummary) -> str:
+    """Overview readback for the selected session's stimulus context."""
+
+    strategy_part = session.active_arm if session.active_arm else "no active strategy"
+    expected_response = truncate_expected_greeting(session.expected_greeting, limit=42)
+    return (
+        f"id {session.session_id} · stimulus strategy {strategy_part} · "
+        f"expected response “{expected_response}” · {format_duration(session.duration_s)}"
+    )
+
+
+def format_action_bar_session_context(
+    session_id: UUID,
+    active_arm: str | None,
+    expected_greeting: str | None,
+) -> ActionBarSessionDisplay:
+    """Action rail readback for the current stimulus strategy."""
+
+    strategy_part = active_arm if active_arm else "no active strategy"
+    expected_response = truncate_expected_greeting(expected_greeting, limit=80)
+    response_text = (
+        None
+        if expected_greeting is None or not expected_greeting.strip()
+        else (f"Expected response: “{expected_response}”")
+    )
+    return ActionBarSessionDisplay(
+        session_text=f"Session {session_id} — stimulus strategy: {strategy_part}",
+        expected_response_text=response_text,
+    )
+
+
+def format_session_id_compact(session_id: UUID | str | None) -> str:
+    """Short-form session id for cards that cannot fit a full UUID."""
+    if session_id is None:
+        return _EM_DASH
+    value = str(session_id)
+    if len(value) <= 14:
+        return value
+    return f"{value[:8]}…{value[-4:]}"
 
 
 # ----------------------------------------------------------------------
@@ -733,9 +982,171 @@ def format_comodulation_index(summary: CoModulationSummary | None) -> str:
     return f"{summary.co_modulation_index:+.3f}"
 
 
+def build_co_modulation_display(summary: CoModulationSummary | None) -> CoModulationDisplay:
+    """§7C display that keeps null-valid states distinct.
+
+    The `kind` field tells the view which of three valid states the
+    summary is in: `absent` (no row at all yet), `null_valid` (§7C
+    explicitly returned no number for a real reason — a real outcome,
+    not a missing value), or `numeric` (a finite Pearson value).
+    """
+
+    if summary is None:
+        return CoModulationDisplay(
+            status=UiStatusKind.NEUTRAL,
+            title="Co-Modulation Index",
+            primary=_EM_DASH,
+            secondary="No sync window yet",
+            detail=(
+                "Sync appears after enough fresh streamer and operator physiology "
+                "observations align."
+            ),
+            kind="absent",
+        )
+    if summary.co_modulation_index is None:
+        reason = summary.null_reason or "not enough aligned observations yet"
+        return CoModulationDisplay(
+            status=UiStatusKind.INFO,
+            title="Co-Modulation Index",
+            primary=reason,
+            secondary="Sync data accumulating",
+            detail=f"Waiting for enough fresh paired observations. Reason: {reason}.",
+            kind="null_valid",
+            null_reason=reason,
+        )
+    direction = "moving together" if summary.co_modulation_index >= 0 else "moving apart"
+    return CoModulationDisplay(
+        status=UiStatusKind.OK,
+        title="Co-Modulation Index",
+        primary=f"{summary.co_modulation_index:+.2f}",
+        secondary=f"Streamer and operator signals are {direction}.",
+        detail=(
+            f"Based on {summary.n_paired_observations} fresh paired observation(s) "
+            f"with {format_percentage(summary.coverage_ratio, digits=0)} window coverage."
+        ),
+        kind="numeric",
+    )
+
+
 # ----------------------------------------------------------------------
 # Compound explainers — used on Overview cards and detail panes
 # ----------------------------------------------------------------------
+
+
+def build_cause_effect_display(encounter: EncounterSummary | None) -> CauseEffectDisplay:
+    """Build the non-expert result summary for the Live Session surface."""
+
+    if encounter is None:
+        return CauseEffectDisplay(
+            status=UiStatusKind.NEUTRAL,
+            headline="Waiting for the first result",
+            detail=(
+                "Send one stimulus, then keep the host visible while the response window completes."
+            ),
+            response_summary="Response signal will appear after the first usable window.",
+            voice_summary="Voice response will appear when stable speech is detected.",
+            technical_summary="No encounter selected.",
+        )
+    if encounter.n_frames_in_window == 0:
+        return CauseEffectDisplay(
+            status=UiStatusKind.WARN,
+            headline="Response not measured",
+            detail="No usable face frames were available in the response window.",
+            response_summary="Keep the host face visible before sending the next stimulus.",
+            voice_summary=_cause_effect_voice_summary(encounter.observational_acoustic),
+            technical_summary=build_reward_explanation(encounter),
+        )
+    if _semantic_is_closed(encounter):
+        return CauseEffectDisplay(
+            status=UiStatusKind.INFO,
+            headline="Stimulus missed or ignored by host.",
+            detail=(
+                "The host response signal was measured, but the confirmation check "
+                "did not show that the host reacted to this stimulus."
+            ),
+            response_summary=_cause_effect_response_summary(encounter),
+            voice_summary=_cause_effect_voice_summary(encounter.observational_acoustic),
+            technical_summary=build_reward_explanation(encounter),
+        )
+    return CauseEffectDisplay(
+        status=UiStatusKind.OK,
+        headline=_cause_effect_success_headline(encounter),
+        detail=(
+            "This result counted because the stimulus was confirmed and usable face "
+            "frames were present."
+        ),
+        response_summary=_cause_effect_response_summary(encounter),
+        voice_summary=_cause_effect_voice_summary(encounter.observational_acoustic),
+        technical_summary=build_reward_explanation(encounter),
+    )
+
+
+def build_readiness_display(
+    *,
+    ready_for_submit: bool,
+    calibration_status: tuple[UiStatusKind, str],
+    capture_detail: str,
+    progress_message: str,
+) -> ReadinessDisplay:
+    """Build a compact pre-stimulus readiness summary."""
+
+    if ready_for_submit:
+        return ReadinessDisplay(
+            status=UiStatusKind.OK,
+            title="Ready for a stimulus",
+            primary="The system can measure the host's next observed response.",
+            detail=f"{progress_message} {capture_detail}",
+        )
+    return ReadinessDisplay(
+        status=calibration_status[0],
+        title="Getting ready",
+        primary=calibration_status[1],
+        detail=f"{progress_message} {capture_detail}",
+    )
+
+
+def build_live_telemetry_display(
+    *,
+    stimulus_state: StimulusActionState,
+    progress_message: str,
+    response_signal_percent: int | None,
+    live_status: tuple[UiStatusKind, str],
+) -> LiveTelemetryDisplay:
+    """Build the Live Session ticker from already-derived UI state."""
+
+    if stimulus_state is StimulusActionState.MEASURING:
+        headline = "Measuring response…"
+        status = UiStatusKind.PROGRESS
+    elif response_signal_percent is None:
+        headline = "Waiting for first response signal"
+        status = live_status[0]
+    else:
+        headline = "Live signal ready"
+        status = UiStatusKind.OK
+    response_signal = _EM_DASH if response_signal_percent is None else f"{response_signal_percent}%"
+    return LiveTelemetryDisplay(
+        status=status,
+        headline=headline,
+        detail=f"{progress_message} {live_status[1]}",
+        response_signal=response_signal,
+    )
+
+
+def build_strategy_evidence_display(
+    detail: ExperimentDetail | None,
+) -> list[StrategyEvidenceDisplay]:
+    """Rank arm readbacks as strategy evidence without claiming a winner."""
+
+    if detail is None:
+        return []
+    rows = [
+        _strategy_evidence_for_arm(
+            arm,
+            is_active=arm.arm_id == detail.active_arm_id,
+        )
+        for arm in detail.arms
+    ]
+    return sorted(rows, key=_strategy_evidence_sort_key)
 
 
 def build_reward_explanation(encounter: EncounterSummary) -> str:
@@ -747,27 +1158,27 @@ def build_reward_explanation(encounter: EncounterSummary) -> str:
     suppressed" — prevents an operator from misreading a zero reward
     as a frame-count issue, and vice-versa for `n_frames_in_window=0`.
     """
+    labels = reward_detail_labels()
     if encounter.n_frames_in_window == 0:
-        return "No valid AU12 frames in the measurement window — reward not computed."
+        return "No usable face frames in the measurement window — reward was not computed."
     if encounter.semantic_gate == 0:
+        confidence_text = format_semantic_confidence(semantic_confidence_for_encounter(encounter))
+        measured_signal = format_reward(encounter.p90_intensity)
         return (
-            f"Semantic gate closed (confidence "
-            f"{format_semantic_confidence(encounter.semantic_confidence)}) — "
-            f"reward suppressed. P90 intensity "
-            f"{format_reward(encounter.p90_intensity)} was observed but not "
-            f"admitted."
+            f"Stimulus was not confirmed with {confidence_text} confidence, so the reward "
+            f"was held back. Response signal {measured_signal} was measured but not used."
         )
     parts: list[str] = []
-    gate_text = encounter.semantic_gate if encounter.semantic_gate is not None else _EM_DASH
+    gate_text = "yes" if encounter.semantic_gate == 1 else _EM_DASH
     parts.append(
-        f"P90 intensity {format_reward(encounter.p90_intensity)} × "
-        f"semantic gate {gate_text} "
-        f"= gated reward {format_reward(encounter.gated_reward)}."
+        f"{labels.reward_formula}: {format_reward(encounter.p90_intensity)} × "
+        f"{gate_text} = {format_reward(encounter.gated_reward)}."
     )
     if encounter.au12_baseline_pre is not None:
-        parts.append(f"AU12 baseline pre {format_reward(encounter.au12_baseline_pre)}.")
+        baseline = format_reward(encounter.au12_baseline_pre)
+        parts.append(f"Before-stimulus response level {baseline}.")
     if encounter.n_frames_in_window is not None:
-        parts.append(f"{encounter.n_frames_in_window} AU12 frame(s) in window.")
+        parts.append(f"{encounter.n_frames_in_window} usable face frame(s) in window.")
     if encounter.physiology_attached:
         stale = encounter.physiology_stale is True
         parts.append(
@@ -896,6 +1307,106 @@ def _window_invalid_reason(
     return f"{window_text} {family_label} {noun} invalid"
 
 
+def _cause_effect_success_headline(encounter: EncounterSummary) -> str:
+    latency = format_au12_peak_latency(encounter.attribution)
+    if latency != _EM_DASH:
+        return f"Host response peaked {latency} after your stimulus."
+    if encounter.attribution is not None and encounter.attribution.au12_lift_p90 is not None:
+        lift = format_reward(encounter.attribution.au12_lift_p90)
+        return f"Host response lifted by {lift} after your stimulus."
+    if encounter.p90_intensity is not None:
+        signal = format_percentage(encounter.p90_intensity, digits=0)
+        return f"Host showed a {signal} response signal."
+    return "Host response counted."
+
+
+def _cause_effect_response_summary(encounter: EncounterSummary) -> str:
+    parts: list[str] = []
+    if encounter.attribution is not None and encounter.attribution.au12_lift_p90 is not None:
+        parts.append(f"response lift {format_reward(encounter.attribution.au12_lift_p90)}")
+    elif encounter.p90_intensity is not None and encounter.au12_baseline_pre is not None:
+        lift = max(0.0, encounter.p90_intensity - encounter.au12_baseline_pre)
+        parts.append(f"response lift {format_reward(lift)}")
+    if encounter.p90_intensity is not None:
+        parts.append(f"peak signal {format_percentage(encounter.p90_intensity, digits=0)}")
+    if encounter.au12_baseline_pre is not None:
+        baseline = format_percentage(encounter.au12_baseline_pre, digits=0)
+        parts.append(f"before-stimulus level {baseline}")
+    if encounter.n_frames_in_window is not None:
+        parts.append(f"{encounter.n_frames_in_window} usable face frame(s)")
+    return " · ".join(parts) if parts else "Response signal not available yet."
+
+
+def _cause_effect_voice_summary(summary: ObservationalAcousticSummary | None) -> str:
+    if summary is None:
+        return "No stable voice signal for this window."
+    parts: list[str] = []
+    if _has_acoustic_number(summary.f0_delta_semitones):
+        parts.append(f"pitch {format_semitone_delta(summary.f0_delta_semitones)}")
+    if _has_acoustic_number(summary.jitter_delta):
+        parts.append(f"pitch steadiness {format_perturbation_delta(summary.jitter_delta)}")
+    if _has_acoustic_number(summary.shimmer_delta):
+        parts.append(f"volume steadiness {format_perturbation_delta(summary.shimmer_delta)}")
+    if summary.voiced_coverage_measure_s is not None:
+        parts.append(f"host spoke for {format_acoustic_seconds(summary.voiced_coverage_measure_s)}")
+    return " · ".join(parts) if parts else "Voice signal was not stable enough to summarize."
+
+
+def _strategy_evidence_for_arm(
+    arm: ArmSummary,
+    *,
+    is_active: bool,
+) -> StrategyEvidenceDisplay:
+    if not arm.enabled:
+        status = UiStatusKind.NEUTRAL
+        label = "Disabled"
+    elif arm.selection_count == 0:
+        status = UiStatusKind.INFO
+        label = "Needs first try"
+    elif (
+        arm.evaluation_variance is not None
+        and arm.evaluation_variance <= 0.02
+        and arm.selection_count >= 5
+    ):
+        status = UiStatusKind.OK
+        label = "Lower uncertainty so far"
+    else:
+        status = UiStatusKind.INFO
+        label = "Still learning"
+    if is_active and arm.enabled:
+        label = f"Active · {label}"
+    evidence = (
+        f"{arm.selection_count} try/tries · positive history "
+        f"{format_reward(arm.posterior_alpha)} · miss history "
+        f"{format_reward(arm.posterior_beta)}"
+    )
+    if arm.evaluation_variance is not None:
+        evidence = f"{evidence} · uncertainty {format_reward(arm.evaluation_variance)}"
+    outcome_parts: list[str] = []
+    if arm.recent_reward_mean is not None:
+        outcome_parts.append(f"recent observed reward {format_reward(arm.recent_reward_mean)}")
+    if arm.recent_semantic_pass_rate is not None:
+        confirmed = format_percentage(arm.recent_semantic_pass_rate, digits=0)
+        outcome_parts.append(f"stimulus confirmed {confirmed}")
+    outcome = " · ".join(outcome_parts) if outcome_parts else "No recent outcome yet"
+    return StrategyEvidenceDisplay(
+        arm_id=arm.arm_id,
+        greeting_text=arm.greeting_text,
+        status=status,
+        label=label,
+        evidence=evidence,
+        outcome=outcome,
+        is_active=is_active,
+        is_enabled=arm.enabled,
+    )
+
+
+def _strategy_evidence_sort_key(row: StrategyEvidenceDisplay) -> tuple[int, int, str]:
+    active_rank = 0 if row.is_active else 1
+    enabled_rank = 0 if row.is_enabled else 1
+    return (active_rank, enabled_rank, row.arm_id)
+
+
 def build_physiology_explanation(snapshot: SessionPhysiologySnapshot | None) -> str:
     """One-line physiology summary used on Overview / session header.
 
@@ -908,18 +1419,19 @@ def build_physiology_explanation(snapshot: SessionPhysiologySnapshot | None) -> 
     parts: list[str] = []
     parts.append(_role_line("streamer", snapshot.streamer))
     parts.append(_role_line("operator", snapshot.operator))
-    parts.append("Co-Modulation Index: " + format_comodulation_index(snapshot.comodulation))
+    parts.append(f"shared movement: {format_comodulation_index(snapshot.comodulation)}")
     return " • ".join(parts)
 
 
 def _role_line(label: str, snap: PhysiologyCurrentSnapshot | None) -> str:
+    labels = physiology_labels()
     if snap is None:
         return f"{label}: absent"
     if snap.rmssd_ms is None:
-        return f"{label}: no RMSSD"
+        return f"{label}: {labels.no_rmssd_summary.lower()}"
     freshness = format_freshness(snap.freshness_s, is_stale=snap.is_stale)
     hr = f"{snap.heart_rate_bpm} bpm" if snap.heart_rate_bpm is not None else _EM_DASH
-    return f"{label}: RMSSD {snap.rmssd_ms:.0f}ms, HR {hr}, {freshness}"
+    return f"{label}: variability {snap.rmssd_ms:.0f}ms, heart rate {hr}, {freshness}"
 
 
 def build_health_detail(row: HealthSubsystemStatus) -> str:
@@ -952,3 +1464,135 @@ def ui_status_for_health(row: HealthSubsystemStatus) -> UiStatusKind:
         HealthState.UNKNOWN: UiStatusKind.NEUTRAL,
     }
     return mapping[row.state]
+
+
+# ----------------------------------------------------------------------
+# Phone preview status (§4.E.1) — affirmative readback
+# ----------------------------------------------------------------------
+
+
+_PHONE_PREVIEW_CAVEAT = "Raw phone frames are not shown."
+
+
+def format_phone_preview_status(
+    *,
+    dashboard_mode: str,
+    detail: str | None = None,
+) -> PhonePreviewStatusDisplay:
+    """Affirm the live capture path before naming the no-frames caveat.
+
+    The operator reads the primary line first; the caveat exists for
+    correctness but should not lead. Using the same primary phrase
+    everywhere ("Capture active · …") keeps the surface confident
+    instead of disclaiming.
+    """
+
+    if dashboard_mode == "ready":
+        return PhonePreviewStatusDisplay(
+            primary=("Capture active · ADB tether · 30 fps · frames buffered for inference."),
+            caveat=_PHONE_PREVIEW_CAVEAT,
+        )
+    if dashboard_mode == "calibrating":
+        suffix = f" {detail.strip()}." if detail else ""
+        return PhonePreviewStatusDisplay(
+            primary=(
+                "Capture active · preparing live analysis from local capture stream." + suffix
+            ),
+            caveat=_PHONE_PREVIEW_CAVEAT,
+        )
+    return PhonePreviewStatusDisplay(
+        primary="Awaiting capture · connect the phone to start live analysis.",
+        caveat=_PHONE_PREVIEW_CAVEAT,
+    )
+
+
+# ----------------------------------------------------------------------
+# ActionBar gating reason (UX-20) — disabled state must explain why
+# ----------------------------------------------------------------------
+
+
+def format_action_bar_gating_reason(
+    *,
+    state: StimulusActionState,
+    has_session: bool,
+    operator_ready_for_submit: bool,
+    calibration_status_text: str | None = None,
+) -> str | None:
+    """Return the operator-facing reason the submit button is disabled.
+
+    Returns ``None`` when the bar is not gated. The phrasing tells the
+    operator both *why* the button is locked and what comes next, so a
+    silent disabled state never leaves them clicking into nothing.
+    """
+
+    if not has_session:
+        return "No session selected — start one to send a stimulus."
+    if state is StimulusActionState.SUBMITTING:
+        return "Sending the stimulus now — wait for the orchestrator to confirm."
+    if state is StimulusActionState.ACCEPTED:
+        return "Stimulus accepted — waiting for the response window to open."
+    if state is StimulusActionState.MEASURING:
+        return "Measuring active — wait for the response window to close."
+    if not operator_ready_for_submit:
+        if calibration_status_text:
+            return (
+                f"{calibration_status_text} — keep the host face visible until "
+                "the response baseline is ready."
+            )
+        return "Setup not ready — keep the host face visible until the response baseline is ready."
+    return None
+
+
+# ----------------------------------------------------------------------
+# Encounter verdict (§7B) — verdict-led detail pane summary
+# ----------------------------------------------------------------------
+
+
+def build_encounter_verdict(encounter: EncounterSummary | None) -> EncounterVerdictDisplay:
+    """Lead with whether the encounter counted and why, in one sentence.
+
+    Operators ask "did this matter?" first; the underlying inputs follow
+    in a definition list. The reason names the gating field rather than
+    the number, so a zero or null reads as a real outcome.
+    """
+
+    if encounter is None:
+        return EncounterVerdictDisplay(
+            status=UiStatusKind.NEUTRAL,
+            headline="No encounter selected",
+            reason="Pick a row from the table to see why it counted.",
+        )
+    if encounter.n_frames_in_window == 0:
+        return EncounterVerdictDisplay(
+            status=UiStatusKind.WARN,
+            headline="Not counted · response window had no usable face frames",
+            reason=(
+                "No usable face frames were available in the response window, "
+                "so the reward could not be computed."
+            ),
+        )
+    if encounter.semantic_gate == 0:
+        confidence = format_semantic_confidence(semantic_confidence_for_encounter(encounter))
+        return EncounterVerdictDisplay(
+            status=UiStatusKind.INFO,
+            headline="Not counted · stimulus confirmation did not pass",
+            reason=(
+                f"Semantic gate held the reward back at {confidence} confidence. "
+                "Response signal was measured but not used."
+            ),
+        )
+    if encounter.semantic_gate == 1:
+        return EncounterVerdictDisplay(
+            status=UiStatusKind.OK,
+            headline="Counted · semantic gate confirmed",
+            reason=(
+                f"Reward {format_reward(encounter.gated_reward)} from "
+                f"response signal {format_reward(encounter.p90_intensity)} × "
+                "confirmed stimulus."
+            ),
+        )
+    return EncounterVerdictDisplay(
+        status=UiStatusKind.NEUTRAL,
+        headline=f"In progress · state {encounter.state.value}",
+        reason="Outcome not yet determined for this encounter.",
+    )

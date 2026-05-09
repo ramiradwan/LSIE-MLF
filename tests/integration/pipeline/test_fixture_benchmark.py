@@ -1,4 +1,4 @@
-"""Integration coverage for the offline fixture benchmark harness."""
+"""Integration coverage for the v4 desktop fixture benchmark harness."""
 
 from __future__ import annotations
 
@@ -10,6 +10,13 @@ import pytest
 
 from scripts import run_fixture_benchmark
 from scripts.generate_capture_fixture import main as generate_capture_fixture
+
+BASELINE_TEMPLATE = (
+    "# LSIE-MLF Performance Baseline Log\n\n"
+    "Fresh v4 baseline.\n\n"
+    + run_fixture_benchmark._format_markdown_row(run_fixture_benchmark.BASELINE_COLUMNS)
+    + "\n|---|---|---|---|---|---|---|---|---|---|---|---|---|\n"
+)
 
 
 def _generate_tiny_fixture(path: Path) -> None:
@@ -45,23 +52,20 @@ def _timing(mapping: dict[str, str], column: str) -> float:
 
 
 def _fixture_row_count(rows: list[tuple[str, ...]]) -> int:
-    cycle_index = run_fixture_benchmark.BASELINE_COLUMNS.index("Cycle / PR")
-    return sum(1 for row in rows if row[cycle_index] == run_fixture_benchmark.FIXTURE_LABEL)
+    scenario_index = run_fixture_benchmark.BASELINE_COLUMNS.index("Scenario")
+    return sum(1 for row in rows if row[scenario_index] == run_fixture_benchmark.FIXTURE_LABEL)
 
 
 @pytest.mark.integration
-def test_fixture_benchmark_appends_parseable_offline_row(
+def test_fixture_benchmark_appends_parseable_v4_row(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     fixture = tmp_path / "tiny-fixture"
     _generate_tiny_fixture(fixture)
-
-    repo_baseline = Path("docs/artifacts/performance_baseline.md")
-    repo_baseline_before = repo_baseline.read_text(encoding="utf-8")
     baseline_copy = tmp_path / "performance_baseline.md"
-    shutil.copyfile(repo_baseline, baseline_copy)
+    baseline_copy.write_text(BASELINE_TEMPLATE, encoding="utf-8")
 
     for env_name in (
         "AZURE_OPENAI_ENDPOINT",
@@ -72,25 +76,17 @@ def test_fixture_benchmark_appends_parseable_offline_row(
     ):
         monkeypatch.delenv(env_name, raising=False)
 
-    from packages.ml_core.semantic import SemanticEvaluator
-    from packages.ml_core.transcription import TranscriptionEngine
-    from services.worker.pipeline.orchestrator import DriftCorrector
-
     def forbidden_live_access(*args: Any, **kwargs: Any) -> None:
         del args, kwargs
         raise KeyboardInterrupt("live hardware/network/model access attempted")
 
-    monkeypatch.setattr(DriftCorrector, "poll", forbidden_live_access)
-    monkeypatch.setattr(TranscriptionEngine, "load_model", forbidden_live_access)
-    monkeypatch.setattr(SemanticEvaluator, "__init__", forbidden_live_access)
+    monkeypatch.setattr(
+        "packages.ml_core.transcription.TranscriptionEngine",
+        forbidden_live_access,
+    )
 
     _columns, original_rows = run_fixture_benchmark._read_baseline_table(baseline_copy)
-    original_fixture_rows = _fixture_row_count(original_rows)
-    assert not any(
-        row[2] == run_fixture_benchmark.FIXTURE_LABEL and "N=3" in row[-1] for row in original_rows
-    ), "checked-in baseline must not keep the non-compliant N=3 fixture row"
-    original_live_rows = [row for row in original_rows if row[2].startswith("PR 91")]
-    assert original_live_rows, "operator-owned live-stack row must be present in baseline"
+    assert _fixture_row_count(original_rows) == 0
 
     exit_code = run_fixture_benchmark.main(
         [
@@ -108,57 +104,82 @@ def test_fixture_benchmark_appends_parseable_offline_row(
     assert len(output_rows) == 1
     mapping = _row_mapping(output_rows[0])
 
-    assert mapping["Cycle / PR"] == run_fixture_benchmark.FIXTURE_LABEL
-    assert "PR" not in mapping["Cycle / PR"]
+    assert mapping["Scenario"] == run_fixture_benchmark.FIXTURE_LABEL
+    assert mapping["Segments"] == "3"
     assert all(cell.strip() and cell.strip().upper() != "TBD" for cell in mapping.values())
-    assert "TBD" not in mapping["Notes"].upper()
-    assert "offline" in mapping["Notes"].lower()
-    assert "N=3" in mapping["Notes"]
+    assert "v4 desktop IPC/SQLite fixture benchmark" in mapping["Notes"]
+    assert "persisted=3" in mapping["Notes"]
+    assert "live ADB/scrcpy path not measured" in mapping["Notes"]
+    assert "Celery" not in captured.out
+    assert "Redis" not in captured.out
+    assert "Cycle / PR" not in captured.out
 
-    segment_p50 = _timing(mapping, "Segment-assembly p50 (ms)")
-    segment_p95 = _timing(mapping, "Segment-assembly p95 (ms)")
-    inference_p50 = _timing(mapping, "ML inference p50 (ms)")
-    inference_p95 = _timing(mapping, "ML inference p95 (ms)")
-    au12_p50 = _timing(mapping, "AU12 per-frame p50 (ms)")
-    comod_ms = _timing(mapping, "Co-Modulation window compute (ms)")
+    dispatch_p50 = _timing(mapping, "Dispatch p50 (ms)")
+    dispatch_p95 = _timing(mapping, "Dispatch p95 (ms)")
+    publish_p50 = _timing(mapping, "ML publish p50 (ms)")
+    publish_p95 = _timing(mapping, "ML publish p95 (ms)")
+    state_p50 = _timing(mapping, "Analytics state p50 (ms)")
+    state_p95 = _timing(mapping, "Analytics state p95 (ms)")
+    visual_p50 = _timing(mapping, "Visual AU12 tick p50 (ms)")
+    e2e_p95 = _timing(mapping, "End-to-end p95 (ms)")
 
-    assert 0.0 < segment_p50 <= segment_p95 < 1_000.0
-    assert 0.0 < inference_p50 <= inference_p95 < 5_000.0
-    assert 0.0 < au12_p50 < 50.0
-    assert comod_ms == pytest.approx(0.0, abs=1e-9)
+    assert 0.0 < dispatch_p50 <= dispatch_p95 < 1_000.0
+    assert 0.0 < publish_p50 <= publish_p95 < 5_000.0
+    assert 0.0 < state_p50 <= state_p95 < 1_000.0
+    assert 0.0 <= visual_p50 < 100.0
+    assert max(dispatch_p95, publish_p95, state_p95) <= e2e_p95 < 10_000.0
 
     _columns, updated_rows = run_fixture_benchmark._read_baseline_table(baseline_copy)
-    assert _fixture_row_count(updated_rows) == original_fixture_rows + 1
-    updated_live_rows = [row for row in updated_rows if row[2].startswith("PR 91")]
-    assert updated_live_rows == original_live_rows
-    assert repo_baseline.read_text(encoding="utf-8") == repo_baseline_before
+    assert _fixture_row_count(updated_rows) == 1
+
+
+@pytest.mark.integration
+def test_fixture_benchmark_rejects_old_baseline_table(tmp_path: Path) -> None:
+    old_baseline = tmp_path / "old_performance_baseline.md"
+    old_baseline.write_text(
+        """# old baseline
+
+| Date | Commit SHA | Cycle / PR | Segment-assembly p50 (ms) | Notes |
+|---|---|---|---|---|
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="performance baseline table columns changed"):
+        run_fixture_benchmark._read_baseline_table(old_baseline)
 
 
 @pytest.mark.integration
 def test_fixture_benchmark_regression_warning_is_observational_only() -> None:
     columns = run_fixture_benchmark.BASELINE_COLUMNS
     previous = (
-        "2026-04-16",
+        "2026-05-06",
         "`abc1234`",
         run_fixture_benchmark.FIXTURE_LABEL,
+        "3",
+        "1.000",
+        "1.000",
         "1.000",
         "1.000",
         "1.000",
         "1.000",
         "0.100",
-        "0.000",
+        "3.000",
         "previous fixture row",
     )
     current = (
-        "2026-04-16",
+        "2026-05-06",
         "`abc1234`",
         run_fixture_benchmark.FIXTURE_LABEL,
+        "3",
         "1.000",
         "1.250",
         "1.000",
         "1.300",
+        "1.000",
+        "1.240",
         "0.100",
-        "0.000",
+        "3.700",
         "current fixture row",
     )
 
@@ -166,6 +187,35 @@ def test_fixture_benchmark_regression_warning_is_observational_only() -> None:
     assert len(current) == len(columns)
     warnings = run_fixture_benchmark._observational_warnings(current, previous)
 
-    assert len(warnings) == 2
-    assert "Segment-assembly p95" in warnings[0]
-    assert "ML inference p95" in warnings[1]
+    assert len(warnings) == 4
+    assert "Dispatch p95" in warnings[0]
+    assert "ML publish p95" in warnings[1]
+    assert "Analytics state p95" in warnings[2]
+    assert "End-to-end p95" in warnings[3]
+
+
+@pytest.mark.integration
+def test_fixture_benchmark_does_not_modify_repository_baseline(
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    fixture = tmp_path / "tiny-fixture"
+    _generate_tiny_fixture(fixture)
+    repo_baseline = Path("docs/artifacts/performance_baseline.md")
+    repo_baseline_before = repo_baseline.read_text(encoding="utf-8")
+    baseline_copy = tmp_path / "performance_baseline.md"
+    shutil.copyfile(repo_baseline, baseline_copy)
+
+    exit_code = run_fixture_benchmark.main(
+        [
+            str(fixture),
+            "--segments",
+            "1",
+            "--baseline-path",
+            str(baseline_copy),
+        ]
+    )
+    captured = capsys.readouterr()
+
+    assert exit_code == 0, captured.err
+    assert repo_baseline.read_text(encoding="utf-8") == repo_baseline_before

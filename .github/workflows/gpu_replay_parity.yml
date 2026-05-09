@@ -1,0 +1,71 @@
+name: Gate 0 GPU Replay Parity
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/gpu_replay_parity.yml"
+      - "packages/ml_core/**"
+      - "services/desktop_app/processes/gpu_ml_worker.py"
+      - "scripts/gate0_gpu_replay.py"
+      - "tests/fixtures/v4_gate0/**"
+      - "tests/fixtures/capture/baseline/**"
+      - "pyproject.toml"
+      - "uv.lock"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/gpu_replay_parity.yml"
+      - "packages/ml_core/**"
+      - "services/desktop_app/processes/gpu_ml_worker.py"
+      - "scripts/gate0_gpu_replay.py"
+      - "tests/fixtures/v4_gate0/**"
+      - "tests/fixtures/capture/baseline/**"
+      - "pyproject.toml"
+      - "uv.lock"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: gate0-gpu-replay-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gate0-gpu-replay:
+    name: Gate 0 CUDA speech replay
+    runs-on: [self-hosted, linux, x64, gpu, turing]
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+
+      - name: Set up Python 3.11
+        run: uv python install 3.11
+
+      - name: Verify production GPU inventory
+        run: nvidia-smi --query-gpu=name,compute_cap --format=csv,noheader
+
+      - name: Sync GPU replay environment
+        run: uv sync --frozen --extra ml_backend --group dev
+
+      - name: Run Gate 0 GPU replay
+        env:
+          LSIE_GATE0_WHISPER_MODEL: large-v3
+        run: >-
+          uv run python scripts/gate0_gpu_replay.py
+          --report-path gate0_gpu_replay_report.json
+
+      - name: Upload Gate 0 replay report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gate0-gpu-replay-report
+          path: gate0_gpu_replay_report.json
+          if-no-files-found: ignore

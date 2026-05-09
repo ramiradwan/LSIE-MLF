@@ -149,24 +149,3 @@ class TestConnectionPool:
         assert dsn["port"] == 5433
         assert dsn["user"] == "test"
         assert dsn["dbname"] == "testdb"
-
-
-def test_schema_bootstrap_loads_attribution_after_metrics_once() -> None:
-    """v3.4 attribution DDL follows the metrics/acoustics rollout exactly once."""
-    from services.api.db import schema
-
-    names = [path.name for path in schema.SQL_BOOTSTRAP_FILES]
-
-    assert names == [
-        "01-schema.sql",
-        "02-seed-experiments.sql",
-        "03-encounter-log.sql",
-        "03-physiology.sql",
-        "04-metrics-observational-acoustics.sql",
-        "05-attribution.sql",
-    ]
-    assert names.count("05-attribution.sql") == 1
-    assert schema.SCHEMA_SQL.count("CREATE TABLE IF NOT EXISTS attribution_event") == 1
-    assert schema.SCHEMA_SQL.count("CREATE TABLE IF NOT EXISTS outcome_event") == 1
-    assert schema.SCHEMA_SQL.count("CREATE TABLE IF NOT EXISTS event_outcome_link") == 1
-    assert schema.SCHEMA_SQL.count("CREATE TABLE IF NOT EXISTS attribution_score") == 1

@@ -29,7 +29,7 @@ from datetime import UTC, datetime
 from uuid import UUID, uuid4
 
 from PySide6.QtCore import Slot
-from PySide6.QtGui import QCloseEvent
+from PySide6.QtGui import QCloseEvent, QResizeEvent
 from PySide6.QtWidgets import (
     QApplication,
     QButtonGroup,
@@ -64,7 +64,6 @@ from services.operator_console.table_models.health_table_model import HealthTabl
 from services.operator_console.table_models.sessions_table_model import (
     SessionsTableModel,
 )
-from services.operator_console.theme import PALETTE
 from services.operator_console.viewmodels.experiments_vm import ExperimentsViewModel
 from services.operator_console.viewmodels.health_vm import HealthViewModel
 from services.operator_console.viewmodels.live_session_vm import LiveSessionViewModel
@@ -87,6 +86,7 @@ class _NavEntry:
 
     route: AppRoute
     label: str
+    description: str
 
 
 # Declaration order is also rendering order in the sidebar and the stack.
@@ -94,13 +94,20 @@ class _NavEntry:
 # Live Session (the active action surface), then drill-downs, then the
 # historical Sessions page last.
 _NAV_SPEC: tuple[_NavEntry, ...] = (
-    _NavEntry(AppRoute.OVERVIEW, "Overview"),
-    _NavEntry(AppRoute.LIVE_SESSION, "Live Session"),
-    _NavEntry(AppRoute.EXPERIMENTS, "Experiments"),
-    _NavEntry(AppRoute.PHYSIOLOGY, "Physiology"),
-    _NavEntry(AppRoute.HEALTH, "Health"),
-    _NavEntry(AppRoute.SESSIONS, "Sessions"),
+    _NavEntry(AppRoute.OVERVIEW, "Overview", "Open the at-a-glance operator overview."),
+    _NavEntry(AppRoute.LIVE_SESSION, "Live Session", "Open the active stimulus workflow."),
+    _NavEntry(AppRoute.EXPERIMENTS, "Experiments", "Open stimulus strategy management."),
+    _NavEntry(AppRoute.PHYSIOLOGY, "Physiology", "Open derived heart-data and sync signals."),
+    _NavEntry(AppRoute.HEALTH, "Health", "Open readiness checks and operator actions."),
+    _NavEntry(AppRoute.SESSIONS, "Sessions", "Open recent sessions history."),
 )
+_INITIAL_ROUTE = AppRoute.LIVE_SESSION
+_MIN_WINDOW_WIDTH = 900
+_MIN_WINDOW_HEIGHT = 640
+_SIDEBAR_MIN_WIDTH = 160
+_SIDEBAR_MAX_WIDTH = 220
+_SIDEBAR_RATIO = 0.18
+_ACTION_BAR_COMPACT_WIDTH = 1024
 
 
 class MainWindow(QMainWindow):
@@ -122,10 +129,12 @@ class MainWindow(QMainWindow):
         self._inflight_stimulus: dict[str, OneShotSignals] = {}
 
         self.setWindowTitle(f"LSIE-MLF Operator Console — {config.environment_label}")
+        self.setMinimumSize(_MIN_WINDOW_WIDTH, _MIN_WINDOW_HEIGHT)
         self.resize(1280, 800)
 
         self._pages: dict[AppRoute, QWidget] = {}
         self._nav_buttons: dict[AppRoute, QPushButton] = {}
+        self._sidebar: QWidget | None = None
 
         self._register_pages()
         self._stack = self._build_stack()
@@ -147,6 +156,7 @@ class MainWindow(QMainWindow):
         root_layout.addWidget(sidebar)
         root_layout.addWidget(content, stretch=1)
         self.setCentralWidget(root)
+        self._update_responsive_layout(self.width())
 
         status_bar = QStatusBar(self)
         api_label = QLabel(
@@ -160,10 +170,10 @@ class MainWindow(QMainWindow):
         self._bind_navigation()
         self._bind_store()
 
-        # Align the store's initial route with the sidebar's checked button
-        # so the coordinator's first sync sees the right active route.
-        self._store.set_route(_NAV_SPEC[0].route)
+        self._store.set_route(_INITIAL_ROUTE)
+        self._on_store_route_changed(self._store.route().value)
         self._update_action_bar_context()
+        self._update_action_bar_progress()
 
     # ------------------------------------------------------------------
     # Construction helpers
@@ -189,10 +199,18 @@ class MainWindow(QMainWindow):
         # read-only getters plus safe operator intents (stimulus,
         # experiment management, and Sessions' selection push).
         self._overview_vm = OverviewViewModel(self._store, self)
-        self._live_session_vm = LiveSessionViewModel(self._store, self._encounters_model, self)
+        self._live_session_vm = LiveSessionViewModel(
+            self._store,
+            self._encounters_model,
+            self,
+            default_experiment_id=self._config.default_experiment_id,
+        )
         self._live_session_vm.bind_session_lifecycle_actions(
             self._coordinator.request_session_start,
             self._coordinator.request_session_end,
+        )
+        self._live_session_vm.action_state_changed.connect(
+            self._on_live_session_action_state_changed
         )
         self._experiments_vm = ExperimentsViewModel(
             self._store,
@@ -208,6 +226,7 @@ class MainWindow(QMainWindow):
         self._experiments_vm.disable_arm_requested.connect(self._coordinator.disable_experiment_arm)
         self._physiology_vm = PhysiologyViewModel(self._store, self)
         self._health_vm = HealthViewModel(self._store, self._health_model, self._alerts_model, self)
+        self._health_vm.bind_repair_action(self._coordinator.repair_install)
         self._sessions_vm = SessionsViewModel(self._store, self._sessions_model, self)
 
         overview_view = OverviewView(self._overview_vm, self)
@@ -235,6 +254,7 @@ class MainWindow(QMainWindow):
 
     def _build_action_bar(self) -> ActionBar:
         bar = ActionBar(self)
+        bar.set_compact_mode(self.width() < _ACTION_BAR_COMPACT_WIDTH)
         # No session yet — bar starts disabled. `_update_action_bar_context`
         # re-enables it when the store emits `selected_session_changed`.
         bar.set_session_context(None, None, None)
@@ -243,19 +263,17 @@ class MainWindow(QMainWindow):
     def _build_sidebar(self) -> QWidget:
         sidebar = QFrame(self)
         sidebar.setObjectName("SidebarNav")
-        sidebar.setFixedWidth(220)
+        sidebar.setMinimumWidth(_SIDEBAR_MIN_WIDTH)
+        sidebar.setMaximumWidth(_SIDEBAR_MAX_WIDTH)
 
         layout = QVBoxLayout(sidebar)
         layout.setContentsMargins(12, 20, 12, 12)
         layout.setSpacing(4)
 
         title = QLabel("LSIE-MLF", sidebar)
-        title.setStyleSheet(
-            "font-size: 16px; font-weight: 700; "
-            f"color: {PALETTE.text_primary}; padding: 0 6px 4px 6px;"
-        )
+        title.setObjectName("SidebarTitle")
         subtitle = QLabel("Operator Console", sidebar)
-        subtitle.setStyleSheet(f"color: {PALETTE.text_muted}; padding: 0 6px 18px 6px;")
+        subtitle.setObjectName("SidebarSubtitle")
 
         layout.addWidget(title)
         layout.addWidget(subtitle)
@@ -265,14 +283,18 @@ class MainWindow(QMainWindow):
         for index, entry in enumerate(_NAV_SPEC):
             btn = QPushButton(entry.label, sidebar)
             btn.setObjectName("NavButton")
+            btn.setAccessibleName(entry.label)
+            btn.setAccessibleDescription(entry.description)
+            btn.setToolTip(entry.description)
             btn.setCheckable(True)
-            if index == 0:
+            if entry.route is _INITIAL_ROUTE:
                 btn.setChecked(True)
             self._nav_group.addButton(btn, index)
             self._nav_buttons[entry.route] = btn
             layout.addWidget(btn)
 
         layout.addStretch(1)
+        self._sidebar = sidebar
         return sidebar
 
     # ------------------------------------------------------------------
@@ -351,9 +373,9 @@ class MainWindow(QMainWindow):
         self._update_action_bar_context()
 
     def _update_action_bar_context(self) -> None:
-        """Push session / arm / greeting and safe-submit readiness into the ActionBar.
+        """Push session stimulus context and safe-submit readiness into the ActionBar.
 
-        The bar is only populated with arm/greeting/readiness when the
+        The bar is only populated with stimulus context/readiness when the
         live-session DTO we have on hand describes the selected session;
         readiness is the console-level threshold check, not the worker's
         authoritative ``is_calibrating`` lifecycle flag.
@@ -373,6 +395,22 @@ class MainWindow(QMainWindow):
             expected_greeting,
             operator_ready_for_submit=operator_ready,
         )
+        self._update_action_bar_progress()
+
+    def _update_action_bar_progress(self) -> None:
+        state = self._live_session_vm.stimulus_ui_context().state
+        if state is StimulusActionState.MEASURING:
+            self._action_bar.set_countdown_remaining(
+                self._live_session_vm.measurement_window_remaining_s(datetime.now(UTC))
+            )
+        else:
+            self._action_bar.set_countdown_remaining(None)
+        self._action_bar.set_last_message(self._live_session_vm.stimulus_progress_message())
+        # UX-20: a disabled submit must explain *why*. The VM composes
+        # the gating reason; the bar makes it visible on the message
+        # line and tints the message warm so the operator does not click
+        # into nothing.
+        self._action_bar.set_gating_reason(self._live_session_vm.stimulus_gating_reason())
 
     # ------------------------------------------------------------------
     # Stimulus submit path (§4.C)
@@ -416,14 +454,18 @@ class MainWindow(QMainWindow):
     def _on_stimulus_succeeded(self, _job: str, payload: object) -> None:
         if not isinstance(payload, StimulusAccepted):
             return
-        next_state = (
-            StimulusActionState.ACCEPTED if payload.accepted else StimulusActionState.FAILED
-        )
+        if not payload.accepted:
+            next_state = StimulusActionState.FAILED
+        elif payload.stimulus_time_utc is not None:
+            next_state = StimulusActionState.MEASURING
+        else:
+            next_state = StimulusActionState.ACCEPTED
         self._store.set_stimulus_ui_context(
             StimulusUiContext(
                 state=next_state,
                 client_action_id=payload.client_action_id,
                 accepted_at_utc=payload.received_at_utc,
+                authoritative_stimulus_time_utc=payload.stimulus_time_utc,
                 message=payload.message,
             )
         )
@@ -444,6 +486,25 @@ class MainWindow(QMainWindow):
     def _on_stimulus_state_changed(self, ctx: object) -> None:
         if isinstance(ctx, StimulusUiContext):
             self._action_bar.set_action_state(ctx)
+            self._update_action_bar_progress()
+
+    @Slot(object)
+    def _on_live_session_action_state_changed(self, _ctx: object) -> None:
+        self._update_action_bar_progress()
+
+    def resizeEvent(self, event: QResizeEvent) -> None:  # noqa: N802 — Qt override
+        super().resizeEvent(event)
+        if hasattr(self, "_action_bar"):
+            self._update_responsive_layout(event.size().width())
+
+    def _update_responsive_layout(self, window_width: int) -> None:
+        sidebar_width = min(
+            _SIDEBAR_MAX_WIDTH,
+            max(_SIDEBAR_MIN_WIDTH, int(window_width * _SIDEBAR_RATIO)),
+        )
+        if self._sidebar is not None:
+            self._sidebar.setFixedWidth(sidebar_width)
+        self._action_bar.set_compact_mode(window_width < _ACTION_BAR_COMPACT_WIDTH)
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -456,12 +517,8 @@ class MainWindow(QMainWindow):
         instant: the operator sees the window disappear right away
         while the orphaned polling threads drain in the background.
         `processEvents()` forces the native hide to flush before we
-        enter the blocking drain — otherwise the window can appear
-        to freeze on screen for the full shutdown window. Anything
-        still running past `_drain_orphan_jobs`'s short wait is
-        force-terminated; the process is exiting and we'd rather
-        ship the operator a snappy close than wait out a 2-3s
-        urlopen on a refused TCP connection.
+        enter the short cooperative drain — otherwise the window can
+        appear to freeze on screen during shutdown.
         """
         self.hide()
         app = QApplication.instance()

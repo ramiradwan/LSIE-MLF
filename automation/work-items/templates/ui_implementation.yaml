@@ -1,0 +1,31 @@
+type: ui_implementation
+title: "<short operator-console UI change title>"
+spec_refs:
+  - "§4.E.1"
+source_artifacts:
+  - "docs/artifacts/OPERATOR_CONSOLE_UI_UX_AUDIT.md"
+  - "services/operator_console/design_system/DESIGN_SYSTEM.md"
+  - "automation/schemas/ux_plan.py"
+ux_plan: "automation/work-items/active/<work-item>-ux.json"
+target_files:
+  - "services/operator_console/views/<page>_view.py"
+  - "services/operator_console/viewmodels/<page>_vm.py"
+  - "services/operator_console/formatters.py"
+target_symbols:
+  - "<Page>View"
+  - "<Page>ViewModel"
+acceptance_criteria:
+  invariants:
+    - "no inline setStyleSheet calls outside services/operator_console/design_system/"
+    - "no hex literals in services/operator_console/ outside design_system/tokens.py"
+    - "every QSS #ObjectName selector is registered in design_system/design_system.json"
+    - "status mapping uses UiStatusKind rather than ad-hoc strings"
+    - "view files do not import services.operator_console.api_client"
+    - "formatter helpers remain pure and Qt-free"
+  tests:
+    - "tests/unit/operator_console/test_<page>_view.py"
+    - "tests/unit/operator_console/test_design_system_audit.py"
+    - "tests/unit/scripts/audit/test_design_system_verifier.py"
+ci_scope:
+  - "operator_console"
+  - "design_system"

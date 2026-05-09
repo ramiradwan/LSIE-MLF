@@ -1,12 +1,11 @@
 # LSIE-MLF Performance Baseline Log
 
-Append-only ledger of latency and throughput measurements captured after feature merges that touch the orchestrator, inference, analytics, transcription, face-mesh, or IPC paths. Maintained per Standing Post-Merge Chore #7 (`docs/POST_MERGE_PLAYBOOK.md`).
+Fresh v4-native ledger of deterministic desktop fixture latency measurements captured after feature merges that touch Module C dispatch, IPC/shared-memory handoff, `gpu_ml_worker` analytics publication, `analytics_state_worker` SQLite persistence, or Operator Console read paths. Maintained per Standing Post-Merge Chore #7 (`docs/POST_MERGE_PLAYBOOK.md`).
 
-**Benchmark protocol.** Standard 30-second segment benchmark against a recorded capture fixture (no live device). Run the orchestrator with `AUTO_STIMULUS_DELAY_S=0`, inject a synthetic stimulus at t=2.0s, and record the assembly wall-clock log line for segments 1..10. Whisper INT8 timer is read from `services/worker/tasks/inference.py` log line at segment completion. AU12 per-frame p50 from `packages/ml_core/au12.py` timer. For physiology-aware runs, prime Redis `physio:events` with 20 synthetic Oura samples per subject_role at 300s cadence before starting the orchestrator.
+**Benchmark protocol.** Run `scripts/run_fixture_benchmark.py` against the checked-in deterministic capture fixture. The benchmark constructs `DesktopSegment` payloads, dispatches them through `DesktopSegmentDispatcher`, transfers PCM through shared-memory `InferenceControlMessage` metadata, publishes the active `AnalyticsResultMessage` shape through the `gpu_ml_worker` publication seam, and persists results through `LocalAnalyticsProcessor` into a temporary SQLite database. Live Android, ADB, scrcpy, camera frames, provider APIs, retained worker paths, brokers, and cloud services are not part of this reproducible baseline.
 
-**Regression threshold.** >20% above the previous row's p95 value triggers investigation before the post-merge cycle can close.
+**Regression threshold.** >20% above the previous `v4-fixture:@` row's p95 value for dispatch, ML publish, analytics state, or end-to-end latency triggers investigation before the post-merge cycle can close.
 
-| Date | Commit SHA | Cycle / PR | Segment-assembly p50 (ms) | Segment-assembly p95 (ms) | ML inference p50 (ms) | ML inference p95 (ms) | AU12 per-frame p50 (ms) | Co-Modulation window compute (ms) | Notes |
-|---|---|---|---|---|---|---|---|---|---|
-| 2026-04-16 | `60be7ec` | PR 91 — `feature/v31-physio-comodulation` | TBD | TBD | TBD | TBD | TBD | TBD | Physiology ingress + co-modulation added. Benchmark TBD pending live stack (no GPU in hardening env). Follow-up ADO work item required to populate the row. |
-| 2026-04-27 | TBD | Task 130 — `feature/v33-baseline-operability-task-130` | TBD | TBD | TBD | TBD | TBD | TBD | Deterministic replay posterior-movement proof is CI-covered. Live-stack benchmark values are hardware/credentials gated; follow-up ADO item should wire live Module B and populate this row from the standard benchmark protocol. |
+| Date | Commit SHA | Scenario | Segments | Dispatch p50 (ms) | Dispatch p95 (ms) | ML publish p50 (ms) | ML publish p95 (ms) | Analytics state p50 (ms) | Analytics state p95 (ms) | Visual AU12 tick p50 (ms) | End-to-end p95 (ms) | Notes |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 2026-05-06 | `de15579` | v4-fixture:@ | 3 | 1.252 | 1.671 | 35.587 | 36.003 | 7.745 | 8.431 | 0.043 | 45.354 | v4 desktop IPC/SQLite fixture benchmark; persisted=3; live ADB/scrcpy path not measured; warnings=0 |
