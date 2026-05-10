@@ -26,6 +26,7 @@ from scripts.generate_capture_fixture import (
     EMBEDDED_SPEECH_BACKEND_ID,
     EMBEDDED_SPEECH_BACKEND_VERSION,
     SPEECH_BACKEND_EMBEDDED,
+    SPEECH_BACKEND_FFMPEG_FLITE,
     _parse_args,
 )
 from scripts.generate_capture_fixture import (
@@ -93,6 +94,17 @@ def _assert_embedded_speech_backend(script: dict[str, Any]) -> None:
         "used": SPEECH_BACKEND_EMBEDDED,
         "version": EMBEDDED_SPEECH_BACKEND_VERSION,
     }
+
+
+def _assert_ffmpeg_flite_speech_backend(script: dict[str, Any]) -> None:
+    assert script["audio_synthesis"] == "deterministic_offline_lexical_speech:ffmpeg-flite"
+    backend = script["speech_backend"]
+    assert backend["deterministic"] is False
+    assert backend["identifier"] == "ffmpeg-flite"
+    assert backend["requested"] == SPEECH_BACKEND_FFMPEG_FLITE
+    assert backend["used"] == SPEECH_BACKEND_FFMPEG_FLITE
+    assert backend["voice"] == "slt"
+    assert str(backend["version"]).startswith("ffmpeg version ")
 
 
 def _read_fixture_audio(path: Path) -> tuple[np.ndarray[Any, np.dtype[np.int16]], int]:
@@ -240,6 +252,23 @@ def test_capture_fixture_cli_defaults_to_embedded_speech_backend(tmp_path: Path)
 
 
 @pytest.mark.integration
+def test_explicit_ffmpeg_flite_backend_records_speech_metadata(tmp_path: Path) -> None:
+    fixture = tmp_path / "fixture"
+    _generate_fixture(
+        fixture,
+        segments=1,
+        segment_duration_s=3.0,
+        width=160,
+        height=120,
+        speech_backend=SPEECH_BACKEND_FFMPEG_FLITE,
+    )
+
+    script = _load_script(fixture)
+
+    _assert_ffmpeg_flite_speech_backend(script)
+    _assert_scripted_speech_energy(fixture, script)
+
+
 def test_explicit_espeak_backend_requires_binary(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

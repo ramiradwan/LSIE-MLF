@@ -40,6 +40,10 @@ _STOPWORDS = frozenset({"a", "an", "and", "are", "be", "been", "for", "s", "the"
 class Gate0ReplayError(RuntimeError):
     """Raised when the Gate 0 replay cannot prove production parity."""
 
+    def __init__(self, message: str, *, report: Gate0ReplayReport | None = None) -> None:
+        super().__init__(message)
+        self.report = report
+
 
 class SpeechEngine(Protocol):
     def transcribe(self, audio: str, language: str | None = None) -> str: ...
@@ -147,7 +151,7 @@ def run_gate0_replay(
         phrase_checks=phrase_checks,
     )
     if not report.passed:
-        raise Gate0ReplayError(_format_failure(report))
+        raise Gate0ReplayError(_format_failure(report), report=report)
     return report
 
 
@@ -183,6 +187,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             min_token_recall=args.min_token_recall,
         )
     except Gate0ReplayError as exc:
+        if exc.report is not None:
+            write_report(exc.report, args.report_path)
         print(str(exc), file=sys.stderr)
         return 1
     write_report(report, args.report_path)
@@ -249,7 +255,12 @@ def _load_segment_fixtures(fixture_dir: Path) -> list[tuple[Path, dict[str, Any]
         if not isinstance(data, dict):
             raise Gate0ReplayError(f"Gate 0 fixture is not a JSON object: {path}")
         fixtures.append((path, data))
-    return fixtures
+    return sorted(
+        fixtures,
+        key=lambda item: _canonical_utc_timestamp(
+            _require_str(item[1], "segment_window_start_utc", item[0])
+        ),
+    )
 
 
 def _expected_greetings_by_segment(stimulus_script: Path) -> dict[int, str]:

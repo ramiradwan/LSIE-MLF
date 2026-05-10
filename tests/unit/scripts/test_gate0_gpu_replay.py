@@ -59,12 +59,13 @@ def _write_gate0_inputs(tmp_path: Path) -> tuple[Path, Path, Path, str]:
     stimulus_script.write_text(
         json.dumps(
             {
+                "speech_backend": {"used": "espeak-ng"},
                 "stimuli": [
                     {
                         "segment_index": 0,
                         "expected_greeting_text": "Hi! What's the best advice today?",
                     }
-                ]
+                ],
             }
         ),
         encoding="utf-8",
@@ -144,6 +145,7 @@ def test_run_gate0_replay_validates_fixture_and_transcribes_cuda(
     assert report.gpu_inventory == (GpuInfo("NVIDIA T4", 7.5),)
     assert report.fixture_checks[0].expected_segment_id == expected_segment_id
     assert report.fixture_checks[0].segment_id_matches is True
+    assert report.fixture_checks[0].expected_greeting == "Hi! What's the best advice today?"
     assert report.phrase_checks[0].passed is True
     assert engine_factory.calls == [{"model_size": "tiny", "device": "cuda"}]
     assert engine_factory.instances[0].calls == [(str(capture_audio), "en")]
@@ -172,6 +174,100 @@ def test_run_gate0_replay_raises_on_fixture_segment_id_mismatch(
         )
 
     assert "segment_id mismatch segment_000.json" in str(exc_info.value)
+
+
+def test_validate_fixture_contract_orders_hashed_fixtures_by_segment_start(tmp_path: Path) -> None:
+    fixture_dir, stimulus_script, _capture_audio, _expected_segment_id = _write_gate0_inputs(
+        tmp_path
+    )
+    path = fixture_dir / "segment_000.json"
+    first_fixture: dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
+    path.unlink()
+
+    second_fixture = dict(first_fixture)
+    second_fixture["segment_window_start_utc"] = "2026-04-17T12:00:30Z"
+    second_fixture["segment_window_end_utc"] = "2026-04-17T12:01:00Z"
+    second_fixture["segment_id"] = replay._derive_segment_id(
+        second_fixture,
+        fixture_dir / "segment_000_first_by_name.json",
+    )
+    first_fixture["segment_id"] = replay._derive_segment_id(
+        first_fixture,
+        fixture_dir / "segment_zzz_second_by_name.json",
+    )
+
+    (fixture_dir / "segment_000_first_by_name.json").write_text(
+        json.dumps(second_fixture),
+        encoding="utf-8",
+    )
+    (fixture_dir / "segment_zzz_second_by_name.json").write_text(
+        json.dumps(first_fixture),
+        encoding="utf-8",
+    )
+    stimulus_script.write_text(
+        json.dumps(
+            {
+                "speech_backend": {"used": "espeak-ng"},
+                "stimuli": [
+                    {"segment_index": 0, "expected_greeting_text": "first chronological"},
+                    {"segment_index": 1, "expected_greeting_text": "second chronological"},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    checks = replay._validate_fixture_contract(fixture_dir, stimulus_script)
+
+    assert [check.expected_greeting for check in checks] == [
+        "first chronological",
+        "second chronological",
+    ]
+
+
+def test_main_writes_failure_report(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    report_path = tmp_path / "gate0_report.json"
+    failure_report = replay.Gate0ReplayReport(
+        gpu_inventory=(GpuInfo("NVIDIA T4", 7.5),),
+        speech_device="cuda",
+        model_size="tiny",
+        transcript="unrelated transcript",
+        fixture_checks=(
+            replay.FixtureCheck(
+                fixture_path=Path("segment_000.json"),
+                segment_id="abc",
+                expected_segment_id="abc",
+                segment_id_matches=True,
+                expected_greeting="Hi best advice today",
+            ),
+        ),
+        phrase_checks=(
+            replay.PhraseCheck(
+                expected_text="Hi best advice today",
+                matched_tokens=(),
+                missing_tokens=("hi", "best", "advice", "today"),
+                recall=0.0,
+                passed=False,
+            ),
+        ),
+    )
+
+    def fail_replay(**kwargs: Any) -> replay.Gate0ReplayReport:
+        del kwargs
+        raise replay.Gate0ReplayError("failed", report=failure_report)
+
+    monkeypatch.setattr(replay, "run_gate0_replay", fail_replay)
+
+    exit_code = replay.main(["--report-path", str(report_path)])
+
+    assert exit_code == 1
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["passed"] is False
+    assert report["transcript"] == "unrelated transcript"
+    assert report["phrase_checks"][0]["passed"] is False
 
 
 def test_run_gate0_replay_raises_on_low_token_recall(

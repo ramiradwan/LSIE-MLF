@@ -3,7 +3,7 @@
   "audio_channels": 1,
   "audio_sample_rate_hz": 48000,
   "audio_sample_width_bytes": 2,
-  "audio_synthesis": "deterministic_offline_lexical_speech:embedded",
+  "audio_synthesis": "deterministic_offline_lexical_speech:ffmpeg-flite",
   "duration_s": 90.0,
   "fps": 30,
   "generator": "scripts/generate_capture_fixture.py",
@@ -13,11 +13,13 @@
   "seed": 1234,
   "segment_duration_s": 30.0,
   "speech_backend": {
-    "deterministic": true,
-    "identifier": "embedded-formant-phoneme-v1",
-    "requested": "embedded",
-    "used": "embedded",
-    "version": "1"
+    "deterministic": false,
+    "ffmpeg_bin": "ffmpeg",
+    "identifier": "ffmpeg-flite",
+    "requested": "ffmpeg-flite",
+    "used": "ffmpeg-flite",
+    "version": "ffmpeg version 8.1-full_build-www.gyan.dev Copyright (c) 2000-2026 the FFmpeg developers",
+    "voice": "slt"
   },
   "stimuli": [
     {

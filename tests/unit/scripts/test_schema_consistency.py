@@ -256,6 +256,46 @@ class TestJsonSchemaLoader:
         assert "FrozenSchema" not in json_schema_entities
         assert not any("docs/artifacts/content.json" in warning for warning in warnings)
 
+    def test_load_default_sources_falls_back_to_embedded_spec_payload(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        fallback_content = {
+            "interface_contracts": {
+                "schemas": {
+                    "PdfSchema": {
+                        "type": "object",
+                        "properties": {"value": {"type": "string"}},
+                    }
+                }
+            }
+        }
+
+        registry = (
+            EntityMapping(
+                name="PdfSchema",
+                pydantic_class=None,
+                json_schema_key="PdfSchema",
+            ),
+        )
+
+        def fake_load_content(
+            pdf_path: Path | None = None,
+            content_path: Path | None = None,
+            repo_root: Path = Path("."),
+        ) -> dict[str, Any]:
+            assert pdf_path is None
+            assert content_path is None
+            assert repo_root == tmp_path
+            return fallback_content
+
+        monkeypatch.setattr("scripts.check_schema_consistency.load_content", fake_load_content)
+
+        _, json_schema_entities, sql_entities, warnings = load_default_sources(registry, tmp_path)
+
+        assert "PdfSchema" in json_schema_entities
+        assert sql_entities == {}
+        assert warnings == []
+
 
 class TestPostgresSqlLoader:
     def test_parse_posterior_delta_log_table(self) -> None:

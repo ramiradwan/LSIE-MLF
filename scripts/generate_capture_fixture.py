@@ -39,9 +39,11 @@ AU12_ALPHA: float = 6.0
 SPEECH_PEAK_AMPLITUDE: float = 0.34
 SPEECH_BACKEND_EMBEDDED: str = "embedded"
 SPEECH_BACKEND_ESPEAK_NG: str = "espeak-ng"
-SPEECH_BACKEND_CHOICES: tuple[str, str] = (
+SPEECH_BACKEND_FFMPEG_FLITE: str = "ffmpeg-flite"
+SPEECH_BACKEND_CHOICES: tuple[str, str, str] = (
     SPEECH_BACKEND_EMBEDDED,
     SPEECH_BACKEND_ESPEAK_NG,
+    SPEECH_BACKEND_FFMPEG_FLITE,
 )
 EMBEDDED_SPEECH_BACKEND_ID: str = "embedded-formant-phoneme-v1"
 EMBEDDED_SPEECH_BACKEND_VERSION: str = "1"
@@ -866,6 +868,42 @@ def _probe_espeak_ng_version(espeak_bin: str) -> str:
     return output.splitlines()[0].strip() or "unknown"
 
 
+def _probe_ffmpeg_version(ffmpeg_bin: str) -> str:
+    try:
+        result = subprocess.run(
+            [ffmpeg_bin, "-version"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except OSError:
+        return "unknown"
+    output = (result.stdout or result.stderr or "").strip()
+    if not output:
+        return "unknown"
+    return output.splitlines()[0].strip() or "unknown"
+
+
+def _require_ffmpeg_filter(ffmpeg_bin: str, filter_name: str) -> None:
+    try:
+        result = subprocess.run(
+            [ffmpeg_bin, "-hide_banner", "-filters"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except OSError as exc:
+        raise FileNotFoundError(f"--ffmpeg-bin is not executable: {ffmpeg_bin}") from exc
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "filter list unavailable").strip()
+        raise RuntimeError(f"ffmpeg failed to list filters: {detail}")
+    filters = result.stdout or result.stderr or ""
+    if filter_name not in filters:
+        raise RuntimeError(
+            f"--speech-backend ffmpeg-flite requires ffmpeg filter {filter_name!r}"
+        )
+
+
 def _resolve_speech_backend(speech_backend: str, ffmpeg_bin: str) -> dict[str, Any]:
     """Resolve explicit speech backend selection into reproducibility metadata."""
     if speech_backend == SPEECH_BACKEND_EMBEDDED:
@@ -895,7 +933,23 @@ def _resolve_speech_backend(speech_backend: str, ffmpeg_bin: str) -> dict[str, A
             "deterministic": False,
         }
 
+    if speech_backend == SPEECH_BACKEND_FFMPEG_FLITE:
+        _require_ffmpeg_filter(ffmpeg_bin, "flite")
+        return {
+            "requested": SPEECH_BACKEND_FFMPEG_FLITE,
+            "used": SPEECH_BACKEND_FFMPEG_FLITE,
+            "identifier": "ffmpeg-flite",
+            "version": _probe_ffmpeg_version(ffmpeg_bin),
+            "voice": "slt",
+            "ffmpeg_bin": ffmpeg_bin,
+            "deterministic": False,
+        }
+
     raise ValueError(f"Unsupported --speech-backend value: {speech_backend!r}")
+
+
+def _escape_ffmpeg_filter_text(text: str) -> str:
+    return text.replace("\\", "\\\\").replace(":", "\\:").replace("'", "")
 
 
 def _espeak_ng_waveform(
@@ -963,6 +1017,38 @@ def _espeak_ng_waveform(
     return _normalize_speech_waveform(samples)
 
 
+def _ffmpeg_flite_waveform(
+    text: str,
+    duration_s: float,
+    ffmpeg_bin: str,
+) -> npt.NDArray[np.float64]:
+    ffmpeg_cmd = [
+        ffmpeg_bin,
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-f",
+        "lavfi",
+        "-i",
+        f"flite=text='{_escape_ffmpeg_filter_text(text)}':voice=slt",
+        "-ar",
+        str(AUDIO_SAMPLE_RATE_HZ),
+        "-ac",
+        str(AUDIO_CHANNELS),
+        "-f",
+        "s16le",
+        "pipe:1",
+    ]
+    ffmpeg_result = subprocess.run(ffmpeg_cmd, check=False, capture_output=True)
+    if ffmpeg_result.returncode != 0 or not ffmpeg_result.stdout:
+        detail = ffmpeg_result.stderr.decode("utf-8", errors="replace").strip()
+        raise RuntimeError(f"ffmpeg flite failed to synthesize fixture speech: {detail}")
+    samples = np.frombuffer(ffmpeg_result.stdout, dtype="<i2").astype(np.float64) / 32_768.0
+    samples = _trim_silence(samples)
+    samples = _fit_waveform_duration(samples, duration_s)
+    return _normalize_speech_waveform(samples)
+
+
 def _lexical_speech_waveform(
     text: str,
     duration_s: float,
@@ -979,6 +1065,8 @@ def _lexical_speech_waveform(
         if not espeak_bin:
             raise RuntimeError("espeak-ng backend metadata is missing binary_path")
         return _espeak_ng_waveform(text, duration_s, ffmpeg_bin, espeak_bin)
+    if speech_backend == SPEECH_BACKEND_FFMPEG_FLITE:
+        return _ffmpeg_flite_waveform(text, duration_s, ffmpeg_bin)
     raise ValueError(f"Unsupported speech backend in stimulus_script.json: {speech_backend!r}")
 
 

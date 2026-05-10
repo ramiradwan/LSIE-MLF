@@ -27,14 +27,41 @@
       "Bash(git diff *)",
       "Bash(git log *)",
       "Bash(git branch *)",
-      "Bash(git push)"
+      "Bash(git push)",
+      "Bash(git restore *)",
+      "Bash(git checkout *)",
+      "Bash(git show *)",
+      "Bash(git fetch *)",
+      "Bash(git stash *)",
+      "Bash(pwsh automation/azure/aca_gpu_runner/probe.ps1*)",
+      "Bash(az containerapp job show*)",
+      "Bash(az containerapp job execution list*)",
+      "Bash(az acr repository list*)",
+      "Bash(az acr repository show-tags*)",
+      "Bash(az deployment group show*)",
+      "mcp__claude_ai_Microsoft_Learn__*"
+    ],
+    "ask": [
+      "Bash(git merge *)",
+      "Bash(git rebase *)",
+      "Bash(git reset --hard *)",
+      "Bash(git push --force*)",
+      "Bash(pwsh automation/azure/aca_gpu_runner/deploy.ps1*)",
+      "Bash(pwsh automation/azure/aca_gpu_runner/update_secret.ps1*)",
+      "Bash(az containerapp job start*)"
     ],
     "deny": [
       "Bash(rm -rf /)*",
       "Bash(shred *)",
       "Bash(docker compose down*)",
       "Bash(docker compose up*)",
-      "Bash(pip install*)"
+      "Bash(pip install*)",
+      "Bash(az group delete*)",
+      "Bash(az containerapp job delete*)",
+      "Bash(az containerapp env delete*)",
+      "Bash(az acr delete*)",
+      "Bash(az identity delete*)",
+      "Bash(az role assignment delete*)"
     ]
   },
   "hooks": {

@@ -58,11 +58,13 @@ Each fixture directory must contain exactly the replay contract files:
   `expected_greeting_text` values and placed at each scripted stimulus offset.
   By default, the generator uses its embedded `embedded-formant-phoneme-v1`
   synthesizer, which is deterministic and independent of host `PATH`. The
-  optional `--speech-backend espeak-ng` path is an explicit opt-in only: it
-  requires `espeak-ng` on `PATH`, fails clearly when unavailable, records the
-  resolved binary/version metadata, and may produce different bytes across
-  `espeak-ng` or FFmpeg versions. Neither backend calls network services or
-  falls back to tone/noise placeholders.
+  optional `--speech-backend ffmpeg-flite` path uses FFmpeg's local `flite`
+  filter for recognizer-audible Gate 0 transcript fixtures. The optional
+  `--speech-backend espeak-ng` path is an explicit opt-in only: it requires
+  `espeak-ng` on `PATH`, fails clearly when unavailable, records the resolved
+  binary/version metadata, and may produce different bytes across `espeak-ng`
+  or FFmpeg versions. No backend calls network services or falls back to
+  tone/noise placeholders.
 - `stimulus_script.json` — JSON metadata consumed by `ReplayCaptureSource` and
   asserted by tests. Each row in `stimuli` contains:
   - `segment_index`
@@ -76,8 +78,8 @@ The JSON also records media parameters (`fps`, `duration_s`, video dimensions,
 audio format, `audio_synthesis`, `speech_backend`, and `segment_duration_s`) so
 the replay source can validate the fixture before decoding. `speech_backend`
 records the requested and used backend plus a stable embedded identifier/version
-for canonical fixtures; explicit `espeak-ng` runs also record the detected binary
-path, version, voice, gap, and FFmpeg conversion command metadata.
+for canonical fixtures; explicit `ffmpeg-flite` and `espeak-ng` runs also record
+the detected toolchain version, voice, and command metadata.
 
 ## Determinism expectations
 
@@ -88,11 +90,12 @@ cadence, writes canonical JSON, synthesizes speech deterministically from the
 literal fixture text, and encodes with single-threaded bit-exact ffmpeg settings
 to minimize nondeterminism.
 
-There is no implicit `espeak-ng` auto-detection: installing or removing an
-`espeak-ng` binary from `PATH` does not change canonical fixture bytes unless
-`--speech-backend espeak-ng` is explicitly requested. For that explicit opt-in,
-fixture bytes are tied to the resolved offline speech toolchain and the recorded
-`speech_backend` metadata should travel with the artifact.
+There is no implicit external speech auto-detection: installing or removing an
+`espeak-ng` binary from `PATH`, or changing FFmpeg builds, does not change
+canonical fixture bytes unless `--speech-backend espeak-ng` or
+`--speech-backend ffmpeg-flite` is explicitly requested. For those explicit
+opt-ins, fixture bytes are tied to the resolved offline speech toolchain and the
+recorded `speech_backend` metadata should travel with the artifact.
 
 The integration tests generate temporary fixtures with `--speech-backend
 embedded` and compare independent outputs with the same inputs before exercising

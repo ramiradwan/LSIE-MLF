@@ -644,6 +644,8 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from scripts.spec_ref_check import load_content  # noqa: E402
+
 
 def load_default_sources(
     registry: tuple[EntityMapping, ...] = DEFAULT_REGISTRY,
@@ -672,9 +674,20 @@ def load_default_sources(
         repo_root / "content.json",
     ]
     content_path = next((path for path in candidates if path.is_file()), None)
+    content_source = ""
     if content_path is None:
-        warnings.append(f"content.json not found (looked at: {[str(path) for path in candidates]})")
+        try:
+            content = load_content(repo_root=repo_root)
+            content_source = "embedded content payload in docs/tech-spec-v*.pdf"
+        except Exception as exc:
+            warnings.append(
+                "content.json not found "
+                f"(looked at: {[str(path) for path in candidates]}) and could not load "
+                f"embedded spec payload: {exc}"
+            )
+            content = {}
     else:
+        content_source = str(content_path)
         try:
             raw = content_path.read_text(encoding="utf-8").strip()
             content = json.loads(raw) if raw else {}
@@ -683,17 +696,18 @@ def load_default_sources(
             content = {}
         if not content:
             warnings.append(f"content.json is empty: {content_path}")
-        schemas = extract_json_schemas(content)
-        for mapping in registry:
-            if mapping.json_schema_key is None:
-                continue
-            schema = schemas.get(mapping.json_schema_key)
-            if isinstance(schema, dict):
-                json_schema_entities[mapping.name] = parse_json_schema(schema, mapping.name, schema)
-            else:
-                warnings.append(
-                    f"JSON schema {mapping.json_schema_key!r} not found in {content_path}"
-                )
+
+    schemas = extract_json_schemas(content)
+    for mapping in registry:
+        if mapping.json_schema_key is None:
+            continue
+        schema = schemas.get(mapping.json_schema_key)
+        if isinstance(schema, dict):
+            json_schema_entities[mapping.name] = parse_json_schema(schema, mapping.name, schema)
+        elif content:
+            warnings.append(
+                f"JSON schema {mapping.json_schema_key!r} not found in {content_source}"
+            )
 
     sql_entities: dict[str, EntitySpec] = {}
     sql_path = repo_root / "services" / "cloud_api" / "db" / "schema.py"
