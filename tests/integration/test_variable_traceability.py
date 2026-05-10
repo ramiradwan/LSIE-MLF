@@ -15,13 +15,18 @@ from typing import Any
 
 import pytest
 
+from scripts.spec_ref_check import load_content
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 REGISTRY_PATH = REPO_ROOT / "docs" / "registries" / "variable_traceability.yaml"
-CONTENT_PATH = REPO_ROOT / "docs" / "content.json"
+
+
+def _load_content_payload() -> dict[str, Any]:
+    return load_content(repo_root=REPO_ROOT)
 
 
 def _expected_variable_sections() -> dict[str, str]:
-    content = json.loads(CONTENT_PATH.read_text(encoding="utf-8"))
+    content = _load_content_payload()
     variable_matrix = content["variable_matrix"]
     refs = {
         ref["title"].removeprefix("Variable — "): f"§{ref['ref']}"
@@ -32,7 +37,7 @@ def _expected_variable_sections() -> dict[str, str]:
 
 
 def _expected_variable_counts() -> dict[str, int]:
-    content = json.loads(CONTENT_PATH.read_text(encoding="utf-8"))
+    content = _load_content_payload()
     return dict(
         Counter(
             str(row["source_module"]).removeprefix("Module ")

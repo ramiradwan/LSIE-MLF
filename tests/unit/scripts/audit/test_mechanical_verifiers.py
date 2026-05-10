@@ -894,7 +894,9 @@ class TestMechanicalVerifiers:
         assert "name: Schema consistency check" in workflow
         assert "uv run python scripts/check_schema_consistency.py" in workflow
         assert "name: Canonical terminology audit" in workflow
-        assert "grep -rnE 'GPU worker|video pipe" in workflow
+        assert "grep -rnE \\" in workflow
+        assert "--exclude='mechanical.py'" in workflow
+        assert "services/ packages/ scripts/; then" in workflow
         assert "name: Docker compose config" not in workflow
         assert "docker compose config --quiet" not in workflow
         assert "Run strict §13 audit harness" in workflow
