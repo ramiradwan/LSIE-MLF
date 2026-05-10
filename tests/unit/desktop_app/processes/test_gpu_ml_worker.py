@@ -219,7 +219,11 @@ def test_gpu_ml_worker_drains_live_control_to_visual_state_messages() -> None:
         assert channels.live_control is not None
         channels.live_control.put(control.model_dump(mode="json"))
 
-    _drain_live_control(channels, LiveVisualTracker())
+    tracker = LiveVisualTracker(
+        video_capture_factory=lambda _path: FakeVideoCapture([]),
+    )
+
+    _drain_live_control(channels, tracker)
 
     visual = [
         VisualAnalyticsStateMessage.model_validate(channels.analytics_inbox.get(timeout=1.0))
