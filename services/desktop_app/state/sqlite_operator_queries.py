@@ -710,12 +710,48 @@ WHERE s.ended_at IS NULL
 
 _MARKER_ENCOUNTERS_SQL: str = """
 SELECT
-    COUNT(*) AS row_count,
-    MAX(timestamp_utc) AS max_timestamp_utc,
-    MAX(created_at) AS max_created_at,
-    MAX(id) AS max_id
-FROM encounter_log
-WHERE (:session_id IS NULL OR session_id = :session_id)
+    (
+        SELECT COUNT(*)
+        FROM encounter_log e
+        WHERE (:session_id IS NULL OR e.session_id = :session_id)
+    ) AS row_count,
+    (
+        SELECT MAX(e.timestamp_utc)
+        FROM encounter_log e
+        WHERE (:session_id IS NULL OR e.session_id = :session_id)
+    ) AS max_timestamp_utc,
+    (
+        SELECT MAX(e.created_at)
+        FROM encounter_log e
+        WHERE (:session_id IS NULL OR e.session_id = :session_id)
+    ) AS max_created_at,
+    (
+        SELECT MAX(e.id)
+        FROM encounter_log e
+        WHERE (:session_id IS NULL OR e.session_id = :session_id)
+    ) AS max_id,
+    (
+        SELECT COUNT(*)
+        FROM attribution_event a
+        WHERE (:session_id IS NULL OR a.session_id = :session_id)
+    ) AS attribution_event_count,
+    (
+        SELECT COUNT(*)
+        FROM attribution_event a
+        WHERE (:session_id IS NULL OR a.session_id = :session_id)
+          AND a.finality = 'online_provisional'
+    ) AS online_provisional_attribution_count,
+    (
+        SELECT COUNT(*)
+        FROM attribution_event a
+        WHERE (:session_id IS NULL OR a.session_id = :session_id)
+          AND a.finality = 'offline_final'
+    ) AS offline_final_attribution_count,
+    (
+        SELECT MAX(a.created_at)
+        FROM attribution_event a
+        WHERE (:session_id IS NULL OR a.session_id = :session_id)
+    ) AS max_attribution_created_at
 """
 
 _MARKER_EXPERIMENTS_SQL: str = """
@@ -874,7 +910,25 @@ SELECT
     (
         SELECT MAX(updated_at_utc)
         FROM live_session_state
-    ) AS max_live_updated_at
+    ) AS max_live_updated_at,
+    (
+        SELECT COUNT(*)
+        FROM attribution_event
+    ) AS attribution_event_count,
+    (
+        SELECT COUNT(*)
+        FROM attribution_event
+        WHERE finality = 'online_provisional'
+    ) AS online_provisional_attribution_count,
+    (
+        SELECT COUNT(*)
+        FROM attribution_event
+        WHERE finality = 'offline_final'
+    ) AS offline_final_attribution_count,
+    (
+        SELECT MAX(created_at)
+        FROM attribution_event
+    ) AS max_attribution_created_at
 """
 
 

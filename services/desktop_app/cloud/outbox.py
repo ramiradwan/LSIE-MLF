@@ -178,6 +178,32 @@ class CloudOutbox:
                 stored_digest = row["payload_sha256"] or payload_sha256(stored_payload_json)
                 if stored_payload_json == payload_json or str(stored_digest) == digest:
                     return str(row["upload_id"])
+                if _is_attribution_finality_promotion(
+                    payload_type,
+                    stored_payload_json,
+                    payload_json,
+                ):
+                    self._conn.execute(
+                        """
+                        UPDATE pending_uploads
+                        SET upload_id = ?, endpoint = ?, payload_json = ?, payload_sha256 = ?,
+                            payload_redacted_at_utc = NULL, created_at_utc = ?,
+                            next_attempt_at_utc = ?, attempt_count = 0, status = 'pending',
+                            locked_at_utc = NULL, last_error = NULL
+                        WHERE payload_type = ? AND dedupe_key = ?
+                        """,
+                        (
+                            upload_id,
+                            endpoint,
+                            payload_json,
+                            digest,
+                            created,
+                            created,
+                            payload_type,
+                            dedupe_key,
+                        ),
+                    )
+                    return upload_id
             raise OutboxDedupeConflictError(
                 f"payload changed for {payload_type} dedupe key {dedupe_key!r}"
             ) from exc
@@ -423,6 +449,30 @@ def _is_redacted_payload(payload_json: str) -> bool:
     except json.JSONDecodeError:
         return False
     return bool(data.get("_redacted")) if isinstance(data, dict) else False
+
+
+def _is_attribution_finality_promotion(
+    payload_type: PayloadType,
+    stored_payload_json: str,
+    payload_json: str,
+) -> bool:
+    if payload_type != "attribution_event":
+        return False
+    try:
+        stored = AttributionEvent.model_validate_json(stored_payload_json)
+        incoming = AttributionEvent.model_validate_json(payload_json)
+    except ValidationError:
+        return False
+    if stored.event_id != incoming.event_id:
+        return False
+    stored_data = stored.model_dump(mode="json")
+    incoming_data = incoming.model_dump(mode="json")
+    stored_data["finality"] = incoming_data["finality"]
+    return (
+        stored.finality == "online_provisional"
+        and incoming.finality == "offline_final"
+        and stored_data == incoming_data
+    )
 
 
 def _redacted_payload_summary(

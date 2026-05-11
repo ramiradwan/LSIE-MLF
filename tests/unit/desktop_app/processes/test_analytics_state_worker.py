@@ -9,6 +9,7 @@ from typing import Any, cast
 
 import pytest
 
+from packages.schemas.attribution import AttributionEvent
 from services.desktop_app.cloud.outbox import CloudOutbox
 from services.desktop_app.ipc.control_messages import (
     AnalyticsResultMessage,
@@ -197,6 +198,11 @@ class _Outbox:
 
     def enqueue_posterior_delta(self, delta: object) -> None:
         self.enqueued.append(("posterior_delta", delta))
+
+
+class _FailingAttributionOutbox(_Outbox):
+    def enqueue_attribution_event(self, event: object) -> None:
+        raise RuntimeError("outbox unavailable")
 
 
 def test_processor_upserts_visual_state(tmp_path: Path) -> None:
@@ -704,6 +710,144 @@ def test_processor_persists_online_provisional_attribution_ledger_rows(tmp_path:
     assert outcome_count == 1
     assert link_count == 1
     assert score_count > 0
+
+
+def test_processor_finalizes_only_closed_horizon_attribution_rows(tmp_path: Path) -> None:
+    db = tmp_path / "desktop.sqlite"
+    _prepare_db(db)
+    processor = LocalAnalyticsProcessor(db, client_id="desktop-a")
+    message = _analytics_message(
+        handoff=_handoff_payload(stimulus_time=100.0),
+        is_match=True,
+        confidence_score=0.8,
+        attribution={
+            "_outcome_events": [
+                {
+                    "outcome_type": "creator_follow",
+                    "outcome_time_utc": "2026-05-02T12:00:03+00:00",
+                    "source_system": "desktop_test",
+                    "source_event_ref": SEGMENT_ID,
+                    "confidence": 1.0,
+                },
+                {
+                    "outcome_type": "creator_follow",
+                    "outcome_time_utc": "2026-05-10T12:00:03+00:00",
+                    "source_system": "desktop_test",
+                    "source_event_ref": SEGMENT_ID,
+                    "confidence": 1.0,
+                },
+            ],
+        },
+    )
+    enqueue_plan = processor.process(message)
+    assert enqueue_plan is not None
+    assert enqueue_plan.attribution_event is not None
+    online_event_id = str(enqueue_plan.attribution_event.event_id)
+
+    younger = processor.finalize_closed_attribution_events(
+        now_utc=datetime(2026, 5, 8, 12, 0, tzinfo=UTC),
+    )
+    finalized = processor.finalize_closed_attribution_events(
+        now_utc=datetime(2026, 5, 9, 12, 0, 1, tzinfo=UTC),
+    )
+
+    conn = sqlite3.connect(str(db), isolation_level=None)
+    conn.row_factory = sqlite3.Row
+    event = conn.execute(
+        "SELECT event_id, finality FROM attribution_event WHERE segment_id = ?",
+        (SEGMENT_ID,),
+    ).fetchone()
+    outcome_finalities = [
+        str(row[0]) for row in conn.execute("SELECT finality FROM outcome_event").fetchall()
+    ]
+    link_finalities = [
+        str(row[0]) for row in conn.execute("SELECT finality FROM event_outcome_link").fetchall()
+    ]
+    score_rows = conn.execute(
+        "SELECT score_id, finality FROM attribution_score ORDER BY score_id"
+    ).fetchall()
+    score_ids = [str(row["score_id"]) for row in score_rows]
+    conn.close()
+
+    assert younger == []
+    assert len(finalized) == 1
+    assert str(finalized[0].event_id) == online_event_id
+    assert finalized[0].finality == "offline_final"
+    assert event is not None
+    assert event["event_id"] == online_event_id
+    assert event["finality"] == "offline_final"
+    assert outcome_finalities == ["offline_final", "offline_final"]
+    assert link_finalities == ["offline_final"]
+    assert [str(row["finality"]) for row in score_rows] == ["offline_final"] * len(score_rows)
+    assert len(score_ids) == len(set(score_ids))
+
+
+def test_run_loop_enqueues_finalized_event_through_existing_outbox_path(tmp_path: Path) -> None:
+    db = tmp_path / "desktop.sqlite"
+    _prepare_db(db)
+    processor = LocalAnalyticsProcessor(db, client_id="desktop-a")
+    old_handoff = _handoff_payload(stimulus_time=100.0)
+    old_handoff["timestamp_utc"] = "2026-04-01T12:00:00+00:00"
+    processor.process(
+        _analytics_message(
+            handoff=old_handoff,
+            attribution={"_creator_follow": True},
+        )
+    )
+    shutdown = _ShutdownEvent()
+    inbox = _OneMessageInbox(_visual_state().model_dump(mode="json", by_alias=True), shutdown)
+    outbox = _Outbox()
+
+    _run_loop(
+        cast("Any", shutdown),
+        cast("QueueLike", inbox),
+        processor,
+        cast("CloudOutbox", outbox),
+    )
+
+    assert [kind for kind, _ in outbox.enqueued] == ["attribution_event"]
+    finalized_event = outbox.enqueued[0][1]
+    assert isinstance(finalized_event, AttributionEvent)
+    assert finalized_event.finality == "offline_final"
+
+    conn = sqlite3.connect(str(db), isolation_level=None)
+    finality = conn.execute(
+        "SELECT finality FROM attribution_event WHERE segment_id = ?",
+        (SEGMENT_ID,),
+    ).fetchone()[0]
+    conn.close()
+    assert finality == "offline_final"
+
+
+def test_run_loop_keeps_replay_rows_provisional_when_outbox_enqueue_fails(tmp_path: Path) -> None:
+    db = tmp_path / "desktop.sqlite"
+    _prepare_db(db)
+    processor = LocalAnalyticsProcessor(db, client_id="desktop-a")
+    old_handoff = _handoff_payload(stimulus_time=100.0)
+    old_handoff["timestamp_utc"] = "2026-04-01T12:00:00+00:00"
+    processor.process(
+        _analytics_message(
+            handoff=old_handoff,
+            attribution={"_creator_follow": True},
+        )
+    )
+    shutdown = _ShutdownEvent()
+    inbox = _OneMessageInbox(_visual_state().model_dump(mode="json", by_alias=True), shutdown)
+
+    _run_loop(
+        cast("Any", shutdown),
+        cast("QueueLike", inbox),
+        processor,
+        cast("CloudOutbox", _FailingAttributionOutbox()),
+    )
+
+    conn = sqlite3.connect(str(db), isolation_level=None)
+    finality = conn.execute(
+        "SELECT finality FROM attribution_event WHERE segment_id = ?",
+        (SEGMENT_ID,),
+    ).fetchone()[0]
+    conn.close()
+    assert finality == "online_provisional"
 
 
 def test_run_loop_enqueues_handoff_before_posterior_delta(tmp_path: Path) -> None:

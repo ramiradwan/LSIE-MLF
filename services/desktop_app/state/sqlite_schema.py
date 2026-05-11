@@ -441,6 +441,8 @@ INDEX_DDL: Final[tuple[str, ...]] = (
     "CREATE INDEX IF NOT EXISTS idx_attribution_event_segment ON attribution_event(segment_id)",
     "CREATE INDEX IF NOT EXISTS idx_attribution_event_time ON attribution_event(event_time_utc)",
     "CREATE INDEX IF NOT EXISTS idx_attribution_event_finality ON attribution_event(finality)",
+    "CREATE INDEX IF NOT EXISTS idx_attribution_event_replay "
+    "ON attribution_event(finality, event_time_utc)",
     "CREATE INDEX IF NOT EXISTS idx_outcome_event_session ON outcome_event(session_id)",
     "CREATE INDEX IF NOT EXISTS idx_outcome_event_time ON outcome_event(outcome_time_utc)",
     "CREATE INDEX IF NOT EXISTS idx_outcome_event_finality ON outcome_event(finality)",

@@ -328,6 +328,78 @@ def test_fetch_encounters_marker_can_scope_to_session(tmp_path: Path) -> None:
     assert marker["max_timestamp_utc"] == "2026-04-01 12:00:30"
 
 
+def test_markers_track_attribution_finality_only_changes(tmp_path: Path) -> None:
+    db = tmp_path / "desktop.sqlite"
+    writer = SqliteWriter(db)
+    try:
+        _seed_session(writer, SESSION_A, stream_url="a", started_at="2026-04-01 12:00:00")
+        writer.flush()
+    finally:
+        writer.close()
+
+    conn = sqlite3.connect(str(db), isolation_level=None)
+    try:
+        conn.execute(
+            """
+            INSERT INTO attribution_event (
+                event_id, session_id, segment_id, event_type, event_time_utc,
+                selected_arm_id, expected_rule_text_hash, semantic_method,
+                semantic_method_version, reward_path_version,
+                bandit_decision_snapshot, evidence_flags, finality,
+                schema_version, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "00000000-0000-4000-8000-000000000010",
+                str(SESSION_A),
+                "a" * 64,
+                "greeting_interaction",
+                "2026-04-01 12:00:30",
+                "warm_welcome",
+                "b" * 64,
+                "cross_encoder",
+                "test-v1",
+                "7B.v3.4",
+                '{"selection_method":"thompson_sampling"}',
+                "[]",
+                "online_provisional",
+                "v3.4",
+                "2026-04-01 12:00:31",
+            ),
+        )
+    finally:
+        conn.close()
+
+    reader = SqliteReader(db)
+    with _cursor(reader) as cur:
+        encounters_before = q.fetch_encounters_marker(cur, session_id=SESSION_A)
+        overview_before = q.fetch_overview_marker(cur)
+
+    conn = sqlite3.connect(str(db), isolation_level=None)
+    try:
+        conn.execute(
+            "UPDATE attribution_event SET finality = 'offline_final' WHERE session_id = ?",
+            (str(SESSION_A),),
+        )
+    finally:
+        conn.close()
+
+    with _cursor(reader) as cur:
+        encounters_after = q.fetch_encounters_marker(cur, session_id=SESSION_A)
+        overview_after = q.fetch_overview_marker(cur)
+
+    assert encounters_before != encounters_after
+    assert encounters_before["online_provisional_attribution_count"] == 1
+    assert encounters_before["offline_final_attribution_count"] == 0
+    assert encounters_after["online_provisional_attribution_count"] == 0
+    assert encounters_after["offline_final_attribution_count"] == 1
+    assert overview_before != overview_after
+    assert overview_before["online_provisional_attribution_count"] == 1
+    assert overview_before["offline_final_attribution_count"] == 0
+    assert overview_after["online_provisional_attribution_count"] == 0
+    assert overview_after["offline_final_attribution_count"] == 1
+
+
 def test_fetch_session_encounters_returns_reward_explanation(tmp_path: Path) -> None:
     db = tmp_path / "desktop.sqlite"
     writer = SqliteWriter(db)

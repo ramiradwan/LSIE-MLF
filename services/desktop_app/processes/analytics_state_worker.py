@@ -16,11 +16,17 @@ import queue
 import sqlite3
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Protocol
 
-from packages.ml_core.attribution import AttributionLedgerRecords, build_attribution_ledger_records
+from packages.ml_core.attribution import (
+    ATTRIBUTION_FINALITY_OFFLINE,
+    ATTRIBUTION_FINALITY_ONLINE,
+    DEFAULT_ATTRIBUTION_HORIZON_S,
+    AttributionLedgerRecords,
+    build_attribution_ledger_records,
+)
 from packages.schemas.attribution import AttributionEvent
 from packages.schemas.cloud import PosteriorDelta
 from packages.schemas.inference_handoff import InferenceHandoffPayload
@@ -43,6 +49,7 @@ POSTERIOR_EVENT_NAMESPACE = uuid.uuid5(
 )
 SQLITE_FILENAME = "desktop.sqlite"
 INBOX_POLL_TIMEOUT_S = 0.5
+OFFLINE_FINAL_REPLAY_INTERVAL_S = 60.0
 
 _DEFAULT_ACOUSTIC_PAYLOAD: dict[str, bool | float | None] = {
     "f0_valid_measure": False,
@@ -191,6 +198,41 @@ class LocalAnalyticsProcessor:
         message = VisualAnalyticsStateMessage.model_validate(raw)
         _upsert_live_session_state(self._conn, message)
 
+    def closed_attribution_events_for_replay(
+        self,
+        *,
+        now_utc: datetime | None = None,
+        horizon_s: float = DEFAULT_ATTRIBUTION_HORIZON_S,
+        limit: int = 100,
+    ) -> list[AttributionEvent]:
+        return _closed_attribution_events_for_replay(
+            self._conn,
+            now_utc=now_utc or datetime.now(UTC),
+            horizon_s=horizon_s,
+            limit=limit,
+        )
+
+    def mark_attribution_events_offline_final(self, events: list[AttributionEvent]) -> None:
+        _mark_attribution_events_offline_final(
+            self._conn,
+            [str(event.event_id) for event in events],
+        )
+
+    def finalize_closed_attribution_events(
+        self,
+        *,
+        now_utc: datetime | None = None,
+        horizon_s: float = DEFAULT_ATTRIBUTION_HORIZON_S,
+        limit: int = 100,
+    ) -> list[AttributionEvent]:
+        events = self.closed_attribution_events_for_replay(
+            now_utc=now_utc,
+            horizon_s=horizon_s,
+            limit=limit,
+        )
+        self.mark_attribution_events_offline_final(events)
+        return events
+
     def close(self) -> None:
         try:
             self._conn.close()
@@ -242,7 +284,18 @@ def _run_loop(
     processor: LocalAnalyticsProcessor,
     outbox: CloudOutbox,
 ) -> None:
+    next_replay_at = datetime.now(UTC)
     while not shutdown_event.is_set():
+        now = datetime.now(UTC)
+        if now >= next_replay_at:
+            try:
+                events = processor.closed_attribution_events_for_replay(now_utc=now)
+                for event in events:
+                    outbox.enqueue_attribution_event(event)
+                processor.mark_attribution_events_offline_final(events)
+            except Exception:  # noqa: BLE001
+                logger.exception("analytics_state_worker offline-final replay failed")
+            next_replay_at = now.replace() + _replay_interval()
         try:
             raw = analytics_inbox.get(timeout=INBOX_POLL_TIMEOUT_S)
         except queue.Empty:
@@ -321,6 +374,126 @@ def _apply_local_update(
     except Exception:
         conn.execute("ROLLBACK")
         raise
+
+
+def _closed_attribution_events_for_replay(
+    conn: sqlite3.Connection,
+    *,
+    now_utc: datetime,
+    horizon_s: float,
+    limit: int,
+) -> list[AttributionEvent]:
+    if limit <= 0:
+        return []
+    cutoff_utc = now_utc.astimezone(UTC) - timedelta(seconds=horizon_s)
+    rows = conn.execute(
+        """
+        SELECT event_id, session_id, segment_id, event_type, event_time_utc,
+               stimulus_time_utc, selected_arm_id, expected_rule_text_hash,
+               semantic_method, semantic_method_version, semantic_p_match,
+               semantic_reason_code, reward_path_version, bandit_decision_snapshot,
+               evidence_flags, schema_version, created_at
+        FROM attribution_event
+        WHERE finality = ?
+          AND event_time_utc <= ?
+        ORDER BY event_time_utc, event_id
+        LIMIT ?
+        """,
+        (ATTRIBUTION_FINALITY_ONLINE, _iso_utc(cutoff_utc), limit),
+    ).fetchall()
+    return [_offline_final_event_from_row(row) for row in rows]
+
+
+def _mark_attribution_events_offline_final(
+    conn: sqlite3.Connection,
+    event_ids: list[str],
+) -> None:
+    if not event_ids:
+        return
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        placeholders = ",".join("?" for _ in event_ids)
+        segment_rows = conn.execute(
+            f"""
+            SELECT DISTINCT segment_id
+            FROM attribution_event
+            WHERE event_id IN ({placeholders})
+            """,
+            event_ids,
+        ).fetchall()
+        segment_ids = [str(row["segment_id"]) for row in segment_rows]
+        conn.execute(
+            f"""
+            UPDATE attribution_event
+            SET finality = ?
+            WHERE event_id IN ({placeholders})
+            """,
+            [ATTRIBUTION_FINALITY_OFFLINE, *event_ids],
+        )
+        conn.execute(
+            f"""
+            UPDATE event_outcome_link
+            SET finality = ?
+            WHERE event_id IN ({placeholders})
+            """,
+            [ATTRIBUTION_FINALITY_OFFLINE, *event_ids],
+        )
+        if segment_ids:
+            segment_placeholders = ",".join("?" for _ in segment_ids)
+            conn.execute(
+                f"""
+                UPDATE outcome_event
+                SET finality = ?
+                WHERE outcome_id IN (
+                    SELECT outcome_id
+                    FROM event_outcome_link
+                    WHERE event_id IN ({placeholders})
+                )
+                   OR source_event_ref IN ({segment_placeholders})
+                """,
+                [ATTRIBUTION_FINALITY_OFFLINE, *event_ids, *segment_ids],
+            )
+        conn.execute(
+            f"""
+            UPDATE attribution_score
+            SET finality = ?
+            WHERE event_id IN ({placeholders})
+            """,
+            [ATTRIBUTION_FINALITY_OFFLINE, *event_ids],
+        )
+        conn.execute("COMMIT")
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+
+
+def _offline_final_event_from_row(row: sqlite3.Row) -> AttributionEvent:
+    return AttributionEvent.model_validate(
+        {
+            "event_id": str(row["event_id"]),
+            "session_id": str(row["session_id"]),
+            "segment_id": str(row["segment_id"]),
+            "event_type": str(row["event_type"]),
+            "event_time_utc": str(row["event_time_utc"]),
+            "stimulus_time_utc": row["stimulus_time_utc"],
+            "selected_arm_id": str(row["selected_arm_id"]),
+            "expected_rule_text_hash": str(row["expected_rule_text_hash"]),
+            "semantic_method": str(row["semantic_method"]),
+            "semantic_method_version": str(row["semantic_method_version"]),
+            "semantic_p_match": row["semantic_p_match"],
+            "semantic_reason_code": row["semantic_reason_code"],
+            "reward_path_version": str(row["reward_path_version"]),
+            "bandit_decision_snapshot": json.loads(str(row["bandit_decision_snapshot"])),
+            "evidence_flags": json.loads(str(row["evidence_flags"])),
+            "finality": ATTRIBUTION_FINALITY_OFFLINE,
+            "schema_version": str(row["schema_version"]),
+            "created_at": str(row["created_at"]),
+        }
+    )
+
+
+def _replay_interval() -> timedelta:
+    return timedelta(seconds=OFFLINE_FINAL_REPLAY_INTERVAL_S)
 
 
 def _analytics_identity_exists(

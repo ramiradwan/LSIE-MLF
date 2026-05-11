@@ -28,6 +28,7 @@ from packages.schemas.evaluation import SEMANTIC_METHODS, SEMANTIC_REASON_CODES
 
 ATTRIBUTION_SCHEMA_VERSION: str = "v3.4"
 ATTRIBUTION_FINALITY_ONLINE: str = "online_provisional"
+ATTRIBUTION_FINALITY_OFFLINE: str = "offline_final"
 ATTRIBUTION_EVENT_TYPE_GREETING: Literal["greeting_interaction"] = "greeting_interaction"
 OUTCOME_TYPE_CREATOR_FOLLOW: Literal["creator_follow"] = "creator_follow"
 DEFAULT_REWARD_PATH_VERSION: str = "7B.v3.4"

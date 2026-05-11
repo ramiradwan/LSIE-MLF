@@ -167,6 +167,8 @@ def _attribution_event(
     session_index: int,
     segment_index: int,
     sample_timestamp: datetime,
+    *,
+    finality: str = "online_provisional",
 ) -> AttributionEvent:
     segment_id = f"{session_index * 10_000 + segment_index:064x}"
     return AttributionEvent(
@@ -191,7 +193,7 @@ def _attribution_event(
             sample_timestamp,
         ).bandit_decision_snapshot,
         evidence_flags=[],
-        finality="online_provisional",
+        finality=finality,  # type: ignore[arg-type]
         schema_version="v1",
         created_at=sample_timestamp,
     )
@@ -303,3 +305,35 @@ async def test_offline_replay_is_idempotent_after_crash_before_delete(
     assert len(recovery_sink.attribution_event_keys) == 1
     assert crashy_sink.telemetry_posts == 1
     assert recovery_sink.telemetry_posts == 1
+
+
+@pytest.mark.asyncio
+async def test_offline_final_replay_replaces_pending_provisional_event(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "services.desktop_app.processes.cloud_sync_worker.get_secret",
+        lambda key: "refresh-a",
+    )
+    db_path = tmp_path / "desktop.sqlite"
+    outbox = CloudOutbox(db_path)
+    try:
+        timestamp = datetime(2026, 5, 2, tzinfo=UTC)
+        provisional = _attribution_event(0, 0, timestamp)
+        finalized = _attribution_event(0, 0, timestamp, finality="offline_final")
+        first_upload_id = outbox.enqueue_attribution_event(provisional)
+        final_upload_id = outbox.enqueue_attribution_event(finalized)
+
+        sink = OfflineReplaySink()
+        config = CloudSyncConfig(base_url="https://cloud.example.test", batch_size=10)
+        worker = CloudSyncWorker(outbox, config)
+        async with httpx.AsyncClient(base_url=config.base_url, transport=sink) as client:
+            await worker.sync_once(client)
+    finally:
+        outbox.close()
+
+    assert first_upload_id != final_upload_id
+    assert _pending_upload_count(db_path) == 0
+    assert len(sink.attribution_event_keys) == 1
+    assert sink.telemetry_posts == 1
