@@ -1,4 +1,9 @@
-"""Cloud experiment bundle routes."""
+"""Cloud experiment bundle routes.
+
+Desktop synchronization reaches this control-plane surface through typed
+cloud clients; local Operator Console reads still use the loopback API and
+SQLite read models.
+"""
 
 from __future__ import annotations
 

@@ -1,5 +1,9 @@
 """SQLite-flavored operator query layer.
 
+This is a desktop loopback read-model backend, not an Operator Console
+import surface. The console calls FastAPI through ``ApiClient``; dependency
+overrides inject these query functions behind ``OperatorReadService``.
+
 Mirrors :mod:`services.api.repos.operator_queries` but produces SQLite
 SQL and accepts a :class:`sqlite3.Cursor`. Function names, parameter
 shapes, and returned row-dict keys are identical so

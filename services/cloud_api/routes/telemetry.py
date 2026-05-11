@@ -1,4 +1,9 @@
-"""Cloud telemetry ingest routes."""
+"""Cloud telemetry ingest routes.
+
+Desktop uploads are produced by the cloud outbox and cloud sync helpers;
+route handlers remain server-side control-plane endpoints, not desktop
+local-state writers.
+"""
 
 from __future__ import annotations
 

@@ -1,4 +1,12 @@
-"""FastAPI dependency overrides for the SQLite-backed desktop API shell."""
+"""FastAPI dependency overrides for the SQLite-backed desktop API shell.
+
+``ui_api_shell`` reuses retained route definitions but not their default
+PostgreSQL/Redis dependencies. This module is the handoff point: read
+routes receive ``SqliteReader``-backed services, operator/session write
+routes receive SQLite service methods that publish IPC live-session control
+messages, and the server lifespan is replaced so the desktop loopback API
+does not open a server Persistent Store pool.
+"""
 
 from __future__ import annotations
 

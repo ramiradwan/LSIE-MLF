@@ -219,6 +219,97 @@ def test_desktop_cloud_outbox_producers_remain_current_analytics_surface_only() 
     assert offenders == []
 
 
+def test_desktop_runtime_processes_do_not_import_retained_or_cloud_route_handlers() -> None:
+    allowed_desktop_route_host = "services/desktop_app/processes/operator_api_runtime.py"
+    forbidden_prefixes = (
+        "services.api.routes",
+        "services.cloud_api.routes",
+    )
+    offenders: list[str] = []
+
+    for path in (_REPO_ROOT / "services/desktop_app/processes").glob("*.py"):
+        rel_path = _rel(path)
+        if rel_path == allowed_desktop_route_host:
+            continue
+        tree = _parse(path)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name.startswith(forbidden_prefixes):
+                        offenders.append(f"{rel_path} imports {alias.name}")
+            elif (
+                isinstance(node, ast.ImportFrom)
+                and node.module is not None
+                and node.module.startswith(forbidden_prefixes)
+            ):
+                offenders.append(f"{rel_path} imports from {node.module}")
+
+    assert offenders == []
+
+
+def test_operator_console_sqlite_write_helpers_remain_cloud_bundle_exception_only() -> None:
+    allowed_imports = {
+        "services/operator_console/polling.py": {
+            "services.desktop_app.cloud.experiment_bundle.ExperimentBundleStore",
+            "services.desktop_app.os_adapter.resolve_state_dir",
+            "services.desktop_app.processes.cloud_sync_worker.SQLITE_FILENAME",
+        }
+    }
+    offenders: list[str] = []
+
+    for path in (_REPO_ROOT / "services/operator_console").rglob("*.py"):
+        rel_path = _rel(path)
+        tree = _parse(path)
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.ImportFrom) or node.module is None:
+                continue
+            imported_names = {alias.name for alias in node.names}
+            imported_symbols = {f"{node.module}.{name}" for name in imported_names}
+            relevant = {
+                symbol
+                for symbol in imported_symbols
+                if symbol.startswith("services.desktop_app.state.")
+                or symbol
+                in {
+                    "services.desktop_app.cloud.experiment_bundle.ExperimentBundleStore",
+                    "services.desktop_app.os_adapter.resolve_state_dir",
+                    "services.desktop_app.processes.cloud_sync_worker.SQLITE_FILENAME",
+                }
+            }
+            unexpected = relevant.difference(allowed_imports.get(rel_path, set()))
+            for symbol in sorted(unexpected):
+                offenders.append(f"{rel_path} imports {symbol}")
+
+    assert offenders == []
+
+
+def test_retained_and_cloud_api_routes_do_not_import_desktop_runtime_state() -> None:
+    route_roots = (
+        _REPO_ROOT / "services/api/routes",
+        _REPO_ROOT / "services/cloud_api/routes",
+    )
+    forbidden_prefix = "services.desktop_app.state"
+    offenders: list[str] = []
+
+    for route_root in route_roots:
+        for path in route_root.glob("*.py"):
+            rel_path = _rel(path)
+            tree = _parse(path)
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    for alias in node.names:
+                        if alias.name.startswith(forbidden_prefix):
+                            offenders.append(f"{rel_path} imports {alias.name}")
+                elif (
+                    isinstance(node, ast.ImportFrom)
+                    and node.module is not None
+                    and node.module.startswith(forbidden_prefix)
+                ):
+                    offenders.append(f"{rel_path} imports from {node.module}")
+
+    assert offenders == []
+
+
 def test_ephemeral_vault_cron_is_not_started_by_runtime_code() -> None:
     implementation_path = "services/worker/vault_cron.py"
     offenders: list[str] = []

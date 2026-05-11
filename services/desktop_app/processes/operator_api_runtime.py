@@ -1,4 +1,12 @@
-"""Loopback operator API/control runtime for CLI and GUI shells."""
+"""Loopback operator API/control runtime for CLI and GUI shells.
+
+The active desktop ProcessGraph runs this module as ``ui_api_shell``. It
+hosts ``services.api.main.app`` on 127.0.0.1, installs SQLite-backed
+FastAPI dependency overrides, and publishes live-session write intents onto
+IPC queues. It is the only desktop process that should import the retained
+FastAPI app; other desktop processes use IPC queues/shared-memory blocks or
+typed cloud helpers instead of route handlers.
+"""
 
 from __future__ import annotations
 

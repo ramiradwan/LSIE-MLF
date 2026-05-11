@@ -197,7 +197,7 @@ _ALERT_LIST_ADAPTER: TypeAdapter[list[AlertEvent]] = TypeAdapter(list[AlertEvent
 
 
 class ApiClient:
-    """Thin typed wrapper over the API Server's operator/admin surfaces.
+    """Thin typed wrapper over the configured loopback/operator API surface.
 
     All read methods return Pydantic DTOs. Write methods stay narrow and
     typed: operator stimulus requests go to `/api/v1/operator/*`, while

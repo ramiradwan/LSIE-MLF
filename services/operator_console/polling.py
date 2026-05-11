@@ -23,9 +23,12 @@ Design notes:
     `run_one_shot`; on success the coordinator updates the store and
     queues the relevant refreshes so the UI does not wait for the next
     polling interval.
+  - Cloud experiment-bundle refresh is the sole direct SQLite write-helper
+    exception in this module: it uses the signed-bundle client/store helper
+    pair to cache cloud control-plane data locally after refresh-token auth.
 
 Spec references:
-  §4.C           — stimulus idempotency lives in the API Server, not here
+  §4.C           — stimulus idempotency lives in the loopback API/client boundary, not here
   §4.E.1         — operator-facing aggregate and experiment admin endpoints
   §12            — retryable vs non-retryable errors flow through the
                    store's per-scope error signal

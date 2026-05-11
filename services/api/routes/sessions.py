@@ -1,8 +1,10 @@
 """
 Session endpoints.
 
-Read handlers expose session history/summary views. Lifecycle writes publish
-Redis intent for authoritative execution by the orchestrator; the API Server
+Read handlers expose session history/summary views. Default retained-server
+lifecycle writes publish Redis intent for authoritative execution by the
+orchestrator; desktop loopback dependency overrides publish IPC control
+messages and persist through SQLite service methods instead. The route layer
 never assigns authoritative `started_at`/`ended_at` timestamps itself.
 """
 

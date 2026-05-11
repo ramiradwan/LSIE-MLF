@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import json
 import os
 import subprocess
@@ -74,6 +75,20 @@ class FakeShutdownEvent:
 
 
 created_heartbeats: list[FakeHeartbeat] = []
+_REPO_ROOT = Path(__file__).resolve().parents[4]
+_DESKTOP_PROCESS_DIR = _REPO_ROOT / "services" / "desktop_app" / "processes"
+_ALLOWED_ROUTE_IMPORTER = "services/desktop_app/processes/operator_api_runtime.py"
+
+
+def _imports_module(path: Path, module_name: str) -> bool:
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=path.as_posix())
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            if any(alias.name == module_name for alias in node.names):
+                return True
+        elif isinstance(node, ast.ImportFrom) and node.module == module_name:
+            return True
+    return False
 
 
 def _channels(
@@ -90,6 +105,18 @@ def _channels(
         live_control=cast(Any, live_control),
         segment_control=cast(Any, segment_control),
     )
+
+
+def test_only_operator_api_runtime_imports_retained_fastapi_app_in_desktop_processes() -> None:
+    offenders: list[str] = []
+    for path in sorted(_DESKTOP_PROCESS_DIR.glob("*.py")):
+        rel_path = path.relative_to(_REPO_ROOT).as_posix()
+        if rel_path == _ALLOWED_ROUTE_IMPORTER:
+            continue
+        if _imports_module(path, "services.api.main"):
+            offenders.append(rel_path)
+
+    assert offenders == []
 
 
 def test_control_publisher_serializes_to_live_and_segment_queues() -> None:

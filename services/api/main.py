@@ -1,9 +1,11 @@
 """
-API Server — §3.1 / §9.1
+API Server / desktop loopback FastAPI app — §3.1 / §9.1.
 
-FastAPI application serving REST endpoints on port 8000.
-ASGI entry point via Uvicorn. Dependency injection for
-Persistent Store connection pool.
+The default lifespan initializes retained server PostgreSQL/Redis-backed
+services. The active desktop ``ui_api_shell`` imports the same route graph
+but installs SQLite-backed dependency overrides and a no-op lifespan before
+Uvicorn starts, so desktop local-state authority remains in
+``services.desktop_app.state``.
 """
 
 from __future__ import annotations

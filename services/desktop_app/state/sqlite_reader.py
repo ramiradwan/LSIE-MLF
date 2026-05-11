@@ -1,15 +1,9 @@
-"""Read-only SQLite adapter.
+"""Read-only SQLite adapter for desktop loopback API services.
 
-Mirrors the API surface that ``services/api/repos/operator_queries.py``
-exposes today, so the existing Qt viewmodels in
-``services/operator_console/viewmodels/`` continue to work unchanged
-when the FastAPI dependency swaps from the Postgres-shaped empty-pool
-stub to a ``SqliteReader``-backed adapter.
-
-This module provides connection-vending helpers plus the read functions
-needed for the seed-experiments path so the Experiments page of the
-operator console can render real data immediately. Additional operator
-queries can be added here without changing callers.
+``SqliteReader`` is the only production read-model exception to the
+Operator Console's REST boundary: console widgets and viewmodels still call
+the loopback FastAPI surface through ``ApiClient``, while the FastAPI
+dependency override injects this adapter behind ``OperatorReadService``.
 
 Each connection is opened with ``PRAGMA query_only=1`` to enforce the
 single-writer invariant; an accidental ``INSERT`` from a route handler

@@ -1,4 +1,8 @@
-"""Cloud OAuth token routes."""
+"""Cloud OAuth token routes.
+
+This cloud control-plane surface is consumed by typed desktop cloud helpers,
+not imported by desktop runtime processes or the loopback API shell.
+"""
 
 from __future__ import annotations
 

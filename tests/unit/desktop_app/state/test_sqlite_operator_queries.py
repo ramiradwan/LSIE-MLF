@@ -8,6 +8,7 @@ opens a :class:`sqlite3.Connection` cursor scoped to the same file
 
 from __future__ import annotations
 
+import ast
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -23,6 +24,27 @@ from services.desktop_app.state.sqlite_writer import SqliteWriter
 
 SESSION_A = UUID("00000000-0000-4000-8000-000000000001")
 SESSION_B = UUID("00000000-0000-4000-8000-000000000002")
+_REPO_ROOT = Path(__file__).resolve().parents[4]
+_OPERATOR_CONSOLE_DIR = _REPO_ROOT / "services" / "operator_console"
+_FORBIDDEN_SQLITE_IMPORTS = {
+    "sqlite3",
+    "services.desktop_app.state.sqlite_reader",
+    "services.desktop_app.state.sqlite_writer",
+    "services.desktop_app.state.sqlite_operator_queries",
+}
+
+
+def _imports_forbidden_sqlite_boundary(path: Path) -> list[str]:
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=path.as_posix())
+    offenders: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            offenders.extend(
+                alias.name for alias in node.names if alias.name in _FORBIDDEN_SQLITE_IMPORTS
+            )
+        elif isinstance(node, ast.ImportFrom) and node.module in _FORBIDDEN_SQLITE_IMPORTS:
+            offenders.append(node.module)
+    return offenders
 
 
 @contextmanager
@@ -67,6 +89,21 @@ def _seed_session(
     if ended_at is not None:
         payload["ended_at"] = ended_at
     writer.enqueue("sessions", payload)
+
+
+# ---------------------------------------------------------------------------
+# Data-access boundary
+# ---------------------------------------------------------------------------
+
+
+def test_operator_console_does_not_import_desktop_sqlite_read_models() -> None:
+    offenders: list[str] = []
+    for path in sorted(_OPERATOR_CONSOLE_DIR.rglob("*.py")):
+        for imported in _imports_forbidden_sqlite_boundary(path):
+            rel_path = path.relative_to(_REPO_ROOT).as_posix()
+            offenders.append(f"{rel_path} imports {imported}")
+
+    assert offenders == []
 
 
 # ---------------------------------------------------------------------------

@@ -13,8 +13,8 @@ Design constraints:
     `OperatorReadService` which owns connection lifecycle and DTO
     assembly.
   - The single write path (`POST /sessions/{id}/stimulus`) flows
-    through `OperatorActionService`, which is the only place allowed
-    to touch the Redis trigger channel for operator intent.
+    through `OperatorActionService`; desktop dependency overrides replace
+    its default trigger channel with SQLite/IPC-backed service methods.
   - Operator-safe error payloads: RuntimeError → 503, unexpected →
     500, missing resource → 404, state conflict → 409.
 
