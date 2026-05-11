@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import multiprocessing as mp
 import queue
 import sqlite3
@@ -24,6 +25,24 @@ from services.desktop_app.ipc.control_messages import (
 from services.desktop_app.ipc.shared_buffers import read_pcm_block
 from services.desktop_app.processes import module_c_orchestrator
 from services.desktop_app.state.sqlite_schema import bootstrap_schema
+from services.desktop_app.state.sqlite_session_lifecycle_service import _json_default
+
+_BANDIT_SNAPSHOT = {
+    "selection_method": "thompson_sampling",
+    "selection_time_utc": datetime(2026, 5, 2, 12, 0, tzinfo=UTC),
+    "experiment_id": 1,
+    "policy_version": "desktop_replay_v1",
+    "selected_arm_id": "warm_welcome",
+    "candidate_arm_ids": ["direct_question", "warm_welcome"],
+    "posterior_by_arm": {
+        "direct_question": {"alpha": 1.0, "beta": 5.0},
+        "warm_welcome": {"alpha": 2.0, "beta": 3.0},
+    },
+    "sampled_theta_by_arm": {"direct_question": 0.2, "warm_welcome": 0.6},
+    "expected_greeting": "Say hello to the creator",
+    "decision_context_hash": "a" * 64,
+    "random_seed": 42,
+}
 
 
 def _make_channels() -> IpcChannels:
@@ -45,13 +64,24 @@ def _bootstrap_db(tmp_path: Path) -> Path:
         bootstrap_schema(conn)
         conn.execute(
             """
-            INSERT INTO sessions (session_id, stream_url, experiment_id, started_at)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO sessions (
+                session_id, stream_url, experiment_id, active_arm, expected_greeting,
+                bandit_decision_snapshot, started_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 "00000000-0000-4000-8000-000000000001",
                 "test://stream",
                 "greeting_line_v1",
+                "warm_welcome",
+                "Say hello to the creator",
+                json.dumps(
+                    _BANDIT_SNAPSHOT,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    default=_json_default,
+                ),
                 "2026-05-02 12:00:00",
             ),
         )
@@ -100,6 +130,7 @@ def _segment() -> module_c_orchestrator.DesktopSegment:
         experiment_id="greeting_line_v1",
         active_arm="warm_welcome",
         expected_greeting="Say hello to the creator",
+        bandit_decision_snapshot=_BANDIT_SNAPSHOT,
         stimulus_time_s=100.0,
     )
 
@@ -126,7 +157,11 @@ def test_dispatcher_writes_pcm_shared_memory_and_sends_control_message() -> None
     assert message.handoff["_expected_greeting"] == "Say hello to the creator"
     assert message.handoff["_stimulus_time"] == segment.stimulus_time_s
     assert message.handoff["_au12_series"] == []
-    assert message.handoff["_bandit_decision_snapshot"]["selected_arm_id"] == "warm_welcome"
+    snapshot = message.handoff["_bandit_decision_snapshot"]
+    assert snapshot["selected_arm_id"] == "warm_welcome"
+    assert snapshot["candidate_arm_ids"] == ["direct_question", "warm_welcome"]
+    assert snapshot["posterior_by_arm"]["warm_welcome"] == {"alpha": 2.0, "beta": 3.0}
+    assert snapshot["sampled_theta_by_arm"] == {"direct_question": 0.2, "warm_welcome": 0.6}
 
 
 def test_dispatcher_drops_invalid_handoff_without_shared_memory() -> None:
@@ -143,6 +178,7 @@ def test_dispatcher_drops_invalid_handoff_without_shared_memory() -> None:
         experiment_id=invalid.experiment_id,
         active_arm=invalid.active_arm,
         expected_greeting=invalid.expected_greeting,
+        bandit_decision_snapshot=invalid.bandit_decision_snapshot,
         stimulus_time_s=invalid.stimulus_time_s,
     )
 
@@ -206,6 +242,68 @@ def test_capture_audio_conversion_handles_stereo_duration(tmp_path: Path) -> Non
     assert module_c_orchestrator._audio_duration_for_bytes(len(pcm_16k)).total_seconds() == 1.0  # noqa: SLF001
 
 
+def test_start_control_uses_persisted_lifecycle_selection(tmp_path: Path) -> None:
+    db_path = _bootstrap_db(tmp_path)
+    session_id = uuid.UUID("00000000-0000-4000-8000-000000000001")
+    persisted_snapshot = {
+        **_BANDIT_SNAPSHOT,
+        "candidate_arm_ids": ["direct_question", "simple_hello", "warm_welcome"],
+        "posterior_by_arm": {
+            "direct_question": {"alpha": 1.0, "beta": 5.0},
+            "simple_hello": {"alpha": 9.0, "beta": 1.0},
+            "warm_welcome": {"alpha": 2.0, "beta": 3.0},
+        },
+        "sampled_theta_by_arm": {
+            "direct_question": 0.2,
+            "simple_hello": 0.99,
+            "warm_welcome": 0.6,
+        },
+        "decision_context_hash": "b" * 64,
+        "random_seed": 987654321,
+    }
+    persisted_snapshot_json = json.dumps(
+        persisted_snapshot,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=_json_default,
+    )
+    conn = sqlite3.connect(str(db_path), isolation_level=None)
+    try:
+        conn.execute(
+            """
+            UPDATE sessions
+            SET active_arm = ?, expected_greeting = ?, bandit_decision_snapshot = ?
+            WHERE session_id = ?
+            """,
+            (
+                "warm_welcome",
+                "Say hello to the creator",
+                persisted_snapshot_json,
+                str(session_id),
+            ),
+        )
+    finally:
+        conn.close()
+
+    active = module_c_orchestrator._resolve_control_session(  # noqa: SLF001
+        db_path,
+        LiveSessionControlMessage(
+            action="start",
+            session_id=session_id,
+            stream_url="test://stream",
+            experiment_id="greeting_line_v1",
+            active_arm="simple_hello",
+            expected_greeting="This control value must not override storage",
+            timestamp_utc=datetime(2026, 5, 2, 12, 0, tzinfo=UTC),
+        ),
+    )
+
+    assert active is not None
+    assert active.active_arm == "warm_welcome"
+    assert active.expected_greeting == "Say hello to the creator"
+    assert active.bandit_decision_snapshot == json.loads(persisted_snapshot_json)
+
+
 def test_drain_segment_controls_tracks_start_stimulus_and_end(tmp_path: Path) -> None:
     db_path = _bootstrap_db(tmp_path)
     channels = IpcChannels(
@@ -246,7 +344,16 @@ def test_drain_segment_controls_tracks_start_stimulus_and_end(tmp_path: Path) ->
     assert active is not None
     assert active.experiment_row_id > 0
     assert active.experiment_id == "greeting_line_v1"
-    assert active.active_arm == "warm_welcome"
+    assert active.active_arm in active.bandit_decision_snapshot["candidate_arm_ids"]
+    assert active.active_arm == active.bandit_decision_snapshot["selected_arm_id"]
+    assert active.bandit_decision_snapshot == json.loads(
+        json.dumps(
+            _BANDIT_SNAPSHOT,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=_json_default,
+        )
+    )
     assert active.stimulus_time_s == now.timestamp()
 
     channels.segment_control.put(
@@ -267,11 +374,6 @@ def test_run_segment_loop_dispatches_audio_for_active_stimulus(
     channels: int,
 ) -> None:
     db_path = _bootstrap_db(tmp_path)
-    conn = sqlite3.connect(str(db_path), isolation_level=None)
-    try:
-        conn.execute("UPDATE sessions SET ended_at = ?", ("2026-05-02 12:01:00",))
-    finally:
-        conn.close()
     audio_path = tmp_path / "audio_stream.wav"
     _write_audio_header(audio_path, channels=channels)
     ipc_channels = _make_channels()
@@ -303,11 +405,12 @@ def test_run_segment_loop_dispatches_audio_for_active_stimulus(
         )
         _append_audio(
             audio_path,
-            frames=module_c_orchestrator.AUDIO_SAMPLE_RATE_HZ * 10,
+            frames=module_c_orchestrator.AUDIO_SAMPLE_RATE_HZ
+            * module_c_orchestrator.SEGMENT_WINDOW_SECONDS,
             channels=channels,
         )
         time.sleep(0.05)
-        stimulus_time = datetime.now(UTC).timestamp()
+        stimulus_time = (datetime.now(UTC) - timedelta(seconds=5)).timestamp()
         ipc_channels.segment_control.put(
             LiveSessionControlMessage(
                 action="stimulus",
@@ -340,7 +443,9 @@ def test_run_segment_loop_dispatches_audio_for_active_stimulus(
     assert segment.session_id == uuid.UUID("00000000-0000-4000-8000-000000000001")
     assert segment.experiment_row_id > 0
     assert segment.experiment_id == "greeting_line_v1"
-    assert segment.active_arm == "warm_welcome"
+    assert segment.active_arm == segment.bandit_decision_snapshot["selected_arm_id"]
+    assert segment.expected_greeting == segment.bandit_decision_snapshot["expected_greeting"]
+    assert segment.active_arm in segment.bandit_decision_snapshot["candidate_arm_ids"]
     assert segment.stimulus_time_s == pytest.approx(stimulus_time)
     assert len(segment.pcm_s16le_16khz_mono) == 16_000 * 2 * 30
     assert segment.segment_window_start_utc.timestamp() <= stimulus_time - 5.0
@@ -405,6 +510,7 @@ def test_stimulus_time_attaches_only_to_segment_covering_baseline_and_measuremen
         experiment_row_id=1,
         active_arm="warm_welcome",
         expected_greeting="Say hello to the creator",
+        bandit_decision_snapshot=_BANDIT_SNAPSHOT,
         stimulus_time_s=datetime(2026, 5, 2, 12, 0, 10, tzinfo=UTC).timestamp(),
     )
     covering_start = datetime(2026, 5, 2, 11, 59, 45, tzinfo=UTC)
@@ -435,6 +541,7 @@ def test_stimulus_aligned_segment_start_ends_at_measurement_window_close() -> No
         experiment_row_id=1,
         active_arm="warm_welcome",
         expected_greeting="Say hello to the creator",
+        bandit_decision_snapshot=_BANDIT_SNAPSHOT,
         stimulus_time_s=datetime(2026, 5, 2, 12, 0, 40, tzinfo=UTC).timestamp(),
     )
 
@@ -451,6 +558,7 @@ def test_stimulus_aligned_segment_start_is_anchored_independent_of_buffer_start(
         experiment_row_id=1,
         active_arm="warm_welcome",
         expected_greeting="Say hello to the creator",
+        bandit_decision_snapshot=_BANDIT_SNAPSHOT,
         stimulus_time_s=datetime(2026, 5, 2, 12, 0, 8, tzinfo=UTC).timestamp(),
     )
 

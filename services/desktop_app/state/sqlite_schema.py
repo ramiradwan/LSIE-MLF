@@ -81,6 +81,9 @@ SCHEMA_DDL: Final[tuple[str, ...]] = (
         session_id      TEXT PRIMARY KEY,
         stream_url      TEXT NOT NULL,
         experiment_id   TEXT,
+        active_arm      TEXT,
+        expected_greeting TEXT,
+        bandit_decision_snapshot TEXT,
         started_at      TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
         ended_at        TEXT
     )
@@ -554,6 +557,12 @@ def _apply_sessions_migrations(conn: sqlite3.Connection) -> None:
     columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(sessions)").fetchall()}
     if "experiment_id" not in columns:
         conn.execute("ALTER TABLE sessions ADD COLUMN experiment_id TEXT")
+    if "active_arm" not in columns:
+        conn.execute("ALTER TABLE sessions ADD COLUMN active_arm TEXT")
+    if "expected_greeting" not in columns:
+        conn.execute("ALTER TABLE sessions ADD COLUMN expected_greeting TEXT")
+    if "bandit_decision_snapshot" not in columns:
+        conn.execute("ALTER TABLE sessions ADD COLUMN bandit_decision_snapshot TEXT")
 
 
 def _apply_pending_uploads_migrations(conn: sqlite3.Connection) -> None:

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import audioop
 import hashlib
+import json
 import logging
 import multiprocessing.synchronize as mpsync
 import queue
@@ -65,6 +66,7 @@ class DesktopSegment:
     experiment_id: str
     active_arm: str
     expected_greeting: str
+    bandit_decision_snapshot: dict[str, Any]
     stimulus_time_s: float | None
 
 
@@ -76,6 +78,7 @@ class _ActiveSession:
     experiment_row_id: int
     active_arm: str
     expected_greeting: str
+    bandit_decision_snapshot: dict[str, Any]
     stimulus_time_s: float | None = None
 
 
@@ -228,7 +231,7 @@ def _build_handoff(segment: DesktopSegment, *, drift_offset_s: float) -> Inferen
         "_expected_greeting": segment.expected_greeting,
         "_stimulus_time": segment.stimulus_time_s,
         "_au12_series": [],
-        "_bandit_decision_snapshot": _bandit_snapshot(segment, start),
+        "_bandit_decision_snapshot": segment.bandit_decision_snapshot,
     }
     return InferenceHandoffPayload.model_validate(payload)
 
@@ -240,25 +243,6 @@ def _segment_id(segment: DesktopSegment) -> str:
         f"{segment.active_arm}:{len(segment.pcm_s16le_16khz_mono)}"
     )
     return hashlib.sha256(digest_input.encode()).hexdigest()
-
-
-def _bandit_snapshot(segment: DesktopSegment, selection_time_utc: datetime) -> dict[str, Any]:
-    decision_context_hash = hashlib.sha256(
-        f"{segment.session_id}:{segment.experiment_id}:{segment.active_arm}".encode()
-    ).hexdigest()
-    return {
-        "selection_method": "thompson_sampling",
-        "selection_time_utc": selection_time_utc,
-        "experiment_id": segment.experiment_row_id,
-        "policy_version": "desktop_replay_v1",
-        "selected_arm_id": segment.active_arm,
-        "candidate_arm_ids": [segment.active_arm],
-        "posterior_by_arm": {segment.active_arm: {"alpha": 1.0, "beta": 1.0}},
-        "sampled_theta_by_arm": {segment.active_arm: 0.5},
-        "expected_greeting": segment.expected_greeting,
-        "decision_context_hash": decision_context_hash,
-        "random_seed": 0,
-    }
 
 
 def _reader_connection(db_path: Path) -> sqlite3.Connection:
@@ -274,14 +258,15 @@ def _fetch_active_session(db_path: Path) -> _ActiveSession | None:
     try:
         row = conn.execute(
             """
-            SELECT s.session_id, s.stream_url, s.experiment_id,
+            SELECT s.session_id, s.stream_url, s.experiment_id, s.started_at,
+                   s.active_arm, s.expected_greeting, s.bandit_decision_snapshot,
                    e.id AS experiment_row_id, e.arm, e.greeting_text
             FROM sessions s
-            JOIN experiments e
+            LEFT JOIN experiments e
                 ON e.experiment_id = s.experiment_id
-               AND e.enabled = 1
+               AND e.arm = s.active_arm
             WHERE s.ended_at IS NULL
-            ORDER BY s.started_at DESC, e.alpha_param DESC, e.arm ASC
+            ORDER BY s.started_at DESC
             LIMIT 1
             """
         ).fetchone()
@@ -289,14 +274,70 @@ def _fetch_active_session(db_path: Path) -> _ActiveSession | None:
         conn.close()
     if row is None:
         return None
+    return _active_session_from_row(row)
+
+
+def _fetch_session_by_id(db_path: Path, session_id: UUID) -> _ActiveSession | None:
+    conn = _reader_connection(db_path)
+    try:
+        row = conn.execute(
+            """
+            SELECT s.session_id, s.stream_url, s.experiment_id, s.started_at,
+                   s.active_arm, s.expected_greeting, s.bandit_decision_snapshot,
+                   e.id AS experiment_row_id, e.arm, e.greeting_text
+            FROM sessions s
+            LEFT JOIN experiments e
+                ON e.experiment_id = s.experiment_id
+               AND e.arm = s.active_arm
+            WHERE s.session_id = ?
+              AND s.ended_at IS NULL
+            LIMIT 1
+            """,
+            (str(session_id),),
+        ).fetchone()
+    finally:
+        conn.close()
+    if row is None:
+        return None
+    return _active_session_from_row(row)
+
+
+def _active_session_from_row(row: sqlite3.Row) -> _ActiveSession | None:
+    session_id = UUID(str(row["session_id"]))
+    experiment_id = str(row["experiment_id"] or "greeting_line_v1")
+    selection = _selection_from_session_row(row)
+    if selection is None:
+        return None
+    experiment_row_id, active_arm, expected_greeting, snapshot = selection
     return _ActiveSession(
-        session_id=UUID(str(row["session_id"])),
+        session_id=session_id,
         stream_url=str(row["stream_url"]),
-        experiment_id=str(row["experiment_id"] or "greeting_line_v1"),
-        experiment_row_id=int(row["experiment_row_id"]),
-        active_arm=str(row["arm"] or "warm_welcome"),
-        expected_greeting=str(row["greeting_text"] or "Hello, welcome to the stream!"),
+        experiment_id=experiment_id,
+        experiment_row_id=experiment_row_id,
+        active_arm=active_arm,
+        expected_greeting=expected_greeting,
+        bandit_decision_snapshot=snapshot,
     )
+
+
+def _selection_from_session_row(
+    row: sqlite3.Row,
+) -> tuple[int, str, str, dict[str, Any]] | None:
+    snapshot_json = row["bandit_decision_snapshot"]
+    if snapshot_json is None:
+        return None
+    snapshot = json.loads(str(snapshot_json))
+    active_arm = str(row["active_arm"] or snapshot["selected_arm_id"])
+    expected_greeting = str(row["expected_greeting"] or snapshot["expected_greeting"])
+    experiment_row_id = int(row["experiment_row_id"] or snapshot["experiment_id"])
+    return experiment_row_id, active_arm, expected_greeting, snapshot
+
+
+def _parse_sqlite_datetime(value: str) -> datetime:
+    parsed = datetime.fromisoformat(value.replace(" ", "T"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
 
 
 def _resolve_control_session(
@@ -304,45 +345,20 @@ def _resolve_control_session(
     control: LiveSessionControlMessage,
     active: _ActiveSession | None = None,
 ) -> _ActiveSession | None:
-    experiment_id = control.experiment_id or (
-        active.experiment_id if active is not None else "greeting_line_v1"
-    )
-    active_arm = control.active_arm or (active.active_arm if active is not None else None)
-    conn = _reader_connection(db_path)
-    try:
-        row = conn.execute(
-            """
-            SELECT id, experiment_id, arm, greeting_text
-            FROM experiments
-            WHERE experiment_id = ?
-              AND enabled = 1
-              AND (? IS NULL OR arm = ?)
-            ORDER BY CASE WHEN arm = ? THEN 0 ELSE 1 END, alpha_param DESC, arm ASC
-            LIMIT 1
-            """,
-            (experiment_id, active_arm, active_arm, active_arm or ""),
-        ).fetchone()
-    finally:
-        conn.close()
-    if row is None:
-        logger.error(
-            "module_c_orchestrator could not resolve experiment row for %s/%s",
-            experiment_id,
-            active_arm or "<default>",
+    if active is not None and control.action == "stimulus":
+        return replace(active, stimulus_time_s=control.stimulus_time_s)
+    stored = _fetch_session_by_id(db_path, control.session_id)
+    if stored is not None:
+        return replace(
+            stored,
+            stream_url=str(control.stream_url or stored.stream_url),
+            stimulus_time_s=control.stimulus_time_s,
         )
-        return active
-    return _ActiveSession(
-        session_id=control.session_id,
-        stream_url=str(control.stream_url or (active.stream_url if active is not None else "")),
-        experiment_id=str(row["experiment_id"]),
-        experiment_row_id=int(row["id"]),
-        active_arm=str(row["arm"]),
-        expected_greeting=str(
-            control.expected_greeting
-            or (active.expected_greeting if active is not None else row["greeting_text"])
-        ),
-        stimulus_time_s=control.stimulus_time_s,
+    logger.error(
+        "module_c_orchestrator could not resolve stored session selection for %s",
+        control.session_id,
     )
+    return active
 
 
 def _drain_segment_controls(
@@ -619,6 +635,7 @@ def _segment_from_active_session(
         experiment_id=active.experiment_id,
         active_arm=active.active_arm,
         expected_greeting=active.expected_greeting,
+        bandit_decision_snapshot=active.bandit_decision_snapshot,
         stimulus_time_s=resolved_stimulus_time_s,
     )
 

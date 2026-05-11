@@ -100,8 +100,9 @@ SELECT
     (julianday(COALESCE(s.ended_at, datetime('now'))) - julianday(s.started_at)) * 86400.0
                                                        AS duration_s,
     COALESCE(le.experiment_id, s.experiment_id)       AS experiment_id,
-    COALESCE(live.active_arm, le.arm)                  AS active_arm,
-    live.expected_greeting                             AS expected_greeting,
+    COALESCE(live.active_arm, s.active_arm, le.arm)    AS active_arm,
+    COALESCE(live.expected_greeting, s.expected_greeting)
+                                                           AS expected_greeting,
     le.timestamp_utc                                   AS last_segment_completed_at_utc,
     le.gated_reward                                    AS latest_reward,
     le.semantic_gate                                   AS latest_semantic_gate,
@@ -132,8 +133,9 @@ SELECT
     (julianday(COALESCE(s.ended_at, datetime('now'))) - julianday(s.started_at)) * 86400.0
                                                        AS duration_s,
     COALESCE(le.experiment_id, s.experiment_id)       AS experiment_id,
-    COALESCE(live.active_arm, le.arm)                  AS active_arm,
-    live.expected_greeting                             AS expected_greeting,
+    COALESCE(live.active_arm, s.active_arm, le.arm)    AS active_arm,
+    COALESCE(live.expected_greeting, s.expected_greeting)
+                                                           AS expected_greeting,
     le.timestamp_utc                                   AS last_segment_completed_at_utc,
     le.gated_reward                                    AS latest_reward,
     le.semantic_gate                                   AS latest_semantic_gate,
@@ -163,8 +165,9 @@ SELECT
     (julianday(datetime('now')) - julianday(s.started_at)) * 86400.0
                                                        AS duration_s,
     COALESCE(le.experiment_id, s.experiment_id)       AS experiment_id,
-    COALESCE(live.active_arm, le.arm)                  AS active_arm,
-    live.expected_greeting                             AS expected_greeting,
+    COALESCE(live.active_arm, s.active_arm, le.arm)    AS active_arm,
+    COALESCE(live.expected_greeting, s.expected_greeting)
+                                                           AS expected_greeting,
     le.timestamp_utc                                   AS last_segment_completed_at_utc,
     le.gated_reward                                    AS latest_reward,
     le.semantic_gate                                   AS latest_semantic_gate,
@@ -417,10 +420,16 @@ ORDER BY ex.arm
 
 
 _ACTIVE_ARM_FOR_EXPERIMENT_SQL: str = """
+SELECT active_arm AS arm, started_at AS timestamp_utc
+FROM sessions
+WHERE experiment_id = :experiment_id
+  AND ended_at IS NULL
+  AND active_arm IS NOT NULL
+UNION ALL
 SELECT e.arm, e.timestamp_utc
 FROM encounter_log e
 WHERE e.experiment_id = :experiment_id
-ORDER BY e.timestamp_utc DESC
+ORDER BY timestamp_utc DESC
 LIMIT 1
 """
 

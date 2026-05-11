@@ -398,6 +398,27 @@ def _fixture_segments(fixture_path: Path, segment_count: int) -> tuple[_SegmentF
     return tuple(segments)
 
 
+def _benchmark_bandit_snapshot(
+    *,
+    fixture: _SegmentFixture,
+    experiment_row_id: int,
+    selection_time_utc: datetime,
+) -> dict[str, object]:
+    return {
+        "selection_method": "thompson_sampling",
+        "selection_time_utc": selection_time_utc.isoformat(),
+        "experiment_id": experiment_row_id,
+        "policy_version": "desktop_replay_v1",
+        "selected_arm_id": fixture.active_arm,
+        "candidate_arm_ids": [fixture.active_arm],
+        "posterior_by_arm": {fixture.active_arm: {"alpha": 1.0, "beta": 1.0}},
+        "sampled_theta_by_arm": {fixture.active_arm: 0.5},
+        "expected_greeting": fixture.expected_greeting,
+        "decision_context_hash": "0" * 64,
+        "random_seed": 0,
+    }
+
+
 def _bootstrap_benchmark_db(db_path: Path, session_id: uuid.UUID) -> dict[str, int]:
     from services.desktop_app.state.sqlite_schema import bootstrap_schema
 
@@ -536,6 +557,11 @@ def _run_v4_fixture_path(fixtures: Sequence[_SegmentFixture]) -> _BenchmarkTimin
                         experiment_id="greeting_line_v1",
                         active_arm=fixture.active_arm,
                         expected_greeting=fixture.expected_greeting,
+                        bandit_decision_snapshot=_benchmark_bandit_snapshot(
+                            fixture=fixture,
+                            experiment_row_id=experiment_row_id,
+                            selection_time_utc=segment_start,
+                        ),
                         stimulus_time_s=fixture.stimulus_time_s,
                     )
                     tracker = _make_visual_tracker(

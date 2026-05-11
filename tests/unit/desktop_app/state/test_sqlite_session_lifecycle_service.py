@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -35,7 +36,8 @@ def _fetch_session(db: Path, session_id: UUID) -> sqlite3.Row | None:
     try:
         row = conn.execute(
             """
-            SELECT session_id, stream_url, experiment_id, started_at, ended_at
+            SELECT session_id, stream_url, experiment_id, active_arm, expected_greeting,
+                   bandit_decision_snapshot, started_at, ended_at
             FROM sessions
             WHERE session_id = ?
             """,
@@ -72,13 +74,72 @@ def test_request_session_start_creates_sqlite_session(tmp_path: Path) -> None:
     assert row["experiment_id"] == "greeting_line_v1"
     assert row["started_at"] == "2026-04-01 12:00:00"
     assert row["ended_at"] is None
+    snapshot = json.loads(str(row["bandit_decision_snapshot"]))
+    assert row["active_arm"] == snapshot["selected_arm_id"]
+    assert row["expected_greeting"] == snapshot["expected_greeting"]
+    assert set(snapshot["candidate_arm_ids"]) == {
+        "compliment_content",
+        "direct_question",
+        "simple_hello",
+        "warm_welcome",
+    }
+    assert set(snapshot["posterior_by_arm"]) == set(snapshot["candidate_arm_ids"])
+    assert set(snapshot["sampled_theta_by_arm"]) == set(snapshot["candidate_arm_ids"])
     assert len(publisher.messages) == 1
     assert publisher.messages[0].action == "start"
     assert publisher.messages[0].session_id == accepted.session_id
     assert publisher.messages[0].stream_url == "test://stream"
     assert publisher.messages[0].experiment_id == "greeting_line_v1"
-    assert publisher.messages[0].active_arm is not None
-    assert publisher.messages[0].expected_greeting is not None
+    assert publisher.messages[0].active_arm == row["active_arm"]
+    assert publisher.messages[0].expected_greeting == row["expected_greeting"]
+
+
+def test_request_session_start_excludes_disabled_and_end_dated_arms(tmp_path: Path) -> None:
+    now = datetime(2026, 4, 1, 12, 0, tzinfo=UTC)
+    db = tmp_path / "desktop.sqlite"
+    publisher = _Publisher()
+    service = SqliteSessionLifecycleService(
+        db,
+        clock=lambda: now,
+        control_publisher=publisher,
+    )
+    conn = sqlite3.connect(str(db), isolation_level=None)
+    try:
+        from services.desktop_app.state.sqlite_schema import bootstrap_schema
+
+        bootstrap_schema(conn)
+        conn.execute(
+            """
+            UPDATE experiments
+            SET enabled = 0, end_dated_at = ?
+            WHERE experiment_id = ? AND arm = ?
+            """,
+            ("2026-04-01 11:00:00", "greeting_line_v1", "warm_welcome"),
+        )
+        conn.execute(
+            """
+            UPDATE experiments
+            SET end_dated_at = ?
+            WHERE experiment_id = ? AND arm = ?
+            """,
+            ("2026-04-01 11:30:00", "greeting_line_v1", "direct_question"),
+        )
+    finally:
+        conn.close()
+
+    accepted = service.request_session_start(
+        SessionCreateRequest(
+            stream_url="test://stream",
+            experiment_id="greeting_line_v1",
+            client_action_id=CLIENT_ACTION_A,
+        )
+    )
+
+    row = _fetch_session(db, accepted.session_id)
+    assert row is not None
+    snapshot = json.loads(str(row["bandit_decision_snapshot"]))
+    assert set(snapshot["candidate_arm_ids"]) == {"compliment_content", "simple_hello"}
+    assert publisher.messages[0].active_arm in {"compliment_content", "simple_hello"}
 
 
 def test_request_session_start_is_idempotent_for_client_action(tmp_path: Path) -> None:

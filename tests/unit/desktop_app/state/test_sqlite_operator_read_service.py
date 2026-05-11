@@ -96,6 +96,46 @@ def test_list_sessions_renders_seeded_rows(tmp_path: Path) -> None:
     assert sessions[0].started_at_utc == datetime(2026, 4, 1, 12, 0, tzinfo=UTC)
 
 
+def test_list_sessions_renders_persisted_selection_before_live_state_or_encounters(
+    tmp_path: Path,
+) -> None:
+    db = tmp_path / "desktop.sqlite"
+    writer = SqliteWriter(db)
+    try:
+        writer.enqueue(
+            "sessions",
+            {
+                "session_id": str(SESSION_A),
+                "stream_url": "test://1",
+                "experiment_id": "greeting_line_v1",
+                "active_arm": "warm_welcome",
+                "expected_greeting": "Say hello to the creator",
+                "started_at": "2026-04-01 12:00:00",
+            },
+        )
+        writer.flush()
+    finally:
+        writer.close()
+
+    service = _build_service(db)
+    sessions = service.list_sessions(limit=10)
+    detail = service.get_session(SESSION_A)
+    overview = service.get_overview()
+    experiment = service.get_experiment_detail("greeting_line_v1")
+
+    assert len(sessions) == 1
+    assert sessions[0].active_arm == "warm_welcome"
+    assert sessions[0].expected_greeting == "Say hello to the creator"
+    assert detail is not None
+    assert detail.active_arm == "warm_welcome"
+    assert detail.expected_greeting == "Say hello to the creator"
+    assert overview.active_session is not None
+    assert overview.active_session.active_arm == "warm_welcome"
+    assert overview.active_session.expected_greeting == "Say hello to the creator"
+    assert experiment is not None
+    assert experiment.active_arm_id == "warm_welcome"
+
+
 def test_list_sessions_marks_multiple_active_rows_as_conflict(tmp_path: Path) -> None:
     db = tmp_path / "desktop.sqlite"
     writer = SqliteWriter(db)

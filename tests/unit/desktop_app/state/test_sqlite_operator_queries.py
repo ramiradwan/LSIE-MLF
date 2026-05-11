@@ -49,6 +49,8 @@ def _seed_session(
     stream_url: str,
     started_at: str,
     experiment_id: str | None = None,
+    active_arm: str | None = None,
+    expected_greeting: str | None = None,
     ended_at: str | None = None,
 ) -> None:
     payload: dict[str, str] = {
@@ -58,6 +60,10 @@ def _seed_session(
     }
     if experiment_id is not None:
         payload["experiment_id"] = experiment_id
+    if active_arm is not None:
+        payload["active_arm"] = active_arm
+    if expected_greeting is not None:
+        payload["expected_greeting"] = expected_greeting
     if ended_at is not None:
         payload["ended_at"] = ended_at
     writer.enqueue("sessions", payload)
@@ -183,6 +189,41 @@ def test_fetch_recent_sessions_orders_newest_first(tmp_path: Path) -> None:
     assert [row["session_id"] for row in rows] == [str(SESSION_B), str(SESSION_A)]
     assert rows[0]["last_segment_completed_at_utc"] is None
     assert rows[0]["latest_reward"] is None
+
+
+def test_fetch_sessions_use_persisted_selection_before_live_state_or_encounters(
+    tmp_path: Path,
+) -> None:
+    db = tmp_path / "desktop.sqlite"
+    writer = SqliteWriter(db)
+    try:
+        _seed_session(
+            writer,
+            SESSION_A,
+            stream_url="x",
+            started_at="2026-04-01 12:00:00",
+            experiment_id="greeting_line_v1",
+            active_arm="warm_welcome",
+            expected_greeting="Say hello to the creator",
+        )
+        writer.flush()
+    finally:
+        writer.close()
+
+    reader = SqliteReader(db)
+    with _cursor(reader) as cur:
+        recent = q.fetch_recent_sessions(cur, limit=10)
+        by_id = q.fetch_session_by_id(cur, SESSION_A)
+        active = q.fetch_active_session(cur)
+
+    assert recent[0]["active_arm"] == "warm_welcome"
+    assert recent[0]["expected_greeting"] == "Say hello to the creator"
+    assert by_id is not None
+    assert by_id["active_arm"] == "warm_welcome"
+    assert by_id["expected_greeting"] == "Say hello to the creator"
+    assert active is not None
+    assert active["active_arm"] == "warm_welcome"
+    assert active["expected_greeting"] == "Say hello to the creator"
 
 
 def test_fetch_session_by_id_returns_row(tmp_path: Path) -> None:
@@ -560,11 +601,38 @@ def test_fetch_experiment_arms_aggregates_rollup(tmp_path: Path) -> None:
     assert warm["recent_semantic_pass_rate"] == pytest.approx(0.5)
 
 
-def test_fetch_active_arm_for_experiment(tmp_path: Path) -> None:
+def test_fetch_active_arm_for_experiment_uses_active_session_before_encounters(
+    tmp_path: Path,
+) -> None:
+    db = tmp_path / "desktop.sqlite"
+    writer = SqliteWriter(db)
+    try:
+        _seed_session(
+            writer,
+            SESSION_A,
+            stream_url="x",
+            started_at="2026-04-01 12:00:00",
+            experiment_id="greeting_line_v1",
+            active_arm="warm_welcome",
+            expected_greeting="Say hello to the creator",
+        )
+        writer.flush()
+    finally:
+        writer.close()
+
+    reader = SqliteReader(db)
+    with _cursor(reader) as cur:
+        row = q.fetch_active_arm_for_experiment(cur, "greeting_line_v1")
+
+    assert row is not None
+    assert row["arm"] == "warm_welcome"
+    assert row["timestamp_utc"] == "2026-04-01 12:00:00"
+
+
+def test_fetch_active_arm_for_experiment_none_without_session_or_encounters(tmp_path: Path) -> None:
     db = _bootstrap(tmp_path)
     reader = SqliteReader(db)
     with _cursor(reader) as cur:
-        # No encounter rows → no active arm.
         assert q.fetch_active_arm_for_experiment(cur, "greeting_line_v1") is None
 
 
