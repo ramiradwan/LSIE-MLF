@@ -1,0 +1,37 @@
+{
+  "type": "spec_work_item",
+  "title": "<short spec-driven change title>",
+  "spec_refs": [
+    "§<section>"
+  ],
+  "source_artifacts": [
+    "docs/tech-spec-v4.0.pdf",
+    "<issue-or-briefing-artifact>"
+  ],
+  "target_files": [
+    "services/<area>/<file>.py",
+    "tests/unit/<area>/test_<file>.py"
+  ],
+  "target_symbols": [
+    "<SymbolName>"
+  ],
+  "dependencies": [],
+  "guarded_activation_risks": [],
+  "acceptance_criteria": {
+    "invariants": [
+      "all inter-module payloads remain Pydantic-validated before dispatch"
+    ],
+    "tests": [
+      "tests/unit/<area>/test_<file>.py"
+    ],
+    "required_gates": [
+      "uv run pytest tests/unit/<area>/test_<file>.py -q"
+    ],
+    "forbidden_changes": [
+      "do not activate dormant integration surfaces unless the required executable guard is updated"
+    ]
+  },
+  "local_artifacts": [
+    "automation/work-items/active/<work-item>.json"
+  ]
+}

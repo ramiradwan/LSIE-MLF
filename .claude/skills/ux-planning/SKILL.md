@@ -5,7 +5,7 @@ description: Use when planning a new or modified Operator Console page/section. 
 
 # UX planning for the Operator Console
 
-This skill plans UI work before implementation. It does not write the view directly.
+This skill owns producing the UX plan JSON contract before implementation. It does not write views, create durable committed work-item instances, or duplicate spec-reference validation owned by `spec-ref-check`.
 
 ## Load these sources first
 - `docs/artifacts/OPERATOR_CONSOLE_UI_UX_AUDIT.md`
@@ -29,7 +29,7 @@ This skill plans UI work before implementation. It does not write the view direc
 - Use route values from the current console (`overview`, `live_session`, `experiments`, `physiology`, `health`, `sessions`).
 
 ## Handoff
-After validation, use the UX plan to create a `ui_implementation` work item based on `automation/work-items/templates/ui_implementation.yaml`.
+After validation, use the UX plan to create a local `ui_implementation` work item based on `automation/work-items/templates/ui_implementation.yaml`. Generated plans and work items may live under `automation/work-items/active/`, which is gitignored; do not commit active work-item instances.
 
 ## Visual verification expectation
 The implementer is required to render the actual widgets via

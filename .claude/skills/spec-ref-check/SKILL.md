@@ -7,9 +7,13 @@ description: Validate and resolve spec references (§N.N patterns) against the e
 
 Resolves spec_refs (§7A, §7A.4, §4.A.1, §12.3.2, etc.) to actual embedded spec-content paths. By default, it loads the content payload from the single `docs/tech-spec-v*.pdf` file committed in the repo; it can also load an explicit PDF or standalone generated content file for diagnostics.
 
+## Ownership
+
+This skill owns validating and resolving `§...` references in generic spec work items, UX plans, docstrings, review material, and docs. It does not own UX layout planning, design-system choices, implementation strategy, or gate selection beyond confirming that cited spec references exist.
+
 ## When to Run
 
-Run `--validate` after any spec-related content change. Run `--resolve` before using a spec_ref in ADO work items, docstrings, or review comments to confirm it points to real content. Run `--extract` when you need to inspect or regenerate the machine-readable payload produced by the signed PDF workflow.
+Run `--validate` after any spec-related content change. Run `--resolve` before using a spec_ref in generic spec work items, UX plans, docstrings, or review comments to confirm it points to real content. Run `--extract` when you need to inspect or regenerate the machine-readable payload produced by the signed PDF workflow.
 
 ## Commands
 
@@ -65,4 +69,4 @@ PyMuPDF (`pip install pymupdf`) is used for PDF extraction when available; the c
 
 ## Integration
 
-The `build_index` and `load_content` functions are importable. `automation/platform/spec_grounding.py` in {REDACTED}-platform can use them to replace its hardcoded Rosetta Stone mappings.
+The `build_index` and `load_content` functions are importable. `automation/schemas/spec_work_item.py` validates the generic JSON work-item packet, while this skill validates the packet's `spec_refs`. `automation/platform/spec_grounding.py` in {REDACTED}-platform can use the importable spec-ref helpers to replace its hardcoded Rosetta Stone mappings.

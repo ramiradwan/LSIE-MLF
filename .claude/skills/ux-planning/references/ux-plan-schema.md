@@ -2,6 +2,8 @@
 
 Canonical file: `automation/schemas/ux_plan.py`
 
+Generic spec-work-item packets are validated by `automation/schemas/spec_work_item.py`. UX plans and work-item packets generated for a cycle may be saved under `automation/work-items/active/`; that directory is gitignored and active instances should not be committed.
+
 ## Required top-level fields
 - `spec_refs`
 - `source_artifacts`

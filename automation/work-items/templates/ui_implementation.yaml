@@ -1,3 +1,5 @@
+# Copy this template into automation/work-items/active/ for local execution.
+# Active work-item instances are gitignored; commit templates, schemas, tests, and durable docs instead.
 type: ui_implementation
 title: "<short operator-console UI change title>"
 spec_refs:
@@ -6,6 +8,7 @@ source_artifacts:
   - "docs/artifacts/OPERATOR_CONSOLE_UI_UX_AUDIT.md"
   - "services/operator_console/design_system/DESIGN_SYSTEM.md"
   - "automation/schemas/ux_plan.py"
+# Local-only path under the gitignored active work-item directory.
 ux_plan: "automation/work-items/active/<work-item>-ux.json"
 target_files:
   - "services/operator_console/views/<page>_view.py"

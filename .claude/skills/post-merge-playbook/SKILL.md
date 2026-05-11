@@ -32,7 +32,7 @@ Run the eight Standing Post-Merge Chores **in order**. Each one feeds the next; 
 3. **Schema-Code Consistency Verification** — run `python scripts/check_schema_consistency.py` (see the `schema-consistency` skill) and verify Pydantic ↔ extracted JSON Schema ↔ cloud PostgreSQL DDL alignment for every contract-bearing payload or cloud persistence surface touched. `mypy --strict` must pass.
 4. **Test Coverage Gap Analysis** — list new/modified files lacking corresponding tests under `tests/unit/` or `tests/integration/`. Each gap → follow-up test commit OR ADO work item if infra is missing.
 5. **Logging and Observability Audit** — grep for emoji log lines, bare `except: pass`, `logger.error()` on §12-recoverable conditions, and log statements at WARNING+ that lack `session_id`/`segment_id`/`subject_role`. Confirm no raw biometric payloads in any log line.
-6. **Deferred Integration Inventory Refresh** — walk the diff for new public symbols. Each is either (a) imported by a runtime entrypoint, or (b) added to `docs/DEFERRED_INTEGRATIONS.md` with name, files, gating dependency, deferred-since date, and justification. Re-run the four search recipes from that file's "Search methodology" section.
+6. **Dormant Surface Guard Refresh** — walk the diff for new public symbols. Each is either (a) imported by an intended runtime entrypoint with tests, or (b) protected by an executable guard that fails on accidental activation. Do not commit deferred work-item packets or mutable backlog entries.
 7. **Performance Baseline Refresh** — only required if the merge touched `orchestrator.py`, `inference.py`, `analytics.py`, `transcription.py`, `face_mesh.py`, or any IPC path. Append a row to `docs/artifacts/performance_baseline.md` with date, commit SHA, segment-assembly p50/p95, ML inference p50/p95, AU12 per-frame p50, and (if physiology touched) Co-Modulation Index window-compute time. Regression > 20% → ADO work item.
 8. **§13 Audit Checklist Execution** — run the strict harness and append its Markdown stdout report verbatim to the cycle log:
 
@@ -48,7 +48,7 @@ After Standing Chores complete, execute every chore in **Part 2 — Merge-Specif
 ## Outputs to produce
 
 - A short cycle-log block (markdown) summarizing: merge SHA, branch, Standing chores 1–8 pass/fail, Merge-Specific chores M1–MN pass/fail, follow-up commits, and any new ADO work items filed.
-- For Standing Chore #6 specifically, an updated `docs/DEFERRED_INTEGRATIONS.md` if any new dormant code was found.
+- For Standing Chore #6 specifically, updated dormant-surface tests or audit verifiers if any new intentionally unwired code was found.
 - For Standing Chore #2, any required docs updates committed (or a doc-only fast-follow PR if the merge was already shipped).
 - For Standing Chore #8, the strict harness Markdown report from `python scripts/run_audit.py --strict` appended verbatim to the cycle log.
 
@@ -66,4 +66,4 @@ After Part 2 is done, **rewrite the Merge-Specific Chores section of `docs/POST_
 - §13 audit checklist: `.claude/commands/audit.md`
 - Schema gate: see the `schema-consistency` skill
 - Spec reference tooling: `scripts/spec_ref_check.py` against `docs/tech-spec-v*.pdf`
-- Deferred-integration inventory: `docs/DEFERRED_INTEGRATIONS.md`
+- Dormant-surface guards: `tests/unit/automation/test_deferred_integration_guards.py` and the executable §13 audit harness

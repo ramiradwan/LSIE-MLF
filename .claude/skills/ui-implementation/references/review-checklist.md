@@ -8,6 +8,7 @@
 - [ ] Shared status styling still flows through `UiStatusKind`
 - [ ] New operator-facing copy is routed through formatter helpers where appropriate
 - [ ] Unit tests cover new object names, bindings, or verifier behavior
+- [ ] No generated files under `automation/work-items/active/` are staged
 - [ ] `python scripts/audit/verifiers/design_system.py --paths services/operator_console` passes
 
 ## Recommended

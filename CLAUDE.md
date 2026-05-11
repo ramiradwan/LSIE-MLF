@@ -2,15 +2,13 @@
 
 Real-time multimodal inference engine. All code decisions are governed by the single signed spec PDF at `docs/tech-spec-v*.pdf`; use `scripts/spec_ref_check.py` to extract, index, resolve, and validate its embedded content payload.
 
-Build order and phase dependencies: @IMPLEMENTATION_PLAN.md
-
-Deferred integrations (implemented but not wired — do not activate without satisfying the documented gating dependency): @docs/DEFERRED_INTEGRATIONS.md
+Active implementation cycles are driven by local JSON spec-work-item packets under `automation/work-items/active/`. Packets describe implementable work only, validate with `automation/schemas/spec_work_item.py`, templates live under `automation/work-items/templates/`, and generated active packets are gitignored and must not be committed. Non-implementable deferred surfaces are guarded by executable tests and the signed spec payload, not committed work-item backlogs.
 
 Dependabot handling rules (auto-merge eligibility, human-review impact analysis, weekly cadence): @.github/DEPENDABOT_PROCESS.md — Dependabot PRs are processed on their own weekly cadence and are NEVER bundled into feature merge reviews. Do not include Dependabot bumps in a feature PR's review scope, and do not run the Dependabot sweep in parallel with the post-merge playbook.
 
 ## Canonical names (§0.3) — MUST use only these identifiers in all code and config
 
-The v4 desktop runtime uses `services.desktop_app` terminology: ProcessGraph, IPC queues/shared-memory blocks, SQLite local state, and cloud outbox uploads. Container-era canonical names remain valid only when discussing retained legacy/server/cloud architecture, historical spec context, or deferred integrations; do not use them to describe the active desktop runtime.
+The v4 desktop runtime uses `services.desktop_app` terminology: ProcessGraph, IPC queues/shared-memory blocks, SQLite local state, and cloud outbox uploads. Container-era canonical names remain valid only when discussing retained legacy/server/cloud architecture, historical spec context, or explicitly guarded dormant surfaces; do not use them to describe the active desktop runtime.
 
 - API Server — FastAPI application process for retained server/cloud routes. In the desktop runtime, `ui_api_shell` hosts a loopback FastAPI surface backed by SQLite.
 - ML Worker — Legacy Celery consumer process for retained server/cloud inference tasks. In the desktop runtime, use `gpu_ml_worker` for the spawned local ML child process.

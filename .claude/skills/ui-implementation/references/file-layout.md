@@ -10,7 +10,10 @@
 
 ## Automation surfaces
 - UX plan schema: `automation/schemas/ux_plan.py`
+- Generic spec-work-item schema: `automation/schemas/spec_work_item.py`
 - UI work-item template: `automation/work-items/templates/ui_implementation.yaml`
+- Work-item templates: `automation/work-items/templates/` are committed
+- Active work-item instances: `automation/work-items/active/` is local/generated and gitignored
 
 ## Tests
 - Operator Console unit tests: `tests/unit/operator_console/`

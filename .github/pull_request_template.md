@@ -4,11 +4,11 @@ Which sections of the current LSIE-MLF Technical Specification (`docs/tech-spec-
 
 - §
 
-## Implementation Phase
+## Spec Work Item
 
-If an active plan is in flight, which phase of `IMPLEMENTATION_PLAN.md` does this PR belong to? Otherwise leave blank.
+If this PR implements a local spec-work-item packet, name the packet title or local path. Do not commit files under `automation/work-items/active/`.
 
-- Phase:
+- Work item:
 
 ## Changes
 
@@ -16,8 +16,8 @@ Describe what was implemented or modified.
 
 ## Verification
 
-- [ ] `mypy packages/ services/ --python-version 3.11 --strict` passes
-- [ ] `pytest tests/ -x -q` passes
+- [ ] `uv run mypy packages/ services/ tests/ --python-version 3.11 --ignore-missing-imports --explicit-package-bases` passes
+- [ ] `uv run pytest tests/ -x -q --tb=short` passes
 - [ ] No retired synonyms from §0.3 in changed files
 - [ ] All new functions have full type annotations
 - [ ] All new functions have `from __future__ import annotations`

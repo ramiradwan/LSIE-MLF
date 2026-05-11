@@ -5,6 +5,8 @@ description: Use when editing Operator Console UI, PySide6 widgets, theming, QSS
 
 # Operator Console design system
 
+This is the rules/reference skill for Operator Console primitives, tokens, object names, accessibility, and visual verification. It does not produce UX plan JSON or work-item packets.
+
 Use this skill whenever work touches:
 - `services/operator_console/views/`
 - `services/operator_console/widgets/`

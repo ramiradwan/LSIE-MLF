@@ -29,7 +29,7 @@ The playbook is operator-facing: each chore should be runnable from a clean chec
 
 **Outputs.** Updated docs in the same merge or a fast-follow doc-only PR. Any change that alters the governed spec contract must land in the signed spec PDF/content payload rather than a local amendment registry.
 
-**Success.** Every desktop process, env var, port, schema field, local SQLite table, IPC channel, and retained/server key referenced in the merged code is described in the signed spec payload or one project-facing doc surface. Container manifests are expected only if a future signed spec change reintroduces them. **Failure.** Any new artifact that exists in code but is invisible to the workspace-server, or any spec deviation not reflected in the signed spec/content payload.
+**Success.** Every desktop process, env var, port, schema field, local SQLite table, IPC channel, and retained/server key referenced in the merged code is described in the signed spec payload or one project-facing doc surface. Container manifests are expected only if a future signed spec change reintroduces them. Generated work-item files under `automation/work-items/active/` are not committed; durable changes belong in templates, schemas, skills, or docs. **Failure.** Any new artifact that exists in code but is invisible to the workspace-server, any spec deviation not reflected in the signed spec/content payload, or any completed local work-item instance staged for commit.
 
 ### 3. Schema-Code Consistency Verification
 
@@ -61,15 +61,15 @@ The playbook is operator-facing: each chore should be runnable from a clean chec
 
 **Success.** Zero emoji log lines, zero silent `except: pass`, and every new log statement at WARNING+ level includes the relevant identifiers. **Failure.** Any of the above, or any new log line that prints a raw payload containing biometric content (would violate the no-raw-media rule even in transient logs).
 
-### 6. Deferred Integration Inventory Refresh
+### 6. Dormant Surface Guard Refresh
 
-**Purpose.** Track code that is implemented but not yet wired into the runtime path. The canonical example is Module B (`GroundTruthIngester`), which is fully implemented but not called by the orchestrator because it depends on an external EulerStream signature provider. New merges frequently add similar stubs (new routes not mounted, new analytics not invoked, new schemas with no producer). The ADO agent must know which of these are intentionally dormant vs. wiring bugs.
+**Purpose.** Keep implemented-but-unwired surfaces protected without maintaining a committed planning inventory. Dormant integrations such as external-signature ingestion, context enrichment producers, offline-final attribution replay, or new desktop cloud producers must either become intentionally wired by the merge or remain covered by executable guards that fail when they are activated accidentally.
 
-**Inputs.** `docs/DEFERRED_INTEGRATIONS.md`, the merge diff, and a grep for the new modules' import sites.
+**Inputs.** The merge diff, import/call-site searches for new public symbols, and existing dormant-surface tests such as `tests/unit/automation/test_deferred_integration_guards.py`.
 
-**Outputs.** An updated `docs/DEFERRED_INTEGRATIONS.md` with one entry per dormant module: name, files, gating dependency, deferred-since date, and justification.
+**Outputs.** Updated tests or audit verifiers that encode any new dormant-surface invariant. Do not commit deferred work-item packets or mutable backlog entries; if a surface is non-implementable, capture the blocker in the signed spec payload or an executable guard.
 
-**Success.** Every public symbol added in the merge is either (a) imported by at least one runtime entrypoint, or (b) listed in the deferred inventory with a stated blocker. **Failure.** A new module is dead code with no entry in the deferred inventory and no runtime caller — that is a bug, not a deferral.
+**Success.** Every public symbol added in the merge is either (a) imported by an intended runtime entrypoint with tests, or (b) protected by an executable guard that documents the forbidden activation. **Failure.** New dead code lands without a runtime caller and without a failing guard for accidental activation.
 
 ### 7. Performance Baseline Refresh
 

@@ -45,6 +45,9 @@ htmlcov/
 # Ignore agent implementation artifacts and scaffolding
 .claude/settings.local.json
 .workspace*
+# Local/generated work-item instances. Templates and schemas remain committed.
+automation/work-items/active/*
+!automation/work-items/active/.gitkeep
 docs/artifacts/*
 # docs/artifacts/ is scratch-only by default. Allowlist specific files that
 # are frozen historical records worth tracking (point-in-time snapshots that
