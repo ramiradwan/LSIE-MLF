@@ -67,6 +67,14 @@ from packages.schemas.operator_console import (
     SessionSummary,
     StimulusRequest,
 )
+from services.desktop_app.cloud.auth_flow import AuthFlowConfig, DesktopAuthFlow
+from services.desktop_app.cloud.experiment_bundle import (
+    ExperimentBundleClient,
+    ExperimentBundleStore,
+)
+from services.desktop_app.os_adapter import resolve_state_dir
+from services.desktop_app.privacy.secrets import SECRET_KEY_CLOUD_REFRESH_TOKEN, get_secret
+from services.desktop_app.processes.cloud_sync_worker import SQLITE_FILENAME, CloudSyncConfig
 from services.desktop_launcher.repair import repair_runtime
 from services.operator_console.api_client import ApiClient, ApiError
 from services.operator_console.config import OperatorConsoleConfig
@@ -98,6 +106,8 @@ JOB_STIMULUS = "stimulus"
 JOB_SESSION_START = "session_start"
 JOB_SESSION_END = "session_end"
 JOB_REPAIR_INSTALL = "repair_install"
+JOB_CLOUD_SIGN_IN = "cloud_sign_in"
+JOB_EXPERIMENT_BUNDLE_REFRESH = "experiment_bundle_refresh"
 JOB_EVENT_STREAM = "event_stream"
 
 _HIGH_FREQUENCY_SSE_JOBS = frozenset(
@@ -176,6 +186,7 @@ class PollingCoordinator(QObject):
         self._inflight_session_lifecycle: dict[str, OneShotSignals] = {}
         self._inflight_experiment_mutations: dict[str, OneShotSignals] = {}
         self._inflight_repairs: dict[str, OneShotSignals] = {}
+        self._inflight_cloud_actions: dict[str, OneShotSignals] = {}
         self._event_stream: EventStreamHandle | None = None
         self._orphan_event_streams: list[EventStreamHandle] = []
         self._event_stream_connected = False
@@ -586,6 +597,72 @@ class PollingCoordinator(QObject):
 
         def on_finished(_job: str) -> None:
             self._inflight_repairs.pop(handle_key, None)
+
+        signals.succeeded.connect(on_succeeded)
+        signals.failed.connect(on_failed)
+        signals.finished.connect(on_finished)
+        return signals
+
+    def cloud_sign_in(self) -> OneShotSignals:
+        cloud_config = CloudSyncConfig.from_env()
+        auth_config = AuthFlowConfig(
+            authorization_endpoint=f"{cloud_config.base_url}/v4/auth/oauth/authorize",
+            token_endpoint=f"{cloud_config.base_url}/v4/auth/oauth/token",
+            client_id=cloud_config.client_id,
+        )
+
+        def fn() -> object:
+            return DesktopAuthFlow(auth_config).run_loopback_authorization()
+
+        return self._run_cloud_action(JOB_CLOUD_SIGN_IN, fn)
+
+    def refresh_experiment_bundle(self) -> OneShotSignals:
+        cloud_config = CloudSyncConfig.from_env()
+
+        def fn() -> object:
+            refresh_token = get_secret(SECRET_KEY_CLOUD_REFRESH_TOKEN)
+            if refresh_token is None:
+                raise ApiError(
+                    message="Cloud sign-in is required before refreshing experiments.",
+                    endpoint=None,
+                    retryable=False,
+                )
+            auth_config = AuthFlowConfig(
+                authorization_endpoint=f"{cloud_config.base_url}/v4/auth/oauth/authorize",
+                token_endpoint=f"{cloud_config.base_url}/v4/auth/oauth/token",
+                client_id=cloud_config.client_id,
+            )
+            token = DesktopAuthFlow(auth_config).refresh_access_token(refresh_token=refresh_token)
+            bundle = ExperimentBundleClient(
+                cloud_config.base_url,
+                timeout_s=cloud_config.timeout_s,
+            ).fetch_bundle(access_token=token.access_token)
+            store = ExperimentBundleStore(resolve_state_dir() / SQLITE_FILENAME)
+            try:
+                store.cache_verified_bundle(bundle)
+            finally:
+                store.close()
+            return bundle
+
+        return self._run_cloud_action(JOB_EXPERIMENT_BUNDLE_REFRESH, fn)
+
+    def _run_cloud_action(self, job_name: str, fn: Callable[[], object]) -> OneShotSignals:
+        signals = run_one_shot(job_name, fn)
+        handle_key = str(uuid4())
+        self._inflight_cloud_actions[handle_key] = signals
+
+        def on_succeeded(_job: str, _payload: object) -> None:
+            self._store.clear_error(job_name)
+            for target in (JOB_EXPERIMENT, JOB_EXPERIMENT_SUMMARIES, JOB_HEALTH, JOB_ALERTS):
+                self.refresh_now(target)
+
+        def on_failed(_job: str, error: object) -> None:
+            message = str(error) if not isinstance(error, ApiError) else error.message
+            self._store.set_error(job_name, message)
+            self.job_failed.emit(job_name, message)
+
+        def on_finished(_job: str) -> None:
+            self._inflight_cloud_actions.pop(handle_key, None)
 
         signals.succeeded.connect(on_succeeded)
         signals.failed.connect(on_failed)

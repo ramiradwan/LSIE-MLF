@@ -81,16 +81,26 @@ def test_health_view_empty_until_snapshot_set() -> None:
     assert "first readiness update" in view._empty_state._message.text().lower()
 
 
-def test_health_view_repair_button_tracks_action_binding() -> None:
+def test_health_view_header_buttons_track_action_bindings() -> None:
     view, vm, store = _view_with_vm()
     assert view._repair_button.isEnabled() is False
+    assert view._cloud_sign_in_button.isEnabled() is False
+    assert view._experiment_bundle_button.isEnabled() is False
     assert view._repair_button.accessibleName() == "Repair install"
     assert "desktop.sqlite" in view._repair_button.accessibleDescription()
-    assert view._repair_status.accessibleName() == "Repair status"
+    assert view._cloud_sign_in_button.accessibleName() == "Cloud sign-in"
+    assert "cloud sync" in view._cloud_sign_in_button.accessibleDescription()
+    assert view._experiment_bundle_button.accessibleName() == "Refresh experiments"
+    assert "signed experiment bundle" in view._experiment_bundle_button.accessibleDescription()
+    assert view._action_status.accessibleName() == "Health action status"
     vm.bind_repair_action(lambda: OneShotSignals())
+    vm.bind_cloud_sign_in_action(lambda: OneShotSignals())
+    vm.bind_experiment_bundle_refresh_action(lambda: OneShotSignals())
     store.set_health(_snapshot(HealthState.OK))
 
     assert view._repair_button.isEnabled() is True
+    assert view._cloud_sign_in_button.isEnabled() is True
+    assert view._experiment_bundle_button.isEnabled() is True
 
 
 def test_health_view_repair_click_invokes_bound_action(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -104,20 +114,89 @@ def test_health_view_repair_click_invokes_bound_action(monkeypatch: pytest.Monke
     vm.bind_repair_action(request_repair)
     store.set_health(_snapshot(HealthState.OK))
 
-    # UX-18: repair install now confirms via QMessageBox before dispatching;
-    # patch exec() to return Yes so the test exercises the bound action.
     from PySide6.QtWidgets import QMessageBox
 
     monkeypatch.setattr(QMessageBox, "exec", lambda self: QMessageBox.StandardButton.Yes)
 
     view._repair_button.click()
     assert calls == ["repair"]
-    assert view._repair_status.isHidden() is False
-    # Status copy moved to a determinate progress label while the repair
-    # is in flight ("Installing runtime…") rather than the prior generic
-    # "Repair requested" — the action is heavier and reads as such.
-    assert view._repair_status.text() == "Installing runtime…"
-    assert "Repair install in progress" in view._repair_status.accessibleDescription()
+    assert view._action_status.isHidden() is False
+    assert view._action_status.text() == "Installing runtime…"
+    assert "Repair install in progress" in view._action_status.accessibleDescription()
+
+
+def test_health_view_cloud_buttons_invoke_bound_actions() -> None:
+    view, vm, store = _view_with_vm()
+    calls: list[str] = []
+    sign_in_signals = OneShotSignals()
+    refresh_signals = OneShotSignals()
+
+    def request_sign_in() -> OneShotSignals:
+        calls.append("sign-in")
+        return sign_in_signals
+
+    def request_refresh() -> OneShotSignals:
+        calls.append("refresh")
+        return refresh_signals
+
+    vm.bind_cloud_sign_in_action(request_sign_in)
+    vm.bind_experiment_bundle_refresh_action(request_refresh)
+    store.set_health(_snapshot(HealthState.OK))
+
+    view._cloud_sign_in_button.click()
+    assert calls == ["sign-in"]
+    assert view._action_status.text() == "Waiting for sign-in…"
+    assert "Browser sign-in" in view._action_status.accessibleDescription()
+
+    sign_in_signals.succeeded.emit("cloud_sign_in", object())
+    sign_in_signals.finished.emit("cloud_sign_in")
+    assert view._action_status.text() == "Cloud sign-in completed"
+
+    view._experiment_bundle_button.click()
+    assert calls == ["sign-in", "refresh"]
+    assert view._action_status.text() == "Refreshing experiments…"
+    assert "Experiment bundle refresh" in view._action_status.accessibleDescription()
+
+
+def test_health_view_hides_inline_status_when_cloud_sign_in_fails() -> None:
+    view, vm, store = _view_with_vm()
+    signals = OneShotSignals()
+    vm.bind_cloud_sign_in_action(lambda: signals)
+    store.set_health(_snapshot(HealthState.OK))
+
+    view._cloud_sign_in_button.click()
+    assert view._action_status.text() == "Waiting for sign-in…"
+
+    store.set_error("cloud_sign_in", "browser closed")
+    signals.failed.emit("cloud_sign_in", object())
+    signals.finished.emit("cloud_sign_in")
+
+    assert view._action_status.isHidden() is True
+    assert view._error_banner.isHidden() is False
+    assert view._error_banner._message.text() == "browser closed"
+
+
+def test_health_view_hides_inline_status_when_refresh_prerequisite_fails() -> None:
+    view, vm, store = _view_with_vm()
+    signals = OneShotSignals()
+    vm.bind_experiment_bundle_refresh_action(lambda: signals)
+    store.set_health(_snapshot(HealthState.OK))
+
+    view._experiment_bundle_button.click()
+    assert view._action_status.text() == "Refreshing experiments…"
+
+    store.set_error(
+        "experiment_bundle_refresh",
+        "cloud sign-in is required before refreshing experiments",
+    )
+    signals.failed.emit("experiment_bundle_refresh", object())
+    signals.finished.emit("experiment_bundle_refresh")
+
+    assert view._action_status.isHidden() is True
+    assert view._error_banner.isHidden() is False
+    assert view._error_banner._message.text() == (
+        "Cloud sign-in is required before refreshing experiments."
+    )
 
 
 def test_health_view_renders_ok_snapshot() -> None:

@@ -705,13 +705,13 @@ Current framing details that affect UX interpretation:
 Current implication:
 - the Operator Console shell is not only a dev/test surface; it is the production desktop UI shell path
 
-### 14.4 Cloud auth/sync UI absence
-Per `docs/DEFERRED_INTEGRATIONS.md`, operator-facing interactive cloud sign-in/sync is **not currently wired into the operator shell**.
+### 14.4 Cloud auth/sync UI status
+The operator shell now exposes Health-page actions for cloud sign-in and verified experiment bundle refresh.
 
 Current implications for UX/UI specialists:
-- do not assume a current operator-facing sign-in flow exists
-- do not assume bundle refresh/sync controls exist in the shell
-- do not describe cloud sync producers as current console behavior
+- treat cloud sign-in and bundle refresh as current Health-page behavior
+- keep those actions scoped to operator maintenance/readiness flows rather than live-session controls
+- do not describe broader cloud producer behavior beyond the currently wired Health actions and desktop telemetry upload path
 
 **Primary source files**
 - `services/desktop_launcher/ui.py`
@@ -725,9 +725,7 @@ Current implications for UX/UI specialists:
 
 A UX/UI specialist should **not** assume the following currently exist as active operator-facing surfaces:
 
-- operator-facing cloud sign-in UI
-- operator-facing cloud sync controls
-- operator-facing experiment-bundle refresh UI
+- cloud-management surfaces beyond the Health-page sign-in and experiment refresh actions
 - deferred integrations listed in `docs/DEFERRED_INTEGRATIONS.md`
 - manually launched specialist tools presented as part of the main shell
 

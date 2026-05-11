@@ -56,6 +56,8 @@ from services.operator_console.formatters import (
     format_duration,
     format_f0_hz,
     format_freshness,
+    format_health_action_copy,
+    format_health_action_error,
     format_health_state,
     format_outcome_link_lag,
     format_percentage,
@@ -116,6 +118,24 @@ class TestPrimitives:
         session_id = UUID("12345678-1234-5678-9abc-123456789abc")
         assert format_session_id_compact(session_id) == "12345678…9abc"
         assert format_session_id_compact(None) == "—"
+
+    def test_health_action_copy_uses_exact_progress_and_success_strings(self) -> None:
+        sign_in_progress = format_health_action_copy("cloud_sign_in", stage="progress")
+        assert sign_in_progress.button_label == "Signing in…"
+        assert sign_in_progress.status_text == "Waiting for sign-in…"
+
+        refresh_success = format_health_action_copy(
+            "experiment_bundle_refresh",
+            stage="success",
+        )
+        assert refresh_success.button_label == "Refresh experiments"
+        assert refresh_success.status_text == "Experiments refreshed"
+
+    def test_health_action_error_normalizes_refresh_prerequisite_copy(self) -> None:
+        assert format_health_action_error(
+            "experiment_bundle_refresh",
+            "cloud sign-in is required before refreshing experiments",
+        ) == "Cloud sign-in is required before refreshing experiments."
 
 
 # ----------------------------------------------------------------------

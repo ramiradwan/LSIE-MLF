@@ -46,8 +46,11 @@ from packages.schemas.operator_console import (
     UiStatusKind,
 )
 from services.operator_console.formatters import (
+    HealthActionCopy,
     build_health_detail,
     build_health_probe_detail,
+    format_health_action_copy,
+    format_health_action_error,
     format_health_probe_state,
     format_health_state,
     format_latency_ms,
@@ -183,6 +186,28 @@ class HealthView(QWidget):
             self,
             level="page",
         )
+        self._cloud_sign_in_button = QPushButton("Cloud sign-in", self)
+        self._cloud_sign_in_button.setObjectName("CloudSignInButton")
+        self._cloud_sign_in_button.setAccessibleName("Cloud sign-in")
+        self._cloud_sign_in_button.setAccessibleDescription(
+            "Open browser sign-in so cloud sync can upload and refresh experiments."
+        )
+        self._cloud_sign_in_button.setToolTip(
+            "Open browser sign-in for cloud sync and experiment refresh."
+        )
+        self._cloud_sign_in_button.setEnabled(False)
+        self._cloud_sign_in_button.clicked.connect(self._on_cloud_sign_in_clicked)
+        self._experiment_bundle_button = QPushButton("Refresh experiments", self)
+        self._experiment_bundle_button.setObjectName("ExperimentBundleRefreshButton")
+        self._experiment_bundle_button.setAccessibleName("Refresh experiments")
+        self._experiment_bundle_button.setAccessibleDescription(
+            "Download and apply the latest signed experiment bundle."
+        )
+        self._experiment_bundle_button.setToolTip(
+            "Download and apply the latest signed experiment bundle."
+        )
+        self._experiment_bundle_button.setEnabled(False)
+        self._experiment_bundle_button.clicked.connect(self._on_experiment_bundle_clicked)
         self._repair_button = QPushButton("Repair install", self)
         self._repair_button.setObjectName("RepairInstallButton")
         self._repair_button.setAccessibleName("Repair install")
@@ -192,11 +217,12 @@ class HealthView(QWidget):
         self._repair_button.setToolTip("Rebuild the local runtime without touching desktop.sqlite.")
         self._repair_button.setEnabled(False)
         self._repair_button.clicked.connect(self._on_repair_clicked)
-        self._repair_status = QLabel("", self)
-        self._repair_status.setObjectName("PanelSubtitle")
-        self._repair_status.setAccessibleName("Repair status")
-        self._repair_status.setAccessibleDescription("No repair requested.")
-        self._repair_status.setVisible(False)
+        self._action_status = QLabel("", self)
+        self._action_status.setObjectName("PanelSubtitle")
+        self._action_status.setAccessibleName("Health action status")
+        self._action_status.setAccessibleDescription("No health action requested.")
+        self._action_status.setVisible(False)
+        self._repair_status = self._action_status
         self._error_banner = AlertBanner(self)
         self._empty_state = EmptyStateWidget(self)
         self._empty_state.set_title("No health snapshot")
@@ -275,7 +301,9 @@ class HealthView(QWidget):
         header_row.setContentsMargins(0, 0, 0, 0)
         header_row.setSpacing(14)
         header_row.addWidget(self._header, 1)
-        header_row.addWidget(self._repair_status)
+        header_row.addWidget(self._action_status)
+        header_row.addWidget(self._cloud_sign_in_button)
+        header_row.addWidget(self._experiment_bundle_button)
         header_row.addWidget(self._repair_button)
 
         layout = QVBoxLayout(self)
@@ -290,6 +318,10 @@ class HealthView(QWidget):
         self._vm.changed.connect(self._refresh)
         self._vm.error_changed.connect(self._on_error_changed)
         self._vm.repair_requested.connect(self._on_repair_started)
+        self._vm.cloud_sign_in_requested.connect(self._on_cloud_sign_in_started)
+        self._vm.experiment_bundle_refresh_requested.connect(
+            self._on_experiment_bundle_refresh_started
+        )
         # Keep the alert timeline auto-scrolled to the latest event when
         # new rows land — operators watch the tail.
         self._vm.alerts_model().rowsInserted.connect(self._on_alerts_rows_inserted)
@@ -343,14 +375,57 @@ class HealthView(QWidget):
 
     def _refresh(self) -> None:
         snapshot = self._vm.snapshot()
+        self._cloud_sign_in_button.setEnabled(self._vm.cloud_sign_in_available())
+        self._experiment_bundle_button.setEnabled(self._vm.experiment_bundle_refresh_available())
         self._repair_button.setEnabled(self._vm.repair_available())
-        if self._vm.repair_in_progress():
-            self._repair_button.setText("Installing…")
-        else:
-            self._repair_button.setText("Repair install")
-            installing = self._repair_status.text() == "Installing runtime…"
-            if self._repair_status.isVisible() and installing:
-                self._repair_status.setText("Repair completed")
+
+        sign_in_copy = format_health_action_copy(
+            "cloud_sign_in",
+            stage=("progress" if self._vm.cloud_sign_in_in_progress() else "idle"),
+        )
+        refresh_copy = format_health_action_copy(
+            "experiment_bundle_refresh",
+            stage=(
+                "progress" if self._vm.experiment_bundle_refresh_in_progress() else "idle"
+            ),
+        )
+        repair_copy = format_health_action_copy(
+            "repair_install",
+            stage=("progress" if self._vm.repair_in_progress() else "idle"),
+        )
+        self._cloud_sign_in_button.setText(sign_in_copy.button_label)
+        self._experiment_bundle_button.setText(refresh_copy.button_label)
+        self._repair_button.setText(repair_copy.button_label)
+
+        action_state = self._vm.action_state()
+        if action_state == "cloud_sign_in_progress":
+            self._apply_action_status(
+                format_health_action_copy("cloud_sign_in", stage="progress")
+            )
+        elif action_state == "cloud_sign_in_success":
+            self._apply_action_status(
+                format_health_action_copy("cloud_sign_in", stage="success")
+            )
+        elif action_state == "experiment_bundle_refresh_progress":
+            self._apply_action_status(
+                format_health_action_copy("experiment_bundle_refresh", stage="progress")
+            )
+        elif action_state == "experiment_bundle_refresh_success":
+            self._apply_action_status(
+                format_health_action_copy("experiment_bundle_refresh", stage="success")
+            )
+        elif action_state == "repair_install_progress":
+            self._apply_action_status(
+                format_health_action_copy("repair_install", stage="progress")
+            )
+        elif action_state == "repair_install_success":
+            self._apply_action_status(
+                format_health_action_copy("repair_install", stage="success")
+            )
+        elif action_state.endswith("_failure"):
+            self._action_status.setVisible(False)
+        elif not self._action_status.text():
+            self._action_status.setVisible(False)
         if snapshot is None:
             self._empty_state.setVisible(True)
             self._scroll.setVisible(False)
@@ -421,9 +496,46 @@ class HealthView(QWidget):
 
     def _on_error_changed(self, message: str) -> None:
         if message:
-            self._error_banner.set_alert(AlertSeverity.WARNING, message)
+            action_state = self._vm.action_state()
+            if action_state == "cloud_sign_in_failure":
+                banner_message = format_health_action_error("cloud_sign_in", message)
+            elif action_state == "experiment_bundle_refresh_failure":
+                banner_message = format_health_action_error(
+                    "experiment_bundle_refresh",
+                    message,
+                )
+            elif action_state == "repair_install_failure":
+                banner_message = format_health_action_error("repair_install", message)
+            else:
+                banner_message = message
+            self._error_banner.set_alert(AlertSeverity.WARNING, banner_message)
+            self._action_status.setVisible(False)
+            self._action_status.setText("")
+            self._action_status.setAccessibleDescription("No health action requested.")
         else:
             self._error_banner.set_alert(None, None)
+
+    def _apply_action_status(self, copy: HealthActionCopy) -> None:
+        status_text = copy.status_text
+        accessible_description = copy.accessible_description
+        if status_text is None:
+            self._action_status.setVisible(False)
+            self._action_status.setText("")
+            self._action_status.setAccessibleDescription("No health action requested.")
+            return
+        self._action_status.setText(status_text)
+        self._action_status.setAccessibleDescription(
+            accessible_description or "Health action status."
+        )
+        self._action_status.setVisible(True)
+
+    def _on_cloud_sign_in_clicked(self) -> None:
+        if not self._vm.request_cloud_sign_in():
+            return
+
+    def _on_experiment_bundle_clicked(self) -> None:
+        if not self._vm.request_experiment_bundle_refresh():
+            return
 
     def _on_repair_clicked(self) -> None:
         # Repair install rebuilds the runtime; treat it as deliberate
@@ -447,12 +559,28 @@ class HealthView(QWidget):
         if not self._vm.request_repair():
             return
 
+    def _on_cloud_sign_in_started(self) -> None:
+        self._action_status.setText("Waiting for sign-in…")
+        self._action_status.setAccessibleDescription(
+            "Browser sign-in in progress for cloud sync and experiment refresh."
+        )
+        self._action_status.setVisible(True)
+        self._cloud_sign_in_button.setEnabled(False)
+        self._cloud_sign_in_button.setText("Signing in…")
+
+    def _on_experiment_bundle_refresh_started(self) -> None:
+        self._action_status.setText("Refreshing experiments…")
+        self._action_status.setAccessibleDescription("Experiment bundle refresh in progress.")
+        self._action_status.setVisible(True)
+        self._experiment_bundle_button.setEnabled(False)
+        self._experiment_bundle_button.setText("Refreshing…")
+
     def _on_repair_started(self) -> None:
-        self._repair_status.setText("Installing runtime…")
-        self._repair_status.setAccessibleDescription(
+        self._action_status.setText("Installing runtime…")
+        self._action_status.setAccessibleDescription(
             "Repair install in progress; subsystem rows will reflect recovery state."
         )
-        self._repair_status.setVisible(True)
+        self._action_status.setVisible(True)
         self._repair_button.setEnabled(False)
         self._repair_button.setText("Installing…")
 

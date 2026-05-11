@@ -165,6 +165,23 @@ class ActionBarSessionDisplay:
     expected_response_text: str | None
 
 
+HealthActionName = Literal[
+    "repair_install",
+    "cloud_sign_in",
+    "experiment_bundle_refresh",
+]
+HealthActionStage = Literal["idle", "progress", "success"]
+
+
+@dataclass(frozen=True)
+class HealthActionCopy:
+    """Operator-facing copy bundle for one Health header action."""
+
+    button_label: str
+    status_text: str | None
+    accessible_description: str | None
+
+
 @dataclass(frozen=True)
 class PhysiologyLabels:
     """Static labels for physiology and co-modulation cards."""
@@ -951,6 +968,76 @@ def format_action_bar_session_context(
         session_text=f"Session {session_id} — stimulus strategy: {strategy_part}",
         expected_response_text=response_text,
     )
+
+
+# §4.E.1 / §5.1.6 / §9.1: Health header actions stay on the current page,
+# with progress/success copy inline and failures routed to the AlertBanner.
+def format_health_action_copy(
+    action: HealthActionName,
+    *,
+    stage: HealthActionStage,
+) -> HealthActionCopy:
+    labels: dict[HealthActionName, str] = {
+        "repair_install": "Repair install",
+        "cloud_sign_in": "Cloud sign-in",
+        "experiment_bundle_refresh": "Refresh experiments",
+    }
+    if stage == "idle":
+        return HealthActionCopy(
+            button_label=labels[action],
+            status_text=None,
+            accessible_description=None,
+        )
+    if action == "cloud_sign_in":
+        if stage == "progress":
+            return HealthActionCopy(
+                button_label="Signing in…",
+                status_text="Waiting for sign-in…",
+                accessible_description=(
+                    "Browser sign-in in progress for cloud sync and experiment refresh."
+                ),
+            )
+        return HealthActionCopy(
+            button_label=labels[action],
+            status_text="Cloud sign-in completed",
+            accessible_description="Cloud sign-in completed for cloud sync and experiment refresh.",
+        )
+    if action == "experiment_bundle_refresh":
+        if stage == "progress":
+            return HealthActionCopy(
+                button_label="Refreshing…",
+                status_text="Refreshing experiments…",
+                accessible_description="Experiment bundle refresh in progress.",
+            )
+        return HealthActionCopy(
+            button_label=labels[action],
+            status_text="Experiments refreshed",
+            accessible_description="Experiment bundle refresh completed.",
+        )
+    if stage == "progress":
+        return HealthActionCopy(
+            button_label="Installing…",
+            status_text="Installing runtime…",
+            accessible_description=(
+                "Repair install in progress; subsystem rows will reflect recovery state."
+            ),
+        )
+    return HealthActionCopy(
+        button_label=labels[action],
+        status_text="Repair completed",
+        accessible_description="Repair install completed and readiness is refreshing.",
+    )
+
+
+# §5.1.6 / §9.1: experiment refresh requires a completed cloud sign-in first,
+# and the prerequisite copy is part of the operator contract.
+def format_health_action_error(action: HealthActionName, message: str) -> str:
+    normalized = message.strip()
+    if action == "experiment_bundle_refresh" and normalized.lower() == (
+        "cloud sign-in is required before refreshing experiments"
+    ):
+        return "Cloud sign-in is required before refreshing experiments."
+    return normalized or "Health action failed."
 
 
 def format_session_id_compact(session_id: UUID | str | None) -> str:

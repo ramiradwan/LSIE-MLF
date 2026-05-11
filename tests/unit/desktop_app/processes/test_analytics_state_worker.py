@@ -102,6 +102,7 @@ def _analytics_message(
     confidence_score: float = 0.5,
     transcription: str = TRANSCRIPTION,
     reward: dict[str, Any] | None = None,
+    attribution: dict[str, Any] | None = None,
 ) -> AnalyticsResultMessage:
     payload: dict[str, Any] = {
         "message_id": message_id,
@@ -118,6 +119,8 @@ def _analytics_message(
     }
     if reward is not None:
         payload["reward"] = reward
+    if attribution is not None:
+        payload["attribution"] = attribution
     return AnalyticsResultMessage.model_validate(payload)
 
 
@@ -184,10 +187,16 @@ class _ShutdownEvent:
 
 class _Outbox:
     def __init__(self) -> None:
-        self.enqueued: list[object] = []
+        self.enqueued: list[tuple[str, object]] = []
+
+    def enqueue_inference_handoff(self, handoff: object) -> None:
+        self.enqueued.append(("handoff", handoff))
+
+    def enqueue_attribution_event(self, event: object) -> None:
+        self.enqueued.append(("attribution_event", event))
 
     def enqueue_posterior_delta(self, delta: object) -> None:
-        self.enqueued.append(delta)
+        self.enqueued.append(("posterior_delta", delta))
 
 
 def test_processor_upserts_visual_state(tmp_path: Path) -> None:
@@ -336,9 +345,13 @@ def test_processor_updates_local_posterior_and_persists_analytics_rows(tmp_path:
     _prepare_db(db)
     processor = LocalAnalyticsProcessor(db, client_id="desktop-a")
 
-    delta = processor.process(_analytics_message())
+    enqueue_plan = processor.process(_analytics_message())
 
+    assert enqueue_plan is not None
+    delta = enqueue_plan.posterior_delta
     assert delta is not None
+    assert enqueue_plan.handoff.segment_id == SEGMENT_ID
+    assert enqueue_plan.attribution_event is None
     assert delta.experiment_id == 1
     assert delta.arm_id == "warm_welcome"
     assert delta.delta_alpha == pytest.approx(0.82, abs=1e-12)
@@ -416,7 +429,7 @@ def test_processor_ignores_inbound_reward_and_recomputes_from_handoff(tmp_path: 
     _prepare_db(db)
     processor = LocalAnalyticsProcessor(db, client_id="desktop-a")
 
-    delta = processor.process(
+    enqueue_plan = processor.process(
         _analytics_message(
             reward={
                 "gated_reward": 0.0,
@@ -429,6 +442,8 @@ def test_processor_ignores_inbound_reward_and_recomputes_from_handoff(tmp_path: 
         )
     )
 
+    assert enqueue_plan is not None
+    delta = enqueue_plan.posterior_delta
     assert delta is not None
     assert delta.delta_alpha == pytest.approx(0.82, abs=1e-12)
     assert delta.delta_beta == pytest.approx(0.18, abs=1e-12)
@@ -466,6 +481,7 @@ def test_processor_duplicate_identity_does_not_reapply_or_duplicate_rows(tmp_pat
     second = processor.process(second_message)
 
     assert first is not None
+    assert first.posterior_delta is not None
     assert second is None
     conn = sqlite3.connect(str(db), isolation_level=None)
     experiment = conn.execute(
@@ -544,10 +560,12 @@ def test_processor_uses_semantic_gate_without_confidence_or_physiology(tmp_path:
         }
     }
 
-    delta = processor.process(
+    enqueue_plan = processor.process(
         _analytics_message(handoff=payload, is_match=False, confidence_score=0.99)
     )
 
+    assert enqueue_plan is not None
+    delta = enqueue_plan.posterior_delta
     assert delta is not None
     assert delta.delta_alpha == 0.0
     assert delta.delta_beta == 1.0
@@ -566,9 +584,11 @@ def test_processor_persists_non_reward_rows_without_stimulus(tmp_path: Path) -> 
     _prepare_db(db)
     processor = LocalAnalyticsProcessor(db, client_id="desktop-a")
 
-    delta = processor.process(_analytics_message(handoff=_handoff_payload(stimulus_time=None)))
+    enqueue_plan = processor.process(_analytics_message(handoff=_handoff_payload(stimulus_time=None)))
 
-    assert delta is None
+    assert enqueue_plan is not None
+    assert enqueue_plan.posterior_delta is None
+    assert enqueue_plan.attribution_event is None
     conn = sqlite3.connect(str(db), isolation_level=None)
     encounter_count = conn.execute("SELECT COUNT(*) FROM encounter_log").fetchone()[0]
     transcript_count = conn.execute("SELECT COUNT(*) FROM transcripts").fetchone()[0]
@@ -588,21 +608,98 @@ def test_processor_persists_non_reward_rows_without_stimulus(tmp_path: Path) -> 
     assert experiment == pytest.approx((1.0, 1.0), abs=1e-12)
 
 
-def test_delta_enqueues_after_local_update(tmp_path: Path) -> None:
+def test_enqueue_plan_persists_handoff_and_delta_after_local_update(tmp_path: Path) -> None:
     db = tmp_path / "desktop.sqlite"
     _prepare_db(db)
     processor = LocalAnalyticsProcessor(db, client_id="desktop-a")
     outbox = CloudOutbox(db)
     try:
-        delta = processor.process(_analytics_message())
-        assert delta is not None
-        outbox.enqueue_posterior_delta(delta)
-        upload = outbox.fetch_ready_batch("telemetry_posterior_deltas", limit=1)[0]
+        enqueue_plan = processor.process(_analytics_message())
+        assert enqueue_plan is not None
+        assert enqueue_plan.attribution_event is None
+        assert enqueue_plan.posterior_delta is not None
+        outbox.enqueue_inference_handoff(enqueue_plan.handoff)
+        outbox.enqueue_posterior_delta(enqueue_plan.posterior_delta)
+        segment_upload = outbox.fetch_ready_batch("telemetry_segments", limit=1)[0]
+        delta_upload = outbox.fetch_ready_batch("telemetry_posterior_deltas", limit=1)[0]
     finally:
         outbox.close()
 
-    stored = json.loads(upload.payload_json)
-    assert upload.payload_type == "posterior_delta"
-    assert stored["segment_id"] == SEGMENT_ID
-    assert stored["delta_alpha"] == pytest.approx(0.82, abs=1e-12)
-    assert stored["delta_beta"] == pytest.approx(0.18, abs=1e-12)
+    segment_stored = json.loads(segment_upload.payload_json)
+    delta_stored = json.loads(delta_upload.payload_json)
+    assert segment_upload.payload_type == "inference_handoff"
+    assert segment_stored["segment_id"] == SEGMENT_ID
+    assert delta_upload.payload_type == "posterior_delta"
+    assert delta_stored["segment_id"] == SEGMENT_ID
+    assert delta_stored["delta_alpha"] == pytest.approx(0.82, abs=1e-12)
+    assert delta_stored["delta_beta"] == pytest.approx(0.18, abs=1e-12)
+
+
+def test_processor_builds_attribution_event_when_inputs_exist(tmp_path: Path) -> None:
+    db = tmp_path / "desktop.sqlite"
+    _prepare_db(db)
+    processor = LocalAnalyticsProcessor(db, client_id="desktop-a")
+
+    enqueue_plan = processor.process(
+        _analytics_message(
+            handoff=_handoff_payload(stimulus_time=100.0),
+            is_match=True,
+            confidence_score=0.8,
+            attribution={"_creator_follow": True},
+        )
+    )
+
+    assert enqueue_plan is not None
+    event = enqueue_plan.attribution_event
+    assert event is not None
+    assert event.segment_id == SEGMENT_ID
+    assert str(event.session_id) == SESSION_ID
+    assert event.selected_arm_id == "warm_welcome"
+    assert event.finality == "online_provisional"
+    assert event.semantic_p_match == pytest.approx(0.8, abs=1e-12)
+    assert event.semantic_reason_code == "cross_encoder_high_match"
+
+
+
+def test_run_loop_enqueues_handoff_before_posterior_delta(tmp_path: Path) -> None:
+    db = tmp_path / "desktop.sqlite"
+    _prepare_db(db)
+    shutdown = _ShutdownEvent()
+    inbox = _OneMessageInbox(_analytics_message().model_dump(mode="json", by_alias=True), shutdown)
+    processor = LocalAnalyticsProcessor(db, client_id="desktop-a")
+    outbox = _Outbox()
+
+    _run_loop(
+        cast("Any", shutdown),
+        cast("QueueLike", inbox),
+        processor,
+        cast("CloudOutbox", outbox),
+    )
+
+    assert [kind for kind, _ in outbox.enqueued] == ["handoff", "posterior_delta"]
+
+
+def test_run_loop_enqueues_attribution_event_before_posterior_delta(tmp_path: Path) -> None:
+    db = tmp_path / "desktop.sqlite"
+    _prepare_db(db)
+    shutdown = _ShutdownEvent()
+    message = _analytics_message(attribution={"_creator_follow": True}).model_dump(
+        mode="json",
+        by_alias=True,
+    )
+    inbox = _OneMessageInbox(message, shutdown)
+    processor = LocalAnalyticsProcessor(db, client_id="desktop-a")
+    outbox = _Outbox()
+
+    _run_loop(
+        cast("Any", shutdown),
+        cast("QueueLike", inbox),
+        processor,
+        cast("CloudOutbox", outbox),
+    )
+
+    assert [kind for kind, _ in outbox.enqueued] == [
+        "handoff",
+        "attribution_event",
+        "posterior_delta",
+    ]

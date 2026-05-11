@@ -252,16 +252,22 @@ def test_action_bar_ignores_live_session_of_other_session() -> None:
 # ---------------------------------------------------------------------
 
 
-def test_health_vm_repair_action_routes_to_coordinator() -> None:
+def test_health_vm_actions_route_to_coordinator() -> None:
     config = _make_config()
     store = build_store()
     coord = build_polling_coordinator(config, MagicMock(), store)
     returned_signals = OneShotSignals()
     coord.repair_install = MagicMock(return_value=returned_signals)  # type: ignore[method-assign]
+    coord.cloud_sign_in = MagicMock(return_value=OneShotSignals())  # type: ignore[method-assign]
+    coord.refresh_experiment_bundle = MagicMock(return_value=OneShotSignals())  # type: ignore[method-assign]
     window = build_main_window(config, store, coord)
 
     assert window._health_vm.request_repair() is True
+    assert window._health_vm.request_cloud_sign_in() is True
+    assert window._health_vm.request_experiment_bundle_refresh() is True
     coord.repair_install.assert_called_once_with()
+    coord.cloud_sign_in.assert_called_once_with()
+    coord.refresh_experiment_bundle.assert_called_once_with()
 
 
 def test_experiment_management_vm_signals_route_to_coordinator() -> None:
@@ -349,8 +355,8 @@ def test_stimulus_state_changed_reaches_action_bar() -> None:
     bar = window._action_bar
     assert bar._submit_button.text() == "Measuring…"
     assert bar._submit_button.isEnabled() is False
-    assert bar._countdown_label.isHidden() is False  # type: ignore[attr-defined]
-    assert "response window" in bar._message_label.text().lower()  # type: ignore[attr-defined]
+    assert bar._countdown_label.isHidden() is False
+    assert "response window" in bar._message_label.text().lower()
 
 
 def test_stimulus_success_with_time_starts_action_bar_countdown() -> None:
@@ -378,7 +384,7 @@ def test_stimulus_success_with_time_starts_action_bar_countdown() -> None:
     assert ctx.state == StimulusActionState.MEASURING
     assert ctx.authoritative_stimulus_time_utc == stimulus_time
     assert bar._submit_button.text() == "Measuring…"
-    assert bar._countdown_label.isHidden() is False  # type: ignore[attr-defined]
+    assert bar._countdown_label.isHidden() is False
 
 
 def test_stimulus_success_without_time_keeps_action_bar_accepted() -> None:
@@ -406,7 +412,7 @@ def test_stimulus_success_without_time_keeps_action_bar_accepted() -> None:
     assert ctx.state == StimulusActionState.ACCEPTED
     assert ctx.authoritative_stimulus_time_utc is None
     assert bar._submit_button.text() == "Accepted"
-    assert bar._countdown_label.isHidden() is True  # type: ignore[attr-defined]
+    assert bar._countdown_label.isHidden() is True
 
 
 def test_stimulus_success_rejected_marks_action_bar_failed() -> None:
@@ -434,7 +440,7 @@ def test_stimulus_success_rejected_marks_action_bar_failed() -> None:
     assert ctx.state == StimulusActionState.FAILED
     assert ctx.message == "Phone did not accept the stimulus."
     assert bar._submit_button.text() == "Retry"
-    assert bar._countdown_label.isHidden() is True  # type: ignore[attr-defined]
+    assert bar._countdown_label.isHidden() is True
 
 
 # ---------------------------------------------------------------------

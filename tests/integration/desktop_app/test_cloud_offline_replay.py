@@ -10,6 +10,7 @@ from typing import Final
 import httpx
 import pytest
 
+from packages.schemas.attribution import AttributionEvent
 from packages.schemas.cloud import PosteriorDelta
 from packages.schemas.inference_handoff import InferenceHandoffPayload
 from services.desktop_app.cloud.outbox import CloudOutbox
@@ -22,6 +23,7 @@ CLIENT_ID: Final[str] = "desktop-a"
 class OfflineReplaySink(httpx.AsyncBaseTransport):
     def __init__(self) -> None:
         self.segment_keys: set[tuple[str, str]] = set()
+        self.attribution_event_keys: set[str] = set()
         self.delta_keys: set[tuple[str, str, str]] = set()
         self.telemetry_posts = 0
         self.delta_posts = 0
@@ -36,12 +38,17 @@ class OfflineReplaySink(httpx.AsyncBaseTransport):
         if request.url.path == "/v4/telemetry/segments":
             self.telemetry_posts += 1
             body = json.loads(request.content)
-            accepted = len(body["segments"])
+            accepted = len(body["segments"]) + len(body["attribution_events"])
             inserted = 0
             for segment in body["segments"]:
                 key = (str(segment["session_id"]), str(segment["segment_id"]))
                 if key not in self.segment_keys:
                     self.segment_keys.add(key)
+                    inserted += 1
+            for event in body["attribution_events"]:
+                event_key = str(event["event_id"])
+                if event_key not in self.attribution_event_keys:
+                    self.attribution_event_keys.add(event_key)
                     inserted += 1
             return httpx.Response(
                 200,
@@ -156,6 +163,40 @@ def _posterior_delta(
     )
 
 
+def _attribution_event(
+    session_index: int,
+    segment_index: int,
+    sample_timestamp: datetime,
+) -> AttributionEvent:
+    segment_id = f"{session_index * 10_000 + segment_index:064x}"
+    return AttributionEvent(
+        event_id=uuid.UUID(
+            f"10000000-0000-4000-8000-{session_index * 10_000 + segment_index:012x}"
+        ),
+        session_id=uuid.UUID(_session_id(session_index)),
+        segment_id=segment_id,
+        event_type="greeting_interaction",
+        event_time_utc=sample_timestamp,
+        stimulus_time_utc=None,
+        selected_arm_id="arm_a",
+        expected_rule_text_hash=DECISION_CONTEXT_HASH,
+        semantic_method="cross_encoder",
+        semantic_method_version="ce-v1",
+        semantic_p_match=0.91,
+        semantic_reason_code=None,
+        reward_path_version="reward-v1",
+        bandit_decision_snapshot=_handoff_payload(
+            session_index,
+            segment_index,
+            sample_timestamp,
+        ).bandit_decision_snapshot,
+        evidence_flags=[],
+        finality="online_provisional",
+        schema_version="v1",
+        created_at=sample_timestamp,
+    )
+
+
 def _pending_upload_count(db_path: Path) -> int:
     conn = sqlite3.connect(str(db_path), isolation_level=None)
     try:
@@ -189,6 +230,13 @@ async def test_offline_replay_drains_exactly_once_after_duplicate_enqueue(
                 outbox.enqueue_inference_handoff(
                     _handoff_payload(session_index, segment_index, timestamp)
                 )
+                if segment_index % 3 == 0:
+                    outbox.enqueue_attribution_event(
+                        _attribution_event(session_index, segment_index, timestamp)
+                    )
+                    outbox.enqueue_attribution_event(
+                        _attribution_event(session_index, segment_index, timestamp)
+                    )
                 if segment_index % 2 == 0:
                     outbox.enqueue_posterior_delta(
                         _posterior_delta(session_index, segment_index, timestamp)
@@ -208,8 +256,9 @@ async def test_offline_replay_drains_exactly_once_after_duplicate_enqueue(
 
     assert _pending_upload_count(db_path) == 0
     assert len(sink.segment_keys) == 500
+    assert len(sink.attribution_event_keys) == 200
     assert len(sink.delta_keys) == 250
-    assert sink.telemetry_posts == 14
+    assert sink.telemetry_posts == 19
     assert sink.delta_posts == 7
 
 
@@ -229,6 +278,7 @@ async def test_offline_replay_is_idempotent_after_crash_before_delete(
         timestamp = datetime(2026, 5, 2, tzinfo=UTC)
         for segment_index in range(3):
             outbox.enqueue_inference_handoff(_handoff_payload(0, segment_index, timestamp))
+        outbox.enqueue_attribution_event(_attribution_event(0, 0, timestamp))
 
         config = CloudSyncConfig(base_url="https://cloud.example.test", batch_size=10)
         crashy_sink = CrashAfterTelemetrySink()
@@ -237,10 +287,11 @@ async def test_offline_replay_is_idempotent_after_crash_before_delete(
             with pytest.raises(RuntimeError, match="process crashed"):
                 await worker.sync_once(client)
 
-        assert _pending_upload_count(db_path) == 3
+        assert _pending_upload_count(db_path) == 4
         outbox.reset_stale_locks(before_utc="9999-12-31T23:59:59Z")
         recovery_sink = OfflineReplaySink()
         recovery_sink.segment_keys.update(crashy_sink.segment_keys)
+        recovery_sink.attribution_event_keys.update(crashy_sink.attribution_event_keys)
         recovery_worker = CloudSyncWorker(outbox, config)
         async with httpx.AsyncClient(base_url=config.base_url, transport=recovery_sink) as client:
             await recovery_worker.sync_once(client)
@@ -249,5 +300,6 @@ async def test_offline_replay_is_idempotent_after_crash_before_delete(
 
     assert _pending_upload_count(db_path) == 0
     assert len(recovery_sink.segment_keys) == 3
+    assert len(recovery_sink.attribution_event_keys) == 1
     assert crashy_sink.telemetry_posts == 1
     assert recovery_sink.telemetry_posts == 1

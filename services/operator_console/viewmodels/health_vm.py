@@ -26,6 +26,7 @@ from __future__ import annotations
 from collections import deque
 from collections.abc import Callable
 from datetime import UTC, datetime
+from typing import Literal
 
 from PySide6.QtCore import QObject, Signal
 
@@ -34,6 +35,11 @@ from packages.schemas.operator_console import (
     HealthSnapshot,
     HealthSubsystemProbe,
     UiStatusKind,
+)
+from services.operator_console.polling import (
+    JOB_CLOUD_SIGN_IN,
+    JOB_EXPERIMENT_BUNDLE_REFRESH,
+    JOB_REPAIR_INSTALL,
 )
 from services.operator_console.state import OperatorStore
 from services.operator_console.table_models.alerts_table_model import AlertsTableModel
@@ -60,13 +66,27 @@ _PROBE_UI_STATUS: dict[HealthProbeState, UiStatusKind] = {
 }
 
 
-RepairAction = Callable[[], OneShotSignals]
+HealthAction = Callable[[], OneShotSignals]
+HealthActionState = Literal[
+    "idle",
+    "repair_install_progress",
+    "repair_install_success",
+    "repair_install_failure",
+    "cloud_sign_in_progress",
+    "cloud_sign_in_success",
+    "cloud_sign_in_failure",
+    "experiment_bundle_refresh_progress",
+    "experiment_bundle_refresh_success",
+    "experiment_bundle_refresh_failure",
+]
 
 
 class HealthViewModel(ViewModelBase):
     """Owns the subsystem table + alerts feed."""
 
     repair_requested = Signal()
+    cloud_sign_in_requested = Signal()
+    experiment_bundle_refresh_requested = Signal()
 
     def __init__(
         self,
@@ -78,9 +98,14 @@ class HealthViewModel(ViewModelBase):
         super().__init__(store, parent)
         self._health_model = model
         self._alerts_model = alerts_model
-        self._repair_action: RepairAction | None = None
+        self._repair_action: HealthAction | None = None
+        self._cloud_sign_in_action: HealthAction | None = None
+        self._experiment_bundle_refresh_action: HealthAction | None = None
         self._probe_history: dict[str, deque[ProbeSparklineCell]] = {}
         self._repair_in_progress = False
+        self._cloud_sign_in_in_progress = False
+        self._experiment_bundle_refresh_in_progress = False
+        self._action_state: HealthActionState = "idle"
         store.health_changed.connect(self._on_health_changed)
         store.alerts_changed.connect(self._on_alerts_changed)
         store.error_changed.connect(self._on_error)
@@ -128,8 +153,14 @@ class HealthViewModel(ViewModelBase):
     def probe_history_capacity(self) -> int:
         return _PROBE_HISTORY_CAPACITY
 
-    def bind_repair_action(self, action: RepairAction) -> None:
+    def bind_repair_action(self, action: HealthAction) -> None:
         self._repair_action = action
+
+    def bind_cloud_sign_in_action(self, action: HealthAction) -> None:
+        self._cloud_sign_in_action = action
+
+    def bind_experiment_bundle_refresh_action(self, action: HealthAction) -> None:
+        self._experiment_bundle_refresh_action = action
 
     def repair_available(self) -> bool:
         return self._repair_action is not None and not self._repair_in_progress
@@ -137,13 +168,63 @@ class HealthViewModel(ViewModelBase):
     def repair_in_progress(self) -> bool:
         return self._repair_in_progress
 
+    def cloud_sign_in_available(self) -> bool:
+        return self._cloud_sign_in_action is not None and not self._cloud_sign_in_in_progress
+
+    def cloud_sign_in_in_progress(self) -> bool:
+        return self._cloud_sign_in_in_progress
+
+    def experiment_bundle_refresh_available(self) -> bool:
+        return (
+            self._experiment_bundle_refresh_action is not None
+            and not self._experiment_bundle_refresh_in_progress
+        )
+
+    def experiment_bundle_refresh_in_progress(self) -> bool:
+        return self._experiment_bundle_refresh_in_progress
+
     def request_repair(self) -> bool:
         if self._repair_action is None or self._repair_in_progress:
             return False
+        self.set_error(None)
         self._repair_in_progress = True
+        self._action_state = "repair_install_progress"
         self.repair_requested.emit()
         signals = self._repair_action()
+        signals.succeeded.connect(self._on_repair_succeeded)
+        signals.failed.connect(self._on_repair_failed)
         signals.finished.connect(self._on_repair_finished)
+        self.emit_changed()
+        return True
+
+    def request_cloud_sign_in(self) -> bool:
+        if self._cloud_sign_in_action is None or self._cloud_sign_in_in_progress:
+            return False
+        self.set_error(None)
+        self._cloud_sign_in_in_progress = True
+        self._action_state = "cloud_sign_in_progress"
+        self.cloud_sign_in_requested.emit()
+        signals = self._cloud_sign_in_action()
+        signals.succeeded.connect(self._on_cloud_sign_in_succeeded)
+        signals.failed.connect(self._on_cloud_sign_in_failed)
+        signals.finished.connect(self._on_cloud_sign_in_finished)
+        self.emit_changed()
+        return True
+
+    def request_experiment_bundle_refresh(self) -> bool:
+        if (
+            self._experiment_bundle_refresh_action is None
+            or self._experiment_bundle_refresh_in_progress
+        ):
+            return False
+        self.set_error(None)
+        self._experiment_bundle_refresh_in_progress = True
+        self._action_state = "experiment_bundle_refresh_progress"
+        self.experiment_bundle_refresh_requested.emit()
+        signals = self._experiment_bundle_refresh_action()
+        signals.succeeded.connect(self._on_experiment_bundle_refresh_succeeded)
+        signals.failed.connect(self._on_experiment_bundle_refresh_failed)
+        signals.finished.connect(self._on_experiment_bundle_refresh_finished)
         self.emit_changed()
         return True
 
@@ -160,6 +241,9 @@ class HealthViewModel(ViewModelBase):
         if snap is None:
             return 0
         return snap.degraded_count + snap.recovering_count
+
+    def action_state(self) -> HealthActionState:
+        return self._action_state
 
     # ------------------------------------------------------------------
     # Slots
@@ -201,14 +285,68 @@ class HealthViewModel(ViewModelBase):
                 )
             )
 
+    def _on_repair_succeeded(self, _job: str, _payload: object) -> None:
+        self._action_state = "repair_install_success"
+        self.set_error(None)
+        self.emit_changed()
+
+    def _on_repair_failed(self, _job: str, _error: object) -> None:
+        self._action_state = "repair_install_failure"
+        self.emit_changed()
+
     def _on_repair_finished(self, _job: str) -> None:
         self._repair_in_progress = False
         self.emit_changed()
 
+    def _on_cloud_sign_in_succeeded(self, _job: str, _payload: object) -> None:
+        self._action_state = "cloud_sign_in_success"
+        self.set_error(None)
+        self.emit_changed()
+
+    def _on_cloud_sign_in_failed(self, _job: str, _error: object) -> None:
+        self._action_state = "cloud_sign_in_failure"
+        self.emit_changed()
+
+    def _on_cloud_sign_in_finished(self, _job: str) -> None:
+        self._cloud_sign_in_in_progress = False
+        self.emit_changed()
+
+    def _on_experiment_bundle_refresh_succeeded(self, _job: str, _payload: object) -> None:
+        self._action_state = "experiment_bundle_refresh_success"
+        self.set_error(None)
+        self.emit_changed()
+
+    def _on_experiment_bundle_refresh_failed(self, _job: str, _error: object) -> None:
+        self._action_state = "experiment_bundle_refresh_failure"
+        self.emit_changed()
+
+    def _on_experiment_bundle_refresh_finished(self, _job: str) -> None:
+        self._experiment_bundle_refresh_in_progress = False
+        self.emit_changed()
+
     def _on_error(self, scope: str, message: str) -> None:
-        if scope in ("health", "alerts"):
+        if scope in (
+            "health",
+            "alerts",
+            JOB_REPAIR_INSTALL,
+            JOB_CLOUD_SIGN_IN,
+            JOB_EXPERIMENT_BUNDLE_REFRESH,
+        ):
+            if scope == JOB_REPAIR_INSTALL:
+                self._action_state = "repair_install_failure"
+            elif scope == JOB_CLOUD_SIGN_IN:
+                self._action_state = "cloud_sign_in_failure"
+            elif scope == JOB_EXPERIMENT_BUNDLE_REFRESH:
+                self._action_state = "experiment_bundle_refresh_failure"
             self.set_error(message)
+            self.emit_changed()
 
     def _on_error_cleared(self, scope: str) -> None:
-        if scope in ("health", "alerts"):
+        if scope in (
+            "health",
+            "alerts",
+            JOB_REPAIR_INSTALL,
+            JOB_CLOUD_SIGN_IN,
+            JOB_EXPERIMENT_BUNDLE_REFRESH,
+        ):
             self.set_error(None)

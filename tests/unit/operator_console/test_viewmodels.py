@@ -1466,3 +1466,13 @@ def test_health_vm_sync_alerts_model() -> None:
         ]
     )
     assert alerts.rowCount() == 1
+
+
+def test_health_vm_routes_repair_scope_errors_to_page_error() -> None:
+    store = OperatorStore()
+    vm = HealthViewModel(store, HealthTableModel(), AlertsTableModel())
+
+    store.set_error("repair_install", "repair failed")
+
+    assert vm.error() == "repair failed"
+    assert vm.action_state() == "repair_install_failure"

@@ -20,6 +20,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 from uuid import UUID, uuid4
@@ -27,6 +28,11 @@ from uuid import UUID, uuid4
 import pytest
 from PySide6.QtCore import QCoreApplication, QElapsedTimer, QEventLoop, Qt, QThread
 
+from packages.schemas.cloud import (
+    ExperimentBundle,
+    ExperimentBundleArm,
+    ExperimentBundleExperiment,
+)
 from packages.schemas.experiments import (
     ExperimentAdminResponse,
     ExperimentArmAdminResponse,
@@ -53,13 +59,16 @@ from packages.schemas.operator_console import (
     StimulusAccepted,
     StimulusRequest,
 )
+from packages.schemas.cloud import OAuthTokenResponse
 from services.operator_console.api_client import ApiClient, ApiError
 from services.operator_console.config import OperatorConsoleConfig, load_config
 from services.operator_console.polling import (
     JOB_ALERTS,
+    JOB_CLOUD_SIGN_IN,
     JOB_ENCOUNTERS,
     JOB_EVENT_STREAM,
     JOB_EXPERIMENT,
+    JOB_EXPERIMENT_BUNDLE_REFRESH,
     JOB_EXPERIMENT_SUMMARIES,
     JOB_HEALTH,
     JOB_LIVE_SESSION,
@@ -392,7 +401,7 @@ class TestEventStreamCoordination:
 
         client = _Client()
         worker = EventStreamWorker(client)  # type: ignore[arg-type]
-        worker._handle_open(client.response)  # type: ignore[attr-defined]
+        worker._handle_open(client.response)
 
         worker.stop()
 
@@ -666,6 +675,8 @@ class _FakeOneShot:
         if self._mode == "success":
             try:
                 result = self._fn()
+            except ApiError as exc:
+                self.signals.failed.emit(self._job_name, exc)
             except Exception as exc:
                 self.signals.failed.emit(self._job_name, ApiError(message=str(exc)))
             else:
@@ -788,6 +799,208 @@ class TestRepairOneShot:
         assert (JOB_REPAIR_INSTALL, "boom") in emissions
         assert JOB_HEALTH not in harness.refresh_calls
         assert coord._inflight_repairs == {}
+
+
+# ----------------------------------------------------------------------
+# Cloud one-shots — success refreshes cloud-adjacent readbacks
+# ----------------------------------------------------------------------
+
+
+class TestCloudOneShot:
+    def _patch_one_shot(self, mode: str) -> tuple[Any, list[_FakeOneShot]]:
+        registry: list[_FakeOneShot] = []
+
+        def fake_run_one_shot(job_name: str, fn: Callable[[], object]) -> OneShotSignals:
+            inst = _FakeOneShot(job_name, fn, mode)
+            registry.append(inst)
+            return inst.signals
+
+        return fake_run_one_shot, registry
+
+    def test_cloud_sign_in_success_refreshes_health_and_experiment_readbacks(
+        self, harness: _CoordinatorHarness
+    ) -> None:
+        coord = harness.coordinator
+        coord._store.set_error(JOB_CLOUD_SIGN_IN, "previous sign-in failure")
+        fake, registry = self._patch_one_shot("success")
+
+        class _Flow:
+            def __init__(self, _config: object) -> None:
+                return None
+
+            def run_loopback_authorization(self) -> object:
+                return object()
+
+        with (
+            patch("services.operator_console.polling.DesktopAuthFlow", _Flow),
+            patch("services.operator_console.polling.run_one_shot", fake, create=False),
+        ):
+            coord.cloud_sign_in()
+            assert registry[0]._job_name == JOB_CLOUD_SIGN_IN
+            assert len(coord._inflight_cloud_actions) == 1
+            registry[0].fire()
+
+        assert coord._store.error(JOB_CLOUD_SIGN_IN) is None
+        assert JOB_EXPERIMENT in harness.refresh_calls
+        assert JOB_EXPERIMENT_SUMMARIES in harness.refresh_calls
+        assert JOB_HEALTH in harness.refresh_calls
+        assert JOB_ALERTS in harness.refresh_calls
+        assert coord._inflight_cloud_actions == {}
+
+    def test_cloud_sign_in_failure_surfaces_error(self, harness: _CoordinatorHarness) -> None:
+        coord = harness.coordinator
+        fake, registry = self._patch_one_shot("failure")
+        emissions: list[tuple[str, str]] = []
+        coord.job_failed.connect(lambda *args: emissions.append(tuple(args)))
+
+        with patch("services.operator_console.polling.run_one_shot", fake, create=False):
+            coord.cloud_sign_in()
+            registry[0].fire()
+
+        assert coord._store.error(JOB_CLOUD_SIGN_IN) == "boom"
+        assert (JOB_CLOUD_SIGN_IN, "boom") in emissions
+        assert JOB_HEALTH not in harness.refresh_calls
+        assert coord._inflight_cloud_actions == {}
+
+    def test_experiment_bundle_refresh_success_fetches_and_caches_bundle(
+        self, harness: _CoordinatorHarness
+    ) -> None:
+        coord = harness.coordinator
+        coord._store.set_error(JOB_EXPERIMENT_BUNDLE_REFRESH, "previous refresh failure")
+        fake, registry = self._patch_one_shot("success")
+        emissions: list[tuple[str, str]] = []
+        coord.job_failed.connect(lambda *args: emissions.append(tuple(args)))
+        state_dir = Path("health-cloud-state")
+        events: list[tuple[object, ...]] = []
+        bundle = ExperimentBundle(
+            bundle_id="bundle-a",
+            issued_at_utc=_utc(2026, 5, 2, 12, 0),
+            expires_at_utc=_utc(2036, 5, 3, 12, 0),
+            policy_version="v4.0",
+            experiments=[
+                ExperimentBundleExperiment(
+                    experiment_id="experiment-a",
+                    label="Experiment A",
+                    arms=[
+                        ExperimentBundleArm(
+                            arm_id="arm-a",
+                            greeting_text="Hello A",
+                            posterior_alpha=2.0,
+                            posterior_beta=3.0,
+                        )
+                    ],
+                )
+            ],
+            signature="sig",
+        )
+
+        class _CloudConfig:
+            base_url = "https://cloud.example.test"
+            client_id = "desktop-a"
+            timeout_s = 9.0
+
+        class _Flow:
+            def __init__(self, config: object) -> None:
+                events.append(
+                    (
+                        "flow_init",
+                        getattr(config, "client_id"),
+                        getattr(config, "authorization_endpoint"),
+                        getattr(config, "token_endpoint"),
+                    )
+                )
+
+            def refresh_access_token(self, *, refresh_token: str) -> OAuthTokenResponse:
+                events.append(("refresh_access_token", refresh_token))
+                return OAuthTokenResponse(
+                    access_token="access-a",
+                    expires_in=3600,
+                    refresh_token="refresh-a",
+                )
+
+        class _Client:
+            def __init__(self, base_url: str, *, timeout_s: float = 15.0) -> None:
+                events.append(("client_init", base_url, timeout_s))
+
+            def fetch_bundle(self, *, access_token: str) -> ExperimentBundle:
+                events.append(("fetch_bundle", access_token))
+                return bundle
+
+        class _Store:
+            def __init__(self, db_path: Path) -> None:
+                events.append(("store_init", db_path.parent, db_path.name))
+
+            def cache_verified_bundle(self, cached_bundle: ExperimentBundle) -> None:
+                events.append(("cache_verified_bundle", cached_bundle.bundle_id))
+
+            def close(self) -> None:
+                events.append(("close",))
+
+        def fake_get_secret(_key: str) -> str:
+            events.append(("get_secret",))
+            return "refresh-token"
+
+        with (
+            patch("services.operator_console.polling.CloudSyncConfig.from_env", lambda: _CloudConfig()),
+            patch("services.operator_console.polling.get_secret", fake_get_secret),
+            patch("services.operator_console.polling.DesktopAuthFlow", _Flow),
+            patch("services.operator_console.polling.ExperimentBundleClient", _Client),
+            patch("services.operator_console.polling.ExperimentBundleStore", _Store),
+            patch("services.operator_console.polling.resolve_state_dir", lambda: state_dir),
+            patch("services.operator_console.polling.run_one_shot", fake, create=False),
+        ):
+            coord.refresh_experiment_bundle()
+            assert registry[0]._job_name == JOB_EXPERIMENT_BUNDLE_REFRESH
+            assert len(coord._inflight_cloud_actions) == 1
+            registry[0].fire()
+
+        assert coord._store.error(JOB_EXPERIMENT_BUNDLE_REFRESH) is None
+        assert emissions == []
+        assert harness.refresh_calls == [
+            JOB_EXPERIMENT,
+            JOB_EXPERIMENT_SUMMARIES,
+            JOB_HEALTH,
+            JOB_ALERTS,
+        ]
+        assert coord._inflight_cloud_actions == {}
+        assert events == [
+            ("get_secret",),
+            (
+                "flow_init",
+                "desktop-a",
+                "https://cloud.example.test/v4/auth/oauth/authorize",
+                "https://cloud.example.test/v4/auth/oauth/token",
+            ),
+            ("refresh_access_token", "refresh-token"),
+            ("client_init", "https://cloud.example.test", 9.0),
+            ("fetch_bundle", "access-a"),
+            ("store_init", state_dir, "desktop.sqlite"),
+            ("cache_verified_bundle", "bundle-a"),
+            ("close",),
+        ]
+
+    def test_experiment_bundle_refresh_requires_cloud_sign_in(
+        self, harness: _CoordinatorHarness
+    ) -> None:
+        coord = harness.coordinator
+        fake, registry = self._patch_one_shot("success")
+        emissions: list[tuple[str, str]] = []
+        coord.job_failed.connect(lambda *args: emissions.append(tuple(args)))
+
+        with (
+            patch("services.operator_console.polling.get_secret", lambda _key: None),
+            patch("services.operator_console.polling.run_one_shot", fake, create=False),
+        ):
+            coord.refresh_experiment_bundle()
+            assert registry[0]._job_name == JOB_EXPERIMENT_BUNDLE_REFRESH
+            registry[0].fire()
+
+        assert coord._store.error(JOB_EXPERIMENT_BUNDLE_REFRESH) == (
+            "Cloud sign-in is required before refreshing experiments."
+        )
+        assert emissions[0][0] == JOB_EXPERIMENT_BUNDLE_REFRESH
+        assert JOB_EXPERIMENT not in harness.refresh_calls
+        assert coord._inflight_cloud_actions == {}
 
 
 # ----------------------------------------------------------------------

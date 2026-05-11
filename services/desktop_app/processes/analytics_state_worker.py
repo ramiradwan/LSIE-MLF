@@ -14,14 +14,19 @@ import os
 import queue
 import sqlite3
 import uuid
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
 
+from packages.ml_core.attribution import build_attribution_ledger_records
+from packages.schemas.attribution import AttributionEvent
 from packages.schemas.cloud import PosteriorDelta
+from packages.schemas.inference_handoff import InferenceHandoffPayload
 from services.desktop_app.cloud.outbox import CloudOutbox
 from services.desktop_app.ipc import IpcChannels
 from services.desktop_app.ipc.control_messages import (
+    AnalyticsAttributionInputs,
     AnalyticsResultMessage,
     VisualAnalyticsStateMessage,
 )
@@ -61,6 +66,14 @@ class QueueLike(Protocol):
     def get(self, block: bool = True, timeout: float | None = None) -> object: ...
 
 
+# §9.2: keep cloud-bound artifacts together so enqueue order stays segment-first.
+@dataclass(frozen=True)
+class _CloudAnalyticsEnqueuePlan:
+    handoff: InferenceHandoffPayload
+    attribution_event: AttributionEvent | None
+    posterior_delta: PosteriorDelta | None
+
+
 class LocalAnalyticsProcessor:
     def __init__(self, db_path: Path, *, client_id: str) -> None:
         self._db_path = db_path
@@ -75,7 +88,7 @@ class LocalAnalyticsProcessor:
         self._conn.row_factory = sqlite3.Row
         apply_writer_pragmas(self._conn)
 
-    def process(self, raw: object) -> PosteriorDelta | None:
+    def process(self, raw: object) -> _CloudAnalyticsEnqueuePlan | None:
         message = AnalyticsResultMessage.model_validate(raw)
         handoff = message.handoff
         reward: RewardResult | None = None
@@ -84,6 +97,7 @@ class LocalAnalyticsProcessor:
 
         if handoff.stimulus_time is not None:
             is_match = message.semantic.is_match
+            # §7B: recompute the gated reward from the validated handoff payload.
             reward = compute_reward(
                 au12_series=[
                     TimestampedAU12(timestamp_s=obs.timestamp_s, intensity=obs.intensity)
@@ -117,7 +131,20 @@ class LocalAnalyticsProcessor:
             reward=reward,
             delta=delta,
         )
-        return delta if applied and delta is not None else None
+        if not applied:
+            return None
+        # §6.1 / §6.4.1 / §7E / §9.2: hand off the validated segment payload,
+        # the optional online-provisional AttributionEvent, and the optional
+        # posterior delta together so the caller can preserve cloud ordering.
+        return _CloudAnalyticsEnqueuePlan(
+            handoff=message.handoff,
+            attribution_event=_build_attribution_event(
+                message,
+                reward=reward,
+                applied_at_utc=applied_at_utc,
+            ),
+            posterior_delta=delta,
+        )
 
     def process_visual_state(self, raw: object) -> None:
         message = VisualAnalyticsStateMessage.model_validate(raw)
@@ -188,9 +215,18 @@ def _run_loop(
                 raise ValueError(
                     f"Unsupported analytics message schema_version: {schema_version!r}"
                 )
-            delta = processor.process(raw)
-            if delta is not None:
-                outbox.enqueue_posterior_delta(delta)
+            enqueue_plan = processor.process(raw)
+            if enqueue_plan is not None:
+                # §9.2: the cloud path requires the segment payload before any
+                # related attribution event or posterior delta reaches the outbox.
+                outbox.enqueue_inference_handoff(enqueue_plan.handoff)
+                if enqueue_plan.attribution_event is not None:
+                    # §6.4.1 / §7E: live desktop sync emits only the
+                    # online_provisional AttributionEvent between segment and delta.
+                    outbox.enqueue_attribution_event(enqueue_plan.attribution_event)
+                delta = enqueue_plan.posterior_delta
+                if delta is not None:
+                    outbox.enqueue_posterior_delta(delta)
         except Exception:  # noqa: BLE001
             logger.exception("analytics_state_worker discarded malformed analytics message")
 
@@ -302,11 +338,65 @@ def _upsert_live_session_state(
 
 
 def _schema_version(raw: object) -> str | None:
+    # §6.1: the worker accepts only the typed analytics and visual-state
+    # schemas on its inbox, so the dispatcher normalizes schema_version first.
     if isinstance(raw, dict):
         value = raw.get("schema_version")
     else:
         value = getattr(raw, "schema_version", None)
     return value if isinstance(value, str) else None
+
+
+# §6.4.1 / §7E: desktop live upload emits only the online-provisional
+# AttributionEvent surface; offline finalization remains a separate deferred path.
+def _build_attribution_event(
+    message: AnalyticsResultMessage,
+    *,
+    reward: RewardResult | None,
+    applied_at_utc: datetime,
+) -> AttributionEvent | None:
+    attribution = message.attribution
+    if attribution is None or not _has_attribution_inputs(attribution):
+        return None
+    metrics: dict[str, Any] = {
+        "session_id": str(message.handoff.session_id),
+        "segment_id": message.handoff.segment_id,
+        "timestamp_utc": message.handoff.timestamp_utc,
+        "_active_arm": message.handoff.active_arm,
+        "_expected_greeting": message.handoff.expected_greeting,
+        "_stimulus_time": message.handoff.stimulus_time,
+        "_au12_series": [
+            observation.model_dump(mode="python") for observation in message.handoff.au12_series
+        ],
+        "_bandit_decision_snapshot": message.handoff.bandit_decision_snapshot.model_dump(
+            mode="python",
+            by_alias=True,
+        ),
+        "semantic": message.semantic.model_dump(mode="python", by_alias=True),
+    }
+    if attribution.outcome_event is not None:
+        metrics["_outcome_event"] = attribution.outcome_event
+    if attribution.outcome_events is not None:
+        metrics["_outcome_events"] = attribution.outcome_events
+    if attribution.creator_follow is not None:
+        metrics["_creator_follow"] = attribution.creator_follow
+    ledger = build_attribution_ledger_records(
+        metrics,
+        reward_result=reward,
+        created_at=applied_at_utc,
+    )
+    return None if ledger is None else ledger.event
+
+
+def _has_attribution_inputs(attribution: AnalyticsAttributionInputs) -> bool:
+    return any(
+        value is not None and value != []
+        for value in (
+            attribution.outcome_event,
+            attribution.outcome_events,
+            attribution.creator_follow,
+        )
+    )
 
 
 def _metrics_record(message: AnalyticsResultMessage) -> dict[str, Any]:
