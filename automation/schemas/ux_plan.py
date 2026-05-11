@@ -108,9 +108,7 @@ class UxPlan(_StrictModel):
                 seen.add(component.object_name)
         if duplicates:
             unique_duplicates = sorted(set(duplicates))
-            raise ValueError(
-                "duplicate object_name values: " + ", ".join(unique_duplicates)
-            )
+            raise ValueError("duplicate object_name values: " + ", ".join(unique_duplicates))
         return self
 
     @model_validator(mode="after")
@@ -118,13 +116,9 @@ class UxPlan(_StrictModel):
         duplicate_files = _duplicates(self.target_files)
         duplicate_symbols = _duplicates(self.target_symbols)
         if duplicate_files:
-            raise ValueError(
-                "duplicate target_files values: " + ", ".join(duplicate_files)
-            )
+            raise ValueError("duplicate target_files values: " + ", ".join(duplicate_files))
         if duplicate_symbols:
-            raise ValueError(
-                "duplicate target_symbols values: " + ", ".join(duplicate_symbols)
-            )
+            raise ValueError("duplicate target_symbols values: " + ", ".join(duplicate_symbols))
         return self
 
 

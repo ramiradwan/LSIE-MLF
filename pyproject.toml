@@ -104,4 +104,4 @@ select = ["E", "F", "I", "N", "W", "UP", "ANN", "B", "SIM"]
 ignore = ["ANN401"]
 
 [tool.ruff.lint.isort]
-known-first-party = ["packages", "services"]
+known-first-party = ["automation", "packages", "services"]

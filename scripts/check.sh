@@ -10,6 +10,8 @@
 
 set -e
 
+export PATH="$HOME/.local/bin:$USERPROFILE/.local/bin:$PATH"
+
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -31,7 +33,7 @@ echo ""
 
 # 1. Ruff lint
 echo "── Ruff lint ──"
-if uv run ruff check packages/ services/ tests/; then
+if uv run ruff check packages/ services/ tests/ automation/; then
     pass "Ruff lint"
 else
     fail "Ruff lint"
@@ -40,7 +42,7 @@ echo ""
 
 # 2. Ruff format
 echo "── Ruff format ──"
-if uv run ruff format --check packages/ services/ tests/; then
+if uv run ruff format --check packages/ services/ tests/ automation/; then
     pass "Ruff format"
 else
     fail "Ruff format"
@@ -49,7 +51,7 @@ echo ""
 
 # 3. Mypy — scope and flags MUST match ci.yml lint-and-typecheck job.
 echo "── Mypy type check ──"
-if uv run mypy packages/ services/ tests/ --python-version 3.11 --ignore-missing-imports --explicit-package-bases; then
+if uv run mypy packages/ services/ tests/ automation/ --python-version 3.11 --ignore-missing-imports --explicit-package-bases; then
     pass "Mypy type check"
 else
     fail "Mypy type check"

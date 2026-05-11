@@ -662,7 +662,6 @@ def test_processor_builds_attribution_event_when_inputs_exist(tmp_path: Path) ->
     assert event.semantic_reason_code == "cross_encoder_high_match"
 
 
-
 def test_processor_persists_online_provisional_attribution_ledger_rows(tmp_path: Path) -> None:
     db = tmp_path / "desktop.sqlite"
     _prepare_db(db)

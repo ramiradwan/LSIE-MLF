@@ -56,9 +56,9 @@ Python 3.11.x only (3.12+ breaks CTranslate2). The v4 desktop runtime launches t
 bash scripts/check.sh
 
 # Individual enforced gates
-uv run ruff check packages/ services/ tests/
-uv run ruff format --check packages/ services/ tests/
-uv run mypy packages/ services/ tests/ --python-version 3.11 --ignore-missing-imports --explicit-package-bases
+uv run ruff check packages/ services/ tests/ automation/
+uv run ruff format --check packages/ services/ tests/ automation/
+uv run mypy packages/ services/ tests/ automation/ --python-version 3.11 --ignore-missing-imports --explicit-package-bases
 uv run pytest tests/ -x -q --tb=short
 uv run python scripts/check_schema_consistency.py
 uv run python scripts/run_audit.py --strict

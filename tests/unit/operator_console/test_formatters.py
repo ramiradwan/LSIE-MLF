@@ -132,10 +132,13 @@ class TestPrimitives:
         assert refresh_success.status_text == "Experiments refreshed"
 
     def test_health_action_error_normalizes_refresh_prerequisite_copy(self) -> None:
-        assert format_health_action_error(
-            "experiment_bundle_refresh",
-            "cloud sign-in is required before refreshing experiments",
-        ) == "Cloud sign-in is required before refreshing experiments."
+        assert (
+            format_health_action_error(
+                "experiment_bundle_refresh",
+                "cloud sign-in is required before refreshing experiments",
+            )
+            == "Cloud sign-in is required before refreshing experiments."
+        )
 
 
 # ----------------------------------------------------------------------

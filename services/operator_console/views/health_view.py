@@ -385,9 +385,7 @@ class HealthView(QWidget):
         )
         refresh_copy = format_health_action_copy(
             "experiment_bundle_refresh",
-            stage=(
-                "progress" if self._vm.experiment_bundle_refresh_in_progress() else "idle"
-            ),
+            stage=("progress" if self._vm.experiment_bundle_refresh_in_progress() else "idle"),
         )
         repair_copy = format_health_action_copy(
             "repair_install",
@@ -399,13 +397,9 @@ class HealthView(QWidget):
 
         action_state = self._vm.action_state()
         if action_state == "cloud_sign_in_progress":
-            self._apply_action_status(
-                format_health_action_copy("cloud_sign_in", stage="progress")
-            )
+            self._apply_action_status(format_health_action_copy("cloud_sign_in", stage="progress"))
         elif action_state == "cloud_sign_in_success":
-            self._apply_action_status(
-                format_health_action_copy("cloud_sign_in", stage="success")
-            )
+            self._apply_action_status(format_health_action_copy("cloud_sign_in", stage="success"))
         elif action_state == "experiment_bundle_refresh_progress":
             self._apply_action_status(
                 format_health_action_copy("experiment_bundle_refresh", stage="progress")
@@ -415,16 +409,10 @@ class HealthView(QWidget):
                 format_health_action_copy("experiment_bundle_refresh", stage="success")
             )
         elif action_state == "repair_install_progress":
-            self._apply_action_status(
-                format_health_action_copy("repair_install", stage="progress")
-            )
+            self._apply_action_status(format_health_action_copy("repair_install", stage="progress"))
         elif action_state == "repair_install_success":
-            self._apply_action_status(
-                format_health_action_copy("repair_install", stage="success")
-            )
-        elif action_state.endswith("_failure"):
-            self._action_status.setVisible(False)
-        elif not self._action_status.text():
+            self._apply_action_status(format_health_action_copy("repair_install", stage="success"))
+        elif action_state.endswith("_failure") or not self._action_status.text():
             self._action_status.setVisible(False)
         if snapshot is None:
             self._empty_state.setVisible(True)

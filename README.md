@@ -212,9 +212,9 @@ For desktop-runtime changes, run targeted desktop validation first:
 
 ```bash
 uv run pytest tests/v4_gate0/ tests/unit/desktop_app/ tests/integration/desktop_app/ tests/unit/worker/pipeline/test_orchestrator.py
-uv run ruff check packages/ services/ tests/
-uv run ruff format --check packages/ services/ tests/
-uv run mypy packages/ services/ tests/ --python-version 3.11 --ignore-missing-imports --explicit-package-bases
+uv run ruff check packages/ services/ tests/ automation/
+uv run ruff format --check packages/ services/ tests/ automation/
+uv run mypy packages/ services/ tests/ automation/ --python-version 3.11 --ignore-missing-imports --explicit-package-bases
 ```
 
 The full local check scripts are still available for repository-wide pre-push validation:

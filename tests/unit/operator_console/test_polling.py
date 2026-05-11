@@ -21,7 +21,7 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 from unittest.mock import patch
 from uuid import UUID, uuid4
 
@@ -32,6 +32,7 @@ from packages.schemas.cloud import (
     ExperimentBundle,
     ExperimentBundleArm,
     ExperimentBundleExperiment,
+    OAuthTokenResponse,
 )
 from packages.schemas.experiments import (
     ExperimentAdminResponse,
@@ -59,7 +60,6 @@ from packages.schemas.operator_console import (
     StimulusAccepted,
     StimulusRequest,
 )
-from packages.schemas.cloud import OAuthTokenResponse
 from services.operator_console.api_client import ApiClient, ApiError
 from services.operator_console.config import OperatorConsoleConfig, load_config
 from services.operator_console.polling import (
@@ -94,6 +94,12 @@ from services.operator_console.workers import (
 )
 
 pytestmark = pytest.mark.usefixtures("qt_app")
+
+
+class _DesktopAuthConfig(Protocol):
+    client_id: str
+    authorization_endpoint: str
+    token_endpoint: str
 
 
 # ----------------------------------------------------------------------
@@ -900,13 +906,13 @@ class TestCloudOneShot:
             timeout_s = 9.0
 
         class _Flow:
-            def __init__(self, config: object) -> None:
+            def __init__(self, config: _DesktopAuthConfig) -> None:
                 events.append(
                     (
                         "flow_init",
-                        getattr(config, "client_id"),
-                        getattr(config, "authorization_endpoint"),
-                        getattr(config, "token_endpoint"),
+                        config.client_id,
+                        config.authorization_endpoint,
+                        config.token_endpoint,
                     )
                 )
 
@@ -941,7 +947,10 @@ class TestCloudOneShot:
             return "refresh-token"
 
         with (
-            patch("services.operator_console.polling.CloudSyncConfig.from_env", lambda: _CloudConfig()),
+            patch(
+                "services.operator_console.polling.CloudSyncConfig.from_env",
+                lambda: _CloudConfig(),
+            ),
             patch("services.operator_console.polling.get_secret", fake_get_secret),
             patch("services.operator_console.polling.DesktopAuthFlow", _Flow),
             patch("services.operator_console.polling.ExperimentBundleClient", _Client),

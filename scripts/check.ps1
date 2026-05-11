@@ -25,19 +25,19 @@ Write-Host ""
 
 # 1. Ruff lint
 Write-Host "-- Ruff lint --"
-uv run ruff check packages/ services/ tests/
+uv run ruff check packages/ services/ tests/ automation/
 if ($LASTEXITCODE -eq 0) { Pass "Ruff lint" } else { Fail "Ruff lint" }
 Write-Host ""
 
 # 2. Ruff format
 Write-Host "-- Ruff format --"
-uv run ruff format --check packages/ services/ tests/
+uv run ruff format --check packages/ services/ tests/ automation/
 if ($LASTEXITCODE -eq 0) { Pass "Ruff format" } else { Fail "Ruff format" }
 Write-Host ""
 
 # 3. Mypy -- scope and flags MUST match ci.yml lint-and-typecheck job.
 Write-Host "-- Mypy type check --"
-uv run mypy packages/ services/ tests/ --python-version 3.11 --ignore-missing-imports --explicit-package-bases
+uv run mypy packages/ services/ tests/ automation/ --python-version 3.11 --ignore-missing-imports --explicit-package-bases
 if ($LASTEXITCODE -eq 0) { Pass "Mypy type check" } else { Fail "Mypy type check" }
 Write-Host ""
 

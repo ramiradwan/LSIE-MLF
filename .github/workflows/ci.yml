@@ -21,11 +21,11 @@ jobs:
       - name: Sync dev environment
         run: uv sync --frozen --extra ml_backend --group dev
       - name: Ruff lint
-        run: uv run ruff check packages/ services/ tests/
+        run: uv run ruff check packages/ services/ tests/ automation/
       - name: Ruff format check
-        run: uv run ruff format --check packages/ services/ tests/
+        run: uv run ruff format --check packages/ services/ tests/ automation/
       - name: Mypy type check
-        run: uv run mypy packages/ services/ tests/ --python-version 3.11 --ignore-missing-imports --explicit-package-bases
+        run: uv run mypy packages/ services/ tests/ automation/ --python-version 3.11 --ignore-missing-imports --explicit-package-bases
       - name: Schema consistency check
         run: uv run python scripts/check_schema_consistency.py
       - name: Canonical terminology audit

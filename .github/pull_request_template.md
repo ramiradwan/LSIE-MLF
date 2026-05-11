@@ -16,7 +16,7 @@ Describe what was implemented or modified.
 
 ## Verification
 
-- [ ] `uv run mypy packages/ services/ tests/ --python-version 3.11 --ignore-missing-imports --explicit-package-bases` passes
+- [ ] `uv run mypy packages/ services/ tests/ automation/ --python-version 3.11 --ignore-missing-imports --explicit-package-bases` passes
 - [ ] `uv run pytest tests/ -x -q --tb=short` passes
 - [ ] No retired synonyms from §0.3 in changed files
 - [ ] All new functions have full type annotations

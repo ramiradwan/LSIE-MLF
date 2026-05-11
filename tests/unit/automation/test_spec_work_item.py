@@ -1,12 +1,23 @@
 from __future__ import annotations
 
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
 
-from automation.schemas.spec_work_item import SpecWorkItem, load_work_item, main
+from automation.schemas.spec_work_item import (
+    ACTIVE_WORK_ITEM_PREFIX,
+    SpecWorkItem,
+    load_work_item,
+    main,
+)
+
+_REPO_ROOT = Path(__file__).resolve().parents[3]
+_SPEC_WORK_ITEM_TEMPLATE = (
+    _REPO_ROOT / "automation" / "work-items" / "templates" / "spec_work_item.json"
+)
 
 
 def _valid_work_item_payload() -> dict[str, object]:
@@ -96,6 +107,53 @@ def test_load_work_item_reads_json_file(tmp_path: Path) -> None:
     work_item = load_work_item(str(work_item_path))
 
     assert work_item.spec_refs == ["§6.1", "§7E"]
+
+
+def test_committed_spec_work_item_template_loads_with_schema() -> None:
+    work_item = load_work_item(str(_SPEC_WORK_ITEM_TEMPLATE))
+
+    assert work_item.type == "spec_work_item"
+    assert work_item.spec_refs
+    assert work_item.source_artifacts
+    assert work_item.target_files
+
+
+def test_committed_spec_work_item_template_has_required_gates() -> None:
+    work_item = load_work_item(str(_SPEC_WORK_ITEM_TEMPLATE))
+
+    assert work_item.acceptance_criteria.required_gates
+
+
+def test_committed_spec_work_item_template_keeps_local_artifacts_under_active() -> None:
+    work_item = load_work_item(str(_SPEC_WORK_ITEM_TEMPLATE))
+
+    assert work_item.local_artifacts
+    assert all(
+        artifact.replace("\\", "/").startswith(ACTIVE_WORK_ITEM_PREFIX)
+        for artifact in work_item.local_artifacts
+    )
+
+
+def test_active_work_item_instances_are_gitignored() -> None:
+    result = subprocess.run(
+        ["git", "check-ignore", "-q", "automation/work-items/active/example.json"],
+        cwd=_REPO_ROOT,
+        check=False,
+    )
+
+    assert result.returncode == 0
+
+
+def test_active_work_item_directory_tracks_only_gitkeep() -> None:
+    result = subprocess.run(
+        ["git", "ls-files", "automation/work-items/active"],
+        cwd=_REPO_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.stdout.splitlines() == ["automation/work-items/active/.gitkeep"]
 
 
 def test_main_returns_zero_for_valid_file(
