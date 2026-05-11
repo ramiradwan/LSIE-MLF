@@ -1,18 +1,21 @@
 from __future__ import annotations
 
 import threading
+from pathlib import Path
 from typing import cast
 
 import httpx
 import pytest
 
 from packages.schemas.cloud import OAuthTokenRequest, OAuthTokenResponse
+from packages.schemas.operator_console import CloudAuthState, CloudOperatorErrorCode
 from services.desktop_app.cloud.auth_flow import (
     AuthFlowConfig,
     DesktopAuthFlow,
     build_code_challenge,
 )
 from services.desktop_app.privacy.secrets import SECRET_KEY_CLOUD_REFRESH_TOKEN
+from services.desktop_app.state.sqlite_cloud_operator_service import SqliteCloudOperatorService
 
 
 def _config() -> AuthFlowConfig:
@@ -159,3 +162,81 @@ def test_refresh_exchange_does_not_overwrite_secret_when_response_omits_refresh_
 
     assert response.access_token == "access-b"
     assert stored == {}
+
+
+def test_sqlite_cloud_operator_auth_status_maps_secret_store_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from services.desktop_app.privacy.secrets import SecretStoreUnavailableError
+
+    monkeypatch.setattr(
+        "services.desktop_app.state.sqlite_cloud_operator_service.get_secret",
+        lambda _key: (_ for _ in ()).throw(SecretStoreUnavailableError("backend missing")),
+    )
+    service = SqliteCloudOperatorService(tmp_path / "desktop.sqlite")
+
+    status = service.get_auth_status()
+
+    assert status.state is CloudAuthState.SECRET_STORE_UNAVAILABLE
+    assert status.retryable is True
+    assert "backend missing" not in (status.message or "")
+
+
+def test_sqlite_cloud_operator_sign_in_returns_bounded_error(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from services.desktop_app.cloud.auth_flow import OAuthCallbackError
+
+    class _Flow:
+        def __init__(self, _config: object) -> None:
+            return None
+
+        def run_loopback_authorization(self) -> object:
+            raise OAuthCallbackError("raw oauth failure with secret details")
+
+    monkeypatch.setattr(
+        "services.desktop_app.state.sqlite_cloud_operator_service.DesktopAuthFlow",
+        _Flow,
+    )
+    service = SqliteCloudOperatorService(tmp_path / "desktop.sqlite")
+
+    result = service.sign_in()
+
+    assert result.error_code is CloudOperatorErrorCode.AUTHORIZATION_FAILED
+    assert result.message == "Cloud authorization failed."
+    assert "secret details" not in result.message
+
+
+def test_sqlite_cloud_operator_reports_signed_out_without_token(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(
+        "services.desktop_app.state.sqlite_cloud_operator_service.get_secret",
+        lambda _key: None,
+    )
+    service = SqliteCloudOperatorService(tmp_path / "desktop.sqlite")
+
+    status = service.get_auth_status()
+
+    assert status.state is CloudAuthState.SIGNED_OUT
+    assert status.message == "Cloud sign-in is required."
+
+
+def test_sqlite_cloud_operator_reports_refresh_token_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(
+        "services.desktop_app.state.sqlite_cloud_operator_service.get_secret",
+        lambda _key: "   ",
+    )
+    service = SqliteCloudOperatorService(tmp_path / "desktop.sqlite")
+
+    status = service.get_auth_status()
+    refresh = service.refresh_experiment_bundle()
+
+    assert status.state is CloudAuthState.REFRESH_TOKEN_UNAVAILABLE
+    assert refresh.error_code is CloudOperatorErrorCode.REFRESH_TOKEN_UNAVAILABLE

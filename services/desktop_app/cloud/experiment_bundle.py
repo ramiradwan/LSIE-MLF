@@ -40,7 +40,14 @@ class ExperimentBundleVerificationError(RuntimeError):
 
 
 class ExperimentBundleFetchError(RuntimeError):
-    pass
+    def __init__(
+        self,
+        message: str = "experiment bundle fetch failed",
+        *,
+        status_code: int | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.status_code = status_code
 
 
 class ExperimentBundleClient:
@@ -57,8 +64,12 @@ class ExperimentBundleClient:
             )
             response.raise_for_status()
             return ExperimentBundle.model_validate(response.json())
-        except (httpx.HTTPError, ValueError) as exc:
+        except httpx.HTTPStatusError as exc:
+            raise ExperimentBundleFetchError(status_code=exc.response.status_code) from exc
+        except httpx.HTTPError as exc:
             raise ExperimentBundleFetchError("experiment bundle fetch failed") from exc
+        except ValueError as exc:
+            raise ExperimentBundleFetchError("experiment bundle response was invalid") from exc
 
 
 class ExperimentBundleStore:

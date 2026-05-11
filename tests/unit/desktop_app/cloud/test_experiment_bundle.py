@@ -19,6 +19,7 @@ from packages.schemas.cloud import (
 from services.desktop_app.cloud.experiment_bundle import (
     BundleVerificationConfig,
     ExperimentBundleClient,
+    ExperimentBundleFetchError,
     ExperimentBundleStore,
     ExperimentBundleVerificationError,
     canonical_payload,
@@ -165,6 +166,23 @@ def test_verify_bundle_rejects_bad_ed25519_signature() -> None:
             ),
             now_utc=ISSUED_AT + timedelta(hours=1),
         )
+
+
+def test_bundle_client_preserves_http_status_for_bounded_operator_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fake_get(url: str, *, headers: dict[str, str], timeout: float) -> httpx.Response:
+        del headers, timeout
+        request = httpx.Request("GET", url)
+        return httpx.Response(429, json={"detail": "rate limited"}, request=request)
+
+    monkeypatch.setattr("services.desktop_app.cloud.experiment_bundle.httpx.get", fake_get)
+    client = ExperimentBundleClient("https://cloud.example.test/")
+
+    with pytest.raises(ExperimentBundleFetchError) as exc_info:
+        client.fetch_bundle(access_token="access-a")
+
+    assert exc_info.value.status_code == 429
 
 
 def test_bundle_client_fetches_and_validates_bundle(monkeypatch: pytest.MonkeyPatch) -> None:

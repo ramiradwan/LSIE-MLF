@@ -14,6 +14,7 @@ from pydantic import BaseModel, ValidationError
 from packages.schemas.attribution import AttributionEvent
 from packages.schemas.cloud import PosteriorDelta
 from packages.schemas.inference_handoff import InferenceHandoffPayload
+from packages.schemas.operator_console import CloudOutboxSummary
 from services.desktop_app.state.sqlite_schema import bootstrap_schema
 
 UploadEndpoint = Literal["telemetry_segments", "telemetry_posterior_deltas"]
@@ -307,6 +308,49 @@ class CloudOutbox:
             (before,),
         )
         return int(cursor.rowcount)
+
+    def summarize(self, *, now: datetime | None = None) -> CloudOutboxSummary:
+        rows = self._conn.execute(
+            """
+            SELECT status, next_attempt_at_utc, payload_redacted_at_utc, last_error
+            FROM pending_uploads
+            """
+        ).fetchall()
+        pending_count = 0
+        in_flight_count = 0
+        dead_letter_count = 0
+        retry_scheduled_count = 0
+        redacted_count = 0
+        earliest_next_attempt: datetime | None = None
+        last_error: str | None = None
+        current = now or datetime.now(UTC)
+        for row in rows:
+            status = str(row["status"])
+            if status == "pending":
+                pending_count += 1
+            elif status == "in_flight":
+                in_flight_count += 1
+            elif status == "dead_letter":
+                dead_letter_count += 1
+            next_attempt = _parse_dt(str(row["next_attempt_at_utc"]))
+            if status == "pending" and next_attempt > current:
+                retry_scheduled_count += 1
+            if earliest_next_attempt is None or next_attempt < earliest_next_attempt:
+                earliest_next_attempt = next_attempt
+            if row["payload_redacted_at_utc"] is not None:
+                redacted_count += 1
+            if row["last_error"] is not None:
+                last_error = str(row["last_error"])
+        return CloudOutboxSummary(
+            generated_at_utc=current,
+            pending_count=pending_count,
+            in_flight_count=in_flight_count,
+            dead_letter_count=dead_letter_count,
+            retry_scheduled_count=retry_scheduled_count,
+            redacted_count=redacted_count,
+            earliest_next_attempt_utc=earliest_next_attempt,
+            last_error=last_error,
+        )
 
     def apply_retention_policy(self, *, now: datetime | None = None) -> int:
         current = now or datetime.now(UTC)

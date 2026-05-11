@@ -12,11 +12,12 @@ from fastapi.testclient import TestClient
 from packages.schemas.experiments import ExperimentArmSeedRequest, ExperimentCreateRequest
 from services.api.main import app as api_app
 from services.api.routes.experiments import get_admin_service
-from services.api.routes.operator import get_action_service, get_read_service
+from services.api.routes.operator import get_action_service, get_cloud_service, get_read_service
 from services.api.routes.sessions import get_session_lifecycle_service
 from services.api.services import operator_action_service as action_module
 from services.api.services import session_lifecycle_service as lifecycle_module
 from services.desktop_app.state.sqlite_api_overrides import configure_sqlite_api_overrides
+from services.desktop_app.state.sqlite_cloud_operator_service import SqliteCloudOperatorService
 from services.desktop_app.state.sqlite_experiment_admin_service import (
     SqliteExperimentAdminService,
 )
@@ -44,6 +45,7 @@ def test_configure_sqlite_api_overrides_installs_desktop_services(tmp_path: Path
         SqliteSessionLifecycleService,
     )
     assert isinstance(app.dependency_overrides[get_admin_service](), SqliteExperimentAdminService)
+    assert isinstance(app.dependency_overrides[get_cloud_service](), SqliteCloudOperatorService)
     assert services.read_service is app.dependency_overrides[get_read_service]()
 
 

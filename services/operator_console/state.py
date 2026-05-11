@@ -41,6 +41,8 @@ from PySide6.QtCore import QObject, Signal
 
 from packages.schemas.operator_console import (
     AlertEvent,
+    CloudAuthStatus,
+    CloudOutboxSummary,
     EncounterSummary,
     ExperimentDetail,
     ExperimentSummary,
@@ -109,6 +111,8 @@ class OperatorStore(QObject):
     physiology_changed         = Signal(object)
     health_changed             = Signal(object)
     alerts_changed             = Signal(object)
+    cloud_auth_changed         = Signal(object)
+    cloud_outbox_changed       = Signal(object)
     stimulus_state_changed     = Signal(object)
     error_changed              = Signal(str, str)
     error_cleared              = Signal(str)
@@ -128,6 +132,8 @@ class OperatorStore(QObject):
         self._physiology: SessionPhysiologySnapshot | None = None
         self._health: HealthSnapshot | None = None
         self._alerts: list[AlertEvent] = []
+        self._cloud_auth: CloudAuthStatus | None = None
+        self._cloud_outbox: CloudOutboxSummary | None = None
         self._stimulus_ui_context: StimulusUiContext = StimulusUiContext()
         self._errors: dict[str, str] = {}
 
@@ -251,6 +257,22 @@ class OperatorStore(QObject):
     def set_alerts(self, events: list[AlertEvent]) -> None:
         self._alerts = list(events)
         self.alerts_changed.emit(list(self._alerts))
+
+    # ---- cloud ---------------------------------------------------------
+
+    def cloud_auth_status(self) -> CloudAuthStatus | None:
+        return self._cloud_auth
+
+    def set_cloud_auth_status(self, status: CloudAuthStatus | None) -> None:
+        self._cloud_auth = status
+        self.cloud_auth_changed.emit(status)
+
+    def cloud_outbox_summary(self) -> CloudOutboxSummary | None:
+        return self._cloud_outbox
+
+    def set_cloud_outbox_summary(self, summary: CloudOutboxSummary | None) -> None:
+        self._cloud_outbox = summary
+        self.cloud_outbox_changed.emit(summary)
 
     # ---- stimulus UI context ------------------------------------------
 

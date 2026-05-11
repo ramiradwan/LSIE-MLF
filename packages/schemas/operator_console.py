@@ -132,6 +132,38 @@ class HealthProbeState(StrEnum):
     UNKNOWN = "unknown"
 
 
+class CloudAuthState(StrEnum):
+    SIGNED_OUT = "signed_out"
+    SIGNED_IN = "signed_in"
+    REFRESH_TOKEN_UNAVAILABLE = "refresh_token_unavailable"
+    SECRET_STORE_UNAVAILABLE = "secret_store_unavailable"
+    REFRESH_FAILED = "refresh_failed"
+
+
+class CloudActionStatus(StrEnum):
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+
+
+class CloudExperimentRefreshStatus(StrEnum):
+    APPLIED = "applied"
+    FAILED = "failed"
+
+
+class CloudOperatorErrorCode(StrEnum):
+    AUTHORIZATION_FAILED = "authorization_failed"
+    BUNDLE_EXPIRED = "bundle_expired"
+    CLOUD_UNAVAILABLE = "cloud_unavailable"
+    INVALID_RESPONSE = "invalid_response"
+    OFFLINE = "offline"
+    RATE_LIMITED = "rate_limited"
+    REFRESH_FAILED = "refresh_failed"
+    REFRESH_TOKEN_UNAVAILABLE = "refresh_token_unavailable"
+    SECRET_STORE_UNAVAILABLE = "secret_store_unavailable"
+    SIGNATURE_FAILED = "signature_failed"
+    UNAUTHORIZED = "unauthorized"
+
+
 # ----------------------------------------------------------------------
 # Timestamp validator (shared behavior — UTC-aware only)
 # ----------------------------------------------------------------------
@@ -756,6 +788,69 @@ class SessionLifecycleAccepted(OperatorConsoleModel):
     message: str | None = None
 
     @field_validator("received_at_utc")
+    @classmethod
+    def _utc_only(cls, value: datetime) -> datetime:
+        validated = _require_utc(value)
+        assert validated is not None
+        return validated
+
+
+class CloudAuthStatus(OperatorConsoleModel):
+    state: CloudAuthState
+    checked_at_utc: datetime
+    message: str | None = None
+    retryable: bool = False
+
+    @field_validator("checked_at_utc")
+    @classmethod
+    def _utc_only(cls, value: datetime) -> datetime:
+        validated = _require_utc(value)
+        assert validated is not None
+        return validated
+
+
+class CloudSignInResult(OperatorConsoleModel):
+    status: CloudActionStatus
+    auth_state: CloudAuthState
+    completed_at_utc: datetime
+    message: str
+    error_code: CloudOperatorErrorCode | None = None
+    retryable: bool = False
+
+    @field_validator("completed_at_utc")
+    @classmethod
+    def _utc_only(cls, value: datetime) -> datetime:
+        validated = _require_utc(value)
+        assert validated is not None
+        return validated
+
+
+class CloudOutboxSummary(OperatorConsoleModel):
+    generated_at_utc: datetime
+    pending_count: int = Field(default=0, ge=0)
+    in_flight_count: int = Field(default=0, ge=0)
+    dead_letter_count: int = Field(default=0, ge=0)
+    retry_scheduled_count: int = Field(default=0, ge=0)
+    redacted_count: int = Field(default=0, ge=0)
+    earliest_next_attempt_utc: datetime | None = None
+    last_error: str | None = None
+
+    @field_validator("generated_at_utc", "earliest_next_attempt_utc")
+    @classmethod
+    def _utc_only(cls, value: datetime | None) -> datetime | None:
+        return _require_utc(value)
+
+
+class ExperimentBundleRefreshResult(OperatorConsoleModel):
+    status: CloudExperimentRefreshStatus
+    completed_at_utc: datetime
+    message: str
+    bundle_id: str | None = None
+    experiment_count: int = Field(default=0, ge=0)
+    error_code: CloudOperatorErrorCode | None = None
+    retryable: bool = False
+
+    @field_validator("completed_at_utc")
     @classmethod
     def _utc_only(cls, value: datetime) -> datetime:
         validated = _require_utc(value)

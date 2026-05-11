@@ -13,6 +13,7 @@ Focus:
 from __future__ import annotations
 
 import asyncio
+import threading
 import uuid
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
@@ -24,8 +25,15 @@ from fastapi import HTTPException
 
 from packages.schemas.operator_console import (
     AttributionSummary,
+    CloudActionStatus,
+    CloudAuthState,
+    CloudAuthStatus,
+    CloudExperimentRefreshStatus,
+    CloudOutboxSummary,
+    CloudSignInResult,
     EncounterState,
     EncounterSummary,
+    ExperimentBundleRefreshResult,
     ExperimentDetail,
     HealthSnapshot,
     HealthState,
@@ -39,6 +47,7 @@ from packages.schemas.operator_console import (
     StimulusRequest,
 )
 from services.api.routes.operator import (
+    get_cloud_auth_status,
     get_experiment_detail,
     get_health,
     get_operator_state_bootstrap,
@@ -49,6 +58,7 @@ from services.api.routes.operator import (
     list_alerts,
     list_session_encounters,
     list_sessions,
+    sign_in_to_cloud,
     stream_operator_state_events,
     submit_stimulus,
 )
@@ -318,6 +328,57 @@ class TestOperatorReadRoutes:
         assert result == [encounter]
         assert result[0].semantic_evaluation is None
         assert result[0].attribution is None
+
+
+class TestCloudOperatorRoutes:
+    def test_cloud_sign_in_does_not_block_auth_status_route(self) -> None:
+        sign_in_entered = threading.Event()
+        release_sign_in = threading.Event()
+
+        class Service:
+            def sign_in(self) -> CloudSignInResult:
+                sign_in_entered.set()
+                assert release_sign_in.wait(timeout=5)
+                return CloudSignInResult(
+                    status=CloudActionStatus.SUCCEEDED,
+                    auth_state=CloudAuthState.SIGNED_IN,
+                    completed_at_utc=_now(),
+                    message="Cloud sign-in completed.",
+                )
+
+            def get_auth_status(self) -> CloudAuthStatus:
+                return CloudAuthStatus(
+                    state=CloudAuthState.SIGNED_OUT,
+                    checked_at_utc=_now(),
+                    message="Cloud sign-in is required.",
+                )
+
+            def get_outbox_summary(self) -> CloudOutboxSummary:
+                return CloudOutboxSummary(generated_at_utc=_now())
+
+            def refresh_experiment_bundle(self) -> ExperimentBundleRefreshResult:
+                return ExperimentBundleRefreshResult(
+                    status=CloudExperimentRefreshStatus.FAILED,
+                    completed_at_utc=_now(),
+                    message="not used",
+                )
+
+        service = Service()
+
+        async def exercise_routes() -> CloudAuthStatus:
+            sign_in_task = asyncio.create_task(sign_in_to_cloud(service=service))
+            assert await asyncio.to_thread(sign_in_entered.wait, 5)
+            status = await asyncio.wait_for(
+                get_cloud_auth_status(service=service),
+                timeout=1,
+            )
+            release_sign_in.set()
+            await sign_in_task
+            return status
+
+        status = asyncio.run(exercise_routes())
+
+        assert status.state is CloudAuthState.SIGNED_OUT
 
 
 # ----------------------------------------------------------------------

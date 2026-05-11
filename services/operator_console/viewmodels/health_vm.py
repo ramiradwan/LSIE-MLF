@@ -31,6 +31,8 @@ from typing import Literal
 from PySide6.QtCore import QObject, Signal
 
 from packages.schemas.operator_console import (
+    CloudAuthStatus,
+    CloudOutboxSummary,
     HealthProbeState,
     HealthSnapshot,
     HealthSubsystemProbe,
@@ -108,6 +110,8 @@ class HealthViewModel(ViewModelBase):
         self._action_state: HealthActionState = "idle"
         store.health_changed.connect(self._on_health_changed)
         store.alerts_changed.connect(self._on_alerts_changed)
+        store.cloud_auth_changed.connect(self._on_cloud_readback_changed)
+        store.cloud_outbox_changed.connect(self._on_cloud_readback_changed)
         store.error_changed.connect(self._on_error)
         store.error_cleared.connect(self._on_error_cleared)
         # Seed from whatever the store already holds.
@@ -121,6 +125,12 @@ class HealthViewModel(ViewModelBase):
 
     def snapshot(self) -> HealthSnapshot | None:
         return self._store.health()
+
+    def cloud_auth_status(self) -> CloudAuthStatus | None:
+        return self._store.cloud_auth_status()
+
+    def cloud_outbox_summary(self) -> CloudOutboxSummary | None:
+        return self._store.cloud_outbox_summary()
 
     def health_model(self) -> HealthTableModel:
         return self._health_model
@@ -263,6 +273,9 @@ class HealthViewModel(ViewModelBase):
             self._alerts_model.set_rows(rows)
         else:
             self._alerts_model.set_rows(self._store.alerts())
+        self.emit_changed()
+
+    def _on_cloud_readback_changed(self, _payload: object) -> None:
         self.emit_changed()
 
     def _sync_health_rows(self, snap: HealthSnapshot | None) -> None:

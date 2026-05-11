@@ -277,6 +277,55 @@ def test_reset_stale_locks_returns_inflight_rows_to_pending(tmp_path: Path) -> N
     assert len(rows) == 1
 
 
+def test_outbox_summary_reports_status_retry_and_redaction_counts(tmp_path: Path) -> None:
+    outbox = CloudOutbox(tmp_path / "desktop.sqlite")
+    try:
+        outbox.enqueue_raw(
+            endpoint="telemetry_posterior_deltas",
+            payload_type="posterior_delta",
+            dedupe_key="pending",
+            payload_json='{"segment_id":"pending"}',
+            created_at_utc="2026-05-02T12:00:00Z",
+        )
+        retry_id = outbox.enqueue_raw(
+            endpoint="telemetry_posterior_deltas",
+            payload_type="posterior_delta",
+            dedupe_key="retry",
+            payload_json='{"segment_id":"retry"}',
+            created_at_utc="2026-05-02T12:00:00Z",
+        )
+        in_flight_id = outbox.enqueue_raw(
+            endpoint="telemetry_posterior_deltas",
+            payload_type="posterior_delta",
+            dedupe_key="flight",
+            payload_json='{"segment_id":"flight"}',
+            created_at_utc="2026-05-02T12:00:00Z",
+        )
+        outbox.fetch_ready_batch(
+            "telemetry_posterior_deltas",
+            limit=10,
+            now_utc="2026-05-02T12:00:00Z",
+        )
+        outbox.mark_retry(
+            [retry_id],
+            error="HTTP 503",
+            now=datetime(2026, 5, 2, 12, 0, tzinfo=UTC),
+            base_delay_s=60.0,
+            max_delay_s=60.0,
+        )
+        outbox.mark_dead_letter([in_flight_id], error="HTTP 400")
+        summary = outbox.summarize(now=datetime(2026, 5, 2, 12, 0, tzinfo=UTC))
+    finally:
+        outbox.close()
+
+    assert summary.pending_count == 1
+    assert summary.in_flight_count == 1
+    assert summary.dead_letter_count == 1
+    assert summary.retry_scheduled_count == 1
+    assert summary.redacted_count == 1
+    assert summary.last_error == "HTTP 400"
+
+
 def test_apply_retention_policy_redacts_old_payloads(tmp_path: Path) -> None:
     outbox = CloudOutbox(tmp_path / "desktop.sqlite")
     try:

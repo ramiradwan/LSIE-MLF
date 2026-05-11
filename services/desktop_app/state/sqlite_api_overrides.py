@@ -18,10 +18,16 @@ from typing import Protocol
 from fastapi import FastAPI
 
 from services.api.routes.experiments import get_admin_service
-from services.api.routes.operator import get_action_service, get_event_service, get_read_service
+from services.api.routes.operator import (
+    get_action_service,
+    get_cloud_service,
+    get_event_service,
+    get_read_service,
+)
 from services.api.routes.sessions import get_session_lifecycle_service
 from services.api.services.operator_event_service import OperatorEventService
 from services.desktop_app.ipc.control_messages import LiveSessionControlMessage
+from services.desktop_app.state.sqlite_cloud_operator_service import SqliteCloudOperatorService
 from services.desktop_app.state.sqlite_experiment_admin_service import (
     SqliteExperimentAdminService,
 )
@@ -64,6 +70,7 @@ class DesktopApiServices:
             control_publisher=control_publisher,
         )
         self.experiment_admin_service = SqliteExperimentAdminService(db_path)
+        self.cloud_service = SqliteCloudOperatorService(db_path)
 
 
 def configure_sqlite_api_overrides(
@@ -90,6 +97,9 @@ def configure_sqlite_api_overrides(
     def _experiment_admin_service_dependency() -> SqliteExperimentAdminService:
         return services.experiment_admin_service
 
+    def _cloud_service_dependency() -> SqliteCloudOperatorService:
+        return services.cloud_service
+
     api_app.dependency_overrides[get_read_service] = _read_service_dependency
     api_app.dependency_overrides[get_action_service] = _action_service_dependency
     api_app.dependency_overrides[get_event_service] = _event_service_dependency
@@ -97,6 +107,7 @@ def configure_sqlite_api_overrides(
         _session_lifecycle_service_dependency
     )
     api_app.dependency_overrides[get_admin_service] = _experiment_admin_service_dependency
+    api_app.dependency_overrides[get_cloud_service] = _cloud_service_dependency
 
     @asynccontextmanager
     async def _desktop_lifespan(_app: FastAPI) -> AsyncIterator[None]:

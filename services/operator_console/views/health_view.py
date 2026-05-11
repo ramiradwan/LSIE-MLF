@@ -39,6 +39,9 @@ from PySide6.QtWidgets import (
 
 from packages.schemas.operator_console import (
     AlertSeverity,
+    CloudAuthState,
+    CloudAuthStatus,
+    CloudOutboxSummary,
     HealthProbeState,
     HealthSnapshot,
     HealthState,
@@ -234,6 +237,8 @@ class HealthView(QWidget):
         self._degraded_card = MetricCard("Needs attention", self)
         self._recovering_card = MetricCard("Getting ready", self)
         self._error_card = MetricCard("Error", self)
+        self._cloud_auth_card = MetricCard("Cloud sign-in", self)
+        self._cloud_outbox_card = MetricCard("Cloud outbox", self)
 
         self._cards_grid = ResponsiveMetricGrid(
             breakpoints=_HEALTH_BREAKPOINTS,
@@ -246,6 +251,8 @@ class HealthView(QWidget):
                 self._degraded_card,
                 self._recovering_card,
                 self._error_card,
+                self._cloud_auth_card,
+                self._cloud_outbox_card,
             ]
         )
 
@@ -423,6 +430,8 @@ class HealthView(QWidget):
 
         self._render_overall(snapshot)
         self._render_counts(snapshot)
+        self._render_cloud_auth(self._vm.cloud_auth_status())
+        self._render_cloud_outbox(self._vm.cloud_outbox_summary())
         self._probe_matrix.set_probes(self._vm.subsystem_probes())
         self._apply_responsive_layout()
 
@@ -461,6 +470,35 @@ class HealthView(QWidget):
             UiStatusKind.ERROR if snapshot.error_count else UiStatusKind.NEUTRAL,
             "error" if snapshot.error_count else None,
         )
+
+    def _render_cloud_auth(self, status: CloudAuthStatus | None) -> None:
+        if status is None:
+            self._cloud_auth_card.set_primary_text("Unknown")
+            self._cloud_auth_card.set_secondary_text("waiting for cloud status")
+            self._cloud_auth_card.set_status(UiStatusKind.NEUTRAL, None)
+            return
+        self._cloud_auth_card.set_primary_text(status.state.value.replace("_", " "))
+        self._cloud_auth_card.set_secondary_text(status.message or "No message reported.")
+        self._cloud_auth_card.set_status(_cloud_auth_kind(status.state), status.state.value)
+
+    def _render_cloud_outbox(self, summary: CloudOutboxSummary | None) -> None:
+        if summary is None:
+            self._cloud_outbox_card.set_primary_text("Unknown")
+            self._cloud_outbox_card.set_secondary_text("waiting for outbox summary")
+            self._cloud_outbox_card.set_status(UiStatusKind.NEUTRAL, None)
+            return
+        pending = summary.pending_count + summary.in_flight_count + summary.retry_scheduled_count
+        blocked = summary.dead_letter_count
+        self._cloud_outbox_card.set_primary_text(f"{pending} active")
+        self._cloud_outbox_card.set_secondary_text(
+            f"{blocked} dead-letter · {summary.redacted_count} redacted"
+        )
+        if blocked:
+            self._cloud_outbox_card.set_status(UiStatusKind.ERROR, "dead-letter")
+        elif pending:
+            self._cloud_outbox_card.set_status(UiStatusKind.PROGRESS, "uploading")
+        else:
+            self._cloud_outbox_card.set_status(UiStatusKind.OK, "clear")
 
     def _apply_responsive_layout(self) -> None:
         viewport_width = self._scroll.viewport().width()
@@ -808,6 +846,14 @@ class _TablePanel(QFrame):
         self._layout.setContentsMargins(12, 10, 12, 10 if compact else 12)
         self._layout.setSpacing(4 if compact else 6)
         self._subtitle.setVisible(not compact)
+
+
+def _cloud_auth_kind(state: CloudAuthState) -> UiStatusKind:
+    if state is CloudAuthState.SIGNED_IN:
+        return UiStatusKind.OK
+    if state in (CloudAuthState.SECRET_STORE_UNAVAILABLE, CloudAuthState.REFRESH_FAILED):
+        return UiStatusKind.ERROR
+    return UiStatusKind.WARN
 
 
 def _describe_error_hint(snapshot: HealthSnapshot) -> str:

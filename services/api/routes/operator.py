@@ -34,16 +34,25 @@ from __future__ import annotations
 import inspect
 import logging
 from collections.abc import AsyncIterable
-from datetime import datetime
-from typing import Annotated, Any, cast
+from datetime import UTC, datetime
+from typing import Annotated, Any, Protocol, cast
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from fastapi.sse import EventSourceResponse, ServerSentEvent
+from starlette.concurrency import run_in_threadpool
 
 from packages.schemas.operator_console import (
     AlertEvent,
+    CloudActionStatus,
+    CloudAuthState,
+    CloudAuthStatus,
+    CloudExperimentRefreshStatus,
+    CloudOperatorErrorCode,
+    CloudOutboxSummary,
+    CloudSignInResult,
     EncounterSummary,
+    ExperimentBundleRefreshResult,
     ExperimentDetail,
     ExperimentSummary,
     HealthSnapshot,
@@ -83,6 +92,51 @@ def get_action_service() -> OperatorActionService:
     return OperatorActionService()
 
 
+class CloudOperatorService(Protocol):
+    def get_auth_status(self) -> CloudAuthStatus: ...
+
+    def sign_in(self) -> CloudSignInResult: ...
+
+    def get_outbox_summary(self) -> CloudOutboxSummary: ...
+
+    def refresh_experiment_bundle(self) -> ExperimentBundleRefreshResult: ...
+
+
+class UnavailableCloudOperatorService:
+    def get_auth_status(self) -> CloudAuthStatus:
+        return CloudAuthStatus(
+            state=CloudAuthState.REFRESH_TOKEN_UNAVAILABLE,
+            checked_at_utc=datetime.now(UTC),
+            message="Desktop cloud service is not configured.",
+        )
+
+    def sign_in(self) -> CloudSignInResult:
+        return CloudSignInResult(
+            status=CloudActionStatus.FAILED,
+            auth_state=CloudAuthState.REFRESH_TOKEN_UNAVAILABLE,
+            completed_at_utc=datetime.now(UTC),
+            message="Desktop cloud service is not configured.",
+            error_code=CloudOperatorErrorCode.CLOUD_UNAVAILABLE,
+            retryable=True,
+        )
+
+    def get_outbox_summary(self) -> CloudOutboxSummary:
+        return CloudOutboxSummary(generated_at_utc=datetime.now(UTC))
+
+    def refresh_experiment_bundle(self) -> ExperimentBundleRefreshResult:
+        return ExperimentBundleRefreshResult(
+            status=CloudExperimentRefreshStatus.FAILED,
+            completed_at_utc=datetime.now(UTC),
+            message="Desktop cloud service is not configured.",
+            error_code=CloudOperatorErrorCode.CLOUD_UNAVAILABLE,
+            retryable=True,
+        )
+
+
+def get_cloud_service() -> CloudOperatorService:
+    return UnavailableCloudOperatorService()
+
+
 def get_event_service() -> OperatorEventService:
     return OperatorEventService(read_service=get_read_service())
 
@@ -104,6 +158,7 @@ def get_supported_event_service(
 # the sentinel is declared.
 _ReadDep = Depends(get_read_service)
 _ActionDep = Depends(get_action_service)
+_CloudDep = Depends(get_cloud_service)
 _EventDep = Depends(get_event_service)
 _SupportedEventDep = Depends(get_supported_event_service)
 _LimitSessionsQuery = Query(50, ge=1, le=500)
@@ -284,6 +339,58 @@ async def list_alerts(
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
         logger.error("operator list_alerts failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error") from exc
+
+
+@router.get("/cloud/auth/status", response_model=CloudAuthStatus)
+async def get_cloud_auth_status(
+    service: CloudOperatorService = _CloudDep,
+) -> CloudAuthStatus:
+    try:
+        return await run_in_threadpool(service.get_auth_status)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        logger.error("operator cloud auth status failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error") from exc
+
+
+@router.post("/cloud/auth/sign-in", response_model=CloudSignInResult)
+async def sign_in_to_cloud(
+    service: CloudOperatorService = _CloudDep,
+) -> CloudSignInResult:
+    try:
+        return await run_in_threadpool(service.sign_in)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        logger.error("operator cloud sign-in failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error") from exc
+
+
+@router.get("/cloud/outbox", response_model=CloudOutboxSummary)
+async def get_cloud_outbox_summary(
+    service: CloudOperatorService = _CloudDep,
+) -> CloudOutboxSummary:
+    try:
+        return await run_in_threadpool(service.get_outbox_summary)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        logger.error("operator cloud outbox summary failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error") from exc
+
+
+@router.post("/cloud/experiments/refresh", response_model=ExperimentBundleRefreshResult)
+async def refresh_cloud_experiment_bundle(
+    service: CloudOperatorService = _CloudDep,
+) -> ExperimentBundleRefreshResult:
+    try:
+        return await run_in_threadpool(service.refresh_experiment_bundle)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        logger.error("operator cloud experiment refresh failed: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail="Internal server error") from exc
 
 

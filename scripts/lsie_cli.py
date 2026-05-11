@@ -30,8 +30,14 @@ from packages.schemas.experiments import (
 )
 from packages.schemas.operator_console import (
     AlertEvent,
+    CloudActionStatus,
+    CloudAuthStatus,
+    CloudExperimentRefreshStatus,
+    CloudOutboxSummary,
+    CloudSignInResult,
     CoModulationSummary,
     EncounterSummary,
+    ExperimentBundleRefreshResult,
     ExperimentDetail,
     ExperimentSummary,
     HealthSnapshot,
@@ -119,6 +125,7 @@ experiment_alias_app = typer.Typer(
 stimulus_app = typer.Typer(help="Submit operator stimulus actions", no_args_is_help=True)
 physiology_app = typer.Typer(help="Inspect physiology snapshots", no_args_is_help=True)
 comodulation_app = typer.Typer(help="Inspect Co-Modulation Index readbacks", no_args_is_help=True)
+cloud_app = typer.Typer(help="Inspect and control cloud sync readbacks", no_args_is_help=True)
 
 app.add_typer(sessions_app, name="sessions")
 app.add_typer(session_alias_app, name="session")
@@ -128,6 +135,7 @@ app.add_typer(experiment_alias_app, name="experiment")
 app.add_typer(stimulus_app, name="stimulus")
 app.add_typer(physiology_app, name="physiology")
 app.add_typer(comodulation_app, name="comodulation")
+app.add_typer(cloud_app, name="cloud")
 
 
 @app.callback()
@@ -861,6 +869,99 @@ def _render_comodulation(summary: CoModulationSummary) -> None:
     console.print(f"Window: {window_start} to {window_end}")
     console.print(f"Paired observations: {summary.n_paired_observations}")
     console.print(f"Coverage: {format_percentage(summary.coverage_ratio, digits=0)}")
+
+
+@cloud_app.command("status")
+def cloud_status(json_output: bool = typer.Option(False, "--json", help="Render DTO JSON")) -> None:
+    """Show cloud sign-in and outbox readbacks."""
+    auth = _run_api_call(lambda: _build_client().get_cloud_auth_status())
+    outbox = _run_api_call(lambda: _build_client().get_cloud_outbox_summary())
+    if json_output:
+        console.print(
+            json.dumps(
+                {
+                    "auth": auth.model_dump(mode="json"),
+                    "outbox": outbox.model_dump(mode="json"),
+                },
+                indent=2,
+            )
+        )
+        return
+    _render_cloud_auth(auth)
+    _render_cloud_outbox(outbox)
+
+
+@cloud_app.command("sign-in")
+def cloud_sign_in(
+    json_output: bool = typer.Option(False, "--json", help="Render DTO JSON"),
+) -> None:
+    """Run cloud browser sign-in through the loopback API."""
+    result = _run_api_call(lambda: _build_client().post_cloud_sign_in())
+    if json_output:
+        _print_json(result)
+    else:
+        _render_cloud_sign_in_result(result)
+    if result.status is CloudActionStatus.FAILED:
+        raise typer.Exit(1)
+
+
+@cloud_app.command("refresh-experiments")
+def cloud_refresh_experiments(
+    json_output: bool = typer.Option(False, "--json", help="Render DTO JSON"),
+) -> None:
+    """Refresh signed experiment bundle through the loopback API."""
+    result = _run_api_call(lambda: _build_client().post_experiment_bundle_refresh())
+    if json_output:
+        _print_json(result)
+    else:
+        _render_cloud_refresh_result(result)
+    if result.status is CloudExperimentRefreshStatus.FAILED:
+        raise typer.Exit(1)
+
+
+def _render_cloud_auth(status: CloudAuthStatus) -> None:
+    console.print(f"Cloud sign-in: {status.state.value.replace('_', ' ')}")
+    console.print(f"Checked: {format_timestamp(status.checked_at_utc)}")
+    if status.message:
+        console.print(status.message)
+    if status.retryable:
+        console.print("Retryable: yes")
+
+
+def _render_cloud_outbox(summary: CloudOutboxSummary) -> None:
+    console.print("Cloud outbox")
+    console.print(f"Generated: {format_timestamp(summary.generated_at_utc)}")
+    console.print(f"Pending: {summary.pending_count}")
+    console.print(f"In flight: {summary.in_flight_count}")
+    console.print(f"Retry scheduled: {summary.retry_scheduled_count}")
+    console.print(f"Dead-letter: {summary.dead_letter_count}")
+    console.print(f"Redacted: {summary.redacted_count}")
+    if summary.earliest_next_attempt_utc is not None:
+        console.print(f"Next attempt: {format_timestamp(summary.earliest_next_attempt_utc)}")
+    if summary.last_error:
+        console.print(f"Last error: {summary.last_error}")
+
+
+def _render_cloud_sign_in_result(result: CloudSignInResult) -> None:
+    auth_state = result.auth_state.value.replace("_", " ")
+    console.print(f"Cloud sign-in {result.status.value}: {auth_state}")
+    console.print(result.message)
+    if result.error_code is not None:
+        console.print(f"Error code: {result.error_code.value}")
+    if result.retryable:
+        console.print("Retryable: yes")
+
+
+def _render_cloud_refresh_result(result: ExperimentBundleRefreshResult) -> None:
+    console.print(f"Experiment refresh {result.status.value}")
+    console.print(result.message)
+    if result.bundle_id is not None:
+        console.print(f"Bundle: {result.bundle_id}")
+    console.print(f"Experiments: {result.experiment_count}")
+    if result.error_code is not None:
+        console.print(f"Error code: {result.error_code.value}")
+    if result.retryable:
+        console.print("Retryable: yes")
 
 
 def main() -> None:

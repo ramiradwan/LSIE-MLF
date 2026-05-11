@@ -45,7 +45,11 @@ from packages.schemas.experiments import (
 )
 from packages.schemas.operator_console import (
     AlertEvent,
+    CloudAuthStatus,
+    CloudOutboxSummary,
+    CloudSignInResult,
     EncounterSummary,
+    ExperimentBundleRefreshResult,
     ExperimentDetail,
     ExperimentSummary,
     HealthSnapshot,
@@ -194,6 +198,7 @@ _EXPERIMENT_SUMMARY_LIST_ADAPTER: TypeAdapter[list[ExperimentSummary]] = TypeAda
     list[ExperimentSummary]
 )
 _ALERT_LIST_ADAPTER: TypeAdapter[list[AlertEvent]] = TypeAdapter(list[AlertEvent])
+_CLOUD_SIGN_IN_TIMEOUT_SECONDS = 125.0
 
 
 class ApiClient:
@@ -291,6 +296,12 @@ class ApiClient:
         path = f"/api/v1/operator/alerts?{urlencode(params)}"
         return self._get_list(path, _ALERT_LIST_ADAPTER)
 
+    def get_cloud_auth_status(self) -> CloudAuthStatus:
+        return self._get_model("/api/v1/operator/cloud/auth/status", CloudAuthStatus)
+
+    def get_cloud_outbox_summary(self) -> CloudOutboxSummary:
+        return self._get_model("/api/v1/operator/cloud/outbox", CloudOutboxSummary)
+
     # ---- write endpoints ----------------------------------------------
 
     def post_stimulus(
@@ -359,14 +370,36 @@ class ApiClient:
         path = f"/api/v1/experiments/{_path_segment(experiment_id)}/arms/{_path_segment(arm_id)}"
         return self._delete_model(path, ExperimentArmDeleteResponse)
 
+    def post_cloud_sign_in(self) -> CloudSignInResult:
+        return self._post_model(
+            "/api/v1/operator/cloud/auth/sign-in",
+            b"{}",
+            CloudSignInResult,
+            timeout_s=max(self._timeout, _CLOUD_SIGN_IN_TIMEOUT_SECONDS),
+        )
+
+    def post_experiment_bundle_refresh(self) -> ExperimentBundleRefreshResult:
+        return self._post_model(
+            "/api/v1/operator/cloud/experiments/refresh",
+            b"{}",
+            ExperimentBundleRefreshResult,
+        )
+
     # ---- internal helpers ---------------------------------------------
 
     def _get_model(self, path: str, model: type[_ModelT]) -> _ModelT:
         raw = self._request("GET", path, body=None)
         return self._validate_model(path, raw, model)
 
-    def _post_model(self, path: str, body: bytes, model: type[_ModelT]) -> _ModelT:
-        raw = self._request("POST", path, body=body)
+    def _post_model(
+        self,
+        path: str,
+        body: bytes,
+        model: type[_ModelT],
+        *,
+        timeout_s: float | None = None,
+    ) -> _ModelT:
+        raw = self._request("POST", path, body=body, timeout_s=timeout_s)
         return self._validate_model(path, raw, model)
 
     def _patch_model(self, path: str, body: bytes, model: type[_ModelT]) -> _ModelT:
@@ -381,10 +414,22 @@ class ApiClient:
         raw = self._request("GET", path, body=None)
         return self._validate_adapter(path, raw, adapter)
 
-    def _request(self, method: str, path: str, *, body: bytes | None) -> bytes:
+    def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        body: bytes | None,
+        timeout_s: float | None = None,
+    ) -> bytes:
         url = f"{self._base_url}{path}"
         try:
-            return self._transport.request(method, url, body=body, timeout_s=self._timeout)
+            return self._transport.request(
+                method,
+                url,
+                body=body,
+                timeout_s=self._timeout if timeout_s is None else timeout_s,
+            )
         except ApiError as exc:
             # Attach endpoint if the transport did not already.
             if exc.endpoint is None:

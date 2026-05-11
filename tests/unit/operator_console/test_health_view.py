@@ -17,6 +17,9 @@ from packages.schemas.operator_console import (
     AlertEvent,
     AlertKind,
     AlertSeverity,
+    CloudAuthState,
+    CloudAuthStatus,
+    CloudOutboxSummary,
     HealthProbeState,
     HealthSnapshot,
     HealthState,
@@ -206,6 +209,35 @@ def test_health_view_renders_ok_snapshot() -> None:
     assert view._degraded_card._primary.text() == "0"
     assert view._recovering_card._primary.text() == "0"
     assert view._error_card._primary.text() == "0"
+
+
+def test_health_view_renders_cloud_auth_and_outbox_readbacks() -> None:
+    view, store = _view()
+    store.set_health(_snapshot(HealthState.OK))
+    store.set_cloud_auth_status(
+        CloudAuthStatus(
+            state=CloudAuthState.SIGNED_IN,
+            checked_at_utc=_NOW,
+            message="Cloud sign-in is active.",
+        )
+    )
+    store.set_cloud_outbox_summary(
+        CloudOutboxSummary(
+            generated_at_utc=_NOW,
+            pending_count=2,
+            in_flight_count=1,
+            retry_scheduled_count=1,
+            dead_letter_count=1,
+            redacted_count=3,
+        )
+    )
+
+    assert view._cloud_auth_card._primary.text() == "signed in"
+    assert view._cloud_auth_card._secondary.text() == "Cloud sign-in is active."
+    assert view._cloud_auth_card._status._kind is UiStatusKind.OK
+    assert view._cloud_outbox_card._primary.text() == "4 active"
+    assert view._cloud_outbox_card._secondary.text() == "1 dead-letter · 3 redacted"
+    assert view._cloud_outbox_card._status._kind is UiStatusKind.ERROR
 
 
 def test_health_view_probe_matrix_renders_not_configured_as_muted() -> None:

@@ -42,7 +42,14 @@ from packages.schemas.operator_console import (
     AlertKind,
     AlertSeverity,
     AttributionSummary,
+    CloudActionStatus,
+    CloudAuthState,
+    CloudAuthStatus,
+    CloudExperimentRefreshStatus,
+    CloudOutboxSummary,
+    CloudSignInResult,
     EncounterState,
+    ExperimentBundleRefreshResult,
     HealthSnapshot,
     HealthState,
     ObservationalAcousticSummary,
@@ -228,6 +235,71 @@ class TestQuerystringAssembly:
 # ----------------------------------------------------------------------
 # post_stimulus
 # ----------------------------------------------------------------------
+
+
+class TestCloudEndpoints:
+    def test_cloud_status_and_outbox_validate_bounded_dtos(self) -> None:
+        transport = FakeTransport()
+        transport.enqueue_json(
+            {
+                "state": CloudAuthState.SIGNED_IN.value,
+                "checked_at_utc": _utc(2026, 5, 2, 12, 0).isoformat(),
+                "message": "Cloud sign-in is active.",
+            }
+        )
+        transport.enqueue_json(
+            {
+                "generated_at_utc": _utc(2026, 5, 2, 12, 1).isoformat(),
+                "pending_count": 2,
+                "in_flight_count": 1,
+                "dead_letter_count": 1,
+                "retry_scheduled_count": 1,
+                "redacted_count": 1,
+                "last_error": "HTTP 503",
+            }
+        )
+        client = ApiClient("http://api.test", transport=transport)
+
+        status = client.get_cloud_auth_status()
+        summary = client.get_cloud_outbox_summary()
+
+        assert isinstance(status, CloudAuthStatus)
+        assert isinstance(summary, CloudOutboxSummary)
+        assert transport.calls[0].url.endswith("/api/v1/operator/cloud/auth/status")
+        assert transport.calls[1].url.endswith("/api/v1/operator/cloud/outbox")
+
+    def test_cloud_actions_post_empty_body_and_validate_bounded_results(self) -> None:
+        transport = FakeTransport()
+        transport.enqueue_json(
+            {
+                "status": CloudActionStatus.SUCCEEDED.value,
+                "auth_state": CloudAuthState.SIGNED_IN.value,
+                "completed_at_utc": _utc(2026, 5, 2, 12, 0).isoformat(),
+                "message": "Cloud sign-in completed.",
+            }
+        )
+        transport.enqueue_json(
+            {
+                "status": CloudExperimentRefreshStatus.APPLIED.value,
+                "completed_at_utc": _utc(2026, 5, 2, 12, 1).isoformat(),
+                "message": "Experiment bundle refreshed.",
+                "bundle_id": "bundle-a",
+                "experiment_count": 2,
+            }
+        )
+        client = ApiClient("http://api.test", transport=transport)
+
+        sign_in = client.post_cloud_sign_in()
+        refresh = client.post_experiment_bundle_refresh()
+
+        assert isinstance(sign_in, CloudSignInResult)
+        assert isinstance(refresh, ExperimentBundleRefreshResult)
+        assert [call.method for call in transport.calls] == ["POST", "POST"]
+        assert [json.loads(call.body or b"{}") for call in transport.calls] == [{}, {}]
+        assert transport.calls[0].url.endswith("/api/v1/operator/cloud/auth/sign-in")
+        assert transport.calls[0].timeout_s == 125.0
+        assert transport.calls[1].url.endswith("/api/v1/operator/cloud/experiments/refresh")
+        assert transport.calls[1].timeout_s == 10.0
 
 
 class TestPostStimulus:

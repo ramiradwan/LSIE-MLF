@@ -22,9 +22,16 @@ from packages.schemas.operator_console import (
     AlertSeverity,
     ArmSummary,
     AttributionSummary,
+    CloudActionStatus,
+    CloudAuthState,
+    CloudAuthStatus,
+    CloudExperimentRefreshStatus,
+    CloudOutboxSummary,
+    CloudSignInResult,
     CoModulationSummary,
     EncounterState,
     EncounterSummary,
+    ExperimentBundleRefreshResult,
     ExperimentDetail,
     ExperimentSummary,
     HealthProbeState,
@@ -73,6 +80,10 @@ class FakeClient:
         self.deleted_arm_id: str | None = None
         self.encounter_limit: int | None = None
         self.list_session_limit: int | None = None
+        self.cloud_sign_in_called = False
+        self.cloud_refresh_called = False
+        self.fail_cloud_sign_in = False
+        self.fail_cloud_refresh = False
 
     def get_overview(self) -> OverviewSnapshot:
         return _overview()
@@ -119,6 +130,56 @@ class FakeClient:
     ) -> list[AlertEvent]:
         del limit, since_utc
         return [_alert()]
+
+    def get_cloud_auth_status(self) -> CloudAuthStatus:
+        return CloudAuthStatus(
+            state=CloudAuthState.SIGNED_IN,
+            checked_at_utc=_NOW,
+            message="Cloud sign-in is active.",
+        )
+
+    def get_cloud_outbox_summary(self) -> CloudOutboxSummary:
+        return CloudOutboxSummary(
+            generated_at_utc=_NOW,
+            pending_count=2,
+            in_flight_count=1,
+            retry_scheduled_count=1,
+            dead_letter_count=1,
+            redacted_count=3,
+            last_error="HTTP 503",
+        )
+
+    def post_cloud_sign_in(self) -> CloudSignInResult:
+        self.cloud_sign_in_called = True
+        if self.fail_cloud_sign_in:
+            return CloudSignInResult(
+                status=CloudActionStatus.FAILED,
+                auth_state=CloudAuthState.REFRESH_FAILED,
+                completed_at_utc=_NOW,
+                message="Cloud authorization failed.",
+            )
+        return CloudSignInResult(
+            status=CloudActionStatus.SUCCEEDED,
+            auth_state=CloudAuthState.SIGNED_IN,
+            completed_at_utc=_NOW,
+            message="Cloud sign-in completed.",
+        )
+
+    def post_experiment_bundle_refresh(self) -> ExperimentBundleRefreshResult:
+        self.cloud_refresh_called = True
+        if self.fail_cloud_refresh:
+            return ExperimentBundleRefreshResult(
+                status=CloudExperimentRefreshStatus.FAILED,
+                completed_at_utc=_NOW,
+                message="Cloud experiment service is offline.",
+            )
+        return ExperimentBundleRefreshResult(
+            status=CloudExperimentRefreshStatus.APPLIED,
+            completed_at_utc=_NOW,
+            message="Experiment bundle refreshed.",
+            bundle_id="bundle-a",
+            experiment_count=2,
+        )
 
     def post_stimulus(self, session_id: UUID | str, request: StimulusRequest) -> StimulusAccepted:
         self.stimulus_session_id = str(session_id)
@@ -609,6 +670,48 @@ def test_health_alerts_physiology_and_comodulation(monkeypatch: pytest.MonkeyPat
     assert "streamer" in physiology_result.output
     assert "Co-Modulation Index" in comodulation_result.output
     assert "+0.82" in comodulation_result.output
+
+
+def test_cloud_commands_use_shared_api_client_methods(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = FakeClient()
+    monkeypatch.setattr("scripts.lsie_cli._build_client", lambda: client)
+
+    status_result = runner.invoke(app, ["cloud", "status"])
+    sign_in_result = runner.invoke(app, ["cloud", "sign-in"])
+    refresh_result = runner.invoke(app, ["cloud", "refresh-experiments"])
+
+    assert status_result.exit_code == 0
+    assert sign_in_result.exit_code == 0
+    assert refresh_result.exit_code == 0
+    assert client.cloud_sign_in_called is True
+    assert client.cloud_refresh_called is True
+    assert "Cloud sign-in: signed in" in status_result.output
+    assert "Dead-letter: 1" in status_result.output
+    assert "Cloud sign-in succeeded" in sign_in_result.output
+    assert "Experiment refresh applied" in refresh_result.output
+    assert "bundle-a" in refresh_result.output
+
+
+def test_cloud_action_json_failures_exit_nonzero(monkeypatch: pytest.MonkeyPatch) -> None:
+    sign_in_client = FakeClient()
+    sign_in_client.fail_cloud_sign_in = True
+    monkeypatch.setattr("scripts.lsie_cli._build_client", lambda: sign_in_client)
+
+    sign_in_result = runner.invoke(app, ["cloud", "sign-in", "--json"])
+
+    assert sign_in_result.exit_code == 1
+    assert '"status": "failed"' in sign_in_result.output
+    assert "Cloud authorization failed." in sign_in_result.output
+
+    refresh_client = FakeClient()
+    refresh_client.fail_cloud_refresh = True
+    monkeypatch.setattr("scripts.lsie_cli._build_client", lambda: refresh_client)
+
+    refresh_result = runner.invoke(app, ["cloud", "refresh-experiments", "--json"])
+
+    assert refresh_result.exit_code == 1
+    assert '"status": "failed"' in refresh_result.output
+    assert "Cloud experiment service is offline." in refresh_result.output
 
 
 def test_api_error_uses_desktop_safe_guidance(monkeypatch: pytest.MonkeyPatch) -> None:

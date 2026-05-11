@@ -23,9 +23,9 @@ Design notes:
     `run_one_shot`; on success the coordinator updates the store and
     queues the relevant refreshes so the UI does not wait for the next
     polling interval.
-  - Cloud experiment-bundle refresh is the sole direct SQLite write-helper
-    exception in this module: it uses the signed-bundle client/store helper
-    pair to cache cloud control-plane data locally after refresh-token auth.
+  - Cloud sign-in and experiment-bundle refresh run through the shared
+    loopback API/client surface so GUI and CLI callers do not duplicate
+    cloud helper logic or touch SQLite write helpers directly.
 
 Spec references:
   §4.C           — stimulus idempotency lives in the loopback API/client boundary, not here
@@ -57,6 +57,10 @@ from packages.schemas.experiments import (
 from packages.schemas.operator_console import (
     AlertEvent,
     ArmSummary,
+    CloudActionStatus,
+    CloudAuthStatus,
+    CloudExperimentRefreshStatus,
+    CloudOutboxSummary,
     EncounterSummary,
     ExperimentDetail,
     ExperimentSummary,
@@ -70,14 +74,6 @@ from packages.schemas.operator_console import (
     SessionSummary,
     StimulusRequest,
 )
-from services.desktop_app.cloud.auth_flow import AuthFlowConfig, DesktopAuthFlow
-from services.desktop_app.cloud.experiment_bundle import (
-    ExperimentBundleClient,
-    ExperimentBundleStore,
-)
-from services.desktop_app.os_adapter import resolve_state_dir
-from services.desktop_app.privacy.secrets import SECRET_KEY_CLOUD_REFRESH_TOKEN, get_secret
-from services.desktop_app.processes.cloud_sync_worker import SQLITE_FILENAME, CloudSyncConfig
 from services.desktop_launcher.repair import repair_runtime
 from services.operator_console.api_client import ApiClient, ApiError
 from services.operator_console.config import OperatorConsoleConfig
@@ -109,6 +105,8 @@ JOB_STIMULUS = "stimulus"
 JOB_SESSION_START = "session_start"
 JOB_SESSION_END = "session_end"
 JOB_REPAIR_INSTALL = "repair_install"
+JOB_CLOUD_AUTH_STATUS = "cloud_auth_status"
+JOB_CLOUD_OUTBOX = "cloud_outbox"
 JOB_CLOUD_SIGN_IN = "cloud_sign_in"
 JOB_EXPERIMENT_BUNDLE_REFRESH = "experiment_bundle_refresh"
 JOB_EVENT_STREAM = "event_stream"
@@ -607,45 +605,20 @@ class PollingCoordinator(QObject):
         return signals
 
     def cloud_sign_in(self) -> OneShotSignals:
-        cloud_config = CloudSyncConfig.from_env()
-        auth_config = AuthFlowConfig(
-            authorization_endpoint=f"{cloud_config.base_url}/v4/auth/oauth/authorize",
-            token_endpoint=f"{cloud_config.base_url}/v4/auth/oauth/token",
-            client_id=cloud_config.client_id,
-        )
-
         def fn() -> object:
-            return DesktopAuthFlow(auth_config).run_loopback_authorization()
+            result = self._client.post_cloud_sign_in()
+            if result.status is CloudActionStatus.FAILED:
+                raise ApiError(message=result.message, retryable=result.retryable)
+            return result
 
         return self._run_cloud_action(JOB_CLOUD_SIGN_IN, fn)
 
     def refresh_experiment_bundle(self) -> OneShotSignals:
-        cloud_config = CloudSyncConfig.from_env()
-
         def fn() -> object:
-            refresh_token = get_secret(SECRET_KEY_CLOUD_REFRESH_TOKEN)
-            if refresh_token is None:
-                raise ApiError(
-                    message="Cloud sign-in is required before refreshing experiments.",
-                    endpoint=None,
-                    retryable=False,
-                )
-            auth_config = AuthFlowConfig(
-                authorization_endpoint=f"{cloud_config.base_url}/v4/auth/oauth/authorize",
-                token_endpoint=f"{cloud_config.base_url}/v4/auth/oauth/token",
-                client_id=cloud_config.client_id,
-            )
-            token = DesktopAuthFlow(auth_config).refresh_access_token(refresh_token=refresh_token)
-            bundle = ExperimentBundleClient(
-                cloud_config.base_url,
-                timeout_s=cloud_config.timeout_s,
-            ).fetch_bundle(access_token=token.access_token)
-            store = ExperimentBundleStore(resolve_state_dir() / SQLITE_FILENAME)
-            try:
-                store.cache_verified_bundle(bundle)
-            finally:
-                store.close()
-            return bundle
+            result = self._client.post_experiment_bundle_refresh()
+            if result.status is CloudExperimentRefreshStatus.FAILED:
+                raise ApiError(message=result.message, retryable=result.retryable)
+            return result
 
         return self._run_cloud_action(JOB_EXPERIMENT_BUNDLE_REFRESH, fn)
 
@@ -752,6 +725,8 @@ class PollingCoordinator(QObject):
                 cfg.health_poll_ms,
                 frozenset({AppRoute.LIVE_SESSION, AppRoute.HEALTH}),
             ),
+            PollJobSpec(JOB_CLOUD_AUTH_STATUS, cfg.health_poll_ms, AppRoute.HEALTH),
+            PollJobSpec(JOB_CLOUD_OUTBOX, cfg.health_poll_ms, AppRoute.HEALTH),
             # Alerts — always on; attention queue must stay current on
             # every page, per the §4.E.1 multi-page layout.
             PollJobSpec(JOB_ALERTS, cfg.alerts_poll_ms, route_scoped=None),
@@ -936,6 +911,10 @@ class PollingCoordinator(QObject):
                 self._store.set_physiology(None)
         elif job_name == JOB_HEALTH and isinstance(payload, HealthSnapshot):
             self._store.set_health(payload)
+        elif job_name == JOB_CLOUD_AUTH_STATUS and isinstance(payload, CloudAuthStatus):
+            self._store.set_cloud_auth_status(payload)
+        elif job_name == JOB_CLOUD_OUTBOX and isinstance(payload, CloudOutboxSummary):
+            self._store.set_cloud_outbox_summary(payload)
         elif job_name == JOB_ALERTS and isinstance(payload, list):
             self._store.set_alerts(_as_list(payload, AlertEvent))
         else:
@@ -1003,6 +982,10 @@ class PollingCoordinator(QObject):
             return self._make_fetch_physiology()
         if job_name == JOB_HEALTH:
             return self._make_fetch_health()
+        if job_name == JOB_CLOUD_AUTH_STATUS:
+            return self._make_fetch_cloud_auth_status()
+        if job_name == JOB_CLOUD_OUTBOX:
+            return self._make_fetch_cloud_outbox()
         if job_name == JOB_ALERTS:
             return self._make_fetch_alerts()
         raise ValueError(f"unknown job: {job_name}")
@@ -1083,6 +1066,22 @@ class PollingCoordinator(QObject):
 
         def fetch() -> HealthSnapshot:
             return client.get_health()
+
+        return fetch
+
+    def _make_fetch_cloud_auth_status(self) -> Callable[[], CloudAuthStatus]:
+        client = self._client
+
+        def fetch() -> CloudAuthStatus:
+            return client.get_cloud_auth_status()
+
+        return fetch
+
+    def _make_fetch_cloud_outbox(self) -> Callable[[], CloudOutboxSummary]:
+        client = self._client
+
+        def fetch() -> CloudOutboxSummary:
+            return client.get_cloud_outbox_summary()
 
         return fetch
 
