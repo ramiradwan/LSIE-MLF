@@ -58,6 +58,14 @@ from services.desktop_app.os_adapter import SupervisedProcess, find_executable
 
 logger = logging.getLogger(__name__)
 
+_ATTRIBUTION_FORWARD_FIELDS: tuple[str, ...] = (
+    "_outcome_event",
+    "_outcome_events",
+    "_creator_follow",
+    "_creator_follow_outcome",
+    "_attribution_outcome",
+)
+
 INBOX_POLL_TIMEOUT_S = 0.5
 SQLITE_FILENAME = "desktop.sqlite"
 _PCM_SAMPLE_WIDTH_BYTES = 2
@@ -790,6 +798,29 @@ def _ack_pcm_block(channels: IpcChannels, name: str) -> None:
     channels.pcm_acks.put(PcmBlockAckMessage(name=name).model_dump(mode="json"))
 
 
+def _extract_attribution_inputs(forward_fields: dict[str, Any]) -> dict[str, Any] | None:
+    outcome_event = forward_fields.get("_outcome_event")
+    if not isinstance(outcome_event, dict):
+        for key in ("_creator_follow_outcome", "_attribution_outcome"):
+            candidate = forward_fields.get(key)
+            if isinstance(candidate, dict):
+                outcome_event = candidate
+                break
+
+    outcome_events = forward_fields.get("_outcome_events")
+    creator_follow = forward_fields.get("_creator_follow")
+    payload: dict[str, Any] = {}
+    if isinstance(outcome_event, dict):
+        payload["_outcome_event"] = outcome_event
+    if isinstance(outcome_events, list):
+        filtered = [item for item in outcome_events if isinstance(item, dict)]
+        if filtered:
+            payload["_outcome_events"] = filtered
+    if isinstance(creator_follow, bool):
+        payload["_creator_follow"] = creator_follow
+    return payload or None
+
+
 def _build_analytics_result(
     msg: InferenceControlMessage,
     audio: bytes,
@@ -920,6 +951,17 @@ def _build_analytics_result(
     if semantic is None:
         return None
 
+    payload: dict[str, Any] = {
+        "message_id": str(_analytics_message_id(segment_id)),
+        "handoff": handoff,
+        "semantic": semantic,
+        "transcription": transcription,
+        "acoustic": acoustic_payload,
+    }
+    attribution = _extract_attribution_inputs(msg.forward_fields)
+    if attribution is not None:
+        payload["attribution"] = attribution
+
     timings["pipeline_total"] = (time.perf_counter() - pipeline_started) * 1000.0
     breakdown = ", ".join(f"{name}={ms:.1f}ms" for name, ms in sorted(timings.items()))
     # WARNING level so the per-segment breakdown reaches the parent's
@@ -927,15 +969,7 @@ def _build_analytics_result(
     # cheap and the cadence is bounded by the 30 s segment window.
     logger.warning("gpu_ml_worker segment_id=%s timings: %s", segment_id, breakdown)
 
-    return AnalyticsResultMessage.model_validate(
-        {
-            "message_id": str(_analytics_message_id(segment_id)),
-            "handoff": handoff,
-            "semantic": semantic,
-            "transcription": transcription,
-            "acoustic": acoustic_payload,
-        }
-    )
+    return AnalyticsResultMessage.model_validate(payload)
 
 
 def _publish_analytics_result(

@@ -584,7 +584,9 @@ def test_processor_persists_non_reward_rows_without_stimulus(tmp_path: Path) -> 
     _prepare_db(db)
     processor = LocalAnalyticsProcessor(db, client_id="desktop-a")
 
-    enqueue_plan = processor.process(_analytics_message(handoff=_handoff_payload(stimulus_time=None)))
+    enqueue_plan = processor.process(
+        _analytics_message(handoff=_handoff_payload(stimulus_time=None))
+    )
 
     assert enqueue_plan is not None
     assert enqueue_plan.posterior_delta is None
@@ -659,6 +661,50 @@ def test_processor_builds_attribution_event_when_inputs_exist(tmp_path: Path) ->
     assert event.semantic_p_match == pytest.approx(0.8, abs=1e-12)
     assert event.semantic_reason_code == "cross_encoder_high_match"
 
+
+
+def test_processor_persists_online_provisional_attribution_ledger_rows(tmp_path: Path) -> None:
+    db = tmp_path / "desktop.sqlite"
+    _prepare_db(db)
+    processor = LocalAnalyticsProcessor(db, client_id="desktop-a")
+
+    enqueue_plan = processor.process(
+        _analytics_message(
+            handoff=_handoff_payload(stimulus_time=100.0),
+            is_match=True,
+            confidence_score=0.8,
+            attribution={
+                "_outcome_event": {
+                    "outcome_type": "creator_follow",
+                    "outcome_time_utc": "2026-05-02T12:00:03+00:00",
+                    "source_system": "desktop_test",
+                    "source_event_ref": SEGMENT_ID,
+                    "confidence": 1.0,
+                },
+            },
+        )
+    )
+
+    assert enqueue_plan is not None
+    assert enqueue_plan.attribution_event is not None
+    conn = sqlite3.connect(str(db), isolation_level=None)
+    conn.row_factory = sqlite3.Row
+    event = conn.execute(
+        "SELECT segment_id, selected_arm_id, finality FROM attribution_event WHERE segment_id = ?",
+        (SEGMENT_ID,),
+    ).fetchone()
+    outcome_count = conn.execute("SELECT COUNT(*) FROM outcome_event").fetchone()[0]
+    link_count = conn.execute("SELECT COUNT(*) FROM event_outcome_link").fetchone()[0]
+    score_count = conn.execute("SELECT COUNT(*) FROM attribution_score").fetchone()[0]
+    conn.close()
+
+    assert event is not None
+    assert event["segment_id"] == SEGMENT_ID
+    assert event["selected_arm_id"] == "warm_welcome"
+    assert event["finality"] == "online_provisional"
+    assert outcome_count == 1
+    assert link_count == 1
+    assert score_count > 0
 
 
 def test_run_loop_enqueues_handoff_before_posterior_delta(tmp_path: Path) -> None:

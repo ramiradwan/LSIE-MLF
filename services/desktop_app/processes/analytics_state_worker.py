@@ -8,6 +8,7 @@ libraries reserved for ``gpu_ml_worker``.
 
 from __future__ import annotations
 
+import json
 import logging
 import multiprocessing.synchronize as mpsync
 import os
@@ -19,7 +20,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Protocol
 
-from packages.ml_core.attribution import build_attribution_ledger_records
+from packages.ml_core.attribution import AttributionLedgerRecords, build_attribution_ledger_records
 from packages.schemas.attribution import AttributionEvent
 from packages.schemas.cloud import PosteriorDelta
 from packages.schemas.inference_handoff import InferenceHandoffPayload
@@ -64,6 +65,44 @@ _DEFAULT_ACOUSTIC_PAYLOAD: dict[str, bool | float | None] = {
 
 class QueueLike(Protocol):
     def get(self, block: bool = True, timeout: float | None = None) -> object: ...
+
+
+def _build_attribution_ledger(
+    message: AnalyticsResultMessage,
+    *,
+    reward: RewardResult | None,
+    applied_at_utc: datetime,
+) -> AttributionLedgerRecords | None:
+    attribution = message.attribution
+    if attribution is None or not _has_attribution_inputs(attribution):
+        return None
+    metrics: dict[str, Any] = {
+        "session_id": str(message.handoff.session_id),
+        "segment_id": message.handoff.segment_id,
+        "timestamp_utc": message.handoff.timestamp_utc,
+        "_active_arm": message.handoff.active_arm,
+        "_expected_greeting": message.handoff.expected_greeting,
+        "_stimulus_time": message.handoff.stimulus_time,
+        "_au12_series": [
+            observation.model_dump(mode="python") for observation in message.handoff.au12_series
+        ],
+        "_bandit_decision_snapshot": message.handoff.bandit_decision_snapshot.model_dump(
+            mode="python",
+            by_alias=True,
+        ),
+        "semantic": message.semantic.model_dump(mode="python", by_alias=True),
+    }
+    if attribution.outcome_event is not None:
+        metrics["_outcome_event"] = attribution.outcome_event
+    if attribution.outcome_events is not None:
+        metrics["_outcome_events"] = attribution.outcome_events
+    if attribution.creator_follow is not None:
+        metrics["_creator_follow"] = attribution.creator_follow
+    return build_attribution_ledger_records(
+        metrics,
+        reward_result=reward,
+        created_at=applied_at_utc,
+    )
 
 
 # §9.2: keep cloud-bound artifacts together so enqueue order stays segment-first.
@@ -123,6 +162,11 @@ class LocalAnalyticsProcessor:
                 decision_context_hash=handoff.bandit_decision_snapshot.decision_context_hash,
             )
 
+        attribution_ledger = _build_attribution_ledger(
+            message,
+            reward=reward,
+            applied_at_utc=applied_at_utc,
+        )
         applied = _apply_local_update(
             self._conn,
             message,
@@ -130,6 +174,7 @@ class LocalAnalyticsProcessor:
             applied_at_utc=applied_at_utc,
             reward=reward,
             delta=delta,
+            attribution_ledger=attribution_ledger,
         )
         if not applied:
             return None
@@ -138,11 +183,7 @@ class LocalAnalyticsProcessor:
         # posterior delta together so the caller can preserve cloud ordering.
         return _CloudAnalyticsEnqueuePlan(
             handoff=message.handoff,
-            attribution_event=_build_attribution_event(
-                message,
-                reward=reward,
-                applied_at_utc=applied_at_utc,
-            ),
+            attribution_event=None if attribution_ledger is None else attribution_ledger.event,
             posterior_delta=delta,
         )
 
@@ -239,6 +280,7 @@ def _apply_local_update(
     applied_at_utc: datetime,
     reward: RewardResult | None,
     delta: PosteriorDelta | None,
+    attribution_ledger: AttributionLedgerRecords | None,
 ) -> bool:
     handoff = message.handoff
     conn.execute("BEGIN IMMEDIATE")
@@ -258,6 +300,8 @@ def _apply_local_update(
                 applied_at_utc,
             )
             _insert_encounter_row(conn, message, reward)
+        if attribution_ledger is not None:
+            _upsert_attribution_ledger(conn, attribution_ledger)
         conn.execute(
             """
             INSERT INTO analytics_message_ledger (
@@ -345,47 +389,6 @@ def _schema_version(raw: object) -> str | None:
     else:
         value = getattr(raw, "schema_version", None)
     return value if isinstance(value, str) else None
-
-
-# §6.4.1 / §7E: desktop live upload emits only the online-provisional
-# AttributionEvent surface; offline finalization remains a separate deferred path.
-def _build_attribution_event(
-    message: AnalyticsResultMessage,
-    *,
-    reward: RewardResult | None,
-    applied_at_utc: datetime,
-) -> AttributionEvent | None:
-    attribution = message.attribution
-    if attribution is None or not _has_attribution_inputs(attribution):
-        return None
-    metrics: dict[str, Any] = {
-        "session_id": str(message.handoff.session_id),
-        "segment_id": message.handoff.segment_id,
-        "timestamp_utc": message.handoff.timestamp_utc,
-        "_active_arm": message.handoff.active_arm,
-        "_expected_greeting": message.handoff.expected_greeting,
-        "_stimulus_time": message.handoff.stimulus_time,
-        "_au12_series": [
-            observation.model_dump(mode="python") for observation in message.handoff.au12_series
-        ],
-        "_bandit_decision_snapshot": message.handoff.bandit_decision_snapshot.model_dump(
-            mode="python",
-            by_alias=True,
-        ),
-        "semantic": message.semantic.model_dump(mode="python", by_alias=True),
-    }
-    if attribution.outcome_event is not None:
-        metrics["_outcome_event"] = attribution.outcome_event
-    if attribution.outcome_events is not None:
-        metrics["_outcome_events"] = attribution.outcome_events
-    if attribution.creator_follow is not None:
-        metrics["_creator_follow"] = attribution.creator_follow
-    ledger = build_attribution_ledger_records(
-        metrics,
-        reward_result=reward,
-        created_at=applied_at_utc,
-    )
-    return None if ledger is None else ledger.event
 
 
 def _has_attribution_inputs(attribution: AnalyticsAttributionInputs) -> bool:
@@ -523,6 +526,163 @@ def _apply_reward_update(
             arm,
         ),
     )
+
+
+def _upsert_attribution_ledger(
+    conn: sqlite3.Connection,
+    ledger: AttributionLedgerRecords,
+) -> None:
+    event = ledger.event.model_dump(mode="json")
+    conn.execute(
+        """
+        INSERT INTO attribution_event (
+            event_id, session_id, segment_id, event_type, event_time_utc,
+            stimulus_time_utc, selected_arm_id, expected_rule_text_hash,
+            semantic_method, semantic_method_version, semantic_p_match,
+            semantic_reason_code, reward_path_version, bandit_decision_snapshot,
+            evidence_flags, finality, schema_version, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT (event_id) DO UPDATE SET
+            session_id = excluded.session_id,
+            segment_id = excluded.segment_id,
+            event_type = excluded.event_type,
+            event_time_utc = excluded.event_time_utc,
+            stimulus_time_utc = excluded.stimulus_time_utc,
+            selected_arm_id = excluded.selected_arm_id,
+            expected_rule_text_hash = excluded.expected_rule_text_hash,
+            semantic_method = excluded.semantic_method,
+            semantic_method_version = excluded.semantic_method_version,
+            semantic_p_match = excluded.semantic_p_match,
+            semantic_reason_code = excluded.semantic_reason_code,
+            reward_path_version = excluded.reward_path_version,
+            bandit_decision_snapshot = excluded.bandit_decision_snapshot,
+            evidence_flags = excluded.evidence_flags,
+            finality = excluded.finality,
+            schema_version = excluded.schema_version
+        """,
+        (
+            str(event["event_id"]),
+            str(event["session_id"]),
+            event["segment_id"],
+            event["event_type"],
+            event["event_time_utc"],
+            event.get("stimulus_time_utc"),
+            event["selected_arm_id"],
+            event["expected_rule_text_hash"],
+            event["semantic_method"],
+            event["semantic_method_version"],
+            event.get("semantic_p_match"),
+            event.get("semantic_reason_code"),
+            event["reward_path_version"],
+            json.dumps(event["bandit_decision_snapshot"], sort_keys=True, separators=(",", ":")),
+            json.dumps(event["evidence_flags"], sort_keys=True, separators=(",", ":")),
+            event["finality"],
+            event["schema_version"],
+            event["created_at"],
+        ),
+    )
+    for outcome in ledger.outcomes:
+        data = outcome.model_dump(mode="json")
+        conn.execute(
+            """
+            INSERT INTO outcome_event (
+                outcome_id, session_id, outcome_type, outcome_value,
+                outcome_time_utc, source_system, source_event_ref,
+                confidence, finality, schema_version, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (outcome_id) DO UPDATE SET
+                session_id = excluded.session_id,
+                outcome_type = excluded.outcome_type,
+                outcome_value = excluded.outcome_value,
+                outcome_time_utc = excluded.outcome_time_utc,
+                source_system = excluded.source_system,
+                source_event_ref = excluded.source_event_ref,
+                confidence = excluded.confidence,
+                finality = excluded.finality,
+                schema_version = excluded.schema_version
+            """,
+            (
+                str(data["outcome_id"]),
+                str(data["session_id"]),
+                data["outcome_type"],
+                data["outcome_value"],
+                data["outcome_time_utc"],
+                data["source_system"],
+                data.get("source_event_ref"),
+                data["confidence"],
+                data["finality"],
+                data["schema_version"],
+                data["created_at"],
+            ),
+        )
+    for link in ledger.links:
+        data = link.model_dump(mode="json")
+        conn.execute(
+            """
+            INSERT INTO event_outcome_link (
+                link_id, event_id, outcome_id, lag_s, horizon_s,
+                link_rule_version, eligibility_flags, finality,
+                schema_version, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (link_id) DO UPDATE SET
+                event_id = excluded.event_id,
+                outcome_id = excluded.outcome_id,
+                lag_s = excluded.lag_s,
+                horizon_s = excluded.horizon_s,
+                link_rule_version = excluded.link_rule_version,
+                eligibility_flags = excluded.eligibility_flags,
+                finality = excluded.finality,
+                schema_version = excluded.schema_version
+            """,
+            (
+                str(data["link_id"]),
+                str(data["event_id"]),
+                str(data["outcome_id"]),
+                data["lag_s"],
+                data["horizon_s"],
+                data["link_rule_version"],
+                json.dumps(data["eligibility_flags"], sort_keys=True, separators=(",", ":")),
+                data["finality"],
+                data["schema_version"],
+                data["created_at"],
+            ),
+        )
+    for score in ledger.scores:
+        data = score.model_dump(mode="json")
+        conn.execute(
+            """
+            INSERT INTO attribution_score (
+                score_id, event_id, outcome_id, attribution_method,
+                method_version, score_raw, score_normalized, confidence,
+                evidence_flags, finality, schema_version, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT (score_id) DO UPDATE SET
+                event_id = excluded.event_id,
+                outcome_id = excluded.outcome_id,
+                attribution_method = excluded.attribution_method,
+                method_version = excluded.method_version,
+                score_raw = excluded.score_raw,
+                score_normalized = excluded.score_normalized,
+                confidence = excluded.confidence,
+                evidence_flags = excluded.evidence_flags,
+                finality = excluded.finality,
+                schema_version = excluded.schema_version
+            """,
+            (
+                str(data["score_id"]),
+                str(data["event_id"]),
+                None if data.get("outcome_id") is None else str(data["outcome_id"]),
+                data["attribution_method"],
+                data["method_version"],
+                data.get("score_raw"),
+                data.get("score_normalized"),
+                data.get("confidence"),
+                json.dumps(data["evidence_flags"], sort_keys=True, separators=(",", ":")),
+                data["finality"],
+                data["schema_version"],
+                data["created_at"],
+            ),
+        )
 
 
 def _insert_encounter_row(

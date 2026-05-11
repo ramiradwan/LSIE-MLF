@@ -167,11 +167,15 @@ def _handoff() -> dict[str, Any]:
     }
 
 
-def _control_message() -> tuple[InferenceControlMessage, PcmBlock]:
+def _control_message(
+    *,
+    forward_fields: dict[str, Any] | None = None,
+) -> tuple[InferenceControlMessage, PcmBlock]:
     block = write_pcm_block(b"\0\0" * 16000)
     msg = InferenceControlMessage(
         handoff=_handoff(),
         audio=AudioBlockRef.from_metadata(block.metadata),
+        forward_fields={} if forward_fields is None else forward_fields,
     )
     return msg, block
 
@@ -790,6 +794,48 @@ def test_gpu_ml_worker_publishes_analytics_result_to_inbox() -> None:
         dumped = analytics.model_dump(mode="json")
         assert "_audio_data" not in dumped
         assert "_frame_data" not in dumped
+    finally:
+        block.close_and_unlink()
+
+
+def test_gpu_ml_worker_forwards_attribution_inputs_from_ipc_tail() -> None:
+    ctx = mp.get_context("spawn")
+    channels = IpcChannels(
+        ml_inbox=ctx.Queue(),
+        drift_updates=ctx.Queue(),
+        analytics_inbox=ctx.Queue(),
+        pcm_acks=ctx.Queue(),
+    )
+    msg, block = _control_message(
+        forward_fields={
+            "_creator_follow": True,
+            "_creator_follow_outcome": {
+                "outcome_type": "creator_follow",
+                "outcome_time_utc": "2026-05-02T12:00:02+00:00",
+                "source_system": "desktop_test",
+                "source_event_ref": SEGMENT_ID,
+                "confidence": 1.0,
+            },
+        }
+    )
+    try:
+        with (
+            patch("packages.ml_core.audio_pipe.pcm_to_wav_bytes", return_value=b"RIFF"),
+            patch("packages.ml_core.preprocessing.TextPreprocessor", StubTextPreprocessor),
+            patch("packages.ml_core.semantic.SemanticEvaluator", StubSemanticEvaluator),
+        ):
+            _publish_analytics_result(
+                channels,
+                msg,
+                transcription_engine=StubTranscriptionEngine(),
+            )
+
+        raw = channels.analytics_inbox.get(timeout=1.0)
+        analytics = AnalyticsResultMessage.model_validate(raw)
+        assert analytics.attribution is not None
+        assert analytics.attribution.creator_follow is True
+        assert analytics.attribution.outcome_event is not None
+        assert analytics.attribution.outcome_event["source_system"] == "desktop_test"
     finally:
         block.close_and_unlink()
 
