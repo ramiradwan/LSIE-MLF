@@ -8,7 +8,7 @@ import json
 import os
 import sqlite3
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Literal
 
@@ -21,6 +21,7 @@ from services.desktop_app.state.sqlite_schema import bootstrap_schema
 
 BundleSignatureMode = Literal["hmac-sha256", "ed25519"]
 _PUBLIC_KEY_ENV = "LSIE_CLOUD_BUNDLE_ED25519_PUBLIC_KEY"
+_BUNDLE_NOT_BEFORE_SKEW = timedelta(seconds=5)
 
 
 @dataclass(frozen=True)
@@ -164,7 +165,7 @@ def verify_bundle(
 ) -> None:
     effective_config = config or BundleVerificationConfig.from_env()
     now = now_utc or datetime.now(UTC)
-    if bundle.issued_at_utc > now or bundle.expires_at_utc <= now:
+    if bundle.issued_at_utc - _BUNDLE_NOT_BEFORE_SKEW > now or bundle.expires_at_utc <= now:
         raise ExperimentBundleVerificationError("experiment bundle is outside its validity window")
     if not bundle.signature:
         raise ExperimentBundleVerificationError("experiment bundle is unsigned")

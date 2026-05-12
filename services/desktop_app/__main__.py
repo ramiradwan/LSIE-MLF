@@ -21,7 +21,10 @@ import signal
 import sys
 from argparse import ArgumentParser
 from collections.abc import Sequence
+from pathlib import Path
 from types import FrameType
+
+from dotenv import load_dotenv
 
 from services.desktop_app.privacy.crash_dumps import install_crash_privacy_guards
 from services.desktop_app.process_graph import ProcessGraph
@@ -29,6 +32,10 @@ from services.desktop_app.startup_timing import ensure_startup_epoch
 from services.desktop_launcher import preflight
 
 logger = logging.getLogger(__name__)
+
+
+def _load_local_env() -> None:
+    load_dotenv(dotenv_path=Path(__file__).resolve().parents[2] / ".env", override=False)
 
 
 def _build_parser() -> ArgumentParser:
@@ -52,6 +59,7 @@ def _build_parser() -> ArgumentParser:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    _load_local_env()
     args = _build_parser().parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
     multiprocessing.set_start_method("spawn", force=True)

@@ -21,15 +21,6 @@ _REQUIRED_VARIABLES = {
     "LSIE_CLOUD_SYNC_BATCH_SIZE",
     "LSIE_CLOUD_SYNC_TIMEOUT_S",
     "LSIE_CLOUD_BUNDLE_ED25519_PUBLIC_KEY",
-    "CLOUD_POSTGRES_HOST",
-    "CLOUD_POSTGRES_PORT",
-    "CLOUD_POSTGRES_USER",
-    "CLOUD_POSTGRES_PASSWORD",
-    "CLOUD_POSTGRES_DB",
-    "LSIE_CLOUD_TOKEN_SIGNING_SECRET",
-    "LSIE_CLOUD_ALLOWED_CLIENT_IDS",
-    "LSIE_CLOUD_BUNDLE_ED25519_PRIVATE_KEY",
-    "LSIE_CLOUD_POLICY_VERSION",
     "SEMANTIC_DEVICE_MODE",
     "SEMANTIC_GRAY_BAND_FALLBACK_ENABLED",
     "SEMANTIC_SHADOW_MODE_ENABLED",
@@ -44,7 +35,7 @@ _REQUIRED_VARIABLES = {
     "OURA_STATE_DIR",
 }
 
-_LEGACY_OR_CONFUSING_VARIABLES = {
+_EXCLUDED_DESKTOP_ENV_VARIABLES = {
     "POSTGRES_USER",
     "POSTGRES_PASSWORD",
     "POSTGRES_DB",
@@ -81,10 +72,10 @@ def test_env_example_documents_current_desktop_and_cloud_variables() -> None:
     assert _REQUIRED_VARIABLES.issubset(assignments)
 
 
-def test_env_example_drops_legacy_runtime_variables() -> None:
+def test_env_example_excludes_non_desktop_runtime_variables() -> None:
     assignments = _env_assignments()
 
-    assert _LEGACY_OR_CONFUSING_VARIABLES.isdisjoint(assignments)
+    assert _EXCLUDED_DESKTOP_ENV_VARIABLES.isdisjoint(assignments)
 
 
 def test_cloud_base_url_example_is_unversioned_origin() -> None:

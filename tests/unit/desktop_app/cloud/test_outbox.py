@@ -265,6 +265,31 @@ def test_invalid_payload_is_marked_dead_letter(tmp_path: Path) -> None:
     assert digest == payload_sha256('{"not":"valid"}')
 
 
+def test_summarize_excludes_redacted_payloads_from_active_counts(tmp_path: Path) -> None:
+    outbox = CloudOutbox(tmp_path / "desktop.sqlite")
+    try:
+        upload_id = outbox.enqueue_raw(
+            endpoint="telemetry_posterior_deltas",
+            payload_type="posterior_delta",
+            dedupe_key="redacted-delta",
+            payload_json='{"posterior_delta_id":"not-a-real-payload"}',
+        )
+        outbox.mark_dead_letter([upload_id], error="invalid payload")
+        conn = sqlite3.connect(str(tmp_path / "desktop.sqlite"), isolation_level=None)
+        conn.execute(
+            "UPDATE pending_uploads SET status = 'pending' WHERE upload_id = ?",
+            (upload_id,),
+        )
+        conn.close()
+        summary = outbox.summarize()
+    finally:
+        outbox.close()
+
+    assert summary.pending_count == 0
+    assert summary.dead_letter_count == 0
+    assert summary.redacted_count == 1
+
+
 def test_reset_stale_locks_returns_inflight_rows_to_pending(tmp_path: Path) -> None:
     outbox = CloudOutbox(tmp_path / "desktop.sqlite")
     try:

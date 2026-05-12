@@ -1,20 +1,34 @@
 from __future__ import annotations
 
 import threading
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
 
 import httpx
 import pytest
 
-from packages.schemas.cloud import OAuthTokenRequest, OAuthTokenResponse
-from packages.schemas.operator_console import CloudAuthState, CloudOperatorErrorCode
+from packages.schemas.cloud import (
+    ExperimentBundle,
+    ExperimentBundleArm,
+    ExperimentBundleExperiment,
+    OAuthTokenRequest,
+    OAuthTokenResponse,
+)
+from packages.schemas.operator_console import (
+    CloudAuthState,
+    CloudExperimentRefreshStatus,
+    CloudOperatorErrorCode,
+    ExperimentBundleRefreshResult,
+)
 from services.desktop_app.cloud.auth_flow import (
     AuthFlowConfig,
     DesktopAuthFlow,
     build_code_challenge,
 )
+from services.desktop_app.cloud.outbox import CloudOutbox
 from services.desktop_app.privacy.secrets import SECRET_KEY_CLOUD_REFRESH_TOKEN
+from services.desktop_app.processes.cloud_sync_worker import CloudSyncConfig
 from services.desktop_app.state.sqlite_cloud_operator_service import SqliteCloudOperatorService
 
 
@@ -25,6 +39,39 @@ def _config() -> AuthFlowConfig:
         client_id="desktop-a",
         redirect_uri="lsie://oauth/callback",
     )
+
+
+def _bundle() -> ExperimentBundle:
+    return ExperimentBundle(
+        bundle_id="bundle-a",
+        issued_at_utc=datetime(2026, 5, 2, 12, 0, tzinfo=UTC),
+        expires_at_utc=datetime(2036, 5, 3, 12, 0, tzinfo=UTC),
+        policy_version="v4.0",
+        experiments=[
+            ExperimentBundleExperiment(
+                experiment_id="experiment-a",
+                label="Experiment A",
+                arms=[
+                    ExperimentBundleArm(
+                        arm_id="arm-a",
+                        greeting_text="Hello A",
+                        posterior_alpha=2.0,
+                        posterior_beta=3.0,
+                        selection_count=5,
+                    )
+                ],
+            )
+        ],
+        signature="signature-a",
+    )
+
+
+def _latest_refresh(db_path: Path) -> ExperimentBundleRefreshResult | None:
+    outbox = CloudOutbox(db_path)
+    try:
+        return outbox.latest_experiment_refresh()
+    finally:
+        outbox.close()
 
 
 def test_pkce_challenge_matches_s256_reference_vector() -> None:
@@ -225,6 +272,29 @@ def test_sqlite_cloud_operator_reports_signed_out_without_token(
     assert status.message == "Cloud sign-in is required."
 
 
+def test_sqlite_cloud_operator_outbox_summary_resets_stale_inflight_uploads(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "desktop.sqlite"
+    outbox = CloudOutbox(db_path)
+    try:
+        outbox.enqueue_raw(
+            endpoint="telemetry_posterior_deltas",
+            payload_type="posterior_delta",
+            dedupe_key="delta-a",
+            payload_json='{"posterior_delta_id":"not-a-real-payload"}',
+        )
+        outbox.fetch_ready_batch("telemetry_posterior_deltas", limit=10)
+    finally:
+        outbox.close()
+    service = SqliteCloudOperatorService(db_path)
+
+    summary = service.get_outbox_summary()
+
+    assert summary.in_flight_count == 0
+    assert summary.pending_count == 1
+
+
 def test_sqlite_cloud_operator_reports_refresh_token_unavailable(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -233,10 +303,68 @@ def test_sqlite_cloud_operator_reports_refresh_token_unavailable(
         "services.desktop_app.state.sqlite_cloud_operator_service.get_secret",
         lambda _key: "   ",
     )
-    service = SqliteCloudOperatorService(tmp_path / "desktop.sqlite")
+    db_path = tmp_path / "desktop.sqlite"
+    service = SqliteCloudOperatorService(db_path)
 
     status = service.get_auth_status()
     refresh = service.refresh_experiment_bundle()
+    latest = _latest_refresh(db_path)
 
     assert status.state is CloudAuthState.REFRESH_TOKEN_UNAVAILABLE
     assert refresh.error_code is CloudOperatorErrorCode.REFRESH_TOKEN_UNAVAILABLE
+    assert latest is not None
+    assert latest.error_code is CloudOperatorErrorCode.REFRESH_TOKEN_UNAVAILABLE
+
+
+def test_sqlite_cloud_operator_records_successful_manual_experiment_refresh(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    class _Flow:
+        def __init__(self, _config: object) -> None:
+            return None
+
+        def refresh_access_token(self, *, refresh_token: str) -> OAuthTokenResponse:
+            assert refresh_token == "refresh-a"
+            return OAuthTokenResponse(access_token="access-a", expires_in=3600)
+
+    class _Client:
+        def __init__(self, base_url: str, *, timeout_s: float) -> None:
+            assert base_url == "https://cloud.example.test"
+            assert timeout_s == 15.0
+
+        def fetch_bundle(self, *, access_token: str) -> ExperimentBundle:
+            assert access_token == "access-a"
+            return _bundle()
+
+    monkeypatch.setattr(
+        "services.desktop_app.state.sqlite_cloud_operator_service.get_secret",
+        lambda _key: "refresh-a",
+    )
+    monkeypatch.setattr(
+        "services.desktop_app.state.sqlite_cloud_operator_service.DesktopAuthFlow",
+        _Flow,
+    )
+    monkeypatch.setattr(
+        "services.desktop_app.state.sqlite_cloud_operator_service.ExperimentBundleClient",
+        _Client,
+    )
+    monkeypatch.setattr(
+        "services.desktop_app.cloud.experiment_bundle.verify_bundle",
+        lambda _bundle, *, config=None: None,
+    )
+    db_path = tmp_path / "desktop.sqlite"
+    service = SqliteCloudOperatorService(
+        db_path,
+        config=CloudSyncConfig(base_url="https://cloud.example.test"),
+    )
+
+    result = service.refresh_experiment_bundle()
+    latest = _latest_refresh(db_path)
+
+    assert result.status is CloudExperimentRefreshStatus.APPLIED
+    assert result.bundle_id == "bundle-a"
+    assert latest is not None
+    assert latest.status is CloudExperimentRefreshStatus.APPLIED
+    assert latest.bundle_id == "bundle-a"
+    assert latest.experiment_count == 1

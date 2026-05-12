@@ -331,19 +331,22 @@ class CloudOutbox:
         current = now or datetime.now(UTC)
         for row in rows:
             status = str(row["status"])
-            if status == "pending":
-                pending_count += 1
-            elif status == "in_flight":
-                in_flight_count += 1
-            elif status == "dead_letter":
-                dead_letter_count += 1
-            next_attempt = _parse_dt(str(row["next_attempt_at_utc"]))
-            if status == "pending" and next_attempt > current:
-                retry_scheduled_count += 1
-            if earliest_next_attempt is None or next_attempt < earliest_next_attempt:
-                earliest_next_attempt = next_attempt
-            if row["payload_redacted_at_utc"] is not None:
+            redacted = row["payload_redacted_at_utc"] is not None
+            if redacted:
                 redacted_count += 1
+            if status == "dead_letter":
+                dead_letter_count += 1
+            elif not redacted and status == "pending":
+                pending_count += 1
+            elif not redacted and status == "in_flight":
+                in_flight_count += 1
+            next_attempt = _parse_dt(str(row["next_attempt_at_utc"]))
+            if not redacted and status == "pending" and next_attempt > current:
+                retry_scheduled_count += 1
+            if not redacted and (
+                earliest_next_attempt is None or next_attempt < earliest_next_attempt
+            ):
+                earliest_next_attempt = next_attempt
             if row["last_error"] is not None:
                 last_error = str(row["last_error"])
         return CloudOutboxSummary(

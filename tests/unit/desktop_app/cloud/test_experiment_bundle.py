@@ -121,6 +121,23 @@ def test_verify_bundle_requires_explicit_ed25519_public_key() -> None:
         )
 
 
+def test_verify_bundle_allows_small_not_before_clock_skew() -> None:
+    future_issued = _signed_bundle(
+        _payload().model_copy(
+            update={
+                "issued_at_utc": ISSUED_AT + timedelta(seconds=2),
+                "expires_at_utc": ISSUED_AT + timedelta(hours=24),
+            }
+        )
+    )
+
+    verify_bundle(
+        future_issued,
+        config=BundleVerificationConfig(signature_mode="hmac-sha256", hmac_secret=SECRET),
+        now_utc=ISSUED_AT,
+    )
+
+
 def test_verify_bundle_rejects_expired_bundle() -> None:
     expired = _signed_bundle(
         _payload().model_copy(update={"expires_at_utc": ISSUED_AT + timedelta(minutes=5)})
@@ -131,6 +148,24 @@ def test_verify_bundle_rejects_expired_bundle() -> None:
             expired,
             config=BundleVerificationConfig(signature_mode="hmac-sha256", hmac_secret=SECRET),
             now_utc=ISSUED_AT + timedelta(minutes=10),
+        )
+
+
+def test_verify_bundle_rejects_large_not_before_clock_skew() -> None:
+    future_issued = _signed_bundle(
+        _payload().model_copy(
+            update={
+                "issued_at_utc": ISSUED_AT + timedelta(seconds=6),
+                "expires_at_utc": ISSUED_AT + timedelta(hours=24),
+            }
+        )
+    )
+
+    with pytest.raises(ExperimentBundleVerificationError, match="validity"):
+        verify_bundle(
+            future_issued,
+            config=BundleVerificationConfig(signature_mode="hmac-sha256", hmac_secret=SECRET),
+            now_utc=ISSUED_AT,
         )
 
 
