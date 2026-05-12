@@ -45,6 +45,8 @@ from packages.schemas.operator_console import (
     CloudSignInResult,
     EncounterState,
     EncounterSummary,
+    ExperimentBundleRefreshPreview,
+    ExperimentBundleRefreshRequest,
     ExperimentBundleRefreshResult,
     ExperimentDetail,
     ExperimentSummary,
@@ -929,22 +931,30 @@ class TestCloudOneShot:
         emissions: list[tuple[str, str]] = []
         coord.job_failed.connect(lambda *args: emissions.append(tuple(args)))
 
-        coord._client.post_experiment_bundle_refresh = (  # type: ignore[method-assign]
-            lambda: ExperimentBundleRefreshResult(
+        seen_requests: list[ExperimentBundleRefreshRequest] = []
+
+        def refresh(
+            request: ExperimentBundleRefreshRequest,
+        ) -> ExperimentBundleRefreshResult:
+            seen_requests.append(request)
+            return ExperimentBundleRefreshResult(
                 status=CloudExperimentRefreshStatus.APPLIED,
                 completed_at_utc=_utc(2026, 5, 2, 12, 0),
                 message="Experiment bundle refreshed.",
                 bundle_id="bundle-a",
                 experiment_count=1,
             )
-        )
 
+        coord._client.post_experiment_bundle_refresh = refresh  # type: ignore[method-assign]
+
+        request = ExperimentBundleRefreshRequest(preview_token="preview-token-a")
         with patch("services.operator_console.polling.run_one_shot", fake, create=False):
-            coord.refresh_experiment_bundle()
+            coord.refresh_experiment_bundle(request)
             assert registry[0]._job_name == JOB_EXPERIMENT_BUNDLE_REFRESH
             assert len(coord._inflight_cloud_actions) == 1
             registry[0].fire()
 
+        assert seen_requests == [request]
         assert coord._store.error(JOB_EXPERIMENT_BUNDLE_REFRESH) is None
         assert emissions == []
         assert harness.refresh_calls == [
@@ -955,6 +965,34 @@ class TestCloudOneShot:
         ]
         assert coord._inflight_cloud_actions == {}
 
+    def test_experiment_bundle_preview_success_does_not_refresh_readbacks(
+        self, harness: _CoordinatorHarness
+    ) -> None:
+        coord = harness.coordinator
+        coord._store.set_error(JOB_EXPERIMENT_BUNDLE_REFRESH, "previous preview failure")
+        fake, registry = self._patch_one_shot("success")
+        coord._client.post_experiment_bundle_refresh_preview = (  # type: ignore[method-assign]
+            lambda: ExperimentBundleRefreshPreview(
+                status=CloudActionStatus.SUCCEEDED,
+                checked_at_utc=_utc(2026, 5, 2, 12, 0),
+                message="Preview ready.",
+                preview_token="preview-token-a",
+                bundle_id="bundle-a",
+                experiment_count=1,
+                added_count=1,
+            )
+        )
+
+        with patch("services.operator_console.polling.run_one_shot", fake, create=False):
+            coord.preview_experiment_bundle_refresh()
+            assert registry[0]._job_name == JOB_EXPERIMENT_BUNDLE_REFRESH
+            assert len(coord._inflight_cloud_actions) == 1
+            registry[0].fire()
+
+        assert coord._store.error(JOB_EXPERIMENT_BUNDLE_REFRESH) is None
+        assert harness.refresh_calls == []
+        assert coord._inflight_cloud_actions == {}
+
     def test_experiment_bundle_refresh_failed_dto_surfaces_error_without_refreshing(
         self, harness: _CoordinatorHarness
     ) -> None:
@@ -962,17 +1000,23 @@ class TestCloudOneShot:
         fake, registry = self._patch_one_shot("success")
         emissions: list[tuple[str, str]] = []
         coord.job_failed.connect(lambda *args: emissions.append(tuple(args)))
-        coord._client.post_experiment_bundle_refresh = (  # type: ignore[method-assign]
-            lambda: ExperimentBundleRefreshResult(
+
+        def refresh(
+            request: ExperimentBundleRefreshRequest,
+        ) -> ExperimentBundleRefreshResult:
+            del request
+            return ExperimentBundleRefreshResult(
                 status=CloudExperimentRefreshStatus.FAILED,
                 completed_at_utc=_utc(2026, 5, 2, 12, 0),
                 message="Cloud experiment service is offline.",
                 retryable=True,
             )
-        )
 
+        coord._client.post_experiment_bundle_refresh = refresh  # type: ignore[method-assign]
+
+        request = ExperimentBundleRefreshRequest(preview_token="preview-token-a")
         with patch("services.operator_console.polling.run_one_shot", fake, create=False):
-            coord.refresh_experiment_bundle()
+            coord.refresh_experiment_bundle(request)
             registry[0].fire()
 
         assert (

@@ -33,6 +33,8 @@ from packages.schemas.operator_console import (
     CloudSignInResult,
     EncounterState,
     EncounterSummary,
+    ExperimentBundleRefreshPreview,
+    ExperimentBundleRefreshRequest,
     ExperimentBundleRefreshResult,
     ExperimentDetail,
     HealthSnapshot,
@@ -59,6 +61,7 @@ from services.api.routes.operator import (
     list_alerts,
     list_session_encounters,
     list_sessions,
+    refresh_cloud_experiment_bundle,
     sign_in_to_cloud,
     stream_operator_state_events,
     submit_stimulus,
@@ -346,6 +349,21 @@ class TestCloudOperatorRoutes:
         assert response is result
         svc.get_latest_experiment_refresh.assert_called_once()
 
+    def test_cloud_experiment_refresh_passes_preview_token_to_service(self) -> None:
+        result = ExperimentBundleRefreshResult(
+            status=CloudExperimentRefreshStatus.APPLIED,
+            completed_at_utc=_now(),
+            message="Experiment bundle refreshed.",
+        )
+        svc = MagicMock()
+        svc.refresh_experiment_bundle.return_value = result
+        request = ExperimentBundleRefreshRequest(preview_token="preview-token-a")
+
+        response = asyncio.run(refresh_cloud_experiment_bundle(request, service=svc))
+
+        assert response is result
+        svc.refresh_experiment_bundle.assert_called_once_with(request)
+
     def test_cloud_sign_in_does_not_block_auth_status_route(self) -> None:
         sign_in_entered = threading.Event()
         release_sign_in = threading.Event()
@@ -374,7 +392,17 @@ class TestCloudOperatorRoutes:
             def get_latest_experiment_refresh(self) -> ExperimentBundleRefreshResult | None:
                 return None
 
-            def refresh_experiment_bundle(self) -> ExperimentBundleRefreshResult:
+            def preview_experiment_bundle_refresh(self) -> ExperimentBundleRefreshPreview:
+                return ExperimentBundleRefreshPreview(
+                    status=CloudActionStatus.FAILED,
+                    checked_at_utc=_now(),
+                    message="not used",
+                )
+
+            def refresh_experiment_bundle(
+                self,
+                _request: ExperimentBundleRefreshRequest,
+            ) -> ExperimentBundleRefreshResult:
                 return ExperimentBundleRefreshResult(
                     status=CloudExperimentRefreshStatus.FAILED,
                     completed_at_utc=_now(),

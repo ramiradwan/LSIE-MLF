@@ -44,6 +44,8 @@ from packages.schemas.operator_console import (
     AttributionSummary,
     CoModulationSummary,
     EncounterSummary,
+    ExperimentBundleRefreshChange,
+    ExperimentBundleRefreshPreview,
     ExperimentDetail,
     HealthProbeState,
     HealthState,
@@ -171,7 +173,7 @@ HealthActionName = Literal[
     "cloud_sign_in",
     "experiment_bundle_refresh",
 ]
-HealthActionStage = Literal["idle", "progress", "success"]
+HealthActionStage = Literal["idle", "preview", "progress", "success"]
 
 
 @dataclass(frozen=True)
@@ -181,6 +183,16 @@ class HealthActionCopy:
     button_label: str
     status_text: str | None
     accessible_description: str | None
+
+
+@dataclass(frozen=True)
+class ExperimentBundlePreviewCopy:
+    """Operator-facing copy for confirming definition updates."""
+
+    title: str
+    text: str
+    informative_text: str
+    details: str
 
 
 @dataclass(frozen=True)
@@ -996,7 +1008,7 @@ def format_action_bar_session_context(
 
 
 # §4.E.1 / §5.1.6 / §9.1: Health header actions stay on the current page,
-# with progress/success copy inline and failures routed to the AlertBanner.
+# with transient status copy kept inline and alert banners reserved for failures.
 def format_health_action_copy(
     action: HealthActionName,
     *,
@@ -1005,7 +1017,7 @@ def format_health_action_copy(
     labels: dict[HealthActionName, str] = {
         "repair_install": "Repair install",
         "cloud_sign_in": "Cloud sign-in",
-        "experiment_bundle_refresh": "Refresh experiments",
+        "experiment_bundle_refresh": "Update definitions",
     }
     if stage == "idle":
         return HealthActionCopy(
@@ -1028,16 +1040,29 @@ def format_health_action_copy(
             accessible_description="Cloud sign-in completed for cloud sync and experiment refresh.",
         )
     if action == "experiment_bundle_refresh":
+        if stage == "preview":
+            return HealthActionCopy(
+                button_label=labels[action],
+                status_text="Checking cloud definitions…",
+                accessible_description=(
+                    "Cloud experiment definitions are being downloaded and compared "
+                    "before applying."
+                ),
+            )
         if stage == "progress":
             return HealthActionCopy(
-                button_label="Refreshing…",
-                status_text="Refreshing experiments…",
-                accessible_description="Experiment bundle refresh in progress.",
+                button_label=labels[action],
+                status_text="Updating experiment definitions without clearing local attempts…",
+                accessible_description=(
+                    "Experiment definition update in progress; local attempts stay on this device."
+                ),
             )
         return HealthActionCopy(
             button_label=labels[action],
-            status_text="Experiments refreshed",
-            accessible_description="Experiment bundle refresh completed.",
+            status_text="Experiment definitions updated; local attempts kept",
+            accessible_description=(
+                "Experiment definition update completed without clearing local attempts."
+            ),
         )
     if stage == "progress":
         return HealthActionCopy(
@@ -1063,6 +1088,59 @@ def format_health_action_error(action: HealthActionName, message: str) -> str:
     ):
         return "Cloud sign-in is required before refreshing experiments."
     return normalized or "Health action failed."
+
+
+def format_experiment_bundle_preview_copy(
+    preview: ExperimentBundleRefreshPreview,
+) -> ExperimentBundlePreviewCopy:
+    change_count = preview.added_count + preview.updated_count + preview.disabled_count
+    title = "Update experiment definitions"
+    text = "Apply verified cloud experiment definitions?"
+    summary = (
+        f"Verified bundle {preview.bundle_id or 'unknown'}"
+        f" with {preview.experiment_count} experiment definition(s). "
+        f"This would add {preview.added_count}, update {preview.updated_count}, "
+        f"disable {preview.disabled_count}, and leave {preview.unchanged_count} unchanged. "
+        f"{preview.existing_preserved_count} existing arm(s) keep their local attempts "
+        "and learned state."
+    )
+    if change_count == 0:
+        summary = (
+            "Verified cloud definitions match the local definitions. "
+            "Applying now will keep local attempts and learned state unchanged."
+        )
+    details = "\n".join(
+        _format_experiment_bundle_preview_change(change) for change in preview.changes
+    )
+    if not details:
+        details = "No local definition changes detected."
+    informative_text = (
+        f"{summary} New cloud arms are added. Matching local arms keep their attempts "
+        "and learned state. Local arms missing from the cloud bundle are disabled, not deleted."
+    )
+    return ExperimentBundlePreviewCopy(
+        title=title,
+        text=text,
+        informative_text=informative_text,
+        details=details,
+    )
+
+
+def _format_experiment_bundle_preview_change(change: ExperimentBundleRefreshChange) -> str:
+    arm = f"{change.experiment_id}/{change.arm_id}"
+    if change.action == "add":
+        return f"Add {arm}: {change.cloud_greeting_text or 'definition'}"
+    if change.action == "disable":
+        return f"Disable {arm}: local arm is not in the verified cloud bundle"
+    parts: list[str] = []
+    if change.current_greeting_text != change.cloud_greeting_text:
+        parts.append("prompt text")
+    if change.current_enabled != change.cloud_enabled:
+        target = "enabled" if change.cloud_enabled else "disabled"
+        parts.append(target)
+    if not parts:
+        parts.append("definition metadata")
+    return f"Update {arm}: {', '.join(parts)}"
 
 
 def format_session_id_compact(session_id: UUID | str | None) -> str:

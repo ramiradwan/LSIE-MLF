@@ -6,6 +6,7 @@ from pathlib import Path
 import httpx
 from pydantic import ValidationError
 
+from packages.schemas.cloud import ExperimentBundle
 from packages.schemas.operator_console import (
     CloudActionStatus,
     CloudAuthState,
@@ -14,6 +15,8 @@ from packages.schemas.operator_console import (
     CloudOperatorErrorCode,
     CloudOutboxSummary,
     CloudSignInResult,
+    ExperimentBundleRefreshPreview,
+    ExperimentBundleRefreshRequest,
     ExperimentBundleRefreshResult,
 )
 from services.desktop_app.cloud.auth_flow import (
@@ -130,75 +133,41 @@ class SqliteCloudOperatorService:
         finally:
             outbox.close()
 
-    def refresh_experiment_bundle(self) -> ExperimentBundleRefreshResult:
+    def preview_experiment_bundle_refresh(self) -> ExperimentBundleRefreshPreview:
         now = datetime.now(UTC)
+        bundle_result = self._fetch_experiment_bundle(now)
+        if isinstance(bundle_result, ExperimentBundleRefreshPreview):
+            return bundle_result
+        store = ExperimentBundleStore(self._db_path)
         try:
-            refresh_token = get_secret(SECRET_KEY_CLOUD_REFRESH_TOKEN)
-        except SecretStoreUnavailableError:
+            return store.preview_verified_bundle(bundle_result, checked_at_utc=now)
+        except ExperimentBundleVerificationError as exc:
+            error_code = _verification_error(exc)
+            return _refresh_preview_failure(error_code, _refresh_error_message(error_code), now)
+        finally:
+            store.close()
+
+    def refresh_experiment_bundle(
+        self,
+        request: ExperimentBundleRefreshRequest,
+    ) -> ExperimentBundleRefreshResult:
+        now = datetime.now(UTC)
+        bundle_result = self._fetch_experiment_bundle(now)
+        if isinstance(bundle_result, ExperimentBundleRefreshPreview):
             return self._record_refresh_result(
                 _refresh_failure(
-                    CloudOperatorErrorCode.SECRET_STORE_UNAVAILABLE,
-                    "Cloud sign-in is temporarily unavailable.",
+                    bundle_result.error_code or CloudOperatorErrorCode.REFRESH_FAILED,
+                    bundle_result.message,
                     now,
-                    retryable=True,
-                )
-            )
-        if refresh_token is None:
-            return self._record_refresh_result(
-                _refresh_failure(
-                    CloudOperatorErrorCode.REFRESH_TOKEN_UNAVAILABLE,
-                    "Cloud sign-in is required before refreshing experiments.",
-                    now,
-                )
-            )
-        if not refresh_token.strip():
-            return self._record_refresh_result(
-                _refresh_failure(
-                    CloudOperatorErrorCode.REFRESH_TOKEN_UNAVAILABLE,
-                    "Cloud refresh token is unavailable.",
-                    now,
-                )
-            )
-        try:
-            token = DesktopAuthFlow(_auth_config(self._config)).refresh_access_token(
-                refresh_token=refresh_token
-            )
-        except SecretStoreUnavailableError:
-            return self._record_refresh_result(
-                _refresh_failure(
-                    CloudOperatorErrorCode.SECRET_STORE_UNAVAILABLE,
-                    "Cloud sign-in is temporarily unavailable.",
-                    now,
-                    retryable=True,
-                )
-            )
-        except (OAuthTokenExchangeError, ValidationError):
-            return self._record_refresh_result(
-                _refresh_failure(
-                    CloudOperatorErrorCode.REFRESH_FAILED,
-                    "Cloud sign-in could not be refreshed.",
-                    now,
-                    retryable=True,
-                )
-            )
-        try:
-            bundle = ExperimentBundleClient(
-                self._config.base_url,
-                timeout_s=self._config.timeout_s,
-            ).fetch_bundle(access_token=token.access_token)
-        except ExperimentBundleFetchError as exc:
-            error_code, retryable = _fetch_error(exc)
-            return self._record_refresh_result(
-                _refresh_failure(
-                    error_code,
-                    _refresh_error_message(error_code),
-                    now,
-                    retryable=retryable,
+                    retryable=bundle_result.retryable,
                 )
             )
         store = ExperimentBundleStore(self._db_path)
         try:
-            store.cache_verified_bundle(bundle)
+            store.cache_verified_bundle(
+                bundle_result,
+                expected_preview_token=request.preview_token,
+            )
         except ExperimentBundleVerificationError as exc:
             error_code = _verification_error(exc)
             return self._record_refresh_result(
@@ -211,10 +180,67 @@ class SqliteCloudOperatorService:
                 status=CloudExperimentRefreshStatus.APPLIED,
                 completed_at_utc=now,
                 message="Experiment bundle refreshed.",
-                bundle_id=bundle.bundle_id,
-                experiment_count=len(bundle.experiments),
+                bundle_id=bundle_result.bundle_id,
+                experiment_count=len(bundle_result.experiments),
             )
         )
+
+    def _fetch_experiment_bundle(
+        self,
+        now: datetime,
+    ) -> ExperimentBundle | ExperimentBundleRefreshPreview:
+        try:
+            refresh_token = get_secret(SECRET_KEY_CLOUD_REFRESH_TOKEN)
+        except SecretStoreUnavailableError:
+            return _refresh_preview_failure(
+                CloudOperatorErrorCode.SECRET_STORE_UNAVAILABLE,
+                "Cloud sign-in is temporarily unavailable.",
+                now,
+                retryable=True,
+            )
+        if refresh_token is None:
+            return _refresh_preview_failure(
+                CloudOperatorErrorCode.REFRESH_TOKEN_UNAVAILABLE,
+                "Cloud sign-in is required before refreshing experiments.",
+                now,
+            )
+        if not refresh_token.strip():
+            return _refresh_preview_failure(
+                CloudOperatorErrorCode.REFRESH_TOKEN_UNAVAILABLE,
+                "Cloud refresh token is unavailable.",
+                now,
+            )
+        try:
+            token = DesktopAuthFlow(_auth_config(self._config)).refresh_access_token(
+                refresh_token=refresh_token
+            )
+        except SecretStoreUnavailableError:
+            return _refresh_preview_failure(
+                CloudOperatorErrorCode.SECRET_STORE_UNAVAILABLE,
+                "Cloud sign-in is temporarily unavailable.",
+                now,
+                retryable=True,
+            )
+        except (OAuthTokenExchangeError, ValidationError):
+            return _refresh_preview_failure(
+                CloudOperatorErrorCode.REFRESH_FAILED,
+                "Cloud sign-in could not be refreshed.",
+                now,
+                retryable=True,
+            )
+        try:
+            return ExperimentBundleClient(
+                self._config.base_url,
+                timeout_s=self._config.timeout_s,
+            ).fetch_bundle(access_token=token.access_token)
+        except ExperimentBundleFetchError as exc:
+            error_code, retryable = _fetch_error(exc)
+            return _refresh_preview_failure(
+                error_code,
+                _refresh_error_message(error_code),
+                now,
+                retryable=retryable,
+            )
 
     def _record_refresh_result(
         self,
@@ -270,6 +296,22 @@ def _refresh_failure(
     )
 
 
+def _refresh_preview_failure(
+    error_code: CloudOperatorErrorCode,
+    message: str,
+    checked_at_utc: datetime,
+    *,
+    retryable: bool = False,
+) -> ExperimentBundleRefreshPreview:
+    return ExperimentBundleRefreshPreview(
+        status=CloudActionStatus.FAILED,
+        checked_at_utc=checked_at_utc,
+        message=message,
+        error_code=error_code,
+        retryable=retryable,
+    )
+
+
 def _fetch_error(exc: ExperimentBundleFetchError) -> tuple[CloudOperatorErrorCode, bool]:
     status_code = exc.status_code
     if status_code == 401:
@@ -287,6 +329,8 @@ def _fetch_error(exc: ExperimentBundleFetchError) -> tuple[CloudOperatorErrorCod
 
 def _verification_error(exc: ExperimentBundleVerificationError) -> CloudOperatorErrorCode:
     message = str(exc).lower()
+    if "changed after preview" in message:
+        return CloudOperatorErrorCode.BUNDLE_CHANGED
     if "validity" in message:
         return CloudOperatorErrorCode.BUNDLE_EXPIRED
     return CloudOperatorErrorCode.SIGNATURE_FAILED
@@ -294,6 +338,9 @@ def _verification_error(exc: ExperimentBundleVerificationError) -> CloudOperator
 
 def _refresh_error_message(error_code: CloudOperatorErrorCode) -> str:
     messages = {
+        CloudOperatorErrorCode.BUNDLE_CHANGED: (
+            "Cloud definitions changed after preview; check again before applying."
+        ),
         CloudOperatorErrorCode.BUNDLE_EXPIRED: "Experiment bundle is outside its validity window.",
         CloudOperatorErrorCode.CLOUD_UNAVAILABLE: "Cloud experiment service is unavailable.",
         CloudOperatorErrorCode.INVALID_RESPONSE: "Cloud experiment bundle response was invalid.",

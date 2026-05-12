@@ -17,6 +17,11 @@ from Crypto.PublicKey import ECC
 from Crypto.Signature import eddsa
 
 from packages.schemas.cloud import ExperimentBundle, ExperimentBundlePayload
+from packages.schemas.operator_console import (
+    CloudActionStatus,
+    ExperimentBundleRefreshChange,
+    ExperimentBundleRefreshPreview,
+)
 from services.desktop_app.state.sqlite_schema import bootstrap_schema
 
 BundleSignatureMode = Literal["hmac-sha256", "ed25519"]
@@ -88,9 +93,153 @@ class ExperimentBundleStore:
         *,
         config: BundleVerificationConfig | None = None,
         applied_at_utc: datetime | None = None,
+        expected_preview_token: str | None = None,
     ) -> None:
         verify_bundle(bundle, config=config)
+        if (
+            expected_preview_token is not None
+            and self.preview_token(bundle) != expected_preview_token
+        ):
+            raise ExperimentBundleVerificationError("experiment bundle changed after preview")
         self.cache_bundle(bundle, applied_at_utc=applied_at_utc)
+
+    def preview_verified_bundle(
+        self,
+        bundle: ExperimentBundle,
+        *,
+        config: BundleVerificationConfig | None = None,
+        checked_at_utc: datetime | None = None,
+    ) -> ExperimentBundleRefreshPreview:
+        verify_bundle(bundle, config=config)
+        return self.preview_bundle(bundle, checked_at_utc=checked_at_utc)
+
+    def preview_bundle(
+        self,
+        bundle: ExperimentBundle,
+        *,
+        checked_at_utc: datetime | None = None,
+    ) -> ExperimentBundleRefreshPreview:
+        checked_at = checked_at_utc or datetime.now(UTC)
+        preview_token = self.preview_token(bundle)
+        local_rows = self._conn.execute(
+            """
+            SELECT experiment_id, label, arm, greeting_text, enabled
+            FROM experiments
+            """
+        ).fetchall()
+        local_by_key = {(str(row["experiment_id"]), str(row["arm"])): row for row in local_rows}
+        cloud_keys: set[tuple[str, str]] = set()
+        changes: list[ExperimentBundleRefreshChange] = []
+        added_count = 0
+        updated_count = 0
+        unchanged_count = 0
+        existing_preserved_count = 0
+
+        for experiment in bundle.experiments:
+            for arm in experiment.arms:
+                key = (experiment.experiment_id, arm.arm_id)
+                cloud_keys.add(key)
+                local = local_by_key.get(key)
+                if local is None:
+                    added_count += 1
+                    changes.append(
+                        ExperimentBundleRefreshChange(
+                            action="add",
+                            experiment_id=experiment.experiment_id,
+                            arm_id=arm.arm_id,
+                            label=experiment.label,
+                            cloud_greeting_text=arm.greeting_text,
+                            cloud_enabled=arm.enabled,
+                            learned_state_preserved=False,
+                        )
+                    )
+                    continue
+                existing_preserved_count += 1
+                current_enabled = bool(local["enabled"])
+                current_greeting = str(local["greeting_text"] or "")
+                label_changed = local["label"] != experiment.label
+                greeting_changed = current_greeting != arm.greeting_text
+                enabled_changed = current_enabled != arm.enabled
+                if label_changed or greeting_changed or enabled_changed:
+                    updated_count += 1
+                    changes.append(
+                        ExperimentBundleRefreshChange(
+                            action="update",
+                            experiment_id=experiment.experiment_id,
+                            arm_id=arm.arm_id,
+                            label=experiment.label,
+                            current_greeting_text=current_greeting,
+                            cloud_greeting_text=arm.greeting_text,
+                            current_enabled=current_enabled,
+                            cloud_enabled=arm.enabled,
+                        )
+                    )
+                else:
+                    unchanged_count += 1
+
+        disabled_count = 0
+        for (experiment_id, arm_id), local in sorted(local_by_key.items()):
+            if (experiment_id, arm_id) in cloud_keys or not bool(local["enabled"]):
+                continue
+            disabled_count += 1
+            changes.append(
+                ExperimentBundleRefreshChange(
+                    action="disable",
+                    experiment_id=experiment_id,
+                    arm_id=arm_id,
+                    label=str(local["label"] or "") or None,
+                    current_greeting_text=str(local["greeting_text"] or ""),
+                    current_enabled=True,
+                    cloud_enabled=False,
+                )
+            )
+
+        change_count = added_count + updated_count + disabled_count
+        message = (
+            "Cloud definitions match local definitions; local attempts stay unchanged."
+            if change_count == 0
+            else "Cloud definitions can be applied without clearing local attempts."
+        )
+        return ExperimentBundleRefreshPreview(
+            status=CloudActionStatus.SUCCEEDED,
+            checked_at_utc=checked_at,
+            message=message,
+            preview_token=preview_token,
+            bundle_id=bundle.bundle_id,
+            policy_version=bundle.policy_version,
+            experiment_count=len(bundle.experiments),
+            added_count=added_count,
+            updated_count=updated_count,
+            disabled_count=disabled_count,
+            unchanged_count=unchanged_count,
+            existing_preserved_count=existing_preserved_count,
+            changes=changes,
+        )
+
+    def preview_token(self, bundle: ExperimentBundle) -> str:
+        local_rows = self._conn.execute(
+            """
+            SELECT experiment_id, label, arm, greeting_text, enabled
+            FROM experiments
+            ORDER BY experiment_id, arm
+            """
+        ).fetchall()
+        local_snapshot = [
+            {
+                "experiment_id": str(row["experiment_id"]),
+                "label": row["label"],
+                "arm": str(row["arm"]),
+                "greeting_text": row["greeting_text"],
+                "enabled": bool(row["enabled"]),
+            }
+            for row in local_rows
+        ]
+        payload = {
+            "bundle_definitions": _stable_bundle_definitions(bundle),
+            "local_snapshot": local_snapshot,
+        }
+        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
     def cache_bundle(
         self,
@@ -115,8 +264,6 @@ class ExperimentBundleStore:
                         ON CONFLICT(experiment_id, arm) DO UPDATE SET
                             label = excluded.label,
                             greeting_text = excluded.greeting_text,
-                            alpha_param = excluded.alpha_param,
-                            beta_param = excluded.beta_param,
                             enabled = excluded.enabled,
                             end_dated_at = excluded.end_dated_at,
                             updated_at = excluded.updated_at
@@ -178,6 +325,27 @@ def verify_bundle(
 def canonical_bundle_payload(bundle: ExperimentBundle) -> str:
     payload = ExperimentBundlePayload.model_validate(bundle.model_dump(exclude={"signature"}))
     return canonical_payload(payload)
+
+
+def _stable_bundle_definitions(bundle: ExperimentBundle) -> list[dict[str, object]]:
+    return [
+        {
+            "experiment_id": experiment.experiment_id,
+            "label": experiment.label,
+            "arms": [
+                {
+                    "arm_id": arm.arm_id,
+                    "enabled": arm.enabled,
+                    "greeting_text": arm.greeting_text,
+                    "posterior_alpha": arm.posterior_alpha,
+                    "posterior_beta": arm.posterior_beta,
+                    "selection_count": arm.selection_count,
+                }
+                for arm in experiment.arms
+            ],
+        }
+        for experiment in sorted(bundle.experiments, key=lambda item: item.experiment_id)
+    ]
 
 
 def canonical_payload(payload: ExperimentBundlePayload) -> str:

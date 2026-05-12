@@ -152,6 +152,7 @@ class CloudExperimentRefreshStatus(StrEnum):
 
 class CloudOperatorErrorCode(StrEnum):
     AUTHORIZATION_FAILED = "authorization_failed"
+    BUNDLE_CHANGED = "bundle_changed"
     BUNDLE_EXPIRED = "bundle_expired"
     CLOUD_UNAVAILABLE = "cloud_unavailable"
     INVALID_RESPONSE = "invalid_response"
@@ -860,6 +861,47 @@ class ExperimentBundleRefreshResult(OperatorConsoleModel):
     retryable: bool = False
 
     @field_validator("completed_at_utc")
+    @classmethod
+    def _utc_only(cls, value: datetime) -> datetime:
+        validated = _require_utc(value)
+        assert validated is not None
+        return validated
+
+
+class ExperimentBundleRefreshRequest(OperatorConsoleModel):
+    preview_token: str
+
+
+class ExperimentBundleRefreshChange(OperatorConsoleModel):
+    action: Literal["add", "update", "disable"]
+    experiment_id: str
+    arm_id: str
+    label: str | None = None
+    current_greeting_text: str | None = None
+    cloud_greeting_text: str | None = None
+    current_enabled: bool | None = None
+    cloud_enabled: bool | None = None
+    learned_state_preserved: bool = True
+
+
+class ExperimentBundleRefreshPreview(OperatorConsoleModel):
+    status: CloudActionStatus
+    checked_at_utc: datetime
+    message: str
+    preview_token: str | None = None
+    bundle_id: str | None = None
+    policy_version: str | None = None
+    experiment_count: int = Field(default=0, ge=0)
+    added_count: int = Field(default=0, ge=0)
+    updated_count: int = Field(default=0, ge=0)
+    disabled_count: int = Field(default=0, ge=0)
+    unchanged_count: int = Field(default=0, ge=0)
+    existing_preserved_count: int = Field(default=0, ge=0)
+    changes: list[ExperimentBundleRefreshChange] = Field(default_factory=list)
+    error_code: CloudOperatorErrorCode | None = None
+    retryable: bool = False
+
+    @field_validator("checked_at_utc")
     @classmethod
     def _utc_only(cls, value: datetime) -> datetime:
         validated = _require_utc(value)

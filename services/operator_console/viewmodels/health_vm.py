@@ -33,6 +33,8 @@ from PySide6.QtCore import QObject, Signal
 from packages.schemas.operator_console import (
     CloudAuthStatus,
     CloudOutboxSummary,
+    ExperimentBundleRefreshPreview,
+    ExperimentBundleRefreshRequest,
     HealthProbeState,
     HealthSnapshot,
     HealthSubsystemProbe,
@@ -69,6 +71,7 @@ _PROBE_UI_STATUS: dict[HealthProbeState, UiStatusKind] = {
 
 
 HealthAction = Callable[[], OneShotSignals]
+ExperimentBundleRefreshAction = Callable[[ExperimentBundleRefreshRequest], OneShotSignals]
 HealthActionState = Literal[
     "idle",
     "repair_install_progress",
@@ -88,6 +91,8 @@ class HealthViewModel(ViewModelBase):
 
     repair_requested = Signal()
     cloud_sign_in_requested = Signal()
+    experiment_bundle_refresh_preview_requested = Signal()
+    experiment_bundle_refresh_preview_ready = Signal(object)
     experiment_bundle_refresh_requested = Signal()
 
     def __init__(
@@ -102,10 +107,12 @@ class HealthViewModel(ViewModelBase):
         self._alerts_model = alerts_model
         self._repair_action: HealthAction | None = None
         self._cloud_sign_in_action: HealthAction | None = None
-        self._experiment_bundle_refresh_action: HealthAction | None = None
+        self._experiment_bundle_refresh_preview_action: HealthAction | None = None
+        self._experiment_bundle_refresh_action: ExperimentBundleRefreshAction | None = None
         self._probe_history: dict[str, deque[ProbeSparklineCell]] = {}
         self._repair_in_progress = False
         self._cloud_sign_in_in_progress = False
+        self._experiment_bundle_refresh_preview_in_progress = False
         self._experiment_bundle_refresh_in_progress = False
         self._action_state: HealthActionState = "idle"
         store.health_changed.connect(self._on_health_changed)
@@ -169,7 +176,13 @@ class HealthViewModel(ViewModelBase):
     def bind_cloud_sign_in_action(self, action: HealthAction) -> None:
         self._cloud_sign_in_action = action
 
-    def bind_experiment_bundle_refresh_action(self, action: HealthAction) -> None:
+    def bind_experiment_bundle_refresh_preview_action(self, action: HealthAction) -> None:
+        self._experiment_bundle_refresh_preview_action = action
+
+    def bind_experiment_bundle_refresh_action(
+        self,
+        action: ExperimentBundleRefreshAction,
+    ) -> None:
         self._experiment_bundle_refresh_action = action
 
     def repair_available(self) -> bool:
@@ -188,10 +201,25 @@ class HealthViewModel(ViewModelBase):
         return (
             self._experiment_bundle_refresh_action is not None
             and not self._experiment_bundle_refresh_in_progress
+            and not self._experiment_bundle_refresh_preview_in_progress
         )
 
     def experiment_bundle_refresh_in_progress(self) -> bool:
         return self._experiment_bundle_refresh_in_progress
+
+    def experiment_bundle_refresh_preview_available(self) -> bool:
+        return (
+            self._experiment_bundle_refresh_preview_action is not None
+            and self.experiment_bundle_refresh_available()
+        )
+
+    def experiment_bundle_refresh_preview_in_progress(self) -> bool:
+        return self._experiment_bundle_refresh_preview_in_progress
+
+    def clear_experiment_bundle_refresh_preview(self) -> None:
+        if self._action_state == "experiment_bundle_refresh_progress":
+            self._action_state = "idle"
+        self.emit_changed()
 
     def request_repair(self) -> bool:
         if self._repair_action is None or self._repair_in_progress:
@@ -221,17 +249,39 @@ class HealthViewModel(ViewModelBase):
         self.emit_changed()
         return True
 
-    def request_experiment_bundle_refresh(self) -> bool:
+    def request_experiment_bundle_refresh_preview(self) -> bool:
+        if (
+            self._experiment_bundle_refresh_preview_action is None
+            or self._experiment_bundle_refresh_preview_in_progress
+            or self._experiment_bundle_refresh_in_progress
+        ):
+            return False
+        self.set_error(None)
+        self._experiment_bundle_refresh_preview_in_progress = True
+        self._action_state = "experiment_bundle_refresh_progress"
+        self.experiment_bundle_refresh_preview_requested.emit()
+        signals = self._experiment_bundle_refresh_preview_action()
+        signals.succeeded.connect(self._on_experiment_bundle_refresh_preview_succeeded)
+        signals.failed.connect(self._on_experiment_bundle_refresh_preview_failed)
+        signals.finished.connect(self._on_experiment_bundle_refresh_preview_finished)
+        self.emit_changed()
+        return True
+
+    def request_experiment_bundle_refresh(
+        self,
+        request: ExperimentBundleRefreshRequest,
+    ) -> bool:
         if (
             self._experiment_bundle_refresh_action is None
             or self._experiment_bundle_refresh_in_progress
+            or self._experiment_bundle_refresh_preview_in_progress
         ):
             return False
         self.set_error(None)
         self._experiment_bundle_refresh_in_progress = True
         self._action_state = "experiment_bundle_refresh_progress"
         self.experiment_bundle_refresh_requested.emit()
-        signals = self._experiment_bundle_refresh_action()
+        signals = self._experiment_bundle_refresh_action(request)
         signals.succeeded.connect(self._on_experiment_bundle_refresh_succeeded)
         signals.failed.connect(self._on_experiment_bundle_refresh_failed)
         signals.finished.connect(self._on_experiment_bundle_refresh_finished)
@@ -322,6 +372,25 @@ class HealthViewModel(ViewModelBase):
 
     def _on_cloud_sign_in_finished(self, _job: str) -> None:
         self._cloud_sign_in_in_progress = False
+        self.emit_changed()
+
+    def _on_experiment_bundle_refresh_preview_succeeded(
+        self,
+        _job: str,
+        payload: object,
+    ) -> None:
+        self.set_error(None)
+        self._experiment_bundle_refresh_preview_in_progress = False
+        if isinstance(payload, ExperimentBundleRefreshPreview):
+            self.experiment_bundle_refresh_preview_ready.emit(payload)
+        self.emit_changed()
+
+    def _on_experiment_bundle_refresh_preview_failed(self, _job: str, _error: object) -> None:
+        self._action_state = "experiment_bundle_refresh_failure"
+        self.emit_changed()
+
+    def _on_experiment_bundle_refresh_preview_finished(self, _job: str) -> None:
+        self._experiment_bundle_refresh_preview_in_progress = False
         self.emit_changed()
 
     def _on_experiment_bundle_refresh_succeeded(self, _job: str, _payload: object) -> None:

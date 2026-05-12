@@ -43,6 +43,8 @@ from packages.schemas.operator_console import (
     CloudAuthStatus,
     CloudExperimentRefreshStatus,
     CloudOutboxSummary,
+    ExperimentBundleRefreshPreview,
+    ExperimentBundleRefreshRequest,
     HealthProbeState,
     HealthSnapshot,
     HealthState,
@@ -53,6 +55,7 @@ from services.operator_console.formatters import (
     HealthActionCopy,
     build_health_detail,
     build_health_probe_detail,
+    format_experiment_bundle_preview_copy,
     format_health_action_copy,
     format_health_action_error,
     format_health_probe_state,
@@ -183,6 +186,7 @@ class HealthView(QWidget):
         super().__init__(parent)
         self.setObjectName("ContentSurface")
         self._vm = vm
+        self._pending_experiment_bundle_preview: ExperimentBundleRefreshPreview | None = None
 
         self._header = SectionHeader(
             "Health",
@@ -201,14 +205,14 @@ class HealthView(QWidget):
         )
         self._cloud_sign_in_button.setEnabled(False)
         self._cloud_sign_in_button.clicked.connect(self._on_cloud_sign_in_clicked)
-        self._experiment_bundle_button = QPushButton("Refresh experiments", self)
+        self._experiment_bundle_button = QPushButton("Update definitions", self)
         self._experiment_bundle_button.setObjectName("ExperimentBundleRefreshButton")
-        self._experiment_bundle_button.setAccessibleName("Refresh experiments")
+        self._experiment_bundle_button.setAccessibleName("Update definitions")
         self._experiment_bundle_button.setAccessibleDescription(
-            "Download and apply the latest signed experiment bundle."
+            "Download signed cloud experiment definitions without clearing local attempts."
         )
         self._experiment_bundle_button.setToolTip(
-            "Download and apply the latest signed experiment bundle."
+            "Download signed cloud experiment definitions without clearing local attempts."
         )
         self._experiment_bundle_button.setEnabled(False)
         self._experiment_bundle_button.clicked.connect(self._on_experiment_bundle_clicked)
@@ -309,7 +313,6 @@ class HealthView(QWidget):
         header_row.setContentsMargins(0, 0, 0, 0)
         header_row.setSpacing(14)
         header_row.addWidget(self._header, 1)
-        header_row.addWidget(self._action_status)
         header_row.addWidget(self._cloud_sign_in_button)
         header_row.addWidget(self._experiment_bundle_button)
         header_row.addWidget(self._repair_button)
@@ -318,6 +321,7 @@ class HealthView(QWidget):
         layout.setContentsMargins(24, 24, 24, 24)
         layout.setSpacing(14)
         layout.addLayout(header_row)
+        layout.addWidget(self._action_status)
         layout.addWidget(self._error_banner)
         layout.addWidget(self._empty_state)
         layout.addWidget(self._scroll, 1)
@@ -327,6 +331,12 @@ class HealthView(QWidget):
         self._vm.error_changed.connect(self._on_error_changed)
         self._vm.repair_requested.connect(self._on_repair_started)
         self._vm.cloud_sign_in_requested.connect(self._on_cloud_sign_in_started)
+        self._vm.experiment_bundle_refresh_preview_requested.connect(
+            self._on_experiment_bundle_refresh_preview_started
+        )
+        self._vm.experiment_bundle_refresh_preview_ready.connect(
+            self._on_experiment_bundle_refresh_preview_ready
+        )
         self._vm.experiment_bundle_refresh_requested.connect(
             self._on_experiment_bundle_refresh_started
         )
@@ -384,7 +394,9 @@ class HealthView(QWidget):
     def _refresh(self) -> None:
         snapshot = self._vm.snapshot()
         self._cloud_sign_in_button.setEnabled(self._vm.cloud_sign_in_available())
-        self._experiment_bundle_button.setEnabled(self._vm.experiment_bundle_refresh_available())
+        self._experiment_bundle_button.setEnabled(
+            self._vm.experiment_bundle_refresh_preview_available()
+        )
         self._repair_button.setEnabled(self._vm.repair_available())
 
         sign_in_copy = format_health_action_copy(
@@ -393,7 +405,13 @@ class HealthView(QWidget):
         )
         refresh_copy = format_health_action_copy(
             "experiment_bundle_refresh",
-            stage=("progress" if self._vm.experiment_bundle_refresh_in_progress() else "idle"),
+            stage=(
+                "preview"
+                if self._vm.experiment_bundle_refresh_preview_in_progress()
+                else "progress"
+                if self._vm.experiment_bundle_refresh_in_progress()
+                else "idle"
+            ),
         )
         repair_copy = format_health_action_copy(
             "repair_install",
@@ -409,9 +427,14 @@ class HealthView(QWidget):
         elif action_state == "cloud_sign_in_success":
             self._apply_action_status(format_health_action_copy("cloud_sign_in", stage="success"))
         elif action_state == "experiment_bundle_refresh_progress":
-            self._apply_action_status(
-                format_health_action_copy("experiment_bundle_refresh", stage="progress")
-            )
+            if self._vm.experiment_bundle_refresh_preview_in_progress():
+                self._apply_action_status(
+                    format_health_action_copy("experiment_bundle_refresh", stage="preview")
+                )
+            else:
+                self._apply_action_status(
+                    format_health_action_copy("experiment_bundle_refresh", stage="progress")
+                )
         elif action_state == "experiment_bundle_refresh_success":
             self._apply_action_status(
                 format_health_action_copy("experiment_bundle_refresh", stage="success")
@@ -488,20 +511,25 @@ class HealthView(QWidget):
             self._cloud_outbox_card.set_secondary_text("waiting for outbox summary")
             self._cloud_outbox_card.set_status(UiStatusKind.NEUTRAL, None)
             return
-        pending = summary.pending_count + summary.in_flight_count + summary.retry_scheduled_count
+        pending = summary.pending_count + summary.in_flight_count
         blocked = summary.dead_letter_count
         refresh = summary.latest_experiment_refresh
-        secondary_parts = [f"{blocked} dead-letter", f"{summary.redacted_count} redacted"]
+        secondary_parts = [
+            f"{blocked} blocked upload record(s)",
+            f"{summary.redacted_count} retained row(s) with payload removed",
+        ]
         if refresh is not None:
             if refresh.status is CloudExperimentRefreshStatus.APPLIED:
-                secondary_parts.append(f"experiments: {refresh.experiment_count} cached")
+                secondary_parts.append(
+                    f"{refresh.experiment_count} cloud experiment definition(s) cached"
+                )
             else:
                 reason = (
                     refresh.error_code.value.replace("_", " ")
                     if refresh.error_code is not None
-                    else "refresh failed"
+                    else "definition update failed"
                 )
-                secondary_parts.append(f"experiments: {reason}; using cached")
+                secondary_parts.append(f"cloud experiment definitions: {reason}; using cached")
         self._cloud_outbox_card.set_primary_text(f"{pending} active")
         self._cloud_outbox_card.set_secondary_text(" · ".join(secondary_parts))
         if refresh is not None and refresh.status is CloudExperimentRefreshStatus.FAILED:
@@ -553,9 +581,7 @@ class HealthView(QWidget):
             else:
                 banner_message = message
             self._error_banner.set_alert(AlertSeverity.WARNING, banner_message)
-            self._action_status.setVisible(False)
-            self._action_status.setText("")
-            self._action_status.setAccessibleDescription("No health action requested.")
+            self._clear_action_status()
         else:
             self._error_banner.set_alert(None, None)
 
@@ -563,22 +589,28 @@ class HealthView(QWidget):
         status_text = copy.status_text
         accessible_description = copy.accessible_description
         if status_text is None:
-            self._action_status.setVisible(False)
-            self._action_status.setText("")
-            self._action_status.setAccessibleDescription("No health action requested.")
+            self._clear_action_status()
+            self._error_banner.set_alert(None, None)
             return
         self._action_status.setText(status_text)
         self._action_status.setAccessibleDescription(
             accessible_description or "Health action status."
         )
         self._action_status.setVisible(True)
+        self._error_banner.set_alert(None, None)
+
+    def _clear_action_status(self) -> None:
+        self._action_status.setVisible(False)
+        self._action_status.setText("")
+        self._action_status.setAccessibleDescription("No health action requested.")
 
     def _on_cloud_sign_in_clicked(self) -> None:
         if not self._vm.request_cloud_sign_in():
             return
 
     def _on_experiment_bundle_clicked(self) -> None:
-        if not self._vm.request_experiment_bundle_refresh():
+        self._pending_experiment_bundle_preview = None
+        if not self._vm.request_experiment_bundle_refresh_preview():
             return
 
     def _on_repair_clicked(self) -> None:
@@ -604,29 +636,61 @@ class HealthView(QWidget):
             return
 
     def _on_cloud_sign_in_started(self) -> None:
-        self._action_status.setText("Waiting for sign-in…")
-        self._action_status.setAccessibleDescription(
-            "Browser sign-in in progress for cloud sync and experiment refresh."
-        )
-        self._action_status.setVisible(True)
+        copy = format_health_action_copy("cloud_sign_in", stage="progress")
+        self._apply_action_status(copy)
         self._cloud_sign_in_button.setEnabled(False)
-        self._cloud_sign_in_button.setText("Signing in…")
+        self._cloud_sign_in_button.setText(copy.button_label)
+
+    def _on_experiment_bundle_refresh_preview_started(self) -> None:
+        self._pending_experiment_bundle_preview = None
+        copy = format_health_action_copy("experiment_bundle_refresh", stage="preview")
+        self._apply_action_status(copy)
+        self._experiment_bundle_button.setEnabled(False)
+        self._experiment_bundle_button.setText(copy.button_label)
+
+    def _on_experiment_bundle_refresh_preview_ready(self, payload: object) -> None:
+        if not isinstance(payload, ExperimentBundleRefreshPreview):
+            return
+        self._pending_experiment_bundle_preview = payload
+        copy = format_experiment_bundle_preview_copy(payload)
+        confirmation = QMessageBox(self)
+        confirmation.setIcon(QMessageBox.Icon.Warning)
+        confirmation.setWindowTitle(copy.title)
+        confirmation.setText(copy.text)
+        confirmation.setInformativeText(copy.informative_text)
+        confirmation.setDetailedText(copy.details)
+        confirmation.setStandardButtons(
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel
+        )
+        confirmation.setDefaultButton(QMessageBox.StandardButton.Cancel)
+        if confirmation.exec() != QMessageBox.StandardButton.Yes:
+            self._pending_experiment_bundle_preview = None
+            self._clear_action_status()
+            self._error_banner.set_alert(None, None)
+            self._vm.clear_experiment_bundle_refresh_preview()
+            return
+        if payload.preview_token is None:
+            self._error_banner.set_alert(
+                AlertSeverity.WARNING,
+                "Cloud definitions must be checked again before applying.",
+            )
+            self._vm.clear_experiment_bundle_refresh_preview()
+            return
+        request = ExperimentBundleRefreshRequest(preview_token=payload.preview_token)
+        if not self._vm.request_experiment_bundle_refresh(request):
+            return
 
     def _on_experiment_bundle_refresh_started(self) -> None:
-        self._action_status.setText("Refreshing experiments…")
-        self._action_status.setAccessibleDescription("Experiment bundle refresh in progress.")
-        self._action_status.setVisible(True)
+        copy = format_health_action_copy("experiment_bundle_refresh", stage="progress")
+        self._apply_action_status(copy)
         self._experiment_bundle_button.setEnabled(False)
-        self._experiment_bundle_button.setText("Refreshing…")
+        self._experiment_bundle_button.setText(copy.button_label)
 
     def _on_repair_started(self) -> None:
-        self._action_status.setText("Installing runtime…")
-        self._action_status.setAccessibleDescription(
-            "Repair install in progress; subsystem rows will reflect recovery state."
-        )
-        self._action_status.setVisible(True)
+        copy = format_health_action_copy("repair_install", stage="progress")
+        self._apply_action_status(copy)
         self._repair_button.setEnabled(False)
-        self._repair_button.setText("Installing…")
+        self._repair_button.setText(copy.button_label)
 
     @Slot(QModelIndex, int, int)
     def _on_alerts_rows_inserted(

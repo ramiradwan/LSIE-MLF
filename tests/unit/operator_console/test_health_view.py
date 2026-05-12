@@ -11,17 +11,21 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 import pytest
-from PySide6.QtWidgets import QHeaderView
+from PySide6.QtWidgets import QApplication, QHeaderView
 
 from packages.schemas.operator_console import (
     AlertEvent,
     AlertKind,
     AlertSeverity,
+    CloudActionStatus,
     CloudAuthState,
     CloudAuthStatus,
     CloudExperimentRefreshStatus,
     CloudOperatorErrorCode,
     CloudOutboxSummary,
+    ExperimentBundleRefreshChange,
+    ExperimentBundleRefreshPreview,
+    ExperimentBundleRefreshRequest,
     ExperimentBundleRefreshResult,
     HealthProbeState,
     HealthSnapshot,
@@ -96,17 +100,42 @@ def test_health_view_header_buttons_track_action_bindings() -> None:
     assert "desktop.sqlite" in view._repair_button.accessibleDescription()
     assert view._cloud_sign_in_button.accessibleName() == "Cloud sign-in"
     assert "cloud sync" in view._cloud_sign_in_button.accessibleDescription()
-    assert view._experiment_bundle_button.accessibleName() == "Refresh experiments"
-    assert "signed experiment bundle" in view._experiment_bundle_button.accessibleDescription()
+    assert view._experiment_bundle_button.accessibleName() == "Update definitions"
+    assert (
+        "without clearing local attempts" in view._experiment_bundle_button.accessibleDescription()
+    )
     assert view._action_status.accessibleName() == "Health action status"
+    assert view._action_status.parent() is view
     vm.bind_repair_action(lambda: OneShotSignals())
     vm.bind_cloud_sign_in_action(lambda: OneShotSignals())
-    vm.bind_experiment_bundle_refresh_action(lambda: OneShotSignals())
+    vm.bind_experiment_bundle_refresh_preview_action(lambda: OneShotSignals())
+    vm.bind_experiment_bundle_refresh_action(lambda _request: OneShotSignals())
     store.set_health(_snapshot(HealthState.OK))
 
     assert view._repair_button.isEnabled() is True
     assert view._cloud_sign_in_button.isEnabled() is True
     assert view._experiment_bundle_button.isEnabled() is True
+
+
+def test_health_view_update_definitions_click_keeps_narrow_header_stable() -> None:
+    view, vm, store = _view_with_vm()
+    preview_signals = OneShotSignals()
+    vm.bind_experiment_bundle_refresh_preview_action(lambda: preview_signals)
+    vm.bind_experiment_bundle_refresh_action(lambda _request: OneShotSignals())
+    store.set_health(_snapshot(HealthState.OK))
+    view.resize(720, 720)
+    view.show()
+    QApplication.processEvents()
+    before_geometry = view._experiment_bundle_button.geometry()
+
+    view._experiment_bundle_button.click()
+    QApplication.processEvents()
+
+    assert view._experiment_bundle_button.text() == "Update definitions"
+    assert view._action_status.text() == "Checking cloud definitions…"
+    assert view._action_status.isHidden() is False
+    assert view._error_banner.isHidden() is True
+    assert view._experiment_bundle_button.geometry() == before_geometry
 
 
 def test_health_view_repair_click_invokes_bound_action(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -128,10 +157,11 @@ def test_health_view_repair_click_invokes_bound_action(monkeypatch: pytest.Monke
     assert calls == ["repair"]
     assert view._action_status.isHidden() is False
     assert view._action_status.text() == "Installing runtime…"
+    assert view._error_banner.isHidden() is True
     assert "Repair install in progress" in view._action_status.accessibleDescription()
 
 
-def test_health_view_cloud_buttons_invoke_bound_actions() -> None:
+def test_health_view_cloud_buttons_invoke_bound_actions(monkeypatch: pytest.MonkeyPatch) -> None:
     view, vm, store = _view_with_vm()
     calls: list[str] = []
     sign_in_signals = OneShotSignals()
@@ -141,30 +171,86 @@ def test_health_view_cloud_buttons_invoke_bound_actions() -> None:
         calls.append("sign-in")
         return sign_in_signals
 
-    def request_refresh() -> OneShotSignals:
+    preview_signals = OneShotSignals()
+
+    def request_preview() -> OneShotSignals:
+        calls.append("preview")
+        return preview_signals
+
+    refresh_tokens: list[str] = []
+
+    def request_refresh(request: ExperimentBundleRefreshRequest) -> OneShotSignals:
         calls.append("refresh")
+        refresh_tokens.append(request.preview_token)
         return refresh_signals
 
     vm.bind_cloud_sign_in_action(request_sign_in)
+    vm.bind_experiment_bundle_refresh_preview_action(request_preview)
     vm.bind_experiment_bundle_refresh_action(request_refresh)
     store.set_health(_snapshot(HealthState.OK))
+
+    from PySide6.QtWidgets import QMessageBox
+
+    seen_confirmation: list[str] = []
+
+    def confirm(self: QMessageBox) -> QMessageBox.StandardButton:
+        seen_confirmation.append(self.informativeText())
+        return QMessageBox.StandardButton.Yes
+
+    monkeypatch.setattr(QMessageBox, "exec", confirm)
 
     view._cloud_sign_in_button.click()
     assert calls == ["sign-in"]
     assert view._action_status.text() == "Waiting for sign-in…"
+    assert view._error_banner.isHidden() is True
     assert "Browser sign-in" in view._action_status.accessibleDescription()
 
     sign_in_signals.succeeded.emit("cloud_sign_in", object())
     sign_in_signals.finished.emit("cloud_sign_in")
     assert view._action_status.text() == "Cloud sign-in completed"
+    assert view._error_banner.isHidden() is True
 
     view._experiment_bundle_button.click()
-    assert calls == ["sign-in", "refresh"]
-    assert view._action_status.text() == "Refreshing experiments…"
-    assert "Experiment bundle refresh" in view._action_status.accessibleDescription()
+    assert calls == ["sign-in", "preview"]
+    assert view._action_status.text() == "Checking cloud definitions…"
+    assert view._error_banner.isHidden() is True
+    preview_signals.succeeded.emit(
+        "experiment_bundle_refresh",
+        ExperimentBundleRefreshPreview(
+            status=CloudActionStatus.SUCCEEDED,
+            checked_at_utc=_NOW,
+            message="Preview ready.",
+            preview_token="preview-token-a",
+            bundle_id="bundle-1",
+            experiment_count=1,
+            added_count=1,
+            updated_count=1,
+            disabled_count=1,
+            unchanged_count=0,
+            existing_preserved_count=2,
+            changes=[
+                ExperimentBundleRefreshChange(
+                    action="add",
+                    experiment_id="compliment_content",
+                    arm_id="new_arm",
+                    cloud_greeting_text="Try this next.",
+                ),
+            ],
+        ),
+    )
+    preview_signals.finished.emit("experiment_bundle_refresh")
+    assert calls == ["sign-in", "preview", "refresh"]
+    assert refresh_tokens == ["preview-token-a"]
+    assert "2 existing arm(s) keep their local attempts" in seen_confirmation[0]
+    assert "disabled, not deleted" in seen_confirmation[0]
+    assert view._action_status.text() == (
+        "Updating experiment definitions without clearing local attempts…"
+    )
+    assert view._error_banner.isHidden() is True
+    assert "local attempts stay" in view._action_status.accessibleDescription()
 
 
-def test_health_view_hides_inline_status_when_cloud_sign_in_fails() -> None:
+def test_health_view_replaces_inline_status_when_cloud_sign_in_fails() -> None:
     view, vm, store = _view_with_vm()
     signals = OneShotSignals()
     vm.bind_cloud_sign_in_action(lambda: signals)
@@ -172,6 +258,8 @@ def test_health_view_hides_inline_status_when_cloud_sign_in_fails() -> None:
 
     view._cloud_sign_in_button.click()
     assert view._action_status.text() == "Waiting for sign-in…"
+    assert view._action_status.isHidden() is False
+    assert view._error_banner.isHidden() is True
 
     store.set_error("cloud_sign_in", "browser closed")
     signals.failed.emit("cloud_sign_in", object())
@@ -182,14 +270,60 @@ def test_health_view_hides_inline_status_when_cloud_sign_in_fails() -> None:
     assert view._error_banner._message.text() == "browser closed"
 
 
-def test_health_view_hides_inline_status_when_refresh_prerequisite_fails() -> None:
+def test_health_view_update_definitions_cancel_does_not_invoke_action(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    view, vm, store = _view_with_vm()
+    calls: list[str] = []
+    preview_signals = OneShotSignals()
+
+    def request_preview() -> OneShotSignals:
+        calls.append("preview")
+        return preview_signals
+
+    def request_refresh(_request: ExperimentBundleRefreshRequest) -> OneShotSignals:
+        calls.append("refresh")
+        return OneShotSignals()
+
+    vm.bind_experiment_bundle_refresh_preview_action(request_preview)
+    vm.bind_experiment_bundle_refresh_action(request_refresh)
+    store.set_health(_snapshot(HealthState.OK))
+
+    from PySide6.QtWidgets import QMessageBox
+
+    monkeypatch.setattr(QMessageBox, "exec", lambda self: QMessageBox.StandardButton.Cancel)
+
+    view._experiment_bundle_button.click()
+    preview_signals.succeeded.emit(
+        "experiment_bundle_refresh",
+        ExperimentBundleRefreshPreview(
+            status=CloudActionStatus.SUCCEEDED,
+            checked_at_utc=_NOW,
+            message="Preview ready.",
+            preview_token="preview-token-a",
+            experiment_count=1,
+        ),
+    )
+    preview_signals.finished.emit("experiment_bundle_refresh")
+
+    assert calls == ["preview"]
+    assert view._action_status.isHidden() is True
+    assert view._error_banner.isHidden() is True
+
+
+def test_health_view_replaces_inline_status_when_refresh_prerequisite_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     view, vm, store = _view_with_vm()
     signals = OneShotSignals()
-    vm.bind_experiment_bundle_refresh_action(lambda: signals)
+    vm.bind_experiment_bundle_refresh_preview_action(lambda: signals)
+    vm.bind_experiment_bundle_refresh_action(lambda _request: OneShotSignals())
     store.set_health(_snapshot(HealthState.OK))
 
     view._experiment_bundle_button.click()
-    assert view._action_status.text() == "Refreshing experiments…"
+    assert view._action_status.text() == "Checking cloud definitions…"
+    assert view._action_status.isHidden() is False
+    assert view._error_banner.isHidden() is True
 
     store.set_error(
         "experiment_bundle_refresh",
@@ -238,8 +372,10 @@ def test_health_view_renders_cloud_auth_and_outbox_readbacks() -> None:
     assert view._cloud_auth_card._primary.text() == "signed in"
     assert view._cloud_auth_card._secondary.text() == "Cloud sign-in is active."
     assert view._cloud_auth_card._status._kind is UiStatusKind.OK
-    assert view._cloud_outbox_card._primary.text() == "4 active"
-    assert view._cloud_outbox_card._secondary.text() == "1 dead-letter · 3 redacted"
+    assert view._cloud_outbox_card._primary.text() == "3 active"
+    assert view._cloud_outbox_card._secondary.text() == (
+        "1 blocked upload record(s) · 3 retained row(s) with payload removed"
+    )
     assert view._cloud_outbox_card._status._kind is UiStatusKind.ERROR
 
 
@@ -260,11 +396,13 @@ def test_health_view_renders_latest_background_refresh_failure() -> None:
     )
 
     assert view._cloud_outbox_card._secondary.text() == (
-        "0 dead-letter · 0 redacted · experiments: rate limited; using cached"
+        "0 blocked upload record(s) · 0 retained row(s) with payload removed · "
+        "cloud experiment definitions: rate limited; using cached"
     )
     assert view._cloud_outbox_card._status._kind is UiStatusKind.WARN
     assert view._cloud_outbox_card._status.text() == "refresh retrying"
     assert "using cached" in view._cloud_outbox_card.accessibleDescription()
+    assert "payload removed" in view._cloud_outbox_card.accessibleDescription()
 
 
 def test_health_view_renders_terminal_background_refresh_failure() -> None:

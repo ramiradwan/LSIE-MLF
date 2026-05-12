@@ -37,6 +37,7 @@ from packages.schemas.operator_console import (
     CloudSignInResult,
     CoModulationSummary,
     EncounterSummary,
+    ExperimentBundleRefreshRequest,
     ExperimentBundleRefreshResult,
     ExperimentDetail,
     ExperimentSummary,
@@ -910,7 +911,23 @@ def cloud_refresh_experiments(
     json_output: bool = typer.Option(False, "--json", help="Render DTO JSON"),
 ) -> None:
     """Refresh signed experiment bundle through the loopback API."""
-    result = _run_api_call(lambda: _build_client().post_experiment_bundle_refresh())
+
+    def apply_preview() -> ExperimentBundleRefreshResult:
+        client = _build_client()
+        preview = client.post_experiment_bundle_refresh_preview()
+        if preview.status is CloudActionStatus.FAILED or preview.preview_token is None:
+            return ExperimentBundleRefreshResult(
+                status=CloudExperimentRefreshStatus.FAILED,
+                completed_at_utc=preview.checked_at_utc,
+                message=preview.message,
+                error_code=preview.error_code,
+                retryable=preview.retryable,
+            )
+        return client.post_experiment_bundle_refresh(
+            ExperimentBundleRefreshRequest(preview_token=preview.preview_token)
+        )
+
+    result = _run_api_call(apply_preview)
     if json_output:
         _print_json(result)
     else:

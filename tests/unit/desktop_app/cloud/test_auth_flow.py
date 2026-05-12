@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 import threading
 from datetime import UTC, datetime
 from pathlib import Path
@@ -16,9 +17,11 @@ from packages.schemas.cloud import (
     OAuthTokenResponse,
 )
 from packages.schemas.operator_console import (
+    CloudActionStatus,
     CloudAuthState,
     CloudExperimentRefreshStatus,
     CloudOperatorErrorCode,
+    ExperimentBundleRefreshRequest,
     ExperimentBundleRefreshResult,
 )
 from services.desktop_app.cloud.auth_flow import (
@@ -30,6 +33,7 @@ from services.desktop_app.cloud.outbox import CloudOutbox
 from services.desktop_app.privacy.secrets import SECRET_KEY_CLOUD_REFRESH_TOKEN
 from services.desktop_app.processes.cloud_sync_worker import CloudSyncConfig
 from services.desktop_app.state.sqlite_cloud_operator_service import SqliteCloudOperatorService
+from services.desktop_app.state.sqlite_schema import bootstrap_schema
 
 
 def _config() -> AuthFlowConfig:
@@ -307,13 +311,167 @@ def test_sqlite_cloud_operator_reports_refresh_token_unavailable(
     service = SqliteCloudOperatorService(db_path)
 
     status = service.get_auth_status()
-    refresh = service.refresh_experiment_bundle()
+    refresh = service.refresh_experiment_bundle(
+        ExperimentBundleRefreshRequest(preview_token="preview-token-a")
+    )
     latest = _latest_refresh(db_path)
 
     assert status.state is CloudAuthState.REFRESH_TOKEN_UNAVAILABLE
     assert refresh.error_code is CloudOperatorErrorCode.REFRESH_TOKEN_UNAVAILABLE
     assert latest is not None
     assert latest.error_code is CloudOperatorErrorCode.REFRESH_TOKEN_UNAVAILABLE
+
+
+def test_sqlite_cloud_operator_preview_fetches_without_recording_or_mutating(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    class _Flow:
+        def __init__(self, _config: object) -> None:
+            return None
+
+        def refresh_access_token(self, *, refresh_token: str) -> OAuthTokenResponse:
+            assert refresh_token == "refresh-a"
+            return OAuthTokenResponse(access_token="access-a", expires_in=3600)
+
+    class _Client:
+        def __init__(self, base_url: str, *, timeout_s: float) -> None:
+            assert base_url == "https://cloud.example.test"
+            assert timeout_s == 15.0
+
+        def fetch_bundle(self, *, access_token: str) -> ExperimentBundle:
+            assert access_token == "access-a"
+            return _bundle()
+
+    monkeypatch.setattr(
+        "services.desktop_app.state.sqlite_cloud_operator_service.get_secret",
+        lambda _key: "refresh-a",
+    )
+    monkeypatch.setattr(
+        "services.desktop_app.state.sqlite_cloud_operator_service.DesktopAuthFlow",
+        _Flow,
+    )
+    monkeypatch.setattr(
+        "services.desktop_app.state.sqlite_cloud_operator_service.ExperimentBundleClient",
+        _Client,
+    )
+    monkeypatch.setattr(
+        "services.desktop_app.cloud.experiment_bundle.verify_bundle",
+        lambda _bundle, *, config=None: None,
+    )
+    db_path = tmp_path / "desktop.sqlite"
+    conn = sqlite3.connect(str(db_path), isolation_level=None)
+    bootstrap_schema(conn, seed_experiments=False)
+    conn.execute(
+        """
+        INSERT INTO experiments (
+            experiment_id, label, arm, greeting_text, alpha_param, beta_param, enabled
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        ("experiment-a", "Experiment A", "arm-a", "Old A", 11.0, 12.0, 1),
+    )
+    conn.close()
+    service = SqliteCloudOperatorService(
+        db_path,
+        config=CloudSyncConfig(base_url="https://cloud.example.test"),
+    )
+
+    preview = service.preview_experiment_bundle_refresh()
+    latest = _latest_refresh(db_path)
+    conn = sqlite3.connect(str(db_path), isolation_level=None)
+    row = conn.execute(
+        """
+        SELECT greeting_text, alpha_param, beta_param, enabled
+        FROM experiments
+        WHERE experiment_id = 'experiment-a' AND arm = 'arm-a'
+        """
+    ).fetchone()
+    conn.close()
+
+    assert preview.status is CloudActionStatus.SUCCEEDED
+    assert preview.preview_token is not None
+    assert preview.updated_count == 1
+    assert preview.existing_preserved_count == 1
+    assert latest is None
+    assert row == ("Old A", 11.0, 12.0, 1)
+
+
+def test_sqlite_cloud_operator_rejects_apply_when_bundle_changes_after_preview(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    class _Flow:
+        def __init__(self, _config: object) -> None:
+            return None
+
+        def refresh_access_token(self, *, refresh_token: str) -> OAuthTokenResponse:
+            assert refresh_token == "refresh-a"
+            return OAuthTokenResponse(access_token="access-a", expires_in=3600)
+
+    stale_bundle = _bundle()
+    changed_bundle = _bundle().model_copy(
+        update={
+            "experiments": [
+                ExperimentBundleExperiment(
+                    experiment_id="experiment-a",
+                    label="Experiment A",
+                    arms=[
+                        ExperimentBundleArm(
+                            arm_id="arm-a",
+                            greeting_text="Changed A",
+                            posterior_alpha=2.0,
+                            posterior_beta=3.0,
+                            selection_count=5,
+                        )
+                    ],
+                )
+            ],
+        }
+    )
+    bundles = [stale_bundle, changed_bundle]
+
+    class _Client:
+        def __init__(self, base_url: str, *, timeout_s: float) -> None:
+            assert base_url == "https://cloud.example.test"
+            assert timeout_s == 15.0
+
+        def fetch_bundle(self, *, access_token: str) -> ExperimentBundle:
+            assert access_token == "access-a"
+            return bundles.pop(0)
+
+    monkeypatch.setattr(
+        "services.desktop_app.state.sqlite_cloud_operator_service.get_secret",
+        lambda _key: "refresh-a",
+    )
+    monkeypatch.setattr(
+        "services.desktop_app.state.sqlite_cloud_operator_service.DesktopAuthFlow",
+        _Flow,
+    )
+    monkeypatch.setattr(
+        "services.desktop_app.state.sqlite_cloud_operator_service.ExperimentBundleClient",
+        _Client,
+    )
+    monkeypatch.setattr(
+        "services.desktop_app.cloud.experiment_bundle.verify_bundle",
+        lambda _bundle, *, config=None: None,
+    )
+    db_path = tmp_path / "desktop.sqlite"
+    service = SqliteCloudOperatorService(
+        db_path,
+        config=CloudSyncConfig(base_url="https://cloud.example.test"),
+    )
+
+    preview = service.preview_experiment_bundle_refresh()
+    assert preview.preview_token is not None
+    result = service.refresh_experiment_bundle(
+        ExperimentBundleRefreshRequest(preview_token=preview.preview_token)
+    )
+    latest = _latest_refresh(db_path)
+
+    assert result.status is CloudExperimentRefreshStatus.FAILED
+    assert result.error_code is CloudOperatorErrorCode.BUNDLE_CHANGED
+    assert latest is not None
+    assert latest.error_code is CloudOperatorErrorCode.BUNDLE_CHANGED
 
 
 def test_sqlite_cloud_operator_records_successful_manual_experiment_refresh(
@@ -359,7 +517,12 @@ def test_sqlite_cloud_operator_records_successful_manual_experiment_refresh(
         config=CloudSyncConfig(base_url="https://cloud.example.test"),
     )
 
-    result = service.refresh_experiment_bundle()
+    preview = service.preview_experiment_bundle_refresh()
+    assert preview.preview_token is not None
+
+    result = service.refresh_experiment_bundle(
+        ExperimentBundleRefreshRequest(preview_token=preview.preview_token)
+    )
     latest = _latest_refresh(db_path)
 
     assert result.status is CloudExperimentRefreshStatus.APPLIED

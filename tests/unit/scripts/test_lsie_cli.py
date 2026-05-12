@@ -31,6 +31,8 @@ from packages.schemas.operator_console import (
     CoModulationSummary,
     EncounterState,
     EncounterSummary,
+    ExperimentBundleRefreshPreview,
+    ExperimentBundleRefreshRequest,
     ExperimentBundleRefreshResult,
     ExperimentDetail,
     ExperimentSummary,
@@ -165,7 +167,21 @@ class FakeClient:
             message="Cloud sign-in completed.",
         )
 
-    def post_experiment_bundle_refresh(self) -> ExperimentBundleRefreshResult:
+    def post_experiment_bundle_refresh_preview(self) -> ExperimentBundleRefreshPreview:
+        return ExperimentBundleRefreshPreview(
+            status=CloudActionStatus.SUCCEEDED,
+            checked_at_utc=_NOW,
+            message="Preview ready.",
+            preview_token="preview-token-a",
+            bundle_id="bundle-a",
+            experiment_count=2,
+        )
+
+    def post_experiment_bundle_refresh(
+        self,
+        request: ExperimentBundleRefreshRequest,
+    ) -> ExperimentBundleRefreshResult:
+        assert request.preview_token == "preview-token-a"
         self.cloud_refresh_called = True
         if self.fail_cloud_refresh:
             return ExperimentBundleRefreshResult(

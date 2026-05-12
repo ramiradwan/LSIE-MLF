@@ -50,6 +50,8 @@ from packages.schemas.operator_console import (
     CloudOutboxSummary,
     CloudSignInResult,
     EncounterState,
+    ExperimentBundleRefreshPreview,
+    ExperimentBundleRefreshRequest,
     ExperimentBundleRefreshResult,
     HealthSnapshot,
     HealthState,
@@ -298,8 +300,20 @@ class TestCloudEndpoints:
         )
         transport.enqueue_json(
             {
+                "status": CloudActionStatus.SUCCEEDED.value,
+                "checked_at_utc": _utc(2026, 5, 2, 12, 1).isoformat(),
+                "message": "Preview ready.",
+                "bundle_id": "bundle-a",
+                "experiment_count": 2,
+                "added_count": 1,
+                "updated_count": 0,
+                "disabled_count": 0,
+            }
+        )
+        transport.enqueue_json(
+            {
                 "status": CloudExperimentRefreshStatus.APPLIED.value,
-                "completed_at_utc": _utc(2026, 5, 2, 12, 1).isoformat(),
+                "completed_at_utc": _utc(2026, 5, 2, 12, 2).isoformat(),
                 "message": "Experiment bundle refreshed.",
                 "bundle_id": "bundle-a",
                 "experiment_count": 2,
@@ -308,16 +322,26 @@ class TestCloudEndpoints:
         client = ApiClient("http://api.test", transport=transport)
 
         sign_in = client.post_cloud_sign_in()
-        refresh = client.post_experiment_bundle_refresh()
+        preview = client.post_experiment_bundle_refresh_preview()
+        refresh = client.post_experiment_bundle_refresh(
+            ExperimentBundleRefreshRequest(preview_token="preview-token-a")
+        )
 
         assert isinstance(sign_in, CloudSignInResult)
+        assert isinstance(preview, ExperimentBundleRefreshPreview)
         assert isinstance(refresh, ExperimentBundleRefreshResult)
-        assert [call.method for call in transport.calls] == ["POST", "POST"]
-        assert [json.loads(call.body or b"{}") for call in transport.calls] == [{}, {}]
+        assert [call.method for call in transport.calls] == ["POST", "POST", "POST"]
+        assert [json.loads(call.body or b"{}") for call in transport.calls] == [
+            {},
+            {},
+            {"preview_token": "preview-token-a"},
+        ]
         assert transport.calls[0].url.endswith("/api/v1/operator/cloud/auth/sign-in")
         assert transport.calls[0].timeout_s == 125.0
-        assert transport.calls[1].url.endswith("/api/v1/operator/cloud/experiments/refresh")
+        assert transport.calls[1].url.endswith("/api/v1/operator/cloud/experiments/refresh/preview")
         assert transport.calls[1].timeout_s == 10.0
+        assert transport.calls[2].url.endswith("/api/v1/operator/cloud/experiments/refresh")
+        assert transport.calls[2].timeout_s == 10.0
 
 
 class TestPostStimulus:

@@ -49,6 +49,8 @@ from packages.schemas.operator_console import (
     CloudOutboxSummary,
     CloudSignInResult,
     EncounterSummary,
+    ExperimentBundleRefreshPreview,
+    ExperimentBundleRefreshRequest,
     ExperimentBundleRefreshResult,
     ExperimentDetail,
     ExperimentSummary,
@@ -384,10 +386,20 @@ class ApiClient:
             timeout_s=max(self._timeout, _CLOUD_SIGN_IN_TIMEOUT_SECONDS),
         )
 
-    def post_experiment_bundle_refresh(self) -> ExperimentBundleRefreshResult:
+    def post_experiment_bundle_refresh_preview(self) -> ExperimentBundleRefreshPreview:
+        return self._post_model(
+            "/api/v1/operator/cloud/experiments/refresh/preview",
+            b"{}",
+            ExperimentBundleRefreshPreview,
+        )
+
+    def post_experiment_bundle_refresh(
+        self,
+        request: ExperimentBundleRefreshRequest,
+    ) -> ExperimentBundleRefreshResult:
         return self._post_model(
             "/api/v1/operator/cloud/experiments/refresh",
-            b"{}",
+            request.model_dump_json().encode("utf-8"),
             ExperimentBundleRefreshResult,
         )
 

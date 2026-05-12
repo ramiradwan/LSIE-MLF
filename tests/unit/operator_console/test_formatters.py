@@ -15,9 +15,12 @@ from packages.schemas.operator_console import (
     ArmDecisionEvidence,
     ArmSummary,
     AttributionSummary,
+    CloudActionStatus,
     CoModulationSummary,
     EncounterState,
     EncounterSummary,
+    ExperimentBundleRefreshChange,
+    ExperimentBundleRefreshPreview,
     ExperimentDetail,
     HealthState,
     HealthSubsystemStatus,
@@ -55,6 +58,7 @@ from services.operator_console.formatters import (
     format_calibration_status,
     format_comodulation_index,
     format_duration,
+    format_experiment_bundle_preview_copy,
     format_f0_hz,
     format_freshness,
     format_health_action_copy,
@@ -125,12 +129,28 @@ class TestPrimitives:
         assert sign_in_progress.button_label == "Signing in…"
         assert sign_in_progress.status_text == "Waiting for sign-in…"
 
+        refresh_preview = format_health_action_copy(
+            "experiment_bundle_refresh",
+            stage="preview",
+        )
+        assert refresh_preview.button_label == "Update definitions"
+        assert refresh_preview.status_text == "Checking cloud definitions…"
+
+        refresh_progress = format_health_action_copy(
+            "experiment_bundle_refresh",
+            stage="progress",
+        )
+        assert refresh_progress.button_label == "Update definitions"
+        assert refresh_progress.status_text == (
+            "Updating experiment definitions without clearing local attempts…"
+        )
+
         refresh_success = format_health_action_copy(
             "experiment_bundle_refresh",
             stage="success",
         )
-        assert refresh_success.button_label == "Refresh experiments"
-        assert refresh_success.status_text == "Experiments refreshed"
+        assert refresh_success.button_label == "Update definitions"
+        assert refresh_success.status_text == "Experiment definitions updated; local attempts kept"
 
     def test_health_action_error_normalizes_refresh_prerequisite_copy(self) -> None:
         assert (
@@ -140,6 +160,55 @@ class TestPrimitives:
             )
             == "Cloud sign-in is required before refreshing experiments."
         )
+
+    def test_experiment_bundle_preview_copy_summarizes_safe_changes(self) -> None:
+        copy = format_experiment_bundle_preview_copy(
+            ExperimentBundleRefreshPreview(
+                status=CloudActionStatus.SUCCEEDED,
+                checked_at_utc=_utc(2026, 4, 17, 11, 30),
+                message="Preview ready.",
+                bundle_id="bundle-1",
+                policy_version="v4.0",
+                experiment_count=1,
+                added_count=1,
+                updated_count=1,
+                disabled_count=1,
+                unchanged_count=2,
+                existing_preserved_count=3,
+                changes=[
+                    ExperimentBundleRefreshChange(
+                        action="add",
+                        experiment_id="compliment_content",
+                        arm_id="new_arm",
+                        cloud_greeting_text="Try this next.",
+                    ),
+                    ExperimentBundleRefreshChange(
+                        action="update",
+                        experiment_id="compliment_content",
+                        arm_id="control",
+                        current_greeting_text="Old text",
+                        cloud_greeting_text="New text",
+                        current_enabled=True,
+                        cloud_enabled=True,
+                    ),
+                    ExperimentBundleRefreshChange(
+                        action="disable",
+                        experiment_id="compliment_content",
+                        arm_id="removed_arm",
+                        current_enabled=True,
+                        cloud_enabled=False,
+                    ),
+                ],
+            )
+        )
+
+        assert copy.text == "Apply verified cloud experiment definitions?"
+        assert "add 1, update 1, disable 1" in copy.informative_text
+        assert "3 existing arm(s) keep their local attempts" in copy.informative_text
+        assert "disabled, not deleted" in copy.informative_text
+        assert "Add compliment_content/new_arm" in copy.details
+        assert "Update compliment_content/control: prompt text" in copy.details
+        assert "Disable compliment_content/removed_arm" in copy.details
 
 
 # ----------------------------------------------------------------------

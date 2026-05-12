@@ -25,6 +25,7 @@ from PySide6.QtWidgets import QLabel
 
 from packages.schemas.operator_console import (
     ArmSummary,
+    ExperimentBundleRefreshRequest,
     ExperimentDetail,
     SessionSummary,
     StimulusAccepted,
@@ -264,10 +265,11 @@ def test_health_vm_actions_route_to_coordinator() -> None:
 
     assert window._health_vm.request_repair() is True
     assert window._health_vm.request_cloud_sign_in() is True
-    assert window._health_vm.request_experiment_bundle_refresh() is True
+    request = ExperimentBundleRefreshRequest(preview_token="preview-token-a")
+    assert window._health_vm.request_experiment_bundle_refresh(request) is True
     coord.repair_install.assert_called_once_with()
     coord.cloud_sign_in.assert_called_once_with()
-    coord.refresh_experiment_bundle.assert_called_once_with()
+    coord.refresh_experiment_bundle.assert_called_once_with(request)
 
 
 def test_experiment_management_vm_signals_route_to_coordinator() -> None:

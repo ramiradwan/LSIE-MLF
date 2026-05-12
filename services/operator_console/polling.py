@@ -62,6 +62,7 @@ from packages.schemas.operator_console import (
     CloudExperimentRefreshStatus,
     CloudOutboxSummary,
     EncounterSummary,
+    ExperimentBundleRefreshRequest,
     ExperimentDetail,
     ExperimentSummary,
     HealthSnapshot,
@@ -613,22 +614,42 @@ class PollingCoordinator(QObject):
 
         return self._run_cloud_action(JOB_CLOUD_SIGN_IN, fn)
 
-    def refresh_experiment_bundle(self) -> OneShotSignals:
+    def preview_experiment_bundle_refresh(self) -> OneShotSignals:
         def fn() -> object:
-            result = self._client.post_experiment_bundle_refresh()
+            result = self._client.post_experiment_bundle_refresh_preview()
+            if result.status is CloudActionStatus.FAILED:
+                raise ApiError(message=result.message, retryable=result.retryable)
+            return result
+
+        return self._run_cloud_action(JOB_EXPERIMENT_BUNDLE_REFRESH, fn, refresh_on_success=False)
+
+    def refresh_experiment_bundle(
+        self,
+        request: ExperimentBundleRefreshRequest,
+    ) -> OneShotSignals:
+        def fn() -> object:
+            result = self._client.post_experiment_bundle_refresh(request)
             if result.status is CloudExperimentRefreshStatus.FAILED:
                 raise ApiError(message=result.message, retryable=result.retryable)
             return result
 
         return self._run_cloud_action(JOB_EXPERIMENT_BUNDLE_REFRESH, fn)
 
-    def _run_cloud_action(self, job_name: str, fn: Callable[[], object]) -> OneShotSignals:
+    def _run_cloud_action(
+        self,
+        job_name: str,
+        fn: Callable[[], object],
+        *,
+        refresh_on_success: bool = True,
+    ) -> OneShotSignals:
         signals = run_one_shot(job_name, fn)
         handle_key = str(uuid4())
         self._inflight_cloud_actions[handle_key] = signals
 
         def on_succeeded(_job: str, _payload: object) -> None:
             self._store.clear_error(job_name)
+            if not refresh_on_success:
+                return
             for target in (JOB_EXPERIMENT, JOB_EXPERIMENT_SUMMARIES, JOB_HEALTH, JOB_ALERTS):
                 self.refresh_now(target)
 

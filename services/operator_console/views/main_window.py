@@ -228,6 +228,9 @@ class MainWindow(QMainWindow):
         self._health_vm = HealthViewModel(self._store, self._health_model, self._alerts_model, self)
         self._health_vm.bind_repair_action(self._coordinator.repair_install)
         self._health_vm.bind_cloud_sign_in_action(self._coordinator.cloud_sign_in)
+        self._health_vm.bind_experiment_bundle_refresh_preview_action(
+            self._coordinator.preview_experiment_bundle_refresh
+        )
         self._health_vm.bind_experiment_bundle_refresh_action(
             self._coordinator.refresh_experiment_bundle
         )

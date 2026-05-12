@@ -52,6 +52,8 @@ from packages.schemas.operator_console import (
     CloudOutboxSummary,
     CloudSignInResult,
     EncounterSummary,
+    ExperimentBundleRefreshPreview,
+    ExperimentBundleRefreshRequest,
     ExperimentBundleRefreshResult,
     ExperimentDetail,
     ExperimentSummary,
@@ -101,7 +103,12 @@ class CloudOperatorService(Protocol):
 
     def get_latest_experiment_refresh(self) -> ExperimentBundleRefreshResult | None: ...
 
-    def refresh_experiment_bundle(self) -> ExperimentBundleRefreshResult: ...
+    def preview_experiment_bundle_refresh(self) -> ExperimentBundleRefreshPreview: ...
+
+    def refresh_experiment_bundle(
+        self,
+        request: ExperimentBundleRefreshRequest,
+    ) -> ExperimentBundleRefreshResult: ...
 
 
 class UnavailableCloudOperatorService:
@@ -128,7 +135,19 @@ class UnavailableCloudOperatorService:
     def get_latest_experiment_refresh(self) -> ExperimentBundleRefreshResult | None:
         return None
 
-    def refresh_experiment_bundle(self) -> ExperimentBundleRefreshResult:
+    def preview_experiment_bundle_refresh(self) -> ExperimentBundleRefreshPreview:
+        return ExperimentBundleRefreshPreview(
+            status=CloudActionStatus.FAILED,
+            checked_at_utc=datetime.now(UTC),
+            message="Desktop cloud service is not configured.",
+            error_code=CloudOperatorErrorCode.CLOUD_UNAVAILABLE,
+            retryable=True,
+        )
+
+    def refresh_experiment_bundle(
+        self,
+        _request: ExperimentBundleRefreshRequest,
+    ) -> ExperimentBundleRefreshResult:
         return ExperimentBundleRefreshResult(
             status=CloudExperimentRefreshStatus.FAILED,
             completed_at_utc=datetime.now(UTC),
@@ -402,12 +421,29 @@ async def get_latest_cloud_experiment_refresh(
         raise HTTPException(status_code=500, detail="Internal server error") from exc
 
 
+@router.post(
+    "/cloud/experiments/refresh/preview",
+    response_model=ExperimentBundleRefreshPreview,
+)
+async def preview_cloud_experiment_bundle_refresh(
+    service: CloudOperatorService = _CloudDep,
+) -> ExperimentBundleRefreshPreview:
+    try:
+        return await run_in_threadpool(service.preview_experiment_bundle_refresh)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        logger.error("operator cloud experiment refresh preview failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error") from exc
+
+
 @router.post("/cloud/experiments/refresh", response_model=ExperimentBundleRefreshResult)
 async def refresh_cloud_experiment_bundle(
+    request: ExperimentBundleRefreshRequest,
     service: CloudOperatorService = _CloudDep,
 ) -> ExperimentBundleRefreshResult:
     try:
-        return await run_in_threadpool(service.refresh_experiment_bundle)
+        return await run_in_threadpool(service.refresh_experiment_bundle, request)
     except RuntimeError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001

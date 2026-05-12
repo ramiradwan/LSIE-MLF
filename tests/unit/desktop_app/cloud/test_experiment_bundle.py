@@ -240,7 +240,96 @@ def test_bundle_client_fetches_and_validates_bundle(monkeypatch: pytest.MonkeyPa
     assert seen_headers == ["Bearer access-a"]
 
 
-def test_cache_verified_bundle_upserts_arms_and_disables_missing_arms(tmp_path: Path) -> None:
+def test_cache_verified_bundle_preserves_local_posterior_for_existing_arm(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "desktop.sqlite"
+    conn = sqlite3.connect(str(db_path), isolation_level=None)
+    bootstrap_schema(conn)
+    conn.execute(
+        """
+        INSERT INTO experiments (
+            experiment_id, label, arm, greeting_text, alpha_param, beta_param, enabled
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        ("experiment-a", "Experiment A", "arm-a", "Old A", 11.0, 12.0, 1),
+    )
+    conn.close()
+    bundle = _signed_bundle(
+        _payload(
+            arms=[
+                ExperimentBundleArm(
+                    arm_id="arm-a",
+                    greeting_text="Updated A",
+                    posterior_alpha=4.0,
+                    posterior_beta=5.0,
+                    selection_count=8,
+                ),
+            ]
+        )
+    )
+    store = ExperimentBundleStore(db_path)
+    try:
+        store.cache_verified_bundle(
+            bundle,
+            config=BundleVerificationConfig(signature_mode="hmac-sha256", hmac_secret=SECRET),
+            applied_at_utc=APPLIED_AT,
+        )
+    finally:
+        store.close()
+
+    conn = sqlite3.connect(str(db_path), isolation_level=None)
+    row = conn.execute(
+        """
+        SELECT greeting_text, alpha_param, beta_param, enabled, end_dated_at, updated_at
+        FROM experiments
+        WHERE experiment_id = 'experiment-a' AND arm = 'arm-a'
+        """
+    ).fetchone()
+    conn.close()
+
+    assert row == ("Updated A", 11.0, 12.0, 1, None, "2036-05-02T13:00:00Z")
+
+
+def test_cache_verified_bundle_seeds_new_arms_from_bundle(tmp_path: Path) -> None:
+    db_path = tmp_path / "desktop.sqlite"
+    bundle = _signed_bundle(
+        _payload(
+            arms=[
+                ExperimentBundleArm(
+                    arm_id="arm-b",
+                    greeting_text="Hello B",
+                    posterior_alpha=6.0,
+                    posterior_beta=7.0,
+                    selection_count=9,
+                ),
+            ]
+        )
+    )
+    store = ExperimentBundleStore(db_path)
+    try:
+        store.cache_verified_bundle(
+            bundle,
+            config=BundleVerificationConfig(signature_mode="hmac-sha256", hmac_secret=SECRET),
+            applied_at_utc=APPLIED_AT,
+        )
+    finally:
+        store.close()
+
+    conn = sqlite3.connect(str(db_path), isolation_level=None)
+    row = conn.execute(
+        """
+        SELECT greeting_text, alpha_param, beta_param, enabled, end_dated_at, updated_at
+        FROM experiments
+        WHERE experiment_id = 'experiment-a' AND arm = 'arm-b'
+        """
+    ).fetchone()
+    conn.close()
+
+    assert row == ("Hello B", 6.0, 7.0, 1, None, "2036-05-02T13:00:00Z")
+
+
+def test_cache_verified_bundle_disables_missing_arms_without_deleting_them(tmp_path: Path) -> None:
     db_path = tmp_path / "desktop.sqlite"
     conn = sqlite3.connect(str(db_path), isolation_level=None)
     bootstrap_schema(conn)
@@ -252,6 +341,65 @@ def test_cache_verified_bundle_upserts_arms_and_disables_missing_arms(tmp_path: 
         """,
         ("experiment-a", "Experiment A", "missing-arm", "Old", 1.0, 1.0, 1),
     )
+    conn.close()
+    store = ExperimentBundleStore(db_path)
+    try:
+        store.cache_verified_bundle(
+            _signed_bundle(),
+            config=BundleVerificationConfig(signature_mode="hmac-sha256", hmac_secret=SECRET),
+            applied_at_utc=APPLIED_AT,
+        )
+    finally:
+        store.close()
+
+    conn = sqlite3.connect(str(db_path), isolation_level=None)
+    row = conn.execute(
+        """
+        SELECT greeting_text, alpha_param, beta_param, enabled, end_dated_at, updated_at
+        FROM experiments
+        WHERE experiment_id = 'experiment-a' AND arm = 'missing-arm'
+        """
+    ).fetchone()
+    conn.close()
+
+    assert row == (
+        "Old",
+        1.0,
+        1.0,
+        0,
+        "2036-05-02T13:00:00Z",
+        "2036-05-02T13:00:00Z",
+    )
+
+
+def test_preview_verified_bundle_reports_changes_without_mutating_sqlite(tmp_path: Path) -> None:
+    db_path = tmp_path / "desktop.sqlite"
+    conn = sqlite3.connect(str(db_path), isolation_level=None)
+    bootstrap_schema(conn, seed_experiments=False)
+    conn.execute(
+        """
+        INSERT INTO experiments (
+            experiment_id, label, arm, greeting_text, alpha_param, beta_param, enabled
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        ("experiment-a", "Experiment A", "arm-a", "Old A", 11.0, 12.0, 1),
+    )
+    conn.execute(
+        """
+        INSERT INTO experiments (
+            experiment_id, label, arm, greeting_text, alpha_param, beta_param, enabled
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        ("experiment-a", "Experiment A", "missing-arm", "Old", 1.0, 1.0, 1),
+    )
+    before_rows = conn.execute(
+        """
+        SELECT arm, greeting_text, alpha_param, beta_param, enabled, end_dated_at, updated_at
+        FROM experiments
+        WHERE experiment_id = 'experiment-a'
+        ORDER BY arm
+        """
+    ).fetchall()
     conn.close()
     bundle = _signed_bundle(
         _payload(
@@ -275,8 +423,109 @@ def test_cache_verified_bundle_upserts_arms_and_disables_missing_arms(tmp_path: 
     )
     store = ExperimentBundleStore(db_path)
     try:
-        store.cache_verified_bundle(
+        preview = store.preview_verified_bundle(
             bundle,
+            config=BundleVerificationConfig(signature_mode="hmac-sha256", hmac_secret=SECRET),
+            checked_at_utc=APPLIED_AT,
+        )
+    finally:
+        store.close()
+
+    assert preview.added_count == 1
+    assert preview.updated_count == 1
+    assert preview.disabled_count >= 1
+    assert preview.existing_preserved_count == 1
+    assert [change.action for change in preview.changes[:2]] == ["update", "add"]
+    assert any(
+        change.action == "disable" and change.arm_id == "missing-arm" for change in preview.changes
+    )
+
+    conn = sqlite3.connect(str(db_path), isolation_level=None)
+    rows = conn.execute(
+        """
+        SELECT arm, greeting_text, alpha_param, beta_param, enabled, end_dated_at, updated_at
+        FROM experiments
+        WHERE experiment_id = 'experiment-a'
+        ORDER BY arm
+        """
+    ).fetchall()
+    conn.close()
+
+    assert rows == before_rows
+
+
+def test_preview_token_allows_freshly_signed_equivalent_bundle(tmp_path: Path) -> None:
+    db_path = tmp_path / "desktop.sqlite"
+    first = _signed_bundle()
+    second = _signed_bundle(
+        _payload().model_copy(
+            update={
+                "bundle_id": "bundle-b",
+                "issued_at_utc": ISSUED_AT + timedelta(minutes=1),
+                "expires_at_utc": EXPIRES_AT + timedelta(minutes=1),
+            }
+        )
+    )
+    store = ExperimentBundleStore(db_path)
+    try:
+        preview_token = store.preview_token(first)
+        store.cache_verified_bundle(
+            second,
+            config=BundleVerificationConfig(signature_mode="hmac-sha256", hmac_secret=SECRET),
+            applied_at_utc=APPLIED_AT,
+            expected_preview_token=preview_token,
+        )
+        row = store._conn.execute(
+            """
+            SELECT greeting_text, alpha_param, beta_param
+            FROM experiments
+            WHERE experiment_id = ? AND arm = ?
+            """,
+            ("experiment-a", "arm-a"),
+        ).fetchone()
+    finally:
+        store.close()
+
+    assert first.signature != second.signature
+    assert row is not None
+    assert tuple(row) == ("Hello A", 2.0, 3.0)
+
+
+def test_cache_verified_bundle_leaves_encounter_log_untouched(tmp_path: Path) -> None:
+    db_path = tmp_path / "desktop.sqlite"
+    conn = sqlite3.connect(str(db_path), isolation_level=None)
+    bootstrap_schema(conn)
+    conn.execute(
+        """
+        INSERT INTO sessions (session_id, stream_url, started_at)
+        VALUES (?, ?, ?)
+        """,
+        ("session-a", "https://example.test/stream", "2036-05-02T12:00:00Z"),
+    )
+    conn.execute(
+        """
+        INSERT INTO encounter_log (
+            session_id, segment_id, experiment_id, arm, timestamp_utc, gated_reward,
+            p90_intensity, semantic_gate, n_frames_in_window
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "session-a",
+            "segment-a",
+            "experiment-a",
+            "arm-a",
+            "2036-05-02T12:00:00Z",
+            0.75,
+            0.75,
+            1,
+            60,
+        ),
+    )
+    conn.close()
+    store = ExperimentBundleStore(db_path)
+    try:
+        store.cache_verified_bundle(
+            _signed_bundle(),
             config=BundleVerificationConfig(signature_mode="hmac-sha256", hmac_secret=SECRET),
             applied_at_utc=APPLIED_AT,
         )
@@ -284,29 +533,15 @@ def test_cache_verified_bundle_upserts_arms_and_disables_missing_arms(tmp_path: 
         store.close()
 
     conn = sqlite3.connect(str(db_path), isolation_level=None)
-    rows = {
-        row[0]: row[1:]
-        for row in conn.execute(
-            """
-            SELECT arm, greeting_text, alpha_param, beta_param, enabled, end_dated_at, updated_at
-            FROM experiments
-            WHERE experiment_id = 'experiment-a'
-            ORDER BY arm
-            """
-        ).fetchall()
-    }
+    row = conn.execute(
+        """
+        SELECT session_id, segment_id, experiment_id, arm, gated_reward
+        FROM encounter_log
+        """
+    ).fetchone()
     conn.close()
 
-    assert rows["arm-a"] == ("Updated A", 4.0, 5.0, 1, None, "2036-05-02T13:00:00Z")
-    assert rows["arm-b"] == ("Hello B", 6.0, 7.0, 1, None, "2036-05-02T13:00:00Z")
-    assert rows["missing-arm"] == (
-        "Old",
-        1.0,
-        1.0,
-        0,
-        "2036-05-02T13:00:00Z",
-        "2036-05-02T13:00:00Z",
-    )
+    assert row == ("session-a", "segment-a", "experiment-a", "arm-a", 0.75)
 
 
 def test_cache_verified_bundle_rejects_unsigned_bundle_without_writing(tmp_path: Path) -> None:
