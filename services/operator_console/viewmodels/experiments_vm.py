@@ -33,6 +33,7 @@ from packages.schemas.operator_console import ExperimentDetail
 from services.operator_console.formatters import (
     StrategyEvidenceDisplay,
     build_strategy_evidence_display,
+    format_experiment_decision_summary,
 )
 from services.operator_console.state import OperatorStore
 from services.operator_console.table_models.experiments_table_model import (
@@ -105,9 +106,14 @@ class ExperimentsViewModel(ViewModelBase):
         operator sees the same phrasing the API logs use.
         """
         detail = self._store.experiment()
-        if detail is None or detail.last_update_summary is None:
+        if detail is None:
             return "No experiment update yet."
-        return detail.last_update_summary
+        if detail.last_update_summary is not None:
+            return detail.last_update_summary
+        decision_summary = format_experiment_decision_summary(detail)
+        if decision_summary is not None:
+            return decision_summary
+        return "No experiment update yet."
 
     def strategy_evidence(self) -> list[StrategyEvidenceDisplay]:
         """Display-ready current strategy evidence from exposed arm summaries."""

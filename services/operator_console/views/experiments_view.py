@@ -384,7 +384,7 @@ class _StrategyEvidencePanel(QFrame):
         self._title = QLabel("Strategy evidence", self)
         self._title.setObjectName("PanelTitle")
         self._subtitle = QLabel(
-            "Current evidence from recent rewards, stimulus confirmation, and learning history.",
+            "Compare observed responses, current history, and decision-time evidence.",
             self,
         )
         self._subtitle.setObjectName("PanelSubtitle")
@@ -414,7 +414,8 @@ class _StrategyEvidencePanel(QFrame):
             card.set_title(row.arm_id)
             card.set_primary_text(row.label)
             card.set_secondary_text(
-                f"{row.outcome}\nConfirmation text: {row.greeting_text}\n{row.evidence}"
+                f"{row.outcome}\nConfirmation text: {row.greeting_text}\n"
+                f"{row.evidence}\nDecision evidence: {row.decision_evidence}"
             )
             card.set_status(row.status, "active" if row.is_active else None)
             visible_cards.append(card)
@@ -425,7 +426,7 @@ class _StrategyEvidencePanel(QFrame):
             self._subtitle.setText("Strategy evidence appears after arms are loaded.")
             return
         self._subtitle.setText(
-            "Current evidence from recent rewards, stimulus confirmation, and learning history."
+            "Compare observed responses, current history, and decision-time evidence."
         )
 
     def apply_responsive_width(self, width: int) -> ResponsiveWidthBand:

@@ -424,14 +424,17 @@ ORDER BY ex.arm
 
 
 _ACTIVE_ARM_FOR_EXPERIMENT_SQL: str = """
-SELECT active_arm AS arm, started_at AS timestamp_utc
+SELECT active_arm AS arm, started_at AS timestamp_utc, bandit_decision_snapshot
 FROM sessions
 WHERE experiment_id = :experiment_id
   AND ended_at IS NULL
   AND active_arm IS NOT NULL
 UNION ALL
-SELECT e.arm, e.timestamp_utc
+SELECT e.arm, e.timestamp_utc, ae.bandit_decision_snapshot
 FROM encounter_log e
+LEFT JOIN attribution_event ae
+    ON ae.session_id = e.session_id
+   AND ae.segment_id = e.segment_id
 WHERE e.experiment_id = :experiment_id
 ORDER BY timestamp_utc DESC
 LIMIT 1
@@ -769,19 +772,97 @@ SELECT
 
 _MARKER_EXPERIMENTS_SQL: str = """
 SELECT
-    COUNT(*) AS row_count,
-    MAX(updated_at) AS max_updated_at,
-    MAX(id) AS max_id
-FROM experiments
+    (
+        SELECT COUNT(*)
+        FROM experiments
+    ) AS row_count,
+    (
+        SELECT MAX(updated_at)
+        FROM experiments
+    ) AS max_updated_at,
+    (
+        SELECT MAX(id)
+        FROM experiments
+    ) AS max_id,
+    (
+        SELECT SUM(alpha_param)
+        FROM experiments
+    ) AS posterior_alpha_sum,
+    (
+        SELECT SUM(beta_param)
+        FROM experiments
+    ) AS posterior_beta_sum,
+    (
+        SELECT COUNT(*)
+        FROM sessions
+        WHERE bandit_decision_snapshot IS NOT NULL
+    ) AS session_decision_snapshot_count,
+    (
+        SELECT MAX(started_at)
+        FROM sessions
+        WHERE bandit_decision_snapshot IS NOT NULL
+    ) AS max_session_decision_at,
+    (
+        SELECT COUNT(*)
+        FROM attribution_event
+    ) AS attribution_event_count,
+    (
+        SELECT MAX(created_at)
+        FROM attribution_event
+    ) AS max_attribution_created_at
 """
 
 _MARKER_EXPERIMENT_SQL: str = """
 SELECT
-    COUNT(*) AS row_count,
-    MAX(updated_at) AS max_updated_at,
-    MAX(id) AS max_id
-FROM experiments
-WHERE experiment_id = :experiment_id
+    (
+        SELECT COUNT(*)
+        FROM experiments
+        WHERE experiment_id = :experiment_id
+    ) AS row_count,
+    (
+        SELECT MAX(updated_at)
+        FROM experiments
+        WHERE experiment_id = :experiment_id
+    ) AS max_updated_at,
+    (
+        SELECT MAX(id)
+        FROM experiments
+        WHERE experiment_id = :experiment_id
+    ) AS max_id,
+    (
+        SELECT SUM(alpha_param)
+        FROM experiments
+        WHERE experiment_id = :experiment_id
+    ) AS posterior_alpha_sum,
+    (
+        SELECT SUM(beta_param)
+        FROM experiments
+        WHERE experiment_id = :experiment_id
+    ) AS posterior_beta_sum,
+    (
+        SELECT COUNT(*)
+        FROM sessions
+        WHERE experiment_id = :experiment_id
+          AND bandit_decision_snapshot IS NOT NULL
+    ) AS session_decision_snapshot_count,
+    (
+        SELECT MAX(started_at)
+        FROM sessions
+        WHERE experiment_id = :experiment_id
+          AND bandit_decision_snapshot IS NOT NULL
+    ) AS max_session_decision_at,
+    (
+        SELECT COUNT(*)
+        FROM attribution_event ae
+        JOIN sessions s ON s.session_id = ae.session_id
+        WHERE s.experiment_id = :experiment_id
+    ) AS attribution_event_count,
+    (
+        SELECT MAX(ae.created_at)
+        FROM attribution_event ae
+        JOIN sessions s ON s.session_id = ae.session_id
+        WHERE s.experiment_id = :experiment_id
+    ) AS max_attribution_created_at
 """
 
 _MARKER_PHYSIOLOGY_SQL: str = """
@@ -912,6 +993,24 @@ SELECT
         SELECT MAX(updated_at)
         FROM experiments
     ) AS max_experiment_updated_at,
+    (
+        SELECT SUM(alpha_param)
+        FROM experiments
+    ) AS experiment_posterior_alpha_sum,
+    (
+        SELECT SUM(beta_param)
+        FROM experiments
+    ) AS experiment_posterior_beta_sum,
+    (
+        SELECT COUNT(*)
+        FROM sessions
+        WHERE bandit_decision_snapshot IS NOT NULL
+    ) AS session_decision_snapshot_count,
+    (
+        SELECT MAX(started_at)
+        FROM sessions
+        WHERE bandit_decision_snapshot IS NOT NULL
+    ) AS max_session_decision_at,
     (
         SELECT MAX(last_heartbeat_utc)
         FROM process_heartbeat

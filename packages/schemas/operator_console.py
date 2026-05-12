@@ -378,6 +378,29 @@ class LatestEncounterSummary(OperatorConsoleModel):
 # ----------------------------------------------------------------------
 
 
+class ArmDecisionEvidence(OperatorConsoleModel):
+    arm_id: str
+    pre_update_alpha: float = Field(..., gt=0.0)
+    pre_update_beta: float = Field(..., gt=0.0)
+    sampled_theta: float | None = Field(default=None, ge=0.0, le=1.0)
+
+
+class BanditDecisionEvidence(OperatorConsoleModel):
+    selection_time_utc: datetime
+    selected_arm_id: str
+    policy_version: str
+    decision_context_hash: str = Field(..., pattern="^[0-9a-f]{64}$")
+    random_seed: int = Field(..., ge=0, le=18446744073709551615)
+    arm_evidence: list[ArmDecisionEvidence] = Field(default_factory=list)
+
+    @field_validator("selection_time_utc")
+    @classmethod
+    def _utc_only(cls, value: datetime) -> datetime:
+        validated = _require_utc(value)
+        assert validated is not None
+        return validated
+
+
 class ArmSummary(OperatorConsoleModel):
     """One arm of a Thompson-sampled experiment.
 
@@ -395,6 +418,7 @@ class ArmSummary(OperatorConsoleModel):
     selection_count: int = Field(default=0, ge=0)
     recent_reward_mean: float | None = None
     recent_semantic_pass_rate: float | None = Field(default=None, ge=0.0, le=1.0)
+    decision_evidence: ArmDecisionEvidence | None = None
     enabled: bool = True
     end_dated_at: datetime | None = None
 
@@ -431,6 +455,7 @@ class ExperimentDetail(OperatorConsoleModel):
     experiment_id: str
     label: str | None = None
     active_arm_id: str | None = None
+    decision_evidence: BanditDecisionEvidence | None = None
     arms: list[ArmSummary] = Field(default_factory=list)
     last_update_summary: str | None = None
     last_updated_utc: datetime | None = None

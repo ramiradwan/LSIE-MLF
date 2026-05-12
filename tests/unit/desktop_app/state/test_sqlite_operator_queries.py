@@ -9,6 +9,7 @@ opens a :class:`sqlite3.Connection` cursor scoped to the same file
 from __future__ import annotations
 
 import ast
+import json
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -73,6 +74,7 @@ def _seed_session(
     experiment_id: str | None = None,
     active_arm: str | None = None,
     expected_greeting: str | None = None,
+    bandit_decision_snapshot: str | None = None,
     ended_at: str | None = None,
 ) -> None:
     payload: dict[str, str] = {
@@ -86,9 +88,32 @@ def _seed_session(
         payload["active_arm"] = active_arm
     if expected_greeting is not None:
         payload["expected_greeting"] = expected_greeting
+    if bandit_decision_snapshot is not None:
+        payload["bandit_decision_snapshot"] = bandit_decision_snapshot
     if ended_at is not None:
         payload["ended_at"] = ended_at
     writer.enqueue("sessions", payload)
+
+
+def _decision_snapshot() -> str:
+    return json.dumps(
+        {
+            "selection_method": "thompson_sampling",
+            "selection_time_utc": "2026-04-01T12:00:00+00:00",
+            "experiment_id": 0,
+            "policy_version": "7B.v4",
+            "selected_arm_id": "warm_welcome",
+            "candidate_arm_ids": ["warm_welcome", "direct_question"],
+            "posterior_by_arm": {
+                "warm_welcome": {"alpha": 2.0, "beta": 3.0},
+                "direct_question": {"alpha": 1.0, "beta": 4.0},
+            },
+            "sampled_theta_by_arm": {"warm_welcome": 0.7, "direct_question": 0.2},
+            "expected_greeting": "Say hello to the creator",
+            "decision_context_hash": "a" * 64,
+            "random_seed": 42,
+        }
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -642,6 +667,7 @@ def test_fetch_active_arm_for_experiment_uses_active_session_before_encounters(
     tmp_path: Path,
 ) -> None:
     db = tmp_path / "desktop.sqlite"
+    snapshot = _decision_snapshot()
     writer = SqliteWriter(db)
     try:
         _seed_session(
@@ -652,6 +678,7 @@ def test_fetch_active_arm_for_experiment_uses_active_session_before_encounters(
             experiment_id="greeting_line_v1",
             active_arm="warm_welcome",
             expected_greeting="Say hello to the creator",
+            bandit_decision_snapshot=snapshot,
         )
         writer.flush()
     finally:
@@ -664,6 +691,119 @@ def test_fetch_active_arm_for_experiment_uses_active_session_before_encounters(
     assert row is not None
     assert row["arm"] == "warm_welcome"
     assert row["timestamp_utc"] == "2026-04-01 12:00:00"
+    assert row["bandit_decision_snapshot"] == snapshot
+
+
+def test_experiment_markers_track_posterior_and_decision_state_changes(tmp_path: Path) -> None:
+    db = tmp_path / "desktop.sqlite"
+    writer = SqliteWriter(db)
+    try:
+        _seed_session(
+            writer,
+            SESSION_A,
+            stream_url="x",
+            started_at="2026-04-01 12:00:00",
+            experiment_id="greeting_line_v1",
+            active_arm="warm_welcome",
+        )
+        writer.flush()
+    finally:
+        writer.close()
+
+    reader = SqliteReader(db)
+    with _cursor(reader) as cur:
+        experiment_before = q.fetch_experiment_marker(cur, experiment_id="greeting_line_v1")
+        overview_before = q.fetch_overview_marker(cur)
+
+    conn = sqlite3.connect(str(db), isolation_level=None)
+    try:
+        conn.execute(
+            "UPDATE experiments SET alpha_param = alpha_param + 1.0 "
+            "WHERE experiment_id = ? AND arm = ?",
+            ("greeting_line_v1", "warm_welcome"),
+        )
+        conn.execute(
+            "UPDATE sessions SET bandit_decision_snapshot = ? WHERE session_id = ?",
+            (_decision_snapshot(), str(SESSION_A)),
+        )
+    finally:
+        conn.close()
+
+    with _cursor(reader) as cur:
+        experiment_after = q.fetch_experiment_marker(cur, experiment_id="greeting_line_v1")
+        overview_after = q.fetch_overview_marker(cur)
+
+    assert experiment_before != experiment_after
+    assert experiment_after["posterior_alpha_sum"] == pytest.approx(
+        float(experiment_before["posterior_alpha_sum"] or 0.0) + 1.0
+    )
+    assert experiment_after["session_decision_snapshot_count"] == 1
+    assert overview_before != overview_after
+    assert overview_after["session_decision_snapshot_count"] == 1
+
+
+def test_experiment_marker_tracks_attribution_decision_snapshot_by_session_context(
+    tmp_path: Path,
+) -> None:
+    db = tmp_path / "desktop.sqlite"
+    writer = SqliteWriter(db)
+    try:
+        _seed_session(
+            writer,
+            SESSION_A,
+            stream_url="x",
+            started_at="2026-04-01 12:00:00",
+            experiment_id="greeting_line_v1",
+            active_arm="warm_welcome",
+        )
+        writer.flush()
+    finally:
+        writer.close()
+
+    reader = SqliteReader(db)
+    with _cursor(reader) as cur:
+        before = q.fetch_experiment_marker(cur, experiment_id="greeting_line_v1")
+
+    conn = sqlite3.connect(str(db), isolation_level=None)
+    try:
+        conn.execute(
+            """
+            INSERT INTO attribution_event (
+                event_id, session_id, segment_id, event_type, event_time_utc,
+                selected_arm_id, expected_rule_text_hash, semantic_method,
+                semantic_method_version, reward_path_version,
+                bandit_decision_snapshot, evidence_flags, finality,
+                schema_version, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "00000000-0000-4000-8000-000000000011",
+                str(SESSION_A),
+                "d" * 64,
+                "greeting_interaction",
+                "2026-04-01 12:00:30",
+                "warm_welcome",
+                "b" * 64,
+                "cross_encoder",
+                "test-v1",
+                "7B.v4",
+                _decision_snapshot(),
+                "[]",
+                "online_provisional",
+                "v4",
+                "2026-04-01 12:00:31",
+            ),
+        )
+    finally:
+        conn.close()
+
+    with _cursor(reader) as cur:
+        after = q.fetch_experiment_marker(cur, experiment_id="greeting_line_v1")
+
+    assert before != after
+    assert before["attribution_event_count"] == 0
+    assert after["attribution_event_count"] == 1
+    assert after["max_attribution_created_at"] == "2026-04-01 12:00:31"
 
 
 def test_fetch_active_arm_for_experiment_none_without_session_or_encounters(tmp_path: Path) -> None:

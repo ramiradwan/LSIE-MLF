@@ -48,8 +48,10 @@ from packages.schemas.operator_console import (
     AlertEvent,
     AlertKind,
     AlertSeverity,
+    ArmDecisionEvidence,
     ArmSummary,
     AttributionSummary,
+    BanditDecisionEvidence,
     CoModulationSummary,
     EncounterState,
     EncounterSummary,
@@ -232,7 +234,16 @@ class OperatorReadService:
                 return None
             active_arm_row = self._queries.fetch_active_arm_for_experiment(cur, experiment_id)
 
-        arms = [self._build_arm_summary(row) for row in arm_rows]
+        decision_evidence = self._build_bandit_decision_evidence(active_arm_row)
+        evidence_by_arm = (
+            {row.arm_id: row for row in decision_evidence.arm_evidence}
+            if decision_evidence is not None
+            else {}
+        )
+        arms = [
+            self._build_arm_summary(row, decision_evidence=evidence_by_arm.get(str(row["arm"])))
+            for row in arm_rows
+        ]
         active_arm_id = (active_arm_row or {}).get("arm") if active_arm_row is not None else None
         last_updated = _latest_datetime(row.get("updated_at") for row in arm_rows)
         label = _experiment_label_from_rows(experiment_id, arm_rows)
@@ -240,6 +251,7 @@ class OperatorReadService:
             experiment_id=experiment_id,
             label=label,
             active_arm_id=active_arm_id if isinstance(active_arm_id, str) else None,
+            decision_evidence=decision_evidence,
             arms=arms,
             last_update_summary=None,
             last_updated_utc=_ensure_utc(last_updated),
@@ -580,7 +592,12 @@ class OperatorReadService:
             shimmer_delta=shimmer_delta,
         )
 
-    def _build_arm_summary(self, row: dict[str, Any]) -> ArmSummary:
+    def _build_arm_summary(
+        self,
+        row: dict[str, Any],
+        *,
+        decision_evidence: ArmDecisionEvidence | None = None,
+    ) -> ArmSummary:
         """§7B — arm posterior + historical rollup."""
         alpha = _as_float(row.get("alpha_param")) or 1.0
         beta = _as_float(row.get("beta_param")) or 1.0
@@ -596,8 +613,47 @@ class OperatorReadService:
             selection_count=_as_int(row.get("selection_count")) or 0,
             recent_reward_mean=_as_float(row.get("recent_reward_mean")),
             recent_semantic_pass_rate=_as_float(row.get("recent_semantic_pass_rate")),
+            decision_evidence=decision_evidence,
             enabled=_as_bool(row.get("enabled"), default=True),
             end_dated_at=_ensure_utc(row.get("end_dated_at")),
+        )
+
+    def _build_bandit_decision_evidence(
+        self,
+        row: dict[str, Any] | None,
+    ) -> BanditDecisionEvidence | None:
+        if row is None:
+            return None
+        raw_snapshot = row.get("bandit_decision_snapshot")
+        if raw_snapshot is None:
+            return None
+        snapshot = _as_json_object(raw_snapshot)
+        if snapshot is None:
+            return None
+        posterior = snapshot.get("posterior_by_arm")
+        if not isinstance(posterior, dict):
+            return None
+        sampled_theta = snapshot.get("sampled_theta_by_arm")
+        theta_by_arm = sampled_theta if isinstance(sampled_theta, dict) else {}
+        arm_evidence: list[ArmDecisionEvidence] = []
+        for arm_id, params in posterior.items():
+            if not isinstance(arm_id, str) or not isinstance(params, dict):
+                continue
+            arm_evidence.append(
+                ArmDecisionEvidence(
+                    arm_id=arm_id,
+                    pre_update_alpha=_as_float(params.get("alpha")) or 1.0,
+                    pre_update_beta=_as_float(params.get("beta")) or 1.0,
+                    sampled_theta=_as_float(theta_by_arm.get(arm_id)),
+                )
+            )
+        return BanditDecisionEvidence(
+            selection_time_utc=_ensure_utc_strict(snapshot.get("selection_time_utc")),
+            selected_arm_id=str(snapshot.get("selected_arm_id") or row.get("arm")),
+            policy_version=str(snapshot["policy_version"]),
+            decision_context_hash=str(snapshot["decision_context_hash"]),
+            random_seed=_as_int(snapshot["random_seed"]) or 0,
+            arm_evidence=arm_evidence,
         )
 
     def _build_experiment_summary(
@@ -949,6 +1005,18 @@ def _as_str(value: Any) -> str | None:
     if value is None:
         return None
     return str(value)
+
+
+def _as_json_object(value: Any) -> dict[str, Any] | None:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return None
+        return parsed if isinstance(parsed, dict) else None
+    return None
 
 
 def _as_bool(value: Any, *, default: bool = False) -> bool:

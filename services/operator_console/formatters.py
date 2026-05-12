@@ -39,6 +39,7 @@ from typing import Literal
 from uuid import UUID
 
 from packages.schemas.operator_console import (
+    ArmDecisionEvidence,
     ArmSummary,
     AttributionSummary,
     CoModulationSummary,
@@ -239,6 +240,7 @@ class StrategyEvidenceDisplay:
     label: str
     evidence: str
     outcome: str
+    decision_evidence: str
     is_active: bool
     is_enabled: bool
 
@@ -298,6 +300,29 @@ def format_timestamp(value: datetime | None) -> str:
         return value.isoformat()
     as_utc = value.astimezone(UTC)
     return as_utc.strftime("%Y-%m-%d %H:%M:%SZ")
+
+
+def format_decision_evidence(decision: ArmDecisionEvidence | None) -> str:
+    if decision is None:
+        return "No decision sample recorded for this strategy"
+    decision_parts = [
+        "picked with decision-time history "
+        f"{format_reward(decision.pre_update_alpha)}/{format_reward(decision.pre_update_beta)}"
+    ]
+    if decision.sampled_theta is not None:
+        decision_parts.append(f"sample {format_percentage(decision.sampled_theta, digits=0)}")
+    return " · ".join(decision_parts)
+
+
+def format_experiment_decision_summary(detail: ExperimentDetail | None) -> str | None:
+    if detail is None or detail.decision_evidence is None:
+        return None
+    evidence = detail.decision_evidence
+    return (
+        f"Latest decision {format_timestamp(evidence.selection_time_utc)} · "
+        f"selected {evidence.selected_arm_id} · policy {evidence.policy_version} · "
+        f"seed {evidence.random_seed}"
+    )
 
 
 def format_duration(seconds: float | None) -> str:
@@ -1476,6 +1501,7 @@ def _strategy_evidence_for_arm(
         confirmed = format_percentage(arm.recent_semantic_pass_rate, digits=0)
         outcome_parts.append(f"stimulus confirmed {confirmed}")
     outcome = " · ".join(outcome_parts) if outcome_parts else "No recent outcome yet"
+    decision_evidence = format_decision_evidence(arm.decision_evidence)
     return StrategyEvidenceDisplay(
         arm_id=arm.arm_id,
         greeting_text=arm.greeting_text,
@@ -1483,6 +1509,7 @@ def _strategy_evidence_for_arm(
         label=label,
         evidence=evidence,
         outcome=outcome,
+        decision_evidence=decision_evidence,
         is_active=is_active,
         is_enabled=arm.enabled,
     )

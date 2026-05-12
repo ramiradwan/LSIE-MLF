@@ -12,6 +12,7 @@ from typing import Any
 from uuid import UUID
 
 from packages.schemas.operator_console import (
+    ArmDecisionEvidence,
     ArmSummary,
     AttributionSummary,
     CoModulationSummary,
@@ -696,6 +697,12 @@ class TestStrategyEvidenceDisplay:
                     selection_count=8,
                     recent_reward_mean=0.62,
                     recent_semantic_pass_rate=0.8,
+                    decision_evidence=ArmDecisionEvidence(
+                        arm_id="a2",
+                        pre_update_alpha=4.0,
+                        pre_update_beta=2.0,
+                        sampled_theta=0.73,
+                    ),
                 ),
             ],
         )
@@ -705,6 +712,8 @@ class TestStrategyEvidenceDisplay:
         assert rows[0].label == "Active · Lower uncertainty so far"
         assert "recent observed reward 0.620" in rows[0].outcome
         assert "stimulus confirmed 80%" in rows[0].outcome
+        assert "picked with decision-time history 4.000/2.000" in rows[0].decision_evidence
+        assert "sample 73%" in rows[0].decision_evidence
 
     def test_strategy_rows_mark_disabled_and_sparse_data(self) -> None:
         detail = ExperimentDetail(

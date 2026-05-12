@@ -15,6 +15,7 @@ valid (degenerate) DTOs rather than raising.
 from __future__ import annotations
 
 import asyncio
+import json
 import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -34,6 +35,27 @@ from services.desktop_app.state.sqlite_writer import SqliteWriter
 
 SESSION_A = UUID("00000000-0000-4000-8000-000000000001")
 SESSION_B = UUID("00000000-0000-4000-8000-000000000002")
+
+
+def _decision_snapshot() -> str:
+    return json.dumps(
+        {
+            "selection_method": "thompson_sampling",
+            "selection_time_utc": "2026-04-01T12:00:00+00:00",
+            "experiment_id": 0,
+            "policy_version": "7B.v4",
+            "selected_arm_id": "warm_welcome",
+            "candidate_arm_ids": ["warm_welcome", "direct_question"],
+            "posterior_by_arm": {
+                "warm_welcome": {"alpha": 2.0, "beta": 3.0},
+                "direct_question": {"alpha": 1.0, "beta": 4.0},
+            },
+            "sampled_theta_by_arm": {"warm_welcome": 0.7, "direct_question": 0.2},
+            "expected_greeting": "Say hello to the creator",
+            "decision_context_hash": "a" * 64,
+            "random_seed": 42,
+        }
+    )
 
 
 def _build_service(db: Path, *, now: datetime | None = None) -> SqliteOperatorReadService:
@@ -110,6 +132,7 @@ def test_list_sessions_renders_persisted_selection_before_live_state_or_encounte
                 "experiment_id": "greeting_line_v1",
                 "active_arm": "warm_welcome",
                 "expected_greeting": "Say hello to the creator",
+                "bandit_decision_snapshot": _decision_snapshot(),
                 "started_at": "2026-04-01 12:00:00",
             },
         )
@@ -134,6 +157,18 @@ def test_list_sessions_renders_persisted_selection_before_live_state_or_encounte
     assert overview.active_session.expected_greeting == "Say hello to the creator"
     assert experiment is not None
     assert experiment.active_arm_id == "warm_welcome"
+    assert experiment.decision_evidence is not None
+    assert experiment.decision_evidence.selected_arm_id == "warm_welcome"
+    assert experiment.decision_evidence.random_seed == 42
+    assert {row.arm_id for row in experiment.decision_evidence.arm_evidence} == {
+        "warm_welcome",
+        "direct_question",
+    }
+    warm = next(arm for arm in experiment.arms if arm.arm_id == "warm_welcome")
+    assert warm.posterior_alpha == pytest.approx(1.0)
+    assert warm.decision_evidence is not None
+    assert warm.decision_evidence.pre_update_alpha == pytest.approx(2.0)
+    assert warm.decision_evidence.sampled_theta == pytest.approx(0.7)
 
 
 def test_list_sessions_marks_multiple_active_rows_as_conflict(tmp_path: Path) -> None:

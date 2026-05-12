@@ -14,7 +14,12 @@ import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QHeaderView, QWidget
 
-from packages.schemas.operator_console import ArmSummary, ExperimentDetail
+from packages.schemas.operator_console import (
+    ArmDecisionEvidence,
+    ArmSummary,
+    BanditDecisionEvidence,
+    ExperimentDetail,
+)
 from services.operator_console.state import OperatorStore
 from services.operator_console.table_models.experiments_table_model import (
     ExperimentsTableModel,
@@ -56,6 +61,12 @@ def _arm(
         selection_count=selection_count,
         recent_reward_mean=recent_reward,
         recent_semantic_pass_rate=recent_pass,
+        decision_evidence=ArmDecisionEvidence(
+            arm_id=arm_id,
+            pre_update_alpha=alpha,
+            pre_update_beta=beta,
+            sampled_theta=0.73,
+        ),
         enabled=enabled,
     )
 
@@ -66,6 +77,14 @@ def _detail(active_arm_id: str | None = "a1") -> ExperimentDetail:
         label="greeting v1",
         active_arm_id=active_arm_id,
         arms=[_arm("a1", recent_reward=0.7), _arm("a2", recent_reward=0.3)],
+        decision_evidence=BanditDecisionEvidence(
+            selection_time_utc=_NOW,
+            selected_arm_id="a1",
+            policy_version="7B.v4",
+            decision_context_hash="a" * 64,
+            random_seed=42,
+            arm_evidence=[],
+        ),
         last_update_summary="arm a1 updated posterior to α=2, β=3",
         last_updated_utc=_NOW,
     )
@@ -111,8 +130,13 @@ def test_experiments_view_strategy_evidence_panel_ranks_active_arm() -> None:
     cards = view._strategy_panel._cards  # type: ignore[attr-defined]
     assert cards[0]._title.text() == "a1"  # type: ignore[attr-defined]
     assert "Active · Lower uncertainty so far" in cards[0]._primary.text()  # type: ignore[attr-defined]
-    assert "stimulus confirmed 60%" in cards[0]._secondary.text()  # type: ignore[attr-defined]
-    assert "Confirmation text: Hei a1" in cards[0]._secondary.text()  # type: ignore[attr-defined]
+    secondary = cards[0]._secondary.text()  # type: ignore[attr-defined]
+    assert "stimulus confirmed 60%" in secondary
+    assert "Confirmation text: Hei a1" in secondary
+    assert "Decision evidence: picked with decision-time history 2.000/3.000" in secondary
+    assert "sample 73%" in secondary
+    subtitle = view._strategy_panel._subtitle.text()  # type: ignore[attr-defined]
+    assert subtitle == "Compare observed responses, current history, and decision-time evidence."
     assert cards[0]._status._label.text() == "active"  # type: ignore[attr-defined]
 
 
@@ -169,6 +193,19 @@ def test_experiments_view_error_changed_shows_alert_banner() -> None:
     view, store = _view()
     store.set_error("experiment", "unreachable")
     assert view._error_banner.isHidden() is False  # type: ignore[attr-defined]
+
+
+def test_experiments_view_latest_update_falls_back_to_decision_metadata() -> None:
+    view, store = _view()
+    detail = _detail()
+    detail.last_update_summary = None
+    store.set_experiment(detail)
+
+    summary = view._update_panel._summary.text()  # type: ignore[attr-defined]
+    assert "Latest decision 2026-04-17 12:00:00Z" in summary
+    assert "selected a1" in summary
+    assert "policy 7B.v4" in summary
+    assert "seed 42" in summary
 
 
 def test_experiments_view_manage_create_visible_without_detail() -> None:
