@@ -50,6 +50,7 @@ from services.api.routes.operator import (
     get_cloud_auth_status,
     get_experiment_detail,
     get_health,
+    get_latest_cloud_experiment_refresh,
     get_operator_state_bootstrap,
     get_overview,
     get_session,
@@ -331,6 +332,20 @@ class TestOperatorReadRoutes:
 
 
 class TestCloudOperatorRoutes:
+    def test_latest_experiment_refresh_returns_persisted_background_state(self) -> None:
+        result = ExperimentBundleRefreshResult(
+            status=CloudExperimentRefreshStatus.FAILED,
+            completed_at_utc=_now(),
+            message="Cloud authorization was rejected.",
+        )
+        svc = MagicMock()
+        svc.get_latest_experiment_refresh.return_value = result
+
+        response = asyncio.run(get_latest_cloud_experiment_refresh(service=svc))
+
+        assert response is result
+        svc.get_latest_experiment_refresh.assert_called_once()
+
     def test_cloud_sign_in_does_not_block_auth_status_route(self) -> None:
         sign_in_entered = threading.Event()
         release_sign_in = threading.Event()
@@ -355,6 +370,9 @@ class TestCloudOperatorRoutes:
 
             def get_outbox_summary(self) -> CloudOutboxSummary:
                 return CloudOutboxSummary(generated_at_utc=_now())
+
+            def get_latest_experiment_refresh(self) -> ExperimentBundleRefreshResult | None:
+                return None
 
             def refresh_experiment_bundle(self) -> ExperimentBundleRefreshResult:
                 return ExperimentBundleRefreshResult(

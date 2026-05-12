@@ -302,6 +302,12 @@ class ApiClient:
     def get_cloud_outbox_summary(self) -> CloudOutboxSummary:
         return self._get_model("/api/v1/operator/cloud/outbox", CloudOutboxSummary)
 
+    def get_latest_experiment_refresh(self) -> ExperimentBundleRefreshResult | None:
+        return self._get_optional_model(
+            "/api/v1/operator/cloud/experiments/refresh/latest",
+            ExperimentBundleRefreshResult,
+        )
+
     # ---- write endpoints ----------------------------------------------
 
     def post_stimulus(
@@ -389,6 +395,12 @@ class ApiClient:
 
     def _get_model(self, path: str, model: type[_ModelT]) -> _ModelT:
         raw = self._request("GET", path, body=None)
+        return self._validate_model(path, raw, model)
+
+    def _get_optional_model(self, path: str, model: type[_ModelT]) -> _ModelT | None:
+        raw = self._request("GET", path, body=None)
+        if json.loads(raw.decode("utf-8")) is None:
+            return None
         return self._validate_model(path, raw, model)
 
     def _post_model(

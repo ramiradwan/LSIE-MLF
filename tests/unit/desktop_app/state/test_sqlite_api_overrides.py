@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID
 
@@ -10,6 +11,11 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from packages.schemas.experiments import ExperimentArmSeedRequest, ExperimentCreateRequest
+from packages.schemas.operator_console import (
+    CloudExperimentRefreshStatus,
+    CloudOperatorErrorCode,
+    ExperimentBundleRefreshResult,
+)
 from services.api.main import app as api_app
 from services.api.routes.experiments import get_admin_service
 from services.api.routes.operator import get_action_service, get_cloud_service, get_read_service
@@ -31,6 +37,10 @@ from services.desktop_app.state.sqlite_session_lifecycle_service import (
 
 CLIENT_ACTION_ID = UUID("00000000-0000-4000-8000-0000000000a1")
 STIMULUS_ACTION_ID = UUID("00000000-0000-4000-8000-0000000000b2")
+
+
+def _now() -> datetime:
+    return datetime(2026, 5, 12, 12, 0, tzinfo=UTC)
 
 
 def test_configure_sqlite_api_overrides_installs_desktop_services(tmp_path: Path) -> None:
@@ -96,6 +106,42 @@ def test_configured_desktop_app_write_paths_do_not_use_server_dependencies(
     finally:
         api_app.dependency_overrides.clear()
         api_app.router.lifespan_context = original_lifespan
+
+
+def test_configured_cloud_outbox_route_exposes_background_refresh_state(tmp_path: Path) -> None:
+    from services.desktop_app.cloud.outbox import CloudOutbox
+
+    db_path = tmp_path / "desktop.sqlite"
+    outbox = CloudOutbox(db_path)
+    try:
+        outbox.record_experiment_refresh_result(
+            ExperimentBundleRefreshResult(
+                status=CloudExperimentRefreshStatus.FAILED,
+                completed_at_utc=_now(),
+                message="Cloud authorization was rejected.",
+                error_code=CloudOperatorErrorCode.UNAUTHORIZED,
+                retryable=False,
+            )
+        )
+    finally:
+        outbox.close()
+
+    api_app.dependency_overrides.clear()
+    original_lifespan = api_app.router.lifespan_context
+    try:
+        configure_sqlite_api_overrides(api_app, db_path)
+        with TestClient(api_app) as client:
+            response = client.get("/api/v1/operator/cloud/outbox")
+    finally:
+        api_app.dependency_overrides.clear()
+        api_app.router.lifespan_context = original_lifespan
+
+    assert response.status_code == 200
+    payload = response.json()["latest_experiment_refresh"]
+    assert payload["status"] == "failed"
+    assert payload["error_code"] == "unauthorized"
+    assert payload["retryable"] is False
+    assert payload["message"] == "Cloud authorization was rejected."
 
 
 def test_configured_lifespan_skips_server_pool_initialization(

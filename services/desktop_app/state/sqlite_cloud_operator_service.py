@@ -50,7 +50,7 @@ class SqliteCloudOperatorService:
             return CloudAuthStatus(
                 state=CloudAuthState.SECRET_STORE_UNAVAILABLE,
                 checked_at_utc=now,
-                message="Cloud secret store is unavailable.",
+                message="Cloud sign-in is temporarily unavailable.",
                 retryable=True,
             )
         if refresh_token is None:
@@ -72,7 +72,7 @@ class SqliteCloudOperatorService:
             return CloudAuthStatus(
                 state=CloudAuthState.SECRET_STORE_UNAVAILABLE,
                 checked_at_utc=now,
-                message="Cloud secret store is unavailable.",
+                message="Cloud sign-in is temporarily unavailable.",
                 retryable=True,
             )
         except (OAuthTokenExchangeError, ValidationError):
@@ -96,7 +96,7 @@ class SqliteCloudOperatorService:
             return _sign_in_failure(
                 CloudAuthState.SECRET_STORE_UNAVAILABLE,
                 CloudOperatorErrorCode.SECRET_STORE_UNAVAILABLE,
-                "Cloud secret store is unavailable.",
+                "Cloud sign-in is temporarily unavailable.",
                 now,
                 retryable=True,
             )
@@ -122,6 +122,13 @@ class SqliteCloudOperatorService:
         finally:
             outbox.close()
 
+    def get_latest_experiment_refresh(self) -> ExperimentBundleRefreshResult | None:
+        outbox = CloudOutbox(self._db_path)
+        try:
+            return outbox.latest_experiment_refresh()
+        finally:
+            outbox.close()
+
     def refresh_experiment_bundle(self) -> ExperimentBundleRefreshResult:
         now = datetime.now(UTC)
         try:
@@ -129,7 +136,7 @@ class SqliteCloudOperatorService:
         except SecretStoreUnavailableError:
             return _refresh_failure(
                 CloudOperatorErrorCode.SECRET_STORE_UNAVAILABLE,
-                "Cloud secret store is unavailable.",
+                "Cloud sign-in is temporarily unavailable.",
                 now,
                 retryable=True,
             )
@@ -152,7 +159,7 @@ class SqliteCloudOperatorService:
         except SecretStoreUnavailableError:
             return _refresh_failure(
                 CloudOperatorErrorCode.SECRET_STORE_UNAVAILABLE,
-                "Cloud secret store is unavailable.",
+                "Cloud sign-in is temporarily unavailable.",
                 now,
                 retryable=True,
             )

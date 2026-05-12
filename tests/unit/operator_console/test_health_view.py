@@ -19,7 +19,10 @@ from packages.schemas.operator_console import (
     AlertSeverity,
     CloudAuthState,
     CloudAuthStatus,
+    CloudExperimentRefreshStatus,
+    CloudOperatorErrorCode,
     CloudOutboxSummary,
+    ExperimentBundleRefreshResult,
     HealthProbeState,
     HealthSnapshot,
     HealthState,
@@ -238,6 +241,50 @@ def test_health_view_renders_cloud_auth_and_outbox_readbacks() -> None:
     assert view._cloud_outbox_card._primary.text() == "4 active"
     assert view._cloud_outbox_card._secondary.text() == "1 dead-letter · 3 redacted"
     assert view._cloud_outbox_card._status._kind is UiStatusKind.ERROR
+
+
+def test_health_view_renders_latest_background_refresh_failure() -> None:
+    view, store = _view()
+    store.set_health(_snapshot(HealthState.OK))
+    store.set_cloud_outbox_summary(
+        CloudOutboxSummary(
+            generated_at_utc=_NOW,
+            latest_experiment_refresh=ExperimentBundleRefreshResult(
+                status=CloudExperimentRefreshStatus.FAILED,
+                completed_at_utc=_NOW,
+                message="Cloud experiment refresh is rate-limited.",
+                error_code=CloudOperatorErrorCode.RATE_LIMITED,
+                retryable=True,
+            ),
+        )
+    )
+
+    assert view._cloud_outbox_card._secondary.text() == (
+        "0 dead-letter · 0 redacted · experiments: rate limited; using cached"
+    )
+    assert view._cloud_outbox_card._status._kind is UiStatusKind.WARN
+    assert view._cloud_outbox_card._status.text() == "refresh retrying"
+    assert "using cached" in view._cloud_outbox_card.accessibleDescription()
+
+
+def test_health_view_renders_terminal_background_refresh_failure() -> None:
+    view, store = _view()
+    store.set_health(_snapshot(HealthState.OK))
+    store.set_cloud_outbox_summary(
+        CloudOutboxSummary(
+            generated_at_utc=_NOW,
+            latest_experiment_refresh=ExperimentBundleRefreshResult(
+                status=CloudExperimentRefreshStatus.FAILED,
+                completed_at_utc=_NOW,
+                message="Cloud authorization was rejected.",
+                error_code=CloudOperatorErrorCode.UNAUTHORIZED,
+                retryable=False,
+            ),
+        )
+    )
+
+    assert view._cloud_outbox_card._status._kind is UiStatusKind.ERROR
+    assert view._cloud_outbox_card._status.text() == "refresh blocked"
 
 
 def test_health_view_probe_matrix_renders_not_configured_as_muted() -> None:

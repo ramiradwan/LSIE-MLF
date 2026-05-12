@@ -306,7 +306,9 @@ def test_oauth_authorize_route_redirects_with_exchangeable_code() -> None:
     location = response.headers["location"]
     parsed = urlparse(location)
     query = parse_qs(parsed.query)
-    assert f"{parsed.scheme}://{parsed.netloc}{parsed.path}" == "http://127.0.0.1:8765/oauth/callback"
+    assert (
+        f"{parsed.scheme}://{parsed.netloc}{parsed.path}" == "http://127.0.0.1:8765/oauth/callback"
+    )
     assert query["state"] == ["state-a"]
 
     token_response = OAuthTokenService(codec=_token_codec()).exchange_token(

@@ -50,7 +50,6 @@ def put_connection(conn: Any) -> None:
 async def check_readiness() -> bool:
     conn: Any | None = None
     try:
-        await init_pool()
         conn = get_connection()
         with conn.cursor() as cur:
             cur.execute("SELECT 1")

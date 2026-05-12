@@ -14,7 +14,7 @@ from pydantic import BaseModel, ValidationError
 from packages.schemas.attribution import AttributionEvent
 from packages.schemas.cloud import PosteriorDelta
 from packages.schemas.inference_handoff import InferenceHandoffPayload
-from packages.schemas.operator_console import CloudOutboxSummary
+from packages.schemas.operator_console import CloudOutboxSummary, ExperimentBundleRefreshResult
 from services.desktop_app.state.sqlite_schema import bootstrap_schema
 
 UploadEndpoint = Literal["telemetry_segments", "telemetry_posterior_deltas"]
@@ -103,9 +103,14 @@ def deterministic_upload_id(
 
 class CloudOutbox:
     def __init__(self, db_path: Path) -> None:
+        self._db_path = db_path
         self._conn = sqlite3.connect(str(db_path), isolation_level=None)
         self._conn.row_factory = sqlite3.Row
         bootstrap_schema(self._conn)
+
+    @property
+    def db_path(self) -> Path:
+        return self._db_path
 
     def close(self) -> None:
         self._conn.close()
@@ -350,6 +355,55 @@ class CloudOutbox:
             redacted_count=redacted_count,
             earliest_next_attempt_utc=earliest_next_attempt,
             last_error=last_error,
+            latest_experiment_refresh=self.latest_experiment_refresh(),
+        )
+
+    def latest_experiment_refresh(self) -> ExperimentBundleRefreshResult | None:
+        row = self._conn.execute(
+            """
+            SELECT status, completed_at_utc, message, bundle_id,
+                   experiment_count, error_code, retryable
+            FROM cloud_experiment_refresh_state
+            WHERE state_key = 'latest'
+            """
+        ).fetchone()
+        if row is None:
+            return None
+        return ExperimentBundleRefreshResult(
+            status=row["status"],
+            completed_at_utc=_parse_dt(str(row["completed_at_utc"])),
+            message=str(row["message"]),
+            bundle_id=row["bundle_id"],
+            experiment_count=int(row["experiment_count"]),
+            error_code=row["error_code"],
+            retryable=bool(row["retryable"]),
+        )
+
+    def record_experiment_refresh_result(self, result: ExperimentBundleRefreshResult) -> None:
+        self._conn.execute(
+            """
+            INSERT INTO cloud_experiment_refresh_state (
+                state_key, status, completed_at_utc, message, bundle_id,
+                experiment_count, error_code, retryable
+            ) VALUES ('latest', ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(state_key) DO UPDATE SET
+                status = excluded.status,
+                completed_at_utc = excluded.completed_at_utc,
+                message = excluded.message,
+                bundle_id = excluded.bundle_id,
+                experiment_count = excluded.experiment_count,
+                error_code = excluded.error_code,
+                retryable = excluded.retryable
+            """,
+            (
+                result.status.value,
+                _format_dt(result.completed_at_utc),
+                result.message,
+                result.bundle_id,
+                result.experiment_count,
+                result.error_code.value if result.error_code is not None else None,
+                1 if result.retryable else 0,
+            ),
         )
 
     def apply_retention_policy(self, *, now: datetime | None = None) -> int:

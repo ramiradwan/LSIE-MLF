@@ -41,6 +41,7 @@ from packages.schemas.operator_console import (
     AlertSeverity,
     CloudAuthState,
     CloudAuthStatus,
+    CloudExperimentRefreshStatus,
     CloudOutboxSummary,
     HealthProbeState,
     HealthSnapshot,
@@ -489,11 +490,28 @@ class HealthView(QWidget):
             return
         pending = summary.pending_count + summary.in_flight_count + summary.retry_scheduled_count
         blocked = summary.dead_letter_count
+        refresh = summary.latest_experiment_refresh
+        secondary_parts = [f"{blocked} dead-letter", f"{summary.redacted_count} redacted"]
+        if refresh is not None:
+            if refresh.status is CloudExperimentRefreshStatus.APPLIED:
+                secondary_parts.append(f"experiments: {refresh.experiment_count} cached")
+            else:
+                reason = (
+                    refresh.error_code.value.replace("_", " ")
+                    if refresh.error_code is not None
+                    else "refresh failed"
+                )
+                secondary_parts.append(f"experiments: {reason}; using cached")
         self._cloud_outbox_card.set_primary_text(f"{pending} active")
-        self._cloud_outbox_card.set_secondary_text(
-            f"{blocked} dead-letter · {summary.redacted_count} redacted"
-        )
-        if blocked:
+        self._cloud_outbox_card.set_secondary_text(" · ".join(secondary_parts))
+        if refresh is not None and refresh.status is CloudExperimentRefreshStatus.FAILED:
+            if not refresh.retryable:
+                self._cloud_outbox_card.set_status(UiStatusKind.ERROR, "refresh blocked")
+            elif blocked:
+                self._cloud_outbox_card.set_status(UiStatusKind.ERROR, "dead-letter")
+            else:
+                self._cloud_outbox_card.set_status(UiStatusKind.WARN, "refresh retrying")
+        elif blocked:
             self._cloud_outbox_card.set_status(UiStatusKind.ERROR, "dead-letter")
         elif pending:
             self._cloud_outbox_card.set_status(UiStatusKind.PROGRESS, "uploading")

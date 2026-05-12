@@ -99,6 +99,8 @@ class CloudOperatorService(Protocol):
 
     def get_outbox_summary(self) -> CloudOutboxSummary: ...
 
+    def get_latest_experiment_refresh(self) -> ExperimentBundleRefreshResult | None: ...
+
     def refresh_experiment_bundle(self) -> ExperimentBundleRefreshResult: ...
 
 
@@ -122,6 +124,9 @@ class UnavailableCloudOperatorService:
 
     def get_outbox_summary(self) -> CloudOutboxSummary:
         return CloudOutboxSummary(generated_at_utc=datetime.now(UTC))
+
+    def get_latest_experiment_refresh(self) -> ExperimentBundleRefreshResult | None:
+        return None
 
     def refresh_experiment_bundle(self) -> ExperimentBundleRefreshResult:
         return ExperimentBundleRefreshResult(
@@ -378,6 +383,22 @@ async def get_cloud_outbox_summary(
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except Exception as exc:  # noqa: BLE001
         logger.error("operator cloud outbox summary failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error") from exc
+
+
+@router.get(
+    "/cloud/experiments/refresh/latest",
+    response_model=ExperimentBundleRefreshResult | None,
+)
+async def get_latest_cloud_experiment_refresh(
+    service: CloudOperatorService = _CloudDep,
+) -> ExperimentBundleRefreshResult | None:
+    try:
+        return await run_in_threadpool(service.get_latest_experiment_refresh)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001
+        logger.error("operator cloud experiment refresh latest failed: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail="Internal server error") from exc
 
 

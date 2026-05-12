@@ -11,6 +11,11 @@ from pydantic import ValidationError
 
 from packages.schemas.cloud import PosteriorDelta
 from packages.schemas.inference_handoff import InferenceHandoffPayload
+from packages.schemas.operator_console import (
+    CloudExperimentRefreshStatus,
+    CloudOperatorErrorCode,
+    ExperimentBundleRefreshResult,
+)
 from services.desktop_app.cloud.outbox import (
     CloudOutbox,
     OutboxDedupeConflictError,
@@ -324,6 +329,24 @@ def test_outbox_summary_reports_status_retry_and_redaction_counts(tmp_path: Path
     assert summary.retry_scheduled_count == 1
     assert summary.redacted_count == 1
     assert summary.last_error == "HTTP 400"
+
+
+def test_outbox_summary_includes_latest_experiment_refresh_state(tmp_path: Path) -> None:
+    outbox = CloudOutbox(tmp_path / "desktop.sqlite")
+    try:
+        result = ExperimentBundleRefreshResult(
+            status=CloudExperimentRefreshStatus.FAILED,
+            completed_at_utc=datetime(2026, 5, 2, 12, 5, tzinfo=UTC),
+            message="Cloud experiment refresh is rate-limited.",
+            error_code=CloudOperatorErrorCode.RATE_LIMITED,
+            retryable=True,
+        )
+        outbox.record_experiment_refresh_result(result)
+        summary = outbox.summarize(now=datetime(2026, 5, 2, 12, 6, tzinfo=UTC))
+    finally:
+        outbox.close()
+
+    assert summary.latest_experiment_refresh == result
 
 
 def test_apply_retention_policy_redacts_old_payloads(tmp_path: Path) -> None:

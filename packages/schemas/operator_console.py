@@ -850,22 +850,6 @@ class CloudSignInResult(OperatorConsoleModel):
         return validated
 
 
-class CloudOutboxSummary(OperatorConsoleModel):
-    generated_at_utc: datetime
-    pending_count: int = Field(default=0, ge=0)
-    in_flight_count: int = Field(default=0, ge=0)
-    dead_letter_count: int = Field(default=0, ge=0)
-    retry_scheduled_count: int = Field(default=0, ge=0)
-    redacted_count: int = Field(default=0, ge=0)
-    earliest_next_attempt_utc: datetime | None = None
-    last_error: str | None = None
-
-    @field_validator("generated_at_utc", "earliest_next_attempt_utc")
-    @classmethod
-    def _utc_only(cls, value: datetime | None) -> datetime | None:
-        return _require_utc(value)
-
-
 class ExperimentBundleRefreshResult(OperatorConsoleModel):
     status: CloudExperimentRefreshStatus
     completed_at_utc: datetime
@@ -881,3 +865,20 @@ class ExperimentBundleRefreshResult(OperatorConsoleModel):
         validated = _require_utc(value)
         assert validated is not None
         return validated
+
+
+class CloudOutboxSummary(OperatorConsoleModel):
+    generated_at_utc: datetime
+    pending_count: int = Field(default=0, ge=0)
+    in_flight_count: int = Field(default=0, ge=0)
+    dead_letter_count: int = Field(default=0, ge=0)
+    retry_scheduled_count: int = Field(default=0, ge=0)
+    redacted_count: int = Field(default=0, ge=0)
+    earliest_next_attempt_utc: datetime | None = None
+    last_error: str | None = None
+    latest_experiment_refresh: ExperimentBundleRefreshResult | None = None
+
+    @field_validator("generated_at_utc", "earliest_next_attempt_utc")
+    @classmethod
+    def _utc_only(cls, value: datetime | None) -> datetime | None:
+        return _require_utc(value)

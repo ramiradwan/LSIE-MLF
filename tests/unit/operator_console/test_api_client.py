@@ -46,6 +46,7 @@ from packages.schemas.operator_console import (
     CloudAuthState,
     CloudAuthStatus,
     CloudExperimentRefreshStatus,
+    CloudOperatorErrorCode,
     CloudOutboxSummary,
     CloudSignInResult,
     EncounterState,
@@ -247,6 +248,13 @@ class TestCloudEndpoints:
                 "message": "Cloud sign-in is active.",
             }
         )
+        latest_refresh = {
+            "status": CloudExperimentRefreshStatus.FAILED.value,
+            "completed_at_utc": _utc(2026, 5, 2, 12, 2).isoformat(),
+            "message": "Cloud experiment refresh is rate-limited.",
+            "error_code": CloudOperatorErrorCode.RATE_LIMITED.value,
+            "retryable": True,
+        }
         transport.enqueue_json(
             {
                 "generated_at_utc": _utc(2026, 5, 2, 12, 1).isoformat(),
@@ -256,17 +264,27 @@ class TestCloudEndpoints:
                 "retry_scheduled_count": 1,
                 "redacted_count": 1,
                 "last_error": "HTTP 503",
+                "latest_experiment_refresh": latest_refresh,
             }
         )
+        transport.enqueue_json(latest_refresh)
         client = ApiClient("http://api.test", transport=transport)
 
         status = client.get_cloud_auth_status()
         summary = client.get_cloud_outbox_summary()
+        latest = client.get_latest_experiment_refresh()
 
         assert isinstance(status, CloudAuthStatus)
         assert isinstance(summary, CloudOutboxSummary)
+        assert summary.latest_experiment_refresh is not None
+        assert summary.latest_experiment_refresh.error_code is CloudOperatorErrorCode.RATE_LIMITED
+        assert summary.latest_experiment_refresh.retryable is True
+        assert latest is not None
+        assert latest.error_code is CloudOperatorErrorCode.RATE_LIMITED
+        assert latest.retryable is True
         assert transport.calls[0].url.endswith("/api/v1/operator/cloud/auth/status")
         assert transport.calls[1].url.endswith("/api/v1/operator/cloud/outbox")
+        assert transport.calls[2].url.endswith("/api/v1/operator/cloud/experiments/refresh/latest")
 
     def test_cloud_actions_post_empty_body_and_validate_bounded_results(self) -> None:
         transport = FakeTransport()

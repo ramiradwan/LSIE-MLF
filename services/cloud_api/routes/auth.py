@@ -6,6 +6,7 @@ not imported by desktop runtime processes or the loopback API shell.
 
 from __future__ import annotations
 
+from typing import Literal, cast
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -55,11 +56,11 @@ async def authorize_oauth_client(
 ) -> RedirectResponse:
     try:
         request = OAuthAuthorizationRequest(
-            response_type=response_type,
+            response_type=cast(Literal["code"], response_type),
             client_id=client_id,
             redirect_uri=redirect_uri,
             code_challenge=code_challenge,
-            code_challenge_method=code_challenge_method,
+            code_challenge_method=cast(Literal["S256"], code_challenge_method),
             state=state,
             scope=scope,
         )

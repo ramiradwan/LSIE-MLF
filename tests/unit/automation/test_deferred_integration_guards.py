@@ -339,15 +339,13 @@ def test_cloud_api_image_contract_is_cloud_server_only() -> None:
     assert 'org.lsie_mlf.cloud_control_plane.host="0.0.0.0"' in dockerfile
     assert 'org.lsie_mlf.cloud_control_plane.port="8000"' in dockerfile
     assert (
-        'org.lsie_mlf.cloud_control_plane.bootstrap_command='
-        '"python -m services.cloud_api.db.bootstrap"'
-        in dockerfile
+        "org.lsie_mlf.cloud_control_plane.bootstrap_command="
+        '"python -m services.cloud_api.db.bootstrap"' in dockerfile
     )
     assert "EXPOSE 8000" in dockerfile
     assert (
         'CMD ["uvicorn", "services.cloud_api.main:app", "--host", "0.0.0.0", '
-        '"--port", "8000"]'
-        in dockerfile
+        '"--port", "8000"]' in dockerfile
     )
     assert "--extra ml_backend" not in dockerfile
     assert "services/desktop_app" not in dockerfile

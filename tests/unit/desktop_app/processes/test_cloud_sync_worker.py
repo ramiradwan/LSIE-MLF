@@ -11,8 +11,19 @@ import httpx
 import pytest
 
 from packages.schemas.attribution import AttributionEvent, BanditDecisionSnapshot
-from packages.schemas.cloud import PosteriorDelta
+from packages.schemas.cloud import (
+    ExperimentBundle,
+    ExperimentBundleArm,
+    ExperimentBundleExperiment,
+    ExperimentBundlePayload,
+    PosteriorDelta,
+)
 from packages.schemas.inference_handoff import InferenceHandoffPayload
+from packages.schemas.operator_console import CloudExperimentRefreshStatus, CloudOperatorErrorCode
+from services.desktop_app.cloud.experiment_bundle import (
+    BundleVerificationConfig,
+    sign_bundle_payload,
+)
 from services.desktop_app.cloud.outbox import CloudOutbox, PendingUpload, canonical_payload_json
 from services.desktop_app.os_adapter import SecretStoreUnavailableError
 from services.desktop_app.processes.cloud_sync_worker import CloudSyncConfig, CloudSyncWorker
@@ -20,6 +31,7 @@ from services.desktop_app.processes.cloud_sync_worker import CloudSyncConfig, Cl
 SEGMENT_ID = "a" * 64
 DECISION_CONTEXT_HASH = "b" * 64
 SESSION_ID = "00000000-0000-4000-8000-000000000001"
+BUNDLE_SECRET = "bundle-secret"
 
 
 class ScriptedTransport(httpx.AsyncBaseTransport):
@@ -154,6 +166,34 @@ def _posterior_delta(sample_timestamp: datetime) -> PosteriorDelta:
     )
 
 
+def _bundle(*, signature: str | None = None) -> ExperimentBundle:
+    payload = ExperimentBundlePayload(
+        bundle_id="bundle-a",
+        issued_at_utc=datetime(2026, 5, 1, tzinfo=UTC),
+        expires_at_utc=datetime(2036, 5, 1, tzinfo=UTC),
+        policy_version="v4.0",
+        experiments=[
+            ExperimentBundleExperiment(
+                experiment_id="experiment-a",
+                label="Experiment A",
+                arms=[
+                    ExperimentBundleArm(
+                        arm_id="arm-a",
+                        greeting_text="Hello A",
+                        posterior_alpha=2.0,
+                        posterior_beta=3.0,
+                        selection_count=5,
+                    )
+                ],
+            )
+        ],
+    )
+    effective_signature = signature
+    if effective_signature is None:
+        effective_signature = sign_bundle_payload(payload, BUNDLE_SECRET)
+    return ExperimentBundle(**payload.model_dump(), signature=effective_signature)
+
+
 def _outbox(tmp_path: Path) -> CloudOutbox:
     return CloudOutbox(tmp_path / "desktop.sqlite")
 
@@ -169,6 +209,22 @@ def _row_statuses(db_path: Path) -> dict[str, str]:
         conn.close()
 
 
+def _latest_refresh_state(db_path: Path) -> tuple[str, str | None, int]:
+    conn = sqlite3.connect(str(db_path), isolation_level=None)
+    try:
+        row = conn.execute(
+            """
+            SELECT status, error_code, retryable
+            FROM cloud_experiment_refresh_state
+            WHERE state_key = 'latest'
+            """
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row is not None
+    return str(row[0]), row[1], int(row[2])
+
+
 async def _sync_once(
     outbox: CloudOutbox, transport: httpx.AsyncBaseTransport
 ) -> ScriptedTransport | None:
@@ -177,6 +233,278 @@ async def _sync_once(
     async with httpx.AsyncClient(base_url=config.base_url, transport=transport) as client:
         await worker.sync_once(client)
     return transport if isinstance(transport, ScriptedTransport) else None
+
+
+@pytest.mark.asyncio
+async def test_periodic_refresh_applies_verified_bundle_and_records_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "services.desktop_app.processes.cloud_sync_worker.get_secret",
+        lambda key: "refresh-a",
+    )
+    monkeypatch.setattr(
+        "services.desktop_app.cloud.experiment_bundle.BundleVerificationConfig.from_env",
+        classmethod(
+            lambda cls: BundleVerificationConfig(
+                signature_mode="hmac-sha256",
+                hmac_secret=BUNDLE_SECRET,
+            )
+        ),
+    )
+    outbox = _outbox(tmp_path)
+    try:
+        config = CloudSyncConfig(base_url="https://cloud.example.test", batch_size=10)
+        worker = CloudSyncWorker(outbox, config)
+        transport = ScriptedTransport(
+            [
+                httpx.Response(200, json={"access_token": "access-a", "expires_in": 3600}),
+                httpx.Response(200, json=_bundle().model_dump(mode="json")),
+            ]
+        )
+        async with httpx.AsyncClient(base_url=config.base_url, transport=transport) as client:
+            result = await worker.refresh_experiments_if_due(
+                client,
+                now=datetime(2026, 5, 2, tzinfo=UTC),
+            )
+    finally:
+        outbox.close()
+
+    assert result is not None
+    assert result.status == CloudExperimentRefreshStatus.APPLIED
+    assert result.bundle_id == "bundle-a"
+    assert [request.url.path for request in transport.requests] == [
+        "/v4/auth/oauth/token",
+        "/v4/experiments/bundle",
+    ]
+    conn = sqlite3.connect(str(tmp_path / "desktop.sqlite"), isolation_level=None)
+    try:
+        row = conn.execute(
+            """
+            SELECT greeting_text, alpha_param, beta_param
+            FROM experiments
+            WHERE experiment_id = 'experiment-a' AND arm = 'arm-a'
+            """
+        ).fetchone()
+    finally:
+        conn.close()
+    assert tuple(row) == ("Hello A", 2.0, 3.0)
+    assert _latest_refresh_state(tmp_path / "desktop.sqlite") == ("applied", None, 0)
+
+
+@pytest.mark.asyncio
+async def test_periodic_refresh_401_after_refresh_is_terminal_bounded_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "services.desktop_app.processes.cloud_sync_worker.get_secret",
+        lambda key: "refresh-a",
+    )
+    outbox = _outbox(tmp_path)
+    try:
+        config = CloudSyncConfig(base_url="https://cloud.example.test", batch_size=10)
+        worker = CloudSyncWorker(outbox, config)
+        transport = ScriptedTransport(
+            [
+                httpx.Response(200, json={"access_token": "access-a", "expires_in": 3600}),
+                httpx.Response(401, json={"detail": "expired access"}),
+                httpx.Response(200, json={"access_token": "access-b", "expires_in": 3600}),
+                httpx.Response(401, json={"detail": "denied"}),
+            ]
+        )
+        async with httpx.AsyncClient(base_url=config.base_url, transport=transport) as client:
+            result = await worker.refresh_experiments_if_due(
+                client,
+                now=datetime(2026, 5, 2, tzinfo=UTC),
+            )
+    finally:
+        outbox.close()
+
+    assert result is not None
+    assert result.status == CloudExperimentRefreshStatus.FAILED
+    assert result.error_code == CloudOperatorErrorCode.UNAUTHORIZED
+    assert result.retryable is False
+    assert result.message == "Cloud authorization was rejected."
+    assert _latest_refresh_state(tmp_path / "desktop.sqlite") == ("failed", "unauthorized", 0)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("response", "expected_code", "retryable"),
+    [
+        (
+            httpx.Response(429, json={"detail": "rate limited"}),
+            CloudOperatorErrorCode.RATE_LIMITED,
+            True,
+        ),
+        (
+            httpx.Response(503, json={"detail": "unavailable"}),
+            CloudOperatorErrorCode.CLOUD_UNAVAILABLE,
+            True,
+        ),
+    ],
+)
+async def test_periodic_refresh_http_failures_are_bounded_retryable_states(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    response: httpx.Response,
+    expected_code: CloudOperatorErrorCode,
+    retryable: bool,
+) -> None:
+    monkeypatch.setattr(
+        "services.desktop_app.processes.cloud_sync_worker.get_secret",
+        lambda key: "refresh-a",
+    )
+    outbox = _outbox(tmp_path)
+    try:
+        config = CloudSyncConfig(base_url="https://cloud.example.test", batch_size=10)
+        worker = CloudSyncWorker(outbox, config)
+        transport = ScriptedTransport(
+            [
+                httpx.Response(200, json={"access_token": "access-a", "expires_in": 3600}),
+                response,
+            ]
+        )
+        async with httpx.AsyncClient(base_url=config.base_url, transport=transport) as client:
+            result = await worker.refresh_experiments_if_due(
+                client,
+                now=datetime(2026, 5, 2, tzinfo=UTC),
+            )
+    finally:
+        outbox.close()
+
+    assert result is not None
+    assert result.status == CloudExperimentRefreshStatus.FAILED
+    assert result.error_code == expected_code
+    assert result.retryable is retryable
+    assert _latest_refresh_state(tmp_path / "desktop.sqlite") == (
+        "failed",
+        expected_code.value,
+        1 if retryable else 0,
+    )
+
+
+@pytest.mark.asyncio
+async def test_periodic_refresh_secret_store_failure_is_bounded_without_http(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_get_secret(key: str) -> str | None:
+        raise SecretStoreUnavailableError("token=secret response body")
+
+    monkeypatch.setattr(
+        "services.desktop_app.processes.cloud_sync_worker.get_secret",
+        fail_get_secret,
+    )
+    outbox = _outbox(tmp_path)
+    try:
+        config = CloudSyncConfig(base_url="https://cloud.example.test", batch_size=10)
+        worker = CloudSyncWorker(outbox, config)
+        transport = ScriptedTransport()
+        async with httpx.AsyncClient(base_url=config.base_url, transport=transport) as client:
+            result = await worker.refresh_experiments_if_due(
+                client,
+                now=datetime(2026, 5, 2, tzinfo=UTC),
+            )
+    finally:
+        outbox.close()
+
+    assert result is not None
+    assert result.status == CloudExperimentRefreshStatus.FAILED
+    assert result.error_code == CloudOperatorErrorCode.SECRET_STORE_UNAVAILABLE
+    assert result.message == "Cloud sign-in is temporarily unavailable."
+    assert "secret" not in result.message.lower()
+    assert "token=" not in result.message
+    assert "response body" not in result.message
+    assert transport.requests == []
+    assert _latest_refresh_state(tmp_path / "desktop.sqlite") == (
+        "failed",
+        "secret_store_unavailable",
+        1,
+    )
+
+
+@pytest.mark.asyncio
+async def test_periodic_refresh_verification_failure_preserves_existing_cache(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "services.desktop_app.processes.cloud_sync_worker.get_secret",
+        lambda key: "refresh-a",
+    )
+    monkeypatch.setattr(
+        "services.desktop_app.cloud.experiment_bundle.BundleVerificationConfig.from_env",
+        classmethod(
+            lambda cls: BundleVerificationConfig(
+                signature_mode="hmac-sha256",
+                hmac_secret=BUNDLE_SECRET,
+            )
+        ),
+    )
+    conn = sqlite3.connect(str(tmp_path / "desktop.sqlite"), isolation_level=None)
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS experiments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            experiment_id TEXT NOT NULL,
+            label TEXT,
+            arm TEXT NOT NULL,
+            greeting_text TEXT,
+            alpha_param REAL NOT NULL DEFAULT 1.0,
+            beta_param REAL NOT NULL DEFAULT 1.0,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            end_dated_at TEXT,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE (experiment_id, arm)
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO experiments (experiment_id, label, arm, greeting_text, alpha_param, beta_param)
+        VALUES ('experiment-a', 'Experiment A', 'arm-a', 'Cached A', 9.0, 8.0)
+        """
+    )
+    conn.close()
+    outbox = _outbox(tmp_path)
+    try:
+        config = CloudSyncConfig(base_url="https://cloud.example.test", batch_size=10)
+        worker = CloudSyncWorker(outbox, config)
+        transport = ScriptedTransport(
+            [
+                httpx.Response(200, json={"access_token": "access-a", "expires_in": 3600}),
+                httpx.Response(
+                    200,
+                    json=_bundle(signature="bad-signature").model_dump(mode="json"),
+                ),
+            ]
+        )
+        async with httpx.AsyncClient(base_url=config.base_url, transport=transport) as client:
+            result = await worker.refresh_experiments_if_due(
+                client,
+                now=datetime(2026, 5, 2, tzinfo=UTC),
+            )
+    finally:
+        outbox.close()
+
+    conn = sqlite3.connect(str(tmp_path / "desktop.sqlite"), isolation_level=None)
+    try:
+        row = conn.execute(
+            """
+            SELECT greeting_text, alpha_param, beta_param
+            FROM experiments
+            WHERE experiment_id = 'experiment-a' AND arm = 'arm-a'
+            """
+        ).fetchone()
+    finally:
+        conn.close()
+    assert result is not None
+    assert result.error_code == CloudOperatorErrorCode.SIGNATURE_FAILED
+    assert tuple(row) == ("Cached A", 9.0, 8.0)
+    assert _latest_refresh_state(tmp_path / "desktop.sqlite") == ("failed", "signature_failed", 0)
 
 
 @pytest.mark.asyncio
@@ -463,7 +791,7 @@ async def test_secret_store_failure_marks_rows_for_retry(
         ).fetchone()
     finally:
         conn.close()
-    assert tuple(row) == ("pending", 1, "cloud secret store unavailable")
+    assert tuple(row) == ("pending", 1, "cloud sign-in temporarily unavailable")
     assert transport.requests == []
 
 

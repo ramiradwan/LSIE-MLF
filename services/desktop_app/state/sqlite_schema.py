@@ -420,6 +420,18 @@ SCHEMA_DDL: Final[tuple[str, ...]] = (
         UNIQUE (payload_type, dedupe_key)
     )
     """,
+    """
+    CREATE TABLE IF NOT EXISTS cloud_experiment_refresh_state (
+        state_key          TEXT PRIMARY KEY CHECK (state_key = 'latest'),
+        status             TEXT NOT NULL CHECK (status IN ('applied', 'failed')),
+        completed_at_utc   TEXT NOT NULL,
+        message            TEXT NOT NULL,
+        bundle_id          TEXT,
+        experiment_count   INTEGER NOT NULL DEFAULT 0 CHECK (experiment_count >= 0),
+        error_code         TEXT,
+        retryable          INTEGER NOT NULL DEFAULT 0 CHECK (retryable IN (0, 1))
+    )
+    """,
 )
 
 

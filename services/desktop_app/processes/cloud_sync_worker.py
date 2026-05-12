@@ -15,7 +15,9 @@ import asyncio
 import logging
 import multiprocessing.synchronize as mpsync
 import os
+import sqlite3
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import Protocol
 
 import httpx
@@ -23,6 +25,7 @@ from pydantic import ValidationError
 
 from packages.schemas.attribution import AttributionEvent
 from packages.schemas.cloud import (
+    ExperimentBundle,
     OAuthTokenRequest,
     OAuthTokenResponse,
     PosteriorDelta,
@@ -30,6 +33,15 @@ from packages.schemas.cloud import (
     TelemetrySegmentBatch,
 )
 from packages.schemas.inference_handoff import InferenceHandoffPayload
+from packages.schemas.operator_console import (
+    CloudExperimentRefreshStatus,
+    CloudOperatorErrorCode,
+    ExperimentBundleRefreshResult,
+)
+from services.desktop_app.cloud.experiment_bundle import (
+    ExperimentBundleStore,
+    ExperimentBundleVerificationError,
+)
 from services.desktop_app.cloud.outbox import (
     CloudOutbox,
     PendingUpload,
@@ -52,6 +64,7 @@ DEFAULT_SYNC_INTERVAL_S = 5.0
 DEFAULT_BATCH_SIZE = 50
 DEFAULT_TIMEOUT_S = 15.0
 DEFAULT_CLIENT_ID = "desktop-app"
+DEFAULT_EXPERIMENT_REFRESH_INTERVAL_S = 300.0
 
 _ENDPOINT_PATHS: dict[UploadEndpoint, str] = {
     "telemetry_segments": "/v4/telemetry/segments",
@@ -72,6 +85,7 @@ class CloudSyncConfig:
     batch_size: int = DEFAULT_BATCH_SIZE
     timeout_s: float = DEFAULT_TIMEOUT_S
     client_id: str = DEFAULT_CLIENT_ID
+    experiment_refresh_interval_s: float = DEFAULT_EXPERIMENT_REFRESH_INTERVAL_S
 
     @classmethod
     def from_env(cls) -> CloudSyncConfig:
@@ -89,6 +103,7 @@ class CloudSyncWorker:
         self._outbox = outbox
         self._config = config
         self._access_token: str | None = None
+        self._last_experiment_refresh: datetime | None = None
 
     async def run_until_shutdown(self, shutdown_event: ShutdownEvent) -> None:
         async with httpx.AsyncClient(
@@ -97,6 +112,7 @@ class CloudSyncWorker:
         ) as client:
             while not shutdown_event.is_set():
                 await self.sync_once(client)
+                await self.refresh_experiments_if_due(client)
                 await asyncio.to_thread(shutdown_event.wait, self._config.interval_s)
 
     async def sync_once(self, client: httpx.AsyncClient) -> None:
@@ -108,6 +124,95 @@ class CloudSyncWorker:
                 if not uploads:
                     break
                 await self._sync_batch(client, endpoint, uploads)
+
+    async def refresh_experiments_if_due(
+        self,
+        client: httpx.AsyncClient,
+        *,
+        now: datetime | None = None,
+    ) -> ExperimentBundleRefreshResult | None:
+        current = now or datetime.now(UTC)
+        if self._last_experiment_refresh is not None:
+            elapsed_s = (current - self._last_experiment_refresh).total_seconds()
+            if elapsed_s < self._config.experiment_refresh_interval_s:
+                return None
+        result = await self.refresh_experiments_once(client, now=current)
+        self._last_experiment_refresh = current
+        try:
+            self._outbox.record_experiment_refresh_result(result)
+        except sqlite3.Error:
+            return result
+        return result
+
+    async def refresh_experiments_once(
+        self,
+        client: httpx.AsyncClient,
+        *,
+        now: datetime | None = None,
+    ) -> ExperimentBundleRefreshResult:
+        completed_at = now or datetime.now(UTC)
+        try:
+            access_token = await self._access_token_or_refresh(client)
+            response = await client.get(
+                "/v4/experiments/bundle",
+                headers=_auth_headers(access_token),
+            )
+            if response.status_code == 401:
+                self._access_token = None
+                access_token = await self._refresh_access_token(client)
+                response = await client.get(
+                    "/v4/experiments/bundle",
+                    headers=_auth_headers(access_token),
+                )
+            response.raise_for_status()
+            bundle = ExperimentBundle.model_validate(response.json())
+        except CloudAuthRefreshError as exc:
+            error_code, retryable = _auth_refresh_error(exc)
+            return _refresh_failure(error_code, completed_at, retryable=retryable)
+        except httpx.HTTPStatusError as exc:
+            error_code, retryable = _fetch_error(status_code=exc.response.status_code)
+            return _refresh_failure(error_code, completed_at, retryable=retryable)
+        except (httpx.NetworkError, httpx.TimeoutException):
+            error_code, retryable = _fetch_error(network_failure=True)
+            return _refresh_failure(error_code, completed_at, retryable=retryable)
+        except (ValueError, ValidationError):
+            return _refresh_failure(
+                CloudOperatorErrorCode.INVALID_RESPONSE,
+                completed_at,
+                retryable=False,
+            )
+
+        try:
+            store = ExperimentBundleStore(self._outbox.db_path)
+        except sqlite3.Error:
+            return _refresh_failure(
+                CloudOperatorErrorCode.CLOUD_UNAVAILABLE,
+                completed_at,
+                retryable=True,
+            )
+        try:
+            store.cache_verified_bundle(bundle, applied_at_utc=completed_at)
+        except ExperimentBundleVerificationError as exc:
+            return _refresh_failure(
+                _verification_error(exc),
+                completed_at,
+                retryable=False,
+            )
+        except sqlite3.Error:
+            return _refresh_failure(
+                CloudOperatorErrorCode.CLOUD_UNAVAILABLE,
+                completed_at,
+                retryable=True,
+            )
+        finally:
+            store.close()
+        return ExperimentBundleRefreshResult(
+            status=CloudExperimentRefreshStatus.APPLIED,
+            completed_at_utc=completed_at,
+            message="Experiment bundle refreshed.",
+            bundle_id=bundle.bundle_id,
+            experiment_count=len(bundle.experiments),
+        )
 
     async def _sync_batch(
         self,
@@ -220,7 +325,7 @@ class CloudSyncWorker:
         try:
             refresh_token = get_secret(SECRET_KEY_CLOUD_REFRESH_TOKEN)
         except SecretStoreUnavailableError as exc:
-            raise CloudAuthRefreshError("cloud secret store unavailable") from exc
+            raise CloudAuthRefreshError("cloud sign-in temporarily unavailable") from exc
         if refresh_token is None:
             raise CloudAuthRefreshError("cloud refresh token unavailable")
         request = OAuthTokenRequest(
@@ -241,13 +346,81 @@ class CloudSyncWorker:
             try:
                 set_secret(SECRET_KEY_CLOUD_REFRESH_TOKEN, token_response.refresh_token)
             except SecretStoreUnavailableError as exc:
-                raise CloudAuthRefreshError("cloud refresh token storage failed") from exc
+                raise CloudAuthRefreshError("cloud sign-in temporarily unavailable") from exc
         self._access_token = token_response.access_token
         return token_response.access_token
 
 
 class CloudAuthRefreshError(RuntimeError):
     pass
+
+
+def _refresh_failure(
+    error_code: CloudOperatorErrorCode,
+    completed_at_utc: datetime,
+    *,
+    retryable: bool,
+) -> ExperimentBundleRefreshResult:
+    return ExperimentBundleRefreshResult(
+        status=CloudExperimentRefreshStatus.FAILED,
+        completed_at_utc=completed_at_utc,
+        message=_refresh_error_message(error_code),
+        error_code=error_code,
+        retryable=retryable,
+    )
+
+
+def _auth_refresh_error(exc: CloudAuthRefreshError) -> tuple[CloudOperatorErrorCode, bool]:
+    message = str(exc)
+    if "sign-in temporarily unavailable" in message:
+        return CloudOperatorErrorCode.SECRET_STORE_UNAVAILABLE, True
+    if "refresh token" in message:
+        return CloudOperatorErrorCode.REFRESH_TOKEN_UNAVAILABLE, False
+    return CloudOperatorErrorCode.REFRESH_FAILED, True
+
+
+def _fetch_error(
+    *,
+    status_code: int | None = None,
+    network_failure: bool = False,
+) -> tuple[CloudOperatorErrorCode, bool]:
+    if status_code == 401:
+        return CloudOperatorErrorCode.UNAUTHORIZED, False
+    if status_code == 429:
+        return CloudOperatorErrorCode.RATE_LIMITED, True
+    if status_code is not None and status_code >= 500:
+        return CloudOperatorErrorCode.CLOUD_UNAVAILABLE, True
+    if network_failure:
+        return CloudOperatorErrorCode.OFFLINE, True
+    if status_code is None:
+        return CloudOperatorErrorCode.INVALID_RESPONSE, False
+    return CloudOperatorErrorCode.CLOUD_UNAVAILABLE, True
+
+
+def _verification_error(exc: ExperimentBundleVerificationError) -> CloudOperatorErrorCode:
+    if "validity" in str(exc).lower():
+        return CloudOperatorErrorCode.BUNDLE_EXPIRED
+    return CloudOperatorErrorCode.SIGNATURE_FAILED
+
+
+def _refresh_error_message(error_code: CloudOperatorErrorCode) -> str:
+    messages = {
+        CloudOperatorErrorCode.BUNDLE_EXPIRED: "Experiment bundle is outside its validity window.",
+        CloudOperatorErrorCode.CLOUD_UNAVAILABLE: "Cloud experiment service is unavailable.",
+        CloudOperatorErrorCode.INVALID_RESPONSE: "Cloud experiment bundle response was invalid.",
+        CloudOperatorErrorCode.OFFLINE: "Cloud experiment service is offline.",
+        CloudOperatorErrorCode.RATE_LIMITED: "Cloud experiment refresh is rate-limited.",
+        CloudOperatorErrorCode.REFRESH_FAILED: "Cloud sign-in could not be refreshed.",
+        CloudOperatorErrorCode.REFRESH_TOKEN_UNAVAILABLE: (
+            "Cloud sign-in is required before refreshing experiments."
+        ),
+        CloudOperatorErrorCode.SECRET_STORE_UNAVAILABLE: (
+            "Cloud sign-in is temporarily unavailable."
+        ),
+        CloudOperatorErrorCode.SIGNATURE_FAILED: "Experiment bundle signature verification failed.",
+        CloudOperatorErrorCode.UNAUTHORIZED: "Cloud authorization was rejected.",
+    }
+    return messages.get(error_code, "Experiment bundle refresh failed.")
 
 
 def run(shutdown_event: mpsync.Event, channels: IpcChannels) -> None:
