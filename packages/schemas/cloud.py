@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Literal
+from urllib.parse import urlparse
 from uuid import UUID
 
 from pydantic import UUID4, BaseModel, ConfigDict, Field, model_validator
@@ -119,6 +120,25 @@ class CloudSessionEndResponse(CloudSchemaModel):
     session_id: UUID4
     ended_at_utc: datetime
     status: Literal["ended"] = "ended"
+
+
+class OAuthAuthorizationRequest(CloudSchemaModel):
+    response_type: Literal["code"]
+    client_id: str = Field(..., min_length=1)
+    redirect_uri: str = Field(..., min_length=1)
+    code_challenge: str = Field(..., min_length=43, max_length=128)
+    code_challenge_method: Literal["S256"]
+    state: str | None = Field(default=None, min_length=1)
+    scope: str | None = Field(default=None, min_length=1)
+
+    @model_validator(mode="after")
+    def _requires_loopback_redirect_uri(self) -> OAuthAuthorizationRequest:
+        parsed = urlparse(self.redirect_uri)
+        if parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "localhost"}:
+            raise ValueError("redirect_uri must be a loopback HTTP URI")
+        if parsed.port is None or parsed.path != "/oauth/callback":
+            raise ValueError("redirect_uri must target the loopback callback path")
+        return self
 
 
 class OAuthTokenRequest(CloudSchemaModel):

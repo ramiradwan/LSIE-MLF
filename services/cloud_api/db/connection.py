@@ -45,3 +45,19 @@ def get_connection() -> Any:
 def put_connection(conn: Any) -> None:
     if _pool is not None:
         _pool.putconn(conn)
+
+
+async def check_readiness() -> bool:
+    conn: Any | None = None
+    try:
+        await init_pool()
+        conn = get_connection()
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1")
+            cur.fetchone()
+    except Exception:
+        return False
+    finally:
+        if conn is not None:
+            put_connection(conn)
+    return True

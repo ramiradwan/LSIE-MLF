@@ -2,16 +2,105 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
+from io import StringIO
+from pathlib import Path
 from typing import SupportsFloat, cast
 
 import pytest
 
 from packages.schemas.cloud import PosteriorDelta
-from services.cloud_api.db import schema
+from services.cloud_api.db import bootstrap, connection, schema
 from services.cloud_api.repos import telemetry
 
 SEGMENT_ID = "b" * 64
 DECISION_CONTEXT_HASH = "c" * 64
+
+
+class ReadinessCursor:
+    def __init__(self, *, fail: bool = False) -> None:
+        self.executed_sql: list[str] = []
+        self.fail = fail
+
+    def __enter__(self) -> ReadinessCursor:
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
+        del exc_type, exc, traceback
+
+    def execute(self, sql: str) -> None:
+        if self.fail:
+            raise RuntimeError("postgres://user:secret@db/app SELECT private_table")
+        self.executed_sql.append(sql)
+
+    def fetchone(self) -> tuple[int]:
+        return (1,)
+
+
+class ReadinessConnection:
+    def __init__(self, *, fail: bool = False) -> None:
+        self.cursor_instance = ReadinessCursor(fail=fail)
+
+    def cursor(self) -> ReadinessCursor:
+        return self.cursor_instance
+
+
+class ReadinessPool:
+    def __init__(self, conn: ReadinessConnection) -> None:
+        self.conn = conn
+        self.returned: list[ReadinessConnection] = []
+
+    def getconn(self) -> ReadinessConnection:
+        return self.conn
+
+    def putconn(self, conn: ReadinessConnection) -> None:
+        self.returned.append(conn)
+
+
+class BootstrapCursor:
+    def __init__(self, *, fail_on: str | None = None) -> None:
+        self.executed_sql: list[str] = []
+        self.closed = False
+        self.fail_on = fail_on
+
+    def execute(self, sql: str) -> None:
+        if sql == self.fail_on:
+            raise RuntimeError("postgres://user:secret@db/app CREATE TABLE private")
+        self.executed_sql.append(sql)
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class BootstrapConnection:
+    def __init__(self, *, fail_on: str | None = None) -> None:
+        self.cursor_instance = BootstrapCursor(fail_on=fail_on)
+        self.commits = 0
+        self.rollbacks = 0
+
+    def cursor(self) -> BootstrapCursor:
+        return self.cursor_instance
+
+    def commit(self) -> None:
+        self.commits += 1
+
+    def rollback(self) -> None:
+        self.rollbacks += 1
+
+
+class BootstrapPool:
+    def __init__(self, conn: BootstrapConnection) -> None:
+        self.conn = conn
+        self.returned: list[BootstrapConnection] = []
+        self.closed = False
+
+    def getconn(self) -> BootstrapConnection:
+        return self.conn
+
+    def putconn(self, conn: BootstrapConnection) -> None:
+        self.returned.append(conn)
+
+    def closeall(self) -> None:
+        self.closed = True
 
 
 class PosteriorCursor:
@@ -71,6 +160,11 @@ class PosteriorCursor:
         return self._selected_row
 
 
+def _write_sql_file(path: Path, sql: str) -> Path:
+    path.write_text(sql, encoding="utf-8")
+    return path
+
+
 def _posterior_delta(
     *,
     segment_id: str = SEGMENT_ID,
@@ -126,6 +220,137 @@ def test_cloud_sync_sql_contains_idempotent_tables_and_constraints() -> None:
     assert "CREATE TABLE IF NOT EXISTS posterior_delta_log" in schema.SCHEMA_SQL
     assert "UNIQUE (segment_id, client_id, arm_id)" in schema.SCHEMA_SQL
     assert "decision_context_hash TEXT NOT NULL CHECK" in schema.SCHEMA_SQL
+
+
+def test_bootstrap_applies_sql_files_in_order_and_commits(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first = _write_sql_file(tmp_path / "01-first.sql", "CREATE TABLE first")
+    second = _write_sql_file(tmp_path / "02-second.sql", "CREATE TABLE second")
+    conn = BootstrapConnection()
+    pool = BootstrapPool(conn)
+    monkeypatch.setattr(connection, "_pool", pool)
+
+    applied = bootstrap.apply_bootstrap_files((first, second))
+
+    assert applied == ("01-first.sql", "02-second.sql")
+    assert conn.cursor_instance.executed_sql == ["CREATE TABLE first", "CREATE TABLE second"]
+    assert conn.cursor_instance.closed is True
+    assert conn.commits == 1
+    assert conn.rollbacks == 0
+    assert pool.returned == [conn]
+
+
+def test_bootstrap_rolls_back_and_returns_connection_on_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first = _write_sql_file(tmp_path / "01-first.sql", "CREATE TABLE first")
+    second = _write_sql_file(tmp_path / "02-second.sql", "CREATE TABLE second")
+    conn = BootstrapConnection(fail_on="CREATE TABLE second")
+    pool = BootstrapPool(conn)
+    monkeypatch.setattr(connection, "_pool", pool)
+
+    with pytest.raises(RuntimeError, match="secret"):
+        bootstrap.apply_bootstrap_files((first, second))
+
+    assert conn.cursor_instance.executed_sql == ["CREATE TABLE first"]
+    assert conn.cursor_instance.closed is True
+    assert conn.commits == 0
+    assert conn.rollbacks == 1
+    assert pool.returned == [conn]
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_entrypoint_emits_bounded_success(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sql_file = _write_sql_file(tmp_path / "01-schema.sql", "CREATE TABLE bootstrap_success")
+    conn = BootstrapConnection()
+    pool = BootstrapPool(conn)
+    stdout = StringIO()
+    stderr = StringIO()
+
+    async def init_test_pool(*, minconn: int, maxconn: int) -> None:
+        assert minconn == 1
+        assert maxconn == 1
+        monkeypatch.setattr(connection, "_pool", pool)
+
+    monkeypatch.setattr(bootstrap, "SQL_BOOTSTRAP_FILES", (sql_file,))
+    monkeypatch.setattr(connection, "init_pool", init_test_pool)
+
+    exit_code = await bootstrap.run_bootstrap(stdout=stdout, stderr=stderr)
+
+    assert exit_code == 0
+    assert stdout.getvalue() == "cloud-db-bootstrap status=ok files_applied=1\n"
+    assert stderr.getvalue() == ""
+    assert pool.closed is True
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_entrypoint_emits_bounded_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sql_file = _write_sql_file(tmp_path / "01-schema.sql", "CREATE TABLE bootstrap_failure")
+    conn = BootstrapConnection(fail_on="CREATE TABLE bootstrap_failure")
+    pool = BootstrapPool(conn)
+    stdout = StringIO()
+    stderr = StringIO()
+
+    async def init_test_pool(*, minconn: int, maxconn: int) -> None:
+        del minconn, maxconn
+        monkeypatch.setattr(connection, "_pool", pool)
+
+    monkeypatch.setattr(bootstrap, "SQL_BOOTSTRAP_FILES", (sql_file,))
+    monkeypatch.setattr(connection, "init_pool", init_test_pool)
+
+    exit_code = await bootstrap.run_bootstrap(stdout=stdout, stderr=stderr)
+
+    assert exit_code == 1
+    assert stdout.getvalue() == ""
+    assert stderr.getvalue() == "cloud-db-bootstrap status=failed\n"
+    assert "secret" not in stderr.getvalue()
+    assert "CREATE TABLE" not in stderr.getvalue()
+    assert pool.closed is True
+
+
+@pytest.mark.asyncio
+async def test_readiness_helper_uses_existing_pool_and_returns_connection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    conn = ReadinessConnection()
+    pool = ReadinessPool(conn)
+    monkeypatch.setattr(connection, "_pool", pool)
+
+    ready = await connection.check_readiness()
+
+    assert ready is True
+    assert conn.cursor_instance.executed_sql == ["SELECT 1"]
+    assert pool.returned == [conn]
+
+
+@pytest.mark.asyncio
+async def test_readiness_helper_returns_false_for_dependency_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    conn = ReadinessConnection(fail=True)
+    pool = ReadinessPool(conn)
+    monkeypatch.setattr(connection, "_pool", pool)
+
+    ready = await connection.check_readiness()
+
+    assert ready is False
+    assert pool.returned == [conn]
+
+
+@pytest.mark.asyncio
+async def test_readiness_helper_returns_false_without_pool() -> None:
+    await connection.close_pool()
+
+    assert await connection.check_readiness() is False
 
 
 def test_posterior_delta_duplicate_applies_once() -> None:

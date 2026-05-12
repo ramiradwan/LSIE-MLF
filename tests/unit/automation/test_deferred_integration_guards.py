@@ -330,3 +330,71 @@ def test_ephemeral_vault_cron_is_not_started_by_runtime_code() -> None:
                 offenders.append(f"{_rel(path)}:{call.lineno} calls run_vault_cron")
 
     assert offenders == []
+
+
+def test_cloud_api_image_contract_is_cloud_server_only() -> None:
+    dockerfile = (_REPO_ROOT / "services/cloud_api/Dockerfile").read_text(encoding="utf-8")
+
+    assert 'org.lsie_mlf.cloud_control_plane.app="services.cloud_api.main:app"' in dockerfile
+    assert 'org.lsie_mlf.cloud_control_plane.host="0.0.0.0"' in dockerfile
+    assert 'org.lsie_mlf.cloud_control_plane.port="8000"' in dockerfile
+    assert (
+        'org.lsie_mlf.cloud_control_plane.bootstrap_command='
+        '"python -m services.cloud_api.db.bootstrap"'
+        in dockerfile
+    )
+    assert "EXPOSE 8000" in dockerfile
+    assert (
+        'CMD ["uvicorn", "services.cloud_api.main:app", "--host", "0.0.0.0", '
+        '"--port", "8000"]'
+        in dockerfile
+    )
+    assert "--extra ml_backend" not in dockerfile
+    assert "services/desktop_app" not in dockerfile
+    assert "COPY services ./services" not in dockerfile
+    assert "docker compose" not in dockerfile.lower()
+
+
+def test_no_active_desktop_docker_or_compose_manifests_are_tracked() -> None:
+    forbidden_paths = [
+        path
+        for path in (_REPO_ROOT / "services/desktop_app").rglob("*")
+        if path.name in {"Dockerfile", "docker-compose.yml", "docker-compose.yaml", "compose.yml"}
+    ]
+
+    assert [_rel(path) for path in forbidden_paths] == []
+
+
+def test_cloud_api_dockerignore_excludes_sensitive_and_local_artifacts() -> None:
+    patterns = {
+        line.strip()
+        for line in (_REPO_ROOT / ".dockerignore").read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.startswith("#")
+    }
+
+    required_patterns = {
+        ".git",
+        ".git/**",
+        "*.env",
+        ".env",
+        ".env.*",
+        "*.local.bicepparam",
+        "*.pem",
+        "*.key",
+        "*.pfx",
+        "*.p12",
+        "secrets/**",
+        "private/**",
+        ".pytest_cache/**",
+        ".mypy_cache/**",
+        ".ruff_cache/**",
+        "*.sqlite",
+        "*.sqlite3",
+        "*.db",
+        "*.log",
+        "logs/**",
+        "data/raw/**",
+        "data/interim/**",
+    }
+
+    assert required_patterns.issubset(patterns)

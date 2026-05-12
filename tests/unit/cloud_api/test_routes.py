@@ -4,6 +4,7 @@ import base64
 import uuid
 from collections.abc import Generator
 from datetime import UTC, datetime
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 from Crypto.PublicKey import ECC
@@ -27,12 +28,14 @@ from packages.schemas.cloud import (
     TelemetryPosteriorDeltaBatch,
     TelemetrySegmentBatch,
 )
+from services.cloud_api import main as cloud_main
 from services.cloud_api.main import app
-from services.cloud_api.routes import auth, experiments, sessions, telemetry
+from services.cloud_api.routes import auth, experiments, health, sessions, telemetry
 from services.cloud_api.routes.experiments import get_bundle_service
 from services.cloud_api.routes.sessions import get_session_service
 from services.cloud_api.routes.telemetry import get_telemetry_service
 from services.cloud_api.services.auth_service import (
+    AuthConfigurationError,
     AuthenticatedClient,
     CloudTokenCodec,
     InvalidTokenError,
@@ -129,6 +132,14 @@ class RuntimeErrorBundleService(ExperimentBundleService):
         raise RuntimeError("Persistent Store unavailable")
 
 
+async def _readiness_ok() -> bool:
+    return True
+
+
+async def _readiness_failure() -> bool:
+    return False
+
+
 class FixedOAuthTokenService(OAuthTokenService):
     def exchange_token(self, request: OAuthTokenRequest) -> OAuthTokenResponse:
         del request
@@ -144,6 +155,12 @@ class InvalidOAuthTokenService(OAuthTokenService):
     def exchange_token(self, request: OAuthTokenRequest) -> OAuthTokenResponse:
         del request
         raise InvalidTokenError("authorization code PKCE verification failed")
+
+
+class MisconfiguredOAuthTokenService(OAuthTokenService):
+    def exchange_token(self, request: OAuthTokenRequest) -> OAuthTokenResponse:
+        del request
+        raise AuthConfigurationError("LSIE_CLOUD_TOKEN_SIGNING_SECRET contains secret details")
 
 
 class HappyTelemetryService(TelemetryIngestService):
@@ -271,12 +288,100 @@ def test_oauth_service_rejects_authorization_code_with_wrong_verifier() -> None:
         )
 
 
+def test_oauth_authorize_route_redirects_with_exchangeable_code() -> None:
+    with TestClient(_protected_app(), follow_redirects=False) as client:
+        response = client.get(
+            "/v4/auth/oauth/authorize",
+            params={
+                "response_type": "code",
+                "client_id": "desktop-a",
+                "redirect_uri": "http://127.0.0.1:8765/oauth/callback",
+                "code_challenge": build_code_challenge("verifier-a"),
+                "code_challenge_method": "S256",
+                "state": "state-a",
+            },
+        )
+
+    assert response.status_code == 302
+    location = response.headers["location"]
+    parsed = urlparse(location)
+    query = parse_qs(parsed.query)
+    assert f"{parsed.scheme}://{parsed.netloc}{parsed.path}" == "http://127.0.0.1:8765/oauth/callback"
+    assert query["state"] == ["state-a"]
+
+    token_response = OAuthTokenService(codec=_token_codec()).exchange_token(
+        OAuthTokenRequest(
+            grant_type="authorization_code",
+            client_id="desktop-a",
+            code=query["code"][0],
+            code_verifier="verifier-a",
+            redirect_uri="http://127.0.0.1:8765/oauth/callback",
+        )
+    )
+
+    assert token_response.token_type == "Bearer"
+    assert token_response.refresh_token is not None
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {
+            "response_type": "token",
+            "client_id": "desktop-a",
+            "redirect_uri": "http://127.0.0.1:8765/oauth/callback",
+            "code_challenge": build_code_challenge("verifier-a"),
+            "code_challenge_method": "S256",
+        },
+        {
+            "response_type": "code",
+            "client_id": "desktop-a",
+            "redirect_uri": "https://cloud.example.test/oauth/callback",
+            "code_challenge": build_code_challenge("verifier-a"),
+            "code_challenge_method": "S256",
+        },
+        {
+            "response_type": "code",
+            "client_id": "desktop-a",
+            "redirect_uri": "http://127.0.0.1:8765/oauth/callback",
+            "code_challenge": build_code_challenge("verifier-a"),
+            "code_challenge_method": "plain",
+        },
+    ],
+)
+def test_oauth_authorize_route_rejects_invalid_request(params: dict[str, str]) -> None:
+    with TestClient(_protected_app(), follow_redirects=False) as client:
+        response = client.get("/v4/auth/oauth/authorize", params=params)
+
+    assert response.status_code == 400
+    assert response.json() == {"detail": "invalid authorization request"}
+
+
+def test_oauth_authorize_route_rejects_disallowed_client_without_raw_id() -> None:
+    with TestClient(_protected_app(), follow_redirects=False) as client:
+        response = client.get(
+            "/v4/auth/oauth/authorize",
+            params={
+                "response_type": "code",
+                "client_id": "desktop-secret-client",
+                "redirect_uri": "http://127.0.0.1:8765/oauth/callback",
+                "code_challenge": build_code_challenge("verifier-a"),
+                "code_challenge_method": "S256",
+            },
+        )
+
+    assert response.status_code == 401
+    assert response.json() == {"detail": "client_id is not allowed"}
+
+
 def _protected_app() -> FastAPI:
     test_app = FastAPI()
     test_app.include_router(telemetry.router, prefix="/v4")
     test_app.include_router(sessions.router, prefix="/v4")
     test_app.include_router(experiments.router, prefix="/v4")
+    test_app.include_router(auth.router, prefix="/v4")
     test_app.dependency_overrides[get_token_codec] = _token_codec
+    test_app.dependency_overrides[auth.get_authorization_token_codec] = _token_codec
     test_app.dependency_overrides[get_telemetry_service] = HappyTelemetryService
     test_app.dependency_overrides[get_session_service] = HappySessionService
     test_app.dependency_overrides[get_bundle_service] = HappyBundleService
@@ -490,6 +595,43 @@ async def test_oauth_route_maps_invalid_token_to_401(sample_timestamp: datetime)
     assert exc_info.value.detail == "authorization code PKCE verification failed"
 
 
+@pytest.mark.asyncio
+async def test_oauth_route_maps_invalid_client_to_bounded_401() -> None:
+    request = OAuthTokenRequest(
+        grant_type="refresh_token",
+        client_id="desktop-secret-client",
+        refresh_token="refresh-a",
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await auth.exchange_oauth_token(request, service=OAuthTokenService(codec=_token_codec()))
+
+    assert exc_info.value.status_code == 401
+    assert exc_info.value.detail == "client_id is not allowed"
+
+
+@pytest.mark.asyncio
+async def test_oauth_route_maps_configuration_error_to_bounded_503() -> None:
+    request = OAuthTokenRequest(
+        grant_type="refresh_token",
+        client_id="desktop-a",
+        refresh_token="refresh-a",
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await auth.exchange_oauth_token(request, service=MisconfiguredOAuthTokenService())
+
+    assert exc_info.value.status_code == 503
+    assert exc_info.value.detail == "cloud authorization is not configured"
+
+
+def test_cloud_app_mounts_health_routes() -> None:
+    route_paths = {route.path for route in app.routes if isinstance(route, Route)}
+
+    assert "/healthz" in route_paths
+    assert "/readyz" in route_paths
+
+
 def test_cloud_app_mounts_v4_routes() -> None:
     route_paths = {route.path for route in app.routes if isinstance(route, Route)}
 
@@ -498,7 +640,67 @@ def test_cloud_app_mounts_v4_routes() -> None:
     assert "/v4/sessions" in route_paths
     assert "/v4/sessions/{session_id}/end" in route_paths
     assert "/v4/experiments/bundle" in route_paths
+    assert "/v4/auth/oauth/authorize" in route_paths
     assert "/v4/auth/oauth/token" in route_paths
+
+
+def test_cloud_app_serves_healthz_when_startup_pool_init_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fail_init_pool() -> None:
+        raise RuntimeError("postgres://user:secret@db/app")
+
+    monkeypatch.setattr(cloud_main, "init_pool", fail_init_pool)
+
+    with TestClient(app) as client:
+        response = client.get("/healthz")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+
+
+def test_healthz_returns_bounded_liveness_without_readiness_check(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fail_if_called() -> bool:
+        raise AssertionError("healthz must not touch PostgreSQL")
+
+    test_app = FastAPI()
+    test_app.include_router(health.router)
+    monkeypatch.setattr(health, "check_readiness", fail_if_called)
+
+    with TestClient(test_app) as client:
+        response = client.get("/healthz")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+
+
+def test_readyz_returns_bounded_success(monkeypatch: pytest.MonkeyPatch) -> None:
+    test_app = FastAPI()
+    test_app.include_router(health.router)
+    monkeypatch.setattr(health, "check_readiness", _readiness_ok)
+
+    with TestClient(test_app) as client:
+        response = client.get("/readyz")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok", "checks": {"database": "ok"}}
+
+
+def test_readyz_returns_sanitized_failure(monkeypatch: pytest.MonkeyPatch) -> None:
+    test_app = FastAPI()
+    test_app.include_router(health.router)
+    monkeypatch.setattr(health, "check_readiness", _readiness_failure)
+
+    with TestClient(test_app) as client:
+        response = client.get("/readyz")
+
+    assert response.status_code == 503
+    assert response.json() == {
+        "status": "unavailable",
+        "checks": {"database": "unavailable"},
+    }
 
 
 @pytest.mark.parametrize(
