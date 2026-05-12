@@ -55,6 +55,7 @@ from services.desktop_app.ipc.control_messages import (
 )
 from services.desktop_app.ipc.shared_buffers import read_pcm_block
 from services.desktop_app.os_adapter import SupervisedProcess, find_executable
+from services.desktop_app.startup_timing import log_startup_milestone
 
 logger = logging.getLogger(__name__)
 
@@ -251,6 +252,7 @@ class LiveVisualTracker:
     _latest_au12_intensity: float | None = field(default=None, init=False)
     _latest_au12_timestamp_s: float | None = field(default=None, init=False)
     _message_sequence: int = field(default=0, init=False)
+    _startup_capture_ready_logged: bool = field(default=False, init=False)
     _au12_observations: deque[_Au12Observation] = field(
         default_factory=lambda: deque(maxlen=_VISUAL_AU12_RING_MAXLEN),
         init=False,
@@ -405,6 +407,7 @@ class LiveVisualTracker:
         self._calibration_frames_accumulated = 0
         self._latest_au12_intensity = None
         self._latest_au12_timestamp_s = None
+        self._startup_capture_ready_logged = False
         self._au12_observations.clear()
 
     def _visual_state(
@@ -1043,6 +1046,13 @@ def _publish_visual_tick(
                 )
             )
         return
+    if (
+        outcome.visual is not None
+        and outcome.visual.status == "ready"
+        and not tracker._startup_capture_ready_logged  # noqa: SLF001
+    ):
+        log_startup_milestone("capture_ready", logger=logger)
+        tracker._startup_capture_ready_logged = True  # noqa: SLF001
     if status_callback is not None:
         if outcome.missing_frame:
             status_callback(

@@ -48,9 +48,12 @@ from services.desktop_app.drift import (
 )
 from services.desktop_app.ipc import IpcChannels
 from services.desktop_app.os_adapter import (
+    DESKTOP_CAPTURE_TOOL_SPECS,
     SupervisedProcess,
-    find_executable,
+    missing_external_tools_detail,
+    missing_external_tools_hint,
     resolve_capture_dir,
+    resolve_external_tools,
     resolve_state_dir,
 )
 from services.desktop_app.privacy.zeroize import cleanup_capture_files
@@ -526,20 +529,48 @@ def run(shutdown_event: mpsync.Event, channels: IpcChannels) -> None:
     drift_thread = _DriftPollThread(corrector, channels, shutdown_event)
     drift_thread.start()
 
-    try:
-        scrcpy_path = find_executable("scrcpy", env_override="LSIE_SCRCPY_PATH")
-        adb_path = find_executable("adb", env_override="LSIE_ADB_PATH")
-    except FileNotFoundError as exc:
-        logger.error("capture_supervisor cannot run: %s", exc)
-        # Without scrcpy the supervisor still ships drift updates so
+    resolved_tools, missing_tools = resolve_external_tools(DESKTOP_CAPTURE_TOOL_SPECS)
+    if missing_tools:
+        detail = missing_external_tools_detail(missing_tools)
+        hint = missing_external_tools_hint(missing_tools)
+        logger.error("capture_supervisor cannot run: %s %s", detail, hint)
+        _upsert_capture_statuses(
+            db_path,
+            [
+                CaptureStatusRecord(
+                    status_key="adb",
+                    state="unknown",
+                    label="Android Device Bridge",
+                    detail=detail,
+                    operator_action_hint=hint,
+                ),
+                CaptureStatusRecord(
+                    status_key="audio_capture",
+                    state="unknown",
+                    label="Audio Capture",
+                    detail=detail,
+                    operator_action_hint=hint,
+                ),
+                CaptureStatusRecord(
+                    status_key="video_capture",
+                    state="unknown",
+                    label="Video Capture",
+                    detail=detail,
+                    operator_action_hint=hint,
+                ),
+            ],
+        )
+        # Without capture tooling the supervisor still ships drift updates so
         # the orchestrator's correct_timestamp keeps working with
         # whatever ADB-derived offset is available; bail out of the
         # scrcpy restart loop only.
         shutdown_event.wait()
         drift_thread.join(timeout=5.0)
         heartbeat.stop()
-        logger.info("capture_supervisor stopped (no scrcpy)")
+        logger.info("capture_supervisor stopped (missing capture tooling)")
         return
+    scrcpy_path = resolved_tools["scrcpy"]
+    adb_path = resolved_tools["adb"]
 
     audio_proc: SupervisedProcess | None = None
     video_proc: SupervisedProcess | None = None

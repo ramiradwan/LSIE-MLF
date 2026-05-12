@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from typing import Literal
 
 from services.desktop_app.ipc import IpcChannels
+from services.desktop_app.startup_timing import log_startup_milestone
 
 logger = logging.getLogger(__name__)
 
@@ -164,6 +165,7 @@ class ProcessGraph:
             self.children[name] = proc
             self.shutdown_events[name] = evt
             logger.info("spawned %s pid=%s", name, proc.pid)
+        log_startup_milestone("process_graph_spawned", logger=logger)
 
     def signal_shutdown(self) -> None:
         """Signal-safe: set a flag without touching multiprocessing primitives.

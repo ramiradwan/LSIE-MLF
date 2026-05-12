@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
+from unittest.mock import patch
 from uuid import UUID
 
 import pytest
@@ -211,7 +212,8 @@ def test_start_operator_api_runtime_wires_api_and_stops(
         FakeHeartbeat,
     )
 
-    runtime = operator_api_runtime.start_operator_api_runtime(_channels())
+    with patch.object(operator_api_runtime, "log_startup_milestone") as milestone:
+        runtime = operator_api_runtime.start_operator_api_runtime(_channels())
     runtime.stop()
 
     assert os.environ["LSIE_API_URL"] == "http://127.0.0.1:8123"
@@ -221,6 +223,7 @@ def test_start_operator_api_runtime_wires_api_and_stops(
     assert created_heartbeats[0].process_key == "ui_api_shell"
     assert created_heartbeats[0].started is True
     assert created_heartbeats[0].stopped is True
+    milestone.assert_called_once_with("api_ready", logger=operator_api_runtime.logger)
     assert runtime._uv_server.should_exit is True
     assert cast(FakeThread, runtime._uv_thread).join_timeout == 5.0
 

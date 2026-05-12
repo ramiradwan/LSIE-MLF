@@ -15,10 +15,60 @@ import signal
 import subprocess
 import sys
 import time
+from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class ExternalToolSpec:
+    executable_name: str
+    label: str
+    env_override: str
+    install_hint: str
+
+
+@dataclass(frozen=True)
+class MissingExternalTool:
+    spec: ExternalToolSpec
+    resolver_detail: str
+
+    def detail_message(self) -> str:
+        return f"{self.spec.label} is unavailable: {self.resolver_detail}"
+
+    def operator_action_hint(self) -> str:
+        return self.spec.install_hint
+
+
+ADB_TOOL = ExternalToolSpec(
+    executable_name="adb",
+    label="Android Device Bridge (adb)",
+    env_override="LSIE_ADB_PATH",
+    install_hint=(
+        "Install Android Platform Tools or set LSIE_ADB_PATH to the adb executable path."
+    ),
+)
+SCRCPY_TOOL = ExternalToolSpec(
+    executable_name="scrcpy",
+    label="scrcpy",
+    env_override="LSIE_SCRCPY_PATH",
+    install_hint="Install scrcpy or set LSIE_SCRCPY_PATH to the scrcpy executable path.",
+)
+FFMPEG_TOOL = ExternalToolSpec(
+    executable_name="ffmpeg",
+    label="FFmpeg (ffmpeg)",
+    env_override="LSIE_FFMPEG_PATH",
+    install_hint="Install FFmpeg or set LSIE_FFMPEG_PATH to the ffmpeg executable path.",
+)
+DESKTOP_CAPTURE_TOOL_SPECS: tuple[ExternalToolSpec, ...] = (ADB_TOOL, SCRCPY_TOOL)
+DESKTOP_RUNTIME_TOOL_SPECS: tuple[ExternalToolSpec, ...] = (
+    ADB_TOOL,
+    SCRCPY_TOOL,
+    FFMPEG_TOOL,
+)
 
 
 def resolve_state_dir() -> Path:
@@ -146,6 +196,38 @@ def find_executable(name: str, env_override: str | None = None) -> str:
     raise FileNotFoundError(
         f"could not locate executable {name!r}: PATH lookup failed and no fallback path matched"
     )
+
+
+def resolve_external_tool(spec: ExternalToolSpec) -> str:
+    return find_executable(spec.executable_name, env_override=spec.env_override)
+
+
+def resolve_external_tools(
+    specs: Sequence[ExternalToolSpec],
+) -> tuple[dict[str, str], tuple[MissingExternalTool, ...]]:
+    resolved: dict[str, str] = {}
+    missing: list[MissingExternalTool] = []
+    for spec in specs:
+        try:
+            resolved[spec.executable_name] = resolve_external_tool(spec)
+        except FileNotFoundError as exc:
+            missing.append(MissingExternalTool(spec=spec, resolver_detail=str(exc)))
+    return resolved, tuple(missing)
+
+
+def missing_external_tools_detail(missing: Sequence[MissingExternalTool]) -> str:
+    details = "; ".join(item.detail_message() for item in missing)
+    return f"Missing required external tools: {details}"
+
+
+def missing_external_tools_hint(missing: Sequence[MissingExternalTool]) -> str:
+    return " ".join(item.operator_action_hint() for item in missing)
+
+
+def format_missing_external_tools(missing: Sequence[MissingExternalTool]) -> str:
+    detail = missing_external_tools_detail(missing)
+    hint = missing_external_tools_hint(missing)
+    return f"{detail} {hint}".strip()
 
 
 def zeroize_shared_memory(shm: Any) -> int:
@@ -365,16 +447,24 @@ def cleanup_orphan_ipc_blocks(prefix: str) -> int:
     return unlinked
 
 
-def _apply_windows_child_process_policy(popen_kwargs: dict[str, Any]) -> dict[str, Any]:
+def _apply_windows_child_process_policy(
+    popen_kwargs: dict[str, Any],
+    *,
+    hide_window: bool = True,
+) -> dict[str, Any]:
     if sys.platform != "win32":
         return dict(popen_kwargs)
 
     kwargs = dict(popen_kwargs)
-    kwargs["creationflags"] = (
-        int(kwargs.get("creationflags", 0))
-        | int(getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
-        | int(getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    creationflags = int(kwargs.get("creationflags", 0)) | int(
+        getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
     )
+    if hide_window:
+        creationflags |= int(getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    kwargs["creationflags"] = creationflags
+
+    if not hide_window:
+        return kwargs
 
     startupinfo = kwargs.get("startupinfo")
     startupinfo_factory = getattr(subprocess, "STARTUPINFO", None)
@@ -584,6 +674,9 @@ class SupervisedProcess:
     @property
     def stdout(self) -> Any:
         return self._proc.stdout
+
+    def send_signal(self, sig: int) -> None:
+        self._proc.send_signal(sig)
 
     def wait(self, timeout: float | None = None) -> int:
         return self._proc.wait(timeout=timeout)

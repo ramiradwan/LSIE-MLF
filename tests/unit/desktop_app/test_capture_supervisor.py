@@ -255,8 +255,8 @@ def test_run_cleans_capture_files_on_startup_and_shutdown(tmp_path: Path) -> Non
             "services.desktop_app.processes.capture_supervisor._DriftPollThread",
         ) as drift_cls,
         patch(
-            "services.desktop_app.processes.capture_supervisor.find_executable",
-            return_value="scrcpy",
+            "services.desktop_app.processes.capture_supervisor.resolve_external_tools",
+            return_value=({"adb": "adb", "scrcpy": "scrcpy"}, ()),
         ),
     ):
         heartbeat = MagicMock()

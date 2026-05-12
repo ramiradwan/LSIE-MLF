@@ -23,6 +23,7 @@ import signal
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import MagicMock, patch
 
@@ -74,7 +75,13 @@ def test_main_smoke_runs_preflight_and_skips_process_graph(monkeypatch: pytest.M
 
     preflight_calls: list[str] = []
     guard_calls: list[str] = []
+    epoch_calls: list[str] = []
 
+    monkeypatch.setattr(
+        desktop_main,
+        "ensure_startup_epoch",
+        lambda: epoch_calls.append("called"),
+    )
     monkeypatch.setattr(
         "services.desktop_app.__main__.preflight.ensure_preflight",
         lambda: preflight_calls.append("called"),
@@ -92,6 +99,7 @@ def test_main_smoke_runs_preflight_and_skips_process_graph(monkeypatch: pytest.M
     monkeypatch.setattr(desktop_main, "ProcessGraph", UnexpectedGraph)
 
     assert desktop_main.main(["--smoke"]) == 0
+    assert epoch_calls == ["called"]
     assert preflight_calls == ["called"]
     assert guard_calls == ["called"]
 
@@ -103,7 +111,9 @@ def test_main_operator_api_uses_operator_api_runtime_mode(
 
     modes: list[str] = []
     lifecycle: list[str] = []
+    epoch_calls: list[str] = []
 
+    monkeypatch.setattr(desktop_main, "ensure_startup_epoch", lambda: epoch_calls.append("called"))
     monkeypatch.setattr("services.desktop_app.__main__.preflight.ensure_preflight", lambda: None)
     monkeypatch.setattr(desktop_main, "install_crash_privacy_guards", lambda: None)
     monkeypatch.setattr(signal, "signal", lambda *_args: None)
@@ -127,6 +137,7 @@ def test_main_operator_api_uses_operator_api_runtime_mode(
     monkeypatch.setattr(desktop_main, "ProcessGraph", FakeGraph)
 
     assert desktop_main.main(["--operator-api"]) == 0
+    assert epoch_calls == ["called"]
     assert modes == ["operator_api"]
     assert lifecycle == ["start_all", "wait", "stop_all"]
 
@@ -205,11 +216,13 @@ def test_process_graph_operator_api_mode_uses_selected_module_table() -> None:
     with (
         patch("services.desktop_app.process_graph._prepare_runtime_state"),
         patch("services.desktop_app.process_graph.mp.get_context", return_value=context),
+        patch("services.desktop_app.process_graph.log_startup_milestone") as milestone,
     ):
         graph.start_all()
 
     assert launched == list(modules.items())
     assert set(graph.children) == set(modules)
+    milestone.assert_called_once_with("process_graph_spawned", logger=process_graph.logger)
 
 
 def test_process_graph_starts_and_stops_cleanly() -> None:
@@ -245,6 +258,92 @@ def test_request_shutdown_sets_every_child_event() -> None:
     assert graph._shutdown_requested is True
     evt_a.set.assert_called_once_with()
     evt_b.set.assert_called_once_with()
+
+
+def test_ui_api_shell_logs_ui_visible_after_window_show() -> None:
+    from services.desktop_app.processes import ui_api_shell
+
+    class FakeSignal:
+        def __init__(self) -> None:
+            self.callback: object | None = None
+
+        def connect(self, callback: object) -> None:
+            self.callback = callback
+
+    class FakeQApplication:
+        def __init__(self, _args: list[object]) -> None:
+            self.aboutToQuit = FakeSignal()
+            self.setApplicationName = lambda _name: None
+            self.setOrganizationName = lambda _name: None
+            self.quit = lambda: None
+
+        def exec(self) -> int:
+            return 0
+
+    class FakeQTimer:
+        def __init__(self) -> None:
+            self.timeout = FakeSignal()
+            self.setInterval = lambda _ms: None
+            self.start = lambda: None
+
+    class FakeCoordinator:
+        def __init__(self) -> None:
+            self.started = False
+            self.stopped = False
+
+        def start(self) -> None:
+            self.started = True
+
+        def stop(self) -> None:
+            self.stopped = True
+
+    class FakeWindow:
+        def __init__(self) -> None:
+            self.shown = False
+
+        def show(self) -> None:
+            self.shown = True
+
+    class FakeApiRuntime:
+        def __init__(self) -> None:
+            self.stopped = False
+
+        def stop(self) -> None:
+            self.stopped = True
+
+    coordinator = FakeCoordinator()
+    window = FakeWindow()
+    api_runtime = FakeApiRuntime()
+    channels = cast(Any, object())
+    shutdown_event = SimpleNamespace(is_set=lambda: False)
+
+    with (
+        patch.dict(
+            sys.modules,
+            {
+                "PySide6.QtCore": SimpleNamespace(QTimer=FakeQTimer),
+                "PySide6.QtWidgets": SimpleNamespace(QApplication=FakeQApplication),
+                "services.operator_console.app": SimpleNamespace(
+                    build_api_client=lambda config: object(),
+                    build_main_window=lambda config, store, coord: window,
+                    build_polling_coordinator=lambda config, client, store: coordinator,
+                    build_store=lambda: object(),
+                ),
+                "services.operator_console.config": SimpleNamespace(load_config=lambda: object()),
+                "services.operator_console.design_system": SimpleNamespace(
+                    install_application_stylesheet=lambda app: None,
+                ),
+            },
+        ),
+        patch.object(ui_api_shell, "start_operator_api_runtime", return_value=api_runtime),
+        patch.object(ui_api_shell, "log_startup_milestone") as milestone,
+    ):
+        ui_api_shell.run(cast(Any, shutdown_event), channels)
+
+    assert window.shown is True
+    assert coordinator.started is True
+    assert api_runtime.stopped is True
+    milestone.assert_called_once_with("ui_visible", logger=ui_api_shell.logger)
 
 
 def test_stop_all_uses_cooperative_shutdown_timeout_by_default() -> None:

@@ -25,6 +25,7 @@ from types import FrameType
 
 from services.desktop_app.privacy.crash_dumps import install_crash_privacy_guards
 from services.desktop_app.process_graph import ProcessGraph
+from services.desktop_app.startup_timing import ensure_startup_epoch
 from services.desktop_launcher import preflight
 
 logger = logging.getLogger(__name__)
@@ -55,6 +56,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
     multiprocessing.set_start_method("spawn", force=True)
 
+    ensure_startup_epoch()
     preflight.ensure_preflight()
     install_crash_privacy_guards()
     if args.smoke:

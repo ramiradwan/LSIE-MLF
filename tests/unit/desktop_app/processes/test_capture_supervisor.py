@@ -5,6 +5,7 @@ from pathlib import Path
 
 from services.desktop_app.processes.capture_supervisor import (
     CaptureLayout,
+    CaptureStatusRecord,
     _AdbDevice,
     _parse_active_app,
     _write_capture_statuses,
@@ -109,6 +110,49 @@ def test_write_capture_statuses_reports_silent_audio_stream(tmp_path: Path) -> N
     assert rows["audio_capture"]["operator_action_hint"] == (
         "Make sure the phone is playing audible media; some apps block Android playback capture"
     )
+
+
+def test_missing_capture_tooling_uses_shared_detail_and_hint(tmp_path: Path) -> None:
+    db = _bootstrap(tmp_path)
+    detail = "Missing required external tools: scrcpy is unavailable: PATH lookup failed"
+    hint = "Install scrcpy or set LSIE_SCRCPY_PATH to the scrcpy executable path."
+
+    from services.desktop_app.processes.capture_supervisor import _upsert_capture_statuses
+
+    _upsert_capture_statuses(
+        db,
+        [
+            CaptureStatusRecord(
+                status_key="adb",
+                state="unknown",
+                label="Android Device Bridge",
+                detail=detail,
+                operator_action_hint=hint,
+            ),
+            CaptureStatusRecord(
+                status_key="audio_capture",
+                state="unknown",
+                label="Audio Capture",
+                detail=detail,
+                operator_action_hint=hint,
+            ),
+            CaptureStatusRecord(
+                status_key="video_capture",
+                state="unknown",
+                label="Video Capture",
+                detail=detail,
+                operator_action_hint=hint,
+            ),
+        ],
+    )
+
+    rows = _capture_statuses(db)
+    assert rows["adb"]["detail"] == detail
+    assert rows["adb"]["operator_action_hint"] == hint
+    assert rows["audio_capture"]["detail"] == detail
+    assert rows["audio_capture"]["operator_action_hint"] == hint
+    assert rows["video_capture"]["detail"] == detail
+    assert rows["video_capture"]["operator_action_hint"] == hint
 
 
 class _AliveProc:

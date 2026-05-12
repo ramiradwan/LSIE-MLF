@@ -21,6 +21,7 @@ from typing import Protocol, cast
 
 from services.desktop_app.ipc import IpcChannels
 from services.desktop_app.ipc.control_messages import LiveSessionControlMessage
+from services.desktop_app.startup_timing import log_startup_milestone
 
 logger = logging.getLogger(__name__)
 
@@ -134,6 +135,7 @@ def start_operator_api_runtime(channels: IpcChannels) -> RunningOperatorApiRunti
         time.sleep(0.05)
     if uv_server.started:
         logger.info("uvicorn listening on %s", api_url)
+        log_startup_milestone("api_ready", logger=logger)
     else:
         logger.warning("uvicorn did not report ready within %.1fs", UVICORN_READY_TIMEOUT_S)
 

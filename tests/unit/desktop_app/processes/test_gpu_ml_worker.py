@@ -266,10 +266,47 @@ def test_gpu_ml_worker_visual_tick_restores_health_after_receiving_face_frame(
     statuses: list[gpu_ml_worker._GpuWorkerStatus] = []  # noqa: SLF001
     tracker.handle_control(_start_control(now))
 
-    gpu_ml_worker._publish_visual_tick(channels, tracker, status_callback=statuses.append)  # noqa: SLF001
+    with patch.object(gpu_ml_worker, "log_startup_milestone") as milestone:
+        gpu_ml_worker._publish_visual_tick(channels, tracker, status_callback=statuses.append)  # noqa: SLF001
 
+    milestone.assert_called_once_with("capture_ready", logger=gpu_ml_worker.logger)
     assert statuses[-1].state == "ok"
     assert statuses[-1].detail == "Live visual tracking is receiving phone frames."
+
+
+def test_gpu_ml_worker_logs_capture_ready_only_once_per_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(gpu_ml_worker, "_VISUAL_CALIBRATION_FRAMES_REQUIRED", 1)
+    now = datetime(2026, 5, 2, 12, 0, tzinfo=UTC)
+    channels = IpcChannels(
+        ml_inbox=cast("Any", queue.Queue()),
+        drift_updates=cast("Any", queue.Queue()),
+        analytics_inbox=cast("Any", queue.Queue()),
+        pcm_acks=cast("Any", queue.Queue()),
+        live_control=cast("Any", queue.Queue()),
+    )
+    tracker = LiveVisualTracker(
+        video_capture_factory=lambda _path: FakeVideoCapture([object(), object(), object()]),
+        face_mesh_factory=lambda: FakeFaceMesh([object(), object(), object()]),
+        au12_factory=lambda: FakeAu12Normalizer([]),
+    )
+    tracker.handle_control(_start_control(now))
+
+    with patch.object(gpu_ml_worker, "log_startup_milestone") as milestone:
+        gpu_ml_worker._publish_visual_tick(channels, tracker)
+        gpu_ml_worker._publish_visual_tick(channels, tracker)
+        tracker.handle_control(
+            LiveSessionControlMessage(
+                action="end",
+                session_id=SESSION_UUID,
+                timestamp_utc=now,
+            )
+        )
+        tracker.handle_control(_start_control(now))
+        gpu_ml_worker._publish_visual_tick(channels, tracker)
+
+    assert milestone.call_count == 2
 
 
 def test_gpu_ml_worker_stimulus_control_preserves_calibrated_visual_state(

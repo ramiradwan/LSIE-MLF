@@ -8,7 +8,13 @@ import sys
 from pathlib import Path
 
 from services.desktop_app import os_adapter
+from services.desktop_app.startup_timing import ensure_startup_epoch, format_startup_milestone
 from services.desktop_launcher import manifest, preflight
+
+
+class MissingDesktopToolingError(RuntimeError):
+    """Raised when required desktop tooling cannot be resolved."""
+
 
 _HEALTH_CHECK_SNIPPET = (
     "import torch; "
@@ -21,6 +27,31 @@ _HEALTH_CHECK_SNIPPET = (
 
 class RuntimeHealthCheckError(RuntimeError):
     """Raised when the staged ML runtime cannot import required backends."""
+
+
+def describe_missing_desktop_tooling(
+    missing: tuple[os_adapter.MissingExternalTool, ...],
+) -> str:
+    return os_adapter.format_missing_external_tools(missing)
+
+
+def resolve_desktop_runtime_tools() -> tuple[
+    dict[str, str], tuple[os_adapter.MissingExternalTool, ...]
+]:
+    return os_adapter.resolve_external_tools(os_adapter.DESKTOP_RUNTIME_TOOL_SPECS)
+
+
+def resolve_capture_runtime_tools() -> tuple[
+    dict[str, str], tuple[os_adapter.MissingExternalTool, ...]
+]:
+    return os_adapter.resolve_external_tools(os_adapter.DESKTOP_CAPTURE_TOOL_SPECS)
+
+
+def require_desktop_runtime_tools() -> dict[str, str]:
+    resolved, missing = resolve_desktop_runtime_tools()
+    if missing:
+        raise MissingDesktopToolingError(describe_missing_desktop_tooling(missing))
+    return resolved
 
 
 def runtime_python(runtime_dir: Path) -> Path:
@@ -81,21 +112,46 @@ def finalize_install(
     return active_runtime_dir
 
 
-def launch_desktop_app(runtime_dir: Path, app_root: Path | None = None) -> subprocess.Popen[str]:
-    preflight.ensure_preflight()
+def build_source_launch_command(
+    runtime_dir: Path,
+    *,
+    app_root: Path | None = None,
+    module_args: tuple[str, ...] = (),
+) -> tuple[list[str], Path, dict[str, str]]:
     python_exe = runtime_python(runtime_dir)
     root = (app_root or _default_app_root()).resolve()
     _validate_app_root(root)
     env = os.environ.copy()
     pythonpath = env.get("PYTHONPATH")
     env["PYTHONPATH"] = str(root) if not pythonpath else f"{root}{os.pathsep}{pythonpath}"
+    resolved_tools, _missing_tools = resolve_desktop_runtime_tools()
+    for spec in os_adapter.DESKTOP_RUNTIME_TOOL_SPECS:
+        resolved = resolved_tools.get(spec.executable_name)
+        if resolved is not None:
+            env[spec.env_override] = resolved
+    ensure_startup_epoch(env)
+    command = [str(python_exe), "-m", "services.desktop_app", *module_args]
+    return command, root, env
+
+
+def launch_desktop_app(runtime_dir: Path, app_root: Path | None = None) -> subprocess.Popen[str]:
+    preflight.ensure_preflight()
+    resolved_tools, missing_tools = resolve_desktop_runtime_tools()
+    command, root, env = build_source_launch_command(runtime_dir, app_root=app_root)
+    for spec in os_adapter.DESKTOP_RUNTIME_TOOL_SPECS:
+        resolved = resolved_tools.get(spec.executable_name)
+        if resolved is not None:
+            env[spec.env_override] = resolved
     log_path = _launch_log_path()
     log_handle = log_path.open("a", encoding="utf-8")
-    log_handle.write(f"\n--- launching LSIE-MLF from {root} with {python_exe} ---\n")
+    log_handle.write(f"\n--- launching LSIE-MLF from {root} with {command[0]} ---\n")
+    if missing_tools:
+        log_handle.write(describe_missing_desktop_tooling(missing_tools) + "\n")
+    log_handle.write(format_startup_milestone("launcher_handoff", environ=env) + "\n")
     log_handle.flush()
     try:
         return subprocess.Popen(
-            [str(python_exe), "-m", "services.desktop_app"],
+            command,
             cwd=root,
             env=env,
             stdout=log_handle,

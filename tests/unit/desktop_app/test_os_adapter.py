@@ -238,6 +238,25 @@ def test_apply_windows_child_process_policy_hides_windows_children() -> None:
     assert startupinfo.wShowWindow == fake_subprocess.SW_HIDE
 
 
+def test_apply_windows_child_process_policy_can_keep_console_visible() -> None:
+    startupinfo = SimpleNamespace(dwFlags=0, wShowWindow=99)
+    fake_subprocess = SimpleNamespace(
+        CREATE_NEW_PROCESS_GROUP=0x200,
+        CREATE_NO_WINDOW=0x08000000,
+        STARTF_USESHOWWINDOW=0x1,
+        SW_HIDE=0,
+        STARTUPINFO=lambda: startupinfo,
+    )
+    with pytest.MonkeyPatch.context() as monkeypatch:
+        monkeypatch.setattr(sys, "platform", "win32")
+        monkeypatch.setattr(os_adapter, "subprocess", fake_subprocess)
+        result = _apply_windows_child_process_policy({}, hide_window=False)
+
+    assert result["creationflags"] & fake_subprocess.CREATE_NEW_PROCESS_GROUP
+    assert not (result["creationflags"] & fake_subprocess.CREATE_NO_WINDOW)
+    assert "startupinfo" not in result
+
+
 def test_terminate_root_waits_for_direct_child_without_tree_kill(tmp_path: Path) -> None:
     pid_file = tmp_path / "pids.txt"
     sp = SupervisedProcess(

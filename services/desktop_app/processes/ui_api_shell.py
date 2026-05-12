@@ -7,6 +7,7 @@ import multiprocessing.synchronize as mpsync
 
 from services.desktop_app.ipc import IpcChannels
 from services.desktop_app.processes.operator_api_runtime import start_operator_api_runtime
+from services.desktop_app.startup_timing import log_startup_milestone
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +44,7 @@ def run(shutdown_event: mpsync.Event, channels: IpcChannels) -> None:
     coordinator = build_polling_coordinator(config, client, store)
     window = build_main_window(config, store, coordinator)
     window.show()
+    log_startup_milestone("ui_visible", logger=logger)
     coordinator.start()
     qt_app.aboutToQuit.connect(coordinator.stop)
 

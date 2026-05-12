@@ -17,7 +17,6 @@ import argparse
 import logging
 import math
 import os
-import shutil
 import signal
 import socket
 import subprocess
@@ -30,6 +29,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any, BinaryIO, cast
 
 REPO_ROOT: Path = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -42,6 +42,9 @@ from packages.schemas.operator_console import (  # noqa: E402
     SessionSummary,
     StimulusRequest,
 )
+from services.desktop_app import os_adapter  # noqa: E402
+from services.desktop_app.startup_timing import format_startup_milestone  # noqa: E402
+from services.desktop_launcher import health_check  # noqa: E402
 from services.operator_console.api_client import ApiClient, ApiError  # noqa: E402
 
 logger = logging.getLogger("real_device_benchmark")
@@ -123,6 +126,13 @@ class BenchmarkSummary:
     media_pre: MediaState
     media_post: MediaState
     media_pause_intervals: tuple[tuple[datetime, datetime | None], ...] = ()
+
+
+@dataclass(frozen=True)
+class RealDeviceTooling:
+    adb_path: str
+    scrcpy_path: str
+    ffmpeg_path: str
 
 
 class MediaWatcher:
@@ -317,7 +327,11 @@ def _allocate_port(preferred: int) -> int:
 
 
 def _spawn_desktop_app(
-    api_port: int, log_path: Path
+    api_port: int,
+    log_path: Path,
+    tooling: RealDeviceTooling,
+    *,
+    runtime_dir: Path = REPO_ROOT,
 ) -> tuple[subprocess.Popen[bytes], object | None]:
     """Spawn the desktop subprocess + (Windows) wrap it in a Job Object.
 
@@ -329,21 +343,37 @@ def _spawn_desktop_app(
     keep spawning scrcpy and recreating the §5.2 transient capture
     artefacts that the cleanup just deleted.
     """
-    env = os.environ.copy()
+    command, cwd, env = health_check.build_source_launch_command(
+        runtime_dir,
+        app_root=REPO_ROOT,
+        module_args=("--operator-api",),
+    )
     env["LSIE_API_PORT"] = str(api_port)
+    env["LSIE_ADB_PATH"] = tooling.adb_path
+    env["LSIE_SCRCPY_PATH"] = tooling.scrcpy_path
+    env["LSIE_FFMPEG_PATH"] = tooling.ffmpeg_path
     env["PYTHONUNBUFFERED"] = "1"
     env.setdefault("FOR_DISABLE_CONSOLE_CTRL_HANDLER", "1")
-    creationflags = 0
-    if sys.platform == "win32":
-        creationflags = subprocess.CREATE_NEW_PROCESS_GROUP  # type: ignore[attr-defined]
-    log_handle = log_path.open("wb")
+    with log_path.open("a", encoding="utf-8") as launch_log:
+        launch_log.write(f"\n--- launching LSIE-MLF from {cwd} with {command[0]} ---\n")
+        launch_log.write(format_startup_milestone("launcher_handoff", environ=env) + "\n")
+    stdout_handle = log_path.open("ab")
+    popen_kwargs: dict[str, Any] = os_adapter._apply_windows_child_process_policy(
+        {
+            "cwd": cwd,
+            "env": env,
+            "stdout": stdout_handle,
+            "stderr": subprocess.STDOUT,
+        },
+        hide_window=False,
+    )
     proc = subprocess.Popen(
-        [sys.executable, "-m", "services.desktop_app", "--operator-api"],
-        cwd=str(REPO_ROOT),
-        env=env,
-        stdout=log_handle,
-        stderr=subprocess.STDOUT,
-        creationflags=creationflags,
+        command,
+        cwd=cast(Path, popen_kwargs["cwd"]),
+        env=cast(dict[str, str], popen_kwargs["env"]),
+        stdout=cast(BinaryIO, popen_kwargs["stdout"]),
+        stderr=cast(int, popen_kwargs["stderr"]),
+        creationflags=int(popen_kwargs.get("creationflags", 0)),
     )
     job_handle: object | None = None
     if sys.platform == "win32":
@@ -588,15 +618,18 @@ def run_benchmark(
     experiment_id: str,
     log_path: Path,
 ) -> BenchmarkSummary:
-    adb_path = shutil.which("adb")
-    if adb_path is None:
-        raise RuntimeError(
-            "adb not on PATH — connect a device and ensure platform-tools is installed"
-        )
-    serial = _ensure_adb_device(adb_path)
+    resolved_tools, missing_tools = health_check.resolve_desktop_runtime_tools()
+    if missing_tools:
+        raise RuntimeError(health_check.describe_missing_desktop_tooling(missing_tools))
+    tooling = RealDeviceTooling(
+        adb_path=resolved_tools["adb"],
+        scrcpy_path=resolved_tools["scrcpy"],
+        ffmpeg_path=resolved_tools["ffmpeg"],
+    )
+    serial = _ensure_adb_device(tooling.adb_path)
     logger.info("ADB device ready: %s", serial)
 
-    media_pre = _observe_tiktok_state(adb_path)
+    media_pre = _observe_tiktok_state(tooling.adb_path)
     logger.info("device media state (pre): %s", media_pre.reason())
     if not media_pre.playing:
         raise RuntimeError(
@@ -605,7 +638,7 @@ def run_benchmark(
             "a paused source invalidates capture/playback-preservation conclusions."
         )
 
-    proc, job_handle = _spawn_desktop_app(api_port, log_path)
+    proc, job_handle = _spawn_desktop_app(api_port, log_path, tooling)
     logger.info("desktop app launched pid=%s api_port=%d log=%s", proc.pid, api_port, log_path)
     try:
         client = ApiClient(f"http://127.0.0.1:{api_port}", timeout_seconds=15.0)
@@ -636,7 +669,7 @@ def run_benchmark(
         capture_ready_s = time.monotonic() - capture_t0
         logger.info("capture stabilized after %.2fs", capture_ready_s)
 
-        watcher = MediaWatcher(adb_path)
+        watcher = MediaWatcher(tooling.adb_path)
         watcher.start()
         try:
             measurements: list[StimulusMeasurement] = []
@@ -674,7 +707,7 @@ def run_benchmark(
     finally:
         _stop_desktop_app(proc, job_handle)
 
-    media_post = _observe_tiktok_state(adb_path)
+    media_post = _observe_tiktok_state(tooling.adb_path)
     logger.info("device media state (post): %s", media_post.reason())
     return BenchmarkSummary(
         api_up_s=partial.api_up_s,
