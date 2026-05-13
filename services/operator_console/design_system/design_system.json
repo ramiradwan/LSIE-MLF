@@ -5,6 +5,7 @@
   "spec_refs": [
     "§4.E.1",
     "§7B",
+    "§9.5",
     "§12"
   ],
   "tokens_file": "tokens.json",
@@ -119,6 +120,20 @@
       "name": "ResponsiveMetricGrid",
       "object_names": [],
       "description": "Width-band-aware layout helper for summary cards."
+    },
+    {
+      "name": "LauncherSetupSurface",
+      "object_names": [
+        "SetupPanel",
+        "SetupTitle",
+        "SetupStatus",
+        "SetupProgress",
+        "SetupLog",
+        "SetupRetry",
+        "SetupLaunch",
+        "SetupReinstall"
+      ],
+      "description": "First-run and repair setup surface for launcher hydration, progress readback, and runtime handoff actions."
     }
   ],
   "compounds": [
@@ -165,6 +180,7 @@
     {"object_name": "SessionsFilterInput", "kind": "surface"},
     {"object_name": "ExperimentsSlideOver", "kind": "surface"},
     {"object_name": "ExperimentsSlideOverScrim", "kind": "surface"},
-    {"object_name": "ProbeSparkline", "kind": "surface"}
+    {"object_name": "ProbeSparkline", "kind": "surface"},
+    {"object_name": "SetupRoot", "kind": "launcher"}
   ]
 }

@@ -81,6 +81,24 @@ COMPONENT_SPECS: tuple[ComponentSpec, ...] = (
         ),
     ),
     ComponentSpec(
+        name="LauncherSetupSurface",
+        kind="primitive",
+        object_names=(
+            "SetupPanel",
+            "SetupTitle",
+            "SetupStatus",
+            "SetupProgress",
+            "SetupLog",
+            "SetupRetry",
+            "SetupLaunch",
+            "SetupReinstall",
+        ),
+        description=(
+            "First-run and repair setup surface for launcher hydration, progress readback, "
+            "and runtime handoff actions."
+        ),
+    ),
+    ComponentSpec(
         name="ActionBar",
         kind="compound",
         object_names=(

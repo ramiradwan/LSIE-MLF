@@ -7,9 +7,11 @@ from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
+from PySide6.QtWidgets import QFrame
 
 from services.desktop_launcher.install_manager import InstallerSignals, LauncherPaths
 from services.desktop_launcher.ui import SetupWindow
+from services.operator_console.design_system.qss_builder import build_setup_stylesheet
 
 pytestmark = pytest.mark.usefixtures("qt_app")
 
@@ -74,8 +76,46 @@ def test_setup_window_starts_manager_and_updates_progress() -> None:
 
     assert manager.started is True
     assert window.status_label.text() == "Downloading scrcpy"
+    assert window.progress_bar.objectName() == "SetupProgress"
     assert window.progress_bar.value() == 42
     assert "downloaded chunk" in window.log_view.toPlainText()
+
+
+def test_setup_window_pins_registered_object_names() -> None:
+    manager = _FakeManager()
+    window = SetupWindow(manager=manager)  # type: ignore[arg-type]
+
+    root = window.centralWidget()
+    panel = window.findChild(QFrame, "SetupPanel")
+
+    assert root is not None
+    assert root.objectName() == "SetupRoot"
+    assert panel is not None
+    assert panel.objectName() == "SetupPanel"
+    assert window.title_label.objectName() == "SetupTitle"
+    assert window.status_label.objectName() == "SetupStatus"
+    assert window.progress_bar.objectName() == "SetupProgress"
+    assert window.log_view.objectName() == "SetupLog"
+    assert window.retry_button.objectName() == "SetupRetry"
+    assert window.launch_button.objectName() == "SetupLaunch"
+    assert window.reinstall_button.objectName() == "SetupReinstall"
+
+
+def test_build_setup_stylesheet_uses_registered_launcher_selectors() -> None:
+    stylesheet = build_setup_stylesheet()
+
+    for selector in (
+        "#SetupRoot",
+        "#SetupPanel",
+        "#SetupTitle",
+        "#SetupStatus",
+        "#SetupProgress",
+        "#SetupLog",
+        "#SetupRetry",
+        "#SetupLaunch",
+        "#SetupReinstall",
+    ):
+        assert selector in stylesheet
 
 
 def test_setup_window_failure_exposes_retry() -> None:

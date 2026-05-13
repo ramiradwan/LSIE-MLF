@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
 
 from services.desktop_launcher import health_check, install_manager
 from services.desktop_launcher.install_manager import InstallManager
+from services.operator_console.design_system.qss_builder import install_setup_stylesheet
 
 
 class SetupWindow(QMainWindow):
@@ -43,6 +44,7 @@ class SetupWindow(QMainWindow):
         self.status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
         self.progress_bar = QProgressBar()
+        self.progress_bar.setObjectName("SetupProgress")
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
         self.progress_bar.setTextVisible(True)
@@ -86,7 +88,7 @@ class SetupWindow(QMainWindow):
         root_layout.setContentsMargins(36, 36, 36, 36)
         root_layout.addWidget(panel)
         self.setCentralWidget(root)
-        self.setStyleSheet(build_setup_stylesheet())
+        install_setup_stylesheet(self)
 
         signals = self.manager.signals
         signals.status_changed.connect(self.set_status)
@@ -166,80 +168,6 @@ class SetupWindow(QMainWindow):
             self.append_log("See desktop-launch.log in the LSIE-MLF app-data logs folder.")
             return
         self.close()
-
-
-def build_setup_stylesheet() -> str:
-    return """
-QWidget#SetupRoot {
-    background: #0f1115;
-}
-QFrame#SetupPanel {
-    background: #171a21;
-    border: 1px solid #262a33;
-    border-radius: 14px;
-}
-QLabel#SetupTitle {
-    color: #e6e8ed;
-    font-size: 24px;
-    font-weight: 700;
-}
-QLabel#SetupStatus {
-    color: #a6adba;
-    font-size: 14px;
-}
-QProgressBar {
-    background: #10131a;
-    border: 1px solid #303542;
-    border-radius: 8px;
-    color: #e6e8ed;
-    min-height: 24px;
-    text-align: center;
-}
-QProgressBar::chunk {
-    background: #5b8def;
-    border-radius: 7px;
-}
-QPlainTextEdit#SetupLog {
-    background: #10131a;
-    border: 1px solid #303542;
-    border-radius: 8px;
-    color: #c8ced8;
-    font-family: "Cascadia Mono", "Consolas", monospace;
-    font-size: 12px;
-    padding: 8px;
-}
-QPushButton#SetupRetry {
-    background: #5b8def;
-    border: none;
-    border-radius: 6px;
-    color: white;
-    font-weight: 600;
-    padding: 8px 18px;
-}
-QPushButton#SetupLaunch {
-    background: #2ea043;
-    border: none;
-    border-radius: 6px;
-    color: white;
-    font-weight: 600;
-    padding: 8px 18px;
-}
-QPushButton#SetupLaunch:hover {
-    background: #3fb950;
-}
-QPushButton#SetupReinstall {
-    background: transparent;
-    border: 1px solid #303542;
-    border-radius: 6px;
-    color: #a6adba;
-    font-weight: 600;
-    padding: 8px 18px;
-}
-QPushButton#SetupReinstall:hover {
-    border-color: #5b8def;
-    color: #e6e8ed;
-}
-"""
 
 
 def _build_parser() -> ArgumentParser:

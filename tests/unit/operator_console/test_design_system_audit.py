@@ -6,11 +6,14 @@ from services.operator_console.design_system.audit import (
     registered_object_names,
     stylesheet_object_names,
 )
-from services.operator_console.design_system.qss_builder import build_stylesheet
+from services.operator_console.design_system.qss_builder import (
+    build_setup_stylesheet,
+    build_stylesheet,
+)
 from services.operator_console.design_system.tokens import token_manifest
 
 
-def test_registered_object_names_cover_sidebar_and_action_bar() -> None:
+def test_registered_object_names_cover_sidebar_action_bar_and_launcher() -> None:
     names = registered_object_names(load_design_system_manifest())
 
     for name in (
@@ -21,6 +24,10 @@ def test_registered_object_names_cover_sidebar_and_action_bar() -> None:
         "ActionBarSubmit",
         "StatusPill",
         "EventTimelineTable",
+        "SetupRoot",
+        "SetupPanel",
+        "SetupProgress",
+        "SetupLaunch",
     ):
         assert name in names
 
@@ -28,9 +35,9 @@ def test_registered_object_names_cover_sidebar_and_action_bar() -> None:
 def test_stylesheet_selectors_are_registered_in_manifest() -> None:
     manifest = load_design_system_manifest()
     registered = registered_object_names(manifest)
-    selectors = stylesheet_object_names(build_stylesheet())
 
-    assert selectors <= registered
+    assert stylesheet_object_names(build_stylesheet()) <= registered
+    assert stylesheet_object_names(build_setup_stylesheet()) <= registered
 
 
 def test_stylesheet_selector_extraction_ignores_hex_literals() -> None:

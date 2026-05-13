@@ -33,6 +33,10 @@ def _operator_console_root(repo_root: Path) -> Path:
     return repo_root / "services" / "operator_console"
 
 
+def _desktop_launcher_root(repo_root: Path) -> Path:
+    return repo_root / "services" / "desktop_launcher"
+
+
 def _design_system_root(repo_root: Path) -> Path:
     return _operator_console_root(repo_root) / "design_system"
 
@@ -59,7 +63,10 @@ def _relative(repo_root: Path, path: Path) -> str:
 
 def _resolve_targets(repo_root: Path, raw_paths: Sequence[str] | None) -> tuple[Path, ...]:
     if not raw_paths:
-        return (_operator_console_root(repo_root).resolve(),)
+        return (
+            _operator_console_root(repo_root).resolve(),
+            _desktop_launcher_root(repo_root).resolve(),
+        )
     resolved: list[Path] = []
     for raw_path in raw_paths:
         candidate = Path(raw_path)
@@ -269,7 +276,14 @@ def collect_design_system_issues(
     paths: Sequence[Path] | None = None,
 ) -> tuple[str, ...]:
     resolved_root = repo_root.resolve()
-    targets = tuple(paths) if paths is not None else (_operator_console_root(resolved_root),)
+    targets = (
+        tuple(paths)
+        if paths is not None
+        else (
+            _operator_console_root(resolved_root),
+            _desktop_launcher_root(resolved_root),
+        )
+    )
     issues: list[str] = []
     issues.extend(_collect_manifest_issues(resolved_root))
     issues.extend(_collect_tokens_issues(resolved_root))

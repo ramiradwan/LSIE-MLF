@@ -35,12 +35,27 @@ def _build_repo_fixture(repo_root: Path) -> Path:
                         "name": "SidebarHeader",
                         "object_names": ["SidebarTitle", "SidebarSubtitle"],
                         "description": "Sidebar labels.",
-                    }
+                    },
+                    {
+                        "name": "LauncherSetupSurface",
+                        "object_names": [
+                            "SetupPanel",
+                            "SetupTitle",
+                            "SetupStatus",
+                            "SetupProgress",
+                            "SetupLog",
+                            "SetupRetry",
+                            "SetupLaunch",
+                            "SetupReinstall",
+                        ],
+                        "description": "Launcher setup surface.",
+                    },
                 ],
                 "compounds": [],
                 "selectors": [
                     {"object_name": "ContentSurface", "kind": "surface"},
                     {"object_name": "SidebarNav", "kind": "shell"},
+                    {"object_name": "SetupRoot", "kind": "launcher"},
                 ],
             },
             indent=2,
@@ -79,6 +94,10 @@ def _build_repo_fixture(repo_root: Path) -> Path:
         "from __future__ import annotations\n",
     )
     _write(
+        repo_root / "services" / "desktop_launcher" / "ui.py",
+        "from __future__ import annotations\n",
+    )
+    _write(
         repo_root / "docs" / "artifacts" / "OPERATOR_CONSOLE_UI_UX_AUDIT.md",
         "# audit\n",
     )
@@ -103,6 +122,10 @@ def test_collect_design_system_issues_reports_inline_qss_hex_api_import_and_unre
         "from __future__ import annotations\n\n"
         "def install() -> None:\n"
         '    widget.setStyleSheet("color: red;")\n',
+    )
+    _write(
+        repo_root / "services" / "desktop_launcher" / "ui.py",
+        'from __future__ import annotations\nACCENT = "#ffffff"\n',
     )
     _write(
         repo_root / "services" / "operator_console" / "views" / "example_view.py",

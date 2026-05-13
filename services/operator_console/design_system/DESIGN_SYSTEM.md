@@ -8,7 +8,7 @@ It is grounded in the current-state audit at `docs/artifacts/OPERATOR_CONSOLE_UI
 
 - `tokens.py` — typed palette tokens.
 - `tokens.json` — machine-readable token export.
-- `qss_builder.py` — the only place the main Operator Console stylesheet is composed or installed.
+- `qss_builder.py` — the only place the Operator Console and launcher setup stylesheets are composed or installed.
 - `design_system.json` — machine-readable manifest of shells, components, and registered object names.
 - `components.py` — Python registry of shared primitives and compounds.
 - `shells.py` — Python registry of current shell patterns.
@@ -23,6 +23,7 @@ It is grounded in the current-state audit at `docs/artifacts/OPERATOR_CONSOLE_UI
 - `EmptyStateWidget`
 - `EventTimelineWidget`
 - `ResponsiveMetricGrid`
+- `LauncherSetupSurface`
 
 ## Current compound surface
 

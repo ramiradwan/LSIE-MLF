@@ -553,6 +553,81 @@ QLabel#NullValidPill {{
 """
 
 
+def build_setup_stylesheet(palette: Palette = PALETTE) -> str:
+    p = palette
+    return f"""
+QWidget#SetupRoot {{
+    background: {p.background};
+}}
+QFrame#SetupPanel {{
+    background: {p.surface};
+    border: 1px solid {p.border};
+    border-radius: 14px;
+}}
+QLabel#SetupTitle {{
+    color: {p.text_primary};
+    font-size: 24px;
+    font-weight: 700;
+}}
+QLabel#SetupStatus {{
+    color: {p.text_muted};
+    font-size: 14px;
+}}
+QProgressBar#SetupProgress {{
+    background: {p.surface_raised};
+    border: 1px solid {p.border};
+    border-radius: 8px;
+    color: {p.text_primary};
+    min-height: 24px;
+    text-align: center;
+}}
+QProgressBar#SetupProgress::chunk {{
+    background: {p.accent};
+    border-radius: 7px;
+}}
+QPlainTextEdit#SetupLog {{
+    background: {p.surface_raised};
+    border: 1px solid {p.border};
+    border-radius: 8px;
+    color: {p.text_primary};
+    font-family: \"Cascadia Mono\", \"Consolas\", monospace;
+    font-size: 12px;
+    padding: 8px;
+}}
+QPushButton#SetupRetry {{
+    background: {p.accent};
+    border: 1px solid {p.accent};
+    border-radius: 6px;
+    color: {p.text_inverse};
+    font-weight: 600;
+    padding: 8px 18px;
+}}
+QPushButton#SetupLaunch {{
+    background: {p.status_ok};
+    border: 1px solid {p.status_ok};
+    border-radius: 6px;
+    color: {p.text_inverse};
+    font-weight: 600;
+    padding: 8px 18px;
+}}
+QPushButton#SetupLaunch:hover {{
+    border-color: {p.text_primary};
+}}
+QPushButton#SetupReinstall {{
+    background: transparent;
+    border: 1px solid {p.border};
+    border-radius: 6px;
+    color: {p.text_muted};
+    font-weight: 600;
+    padding: 8px 18px;
+}}
+QPushButton#SetupReinstall:hover {{
+    border-color: {p.accent};
+    color: {p.text_primary};
+}}
+"""
+
+
 STYLESHEET = build_stylesheet()
 
 
@@ -562,3 +637,7 @@ def install_application_stylesheet(
 ) -> None:
     app.setStyleSheet(build_stylesheet(palette))
     app.setFont(_apply_tabular_features(app.font()))
+
+
+def install_setup_stylesheet(widget: QWidget, palette: Palette = PALETTE) -> None:
+    widget.setStyleSheet(build_setup_stylesheet(palette))
