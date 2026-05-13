@@ -65,6 +65,19 @@ def _bootstrap(tmp_path: Path) -> Path:
     return db
 
 
+def _stimulus_definition(text: str) -> dict[str, object]:
+    return {
+        "stimulus_modality": "spoken_greeting",
+        "stimulus_payload": {"content_type": "text", "text": text},
+        "expected_stimulus_rule": "Deliver the spoken greeting to the creator",
+        "expected_response_rule": "The live streamer acknowledges the greeting",
+    }
+
+
+def _stimulus_definition_json(text: str) -> str:
+    return json.dumps(_stimulus_definition(text))
+
+
 def _seed_session(
     writer: SqliteWriter,
     session_id: UUID,
@@ -73,7 +86,7 @@ def _seed_session(
     started_at: str,
     experiment_id: str | None = None,
     active_arm: str | None = None,
-    expected_greeting: str | None = None,
+    stimulus_definition: str | None = None,
     bandit_decision_snapshot: str | None = None,
     ended_at: str | None = None,
 ) -> None:
@@ -86,8 +99,8 @@ def _seed_session(
         payload["experiment_id"] = experiment_id
     if active_arm is not None:
         payload["active_arm"] = active_arm
-    if expected_greeting is not None:
-        payload["expected_greeting"] = expected_greeting
+    if stimulus_definition is not None:
+        payload["stimulus_definition"] = stimulus_definition
     if bandit_decision_snapshot is not None:
         payload["bandit_decision_snapshot"] = bandit_decision_snapshot
     if ended_at is not None:
@@ -109,7 +122,13 @@ def _decision_snapshot() -> str:
                 "direct_question": {"alpha": 1.0, "beta": 4.0},
             },
             "sampled_theta_by_arm": {"warm_welcome": 0.7, "direct_question": 0.2},
-            "expected_greeting": "Say hello to the creator",
+            "stimulus_modality": "spoken_greeting",
+            "stimulus_payload": {
+                "content_type": "text",
+                "text": _stimulus_definition_json("Say hello to the creator"),
+            },
+            "expected_stimulus_rule": "Deliver the spoken greeting to the creator",
+            "expected_response_rule": "The live streamer acknowledges the greeting",
             "decision_context_hash": "a" * 64,
             "random_seed": 42,
         }
@@ -179,13 +198,13 @@ def test_fetch_sessions_marker_tracks_live_state_and_latest_encounter_changes(
     try:
         conn.execute(
             "INSERT INTO live_session_state "
-            "(session_id, active_arm, expected_greeting, is_calibrating, "
+            "(session_id, active_arm, stimulus_definition, is_calibrating, "
             "calibration_frames_accumulated, calibration_frames_required, face_present, "
             "status, updated_at_utc) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 str(SESSION_A),
                 "warm_welcome",
-                "Say hello to the creator",
+                _stimulus_definition_json("Say hello to the creator"),
                 1,
                 3,
                 10,
@@ -202,7 +221,9 @@ def test_fetch_sessions_marker_tracks_live_state_and_latest_encounter_changes(
     assert live_marker != initial_marker
     assert live_marker["max_live_updated_at"] == "2026-04-01 12:00:05"
     assert live_marker["max_active_arm"] == "warm_welcome"
-    assert live_marker["max_expected_greeting"] == "Say hello to the creator"
+    assert live_marker["max_stimulus_definition"] == _stimulus_definition_json(
+        "Say hello to the creator"
+    )
     assert live_marker["max_calibration_frames_accumulated"] == 3
 
     conn = sqlite3.connect(str(db), isolation_level=None)
@@ -266,7 +287,7 @@ def test_fetch_sessions_use_persisted_selection_before_live_state_or_encounters(
             started_at="2026-04-01 12:00:00",
             experiment_id="greeting_line_v1",
             active_arm="warm_welcome",
-            expected_greeting="Say hello to the creator",
+            stimulus_definition=_stimulus_definition_json("Say hello to the creator"),
         )
         writer.flush()
     finally:
@@ -279,13 +300,13 @@ def test_fetch_sessions_use_persisted_selection_before_live_state_or_encounters(
         active = q.fetch_active_session(cur)
 
     assert recent[0]["active_arm"] == "warm_welcome"
-    assert recent[0]["expected_greeting"] == "Say hello to the creator"
+    assert recent[0]["stimulus_definition"] == _stimulus_definition_json("Say hello to the creator")
     assert by_id is not None
     assert by_id["active_arm"] == "warm_welcome"
-    assert by_id["expected_greeting"] == "Say hello to the creator"
+    assert by_id["stimulus_definition"] == _stimulus_definition_json("Say hello to the creator")
     assert active is not None
     assert active["active_arm"] == "warm_welcome"
-    assert active["expected_greeting"] == "Say hello to the creator"
+    assert active["stimulus_definition"] == _stimulus_definition_json("Say hello to the creator")
 
 
 def test_fetch_session_by_id_returns_row(tmp_path: Path) -> None:
@@ -304,7 +325,7 @@ def test_fetch_session_by_id_returns_row(tmp_path: Path) -> None:
             {
                 "session_id": str(SESSION_A),
                 "active_arm": "warm_welcome",
-                "expected_greeting": "Say hello to the creator",
+                "stimulus_definition": _stimulus_definition_json("Say hello to the creator"),
                 "is_calibrating": 1,
                 "calibration_frames_accumulated": 8,
                 "calibration_frames_required": 10,
@@ -324,7 +345,7 @@ def test_fetch_session_by_id_returns_row(tmp_path: Path) -> None:
     assert row["session_id"] == str(SESSION_A)
     assert row["experiment_id"] == "greeting_line_v1"
     assert row["active_arm"] == "warm_welcome"
-    assert row["expected_greeting"] == "Say hello to the creator"
+    assert row["stimulus_definition"] == _stimulus_definition_json("Say hello to the creator")
     assert row["is_calibrating"] == 1
     assert row["calibration_frames_accumulated"] == 8
     assert row["calibration_frames_required"] == 10
@@ -362,6 +383,90 @@ def test_fetch_active_session_picks_unended(tmp_path: Path) -> None:
         row = q.fetch_active_session(cur)
     assert row is not None
     assert row["session_id"] == str(SESSION_B)
+
+
+def test_fetch_active_session_reads_canonical_stimulus_after_bootstrap_migrates_upgraded_db(
+    tmp_path: Path,
+) -> None:
+    db = tmp_path / "desktop.sqlite"
+    conn = sqlite3.connect(str(db), isolation_level=None)
+    conn.execute(
+        """
+        CREATE TABLE sessions (
+            session_id TEXT PRIMARY KEY,
+            stream_url TEXT NOT NULL,
+            experiment_id TEXT,
+            active_arm TEXT,
+            stimulus_definition TEXT,
+            started_at TEXT NOT NULL,
+            ended_at TEXT
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE live_session_state (
+            session_id TEXT PRIMARY KEY REFERENCES sessions(session_id),
+            active_arm TEXT,
+            is_calibrating INTEGER NOT NULL,
+            calibration_frames_accumulated INTEGER NOT NULL,
+            calibration_frames_required INTEGER NOT NULL,
+            face_present INTEGER NOT NULL,
+            latest_au12_intensity REAL,
+            latest_au12_timestamp_s REAL,
+            status TEXT NOT NULL,
+            updated_at_utc TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO sessions (
+            session_id, stream_url, experiment_id, active_arm,
+            stimulus_definition, started_at, ended_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            str(SESSION_A),
+            "android://device",
+            "greeting_line_v1",
+            "warm_welcome",
+            _stimulus_definition_json("Say hello to the creator"),
+            "2026-05-01 00:00:00",
+            None,
+        ),
+    )
+    from services.desktop_app.state.sqlite_schema import bootstrap_schema
+
+    bootstrap_schema(conn)
+    conn.execute(
+        """
+        INSERT INTO live_session_state (
+            session_id, active_arm, stimulus_definition, is_calibrating,
+            calibration_frames_accumulated, calibration_frames_required,
+            face_present, status, updated_at_utc
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            str(SESSION_A),
+            "warm_welcome",
+            _stimulus_definition_json("Say hello to the creator"),
+            0,
+            10,
+            10,
+            1,
+            "ready",
+            "2026-05-01 00:00:05",
+        ),
+    )
+    conn.close()
+
+    reader = SqliteReader(db)
+    with _cursor(reader) as cur:
+        row = q.fetch_active_session(cur)
+    assert row is not None
+    assert row["session_id"] == str(SESSION_A)
+    assert row["stimulus_definition"] == _stimulus_definition_json("Say hello to the creator")
 
 
 def test_fetch_active_session_none_when_all_ended(tmp_path: Path) -> None:
@@ -456,7 +561,7 @@ def test_markers_track_attribution_finality_only_changes(tmp_path: Path) -> None
                 "00000000-0000-4000-8000-000000000010",
                 str(SESSION_A),
                 "a" * 64,
-                "greeting_interaction",
+                "stimulus_interaction",
                 "2026-04-01 12:00:30",
                 "warm_welcome",
                 "b" * 64,
@@ -626,7 +731,7 @@ def test_fetch_experiment_arms_returns_seed_with_rollup_nulls(tmp_path: Path) ->
         assert row["recent_reward_mean"] is None
         assert row["recent_semantic_pass_rate"] is None
         assert row["enabled"] == 1
-        assert row["greeting_text"]
+        assert row["stimulus_definition"]
 
 
 def test_fetch_experiment_arms_aggregates_rollup(tmp_path: Path) -> None:
@@ -677,7 +782,7 @@ def test_fetch_active_arm_for_experiment_uses_active_session_before_encounters(
             started_at="2026-04-01 12:00:00",
             experiment_id="greeting_line_v1",
             active_arm="warm_welcome",
-            expected_greeting="Say hello to the creator",
+            stimulus_definition=_stimulus_definition_json("Say hello to the creator"),
             bandit_decision_snapshot=snapshot,
         )
         writer.flush()
@@ -780,7 +885,7 @@ def test_experiment_marker_tracks_attribution_decision_snapshot_by_session_conte
                 "00000000-0000-4000-8000-000000000011",
                 str(SESSION_A),
                 "d" * 64,
-                "greeting_interaction",
+                "stimulus_interaction",
                 "2026-04-01 12:00:30",
                 "warm_welcome",
                 "b" * 64,

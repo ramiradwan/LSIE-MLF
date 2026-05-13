@@ -8,6 +8,7 @@ from uuid import UUID
 from pydantic import UUID4, BaseModel, ConfigDict, Field, model_validator
 
 from packages.schemas.attribution import AttributionEvent
+from packages.schemas.evaluation import StimulusDefinition
 from packages.schemas.inference_handoff import InferenceHandoffPayload
 
 SHA256_HEX_PATTERN = "^[0-9a-f]{64}$"
@@ -54,7 +55,7 @@ class CloudIngestResponse(CloudSchemaModel):
 
 class ExperimentBundleArm(CloudSchemaModel):
     arm_id: str = Field(..., min_length=1)
-    greeting_text: str = Field(..., min_length=1)
+    stimulus_definition: StimulusDefinition
     posterior_alpha: float = Field(..., gt=0.0)
     posterior_beta: float = Field(..., gt=0.0)
     selection_count: int = Field(default=0, ge=0)

@@ -29,7 +29,7 @@ from packages.schemas.evaluation import SEMANTIC_METHODS, SEMANTIC_REASON_CODES
 ATTRIBUTION_SCHEMA_VERSION: str = "v3.4"
 ATTRIBUTION_FINALITY_ONLINE: str = "online_provisional"
 ATTRIBUTION_FINALITY_OFFLINE: str = "offline_final"
-ATTRIBUTION_EVENT_TYPE_GREETING: Literal["greeting_interaction"] = "greeting_interaction"
+ATTRIBUTION_EVENT_TYPE_STIMULUS: Literal["stimulus_interaction"] = "stimulus_interaction"
 OUTCOME_TYPE_CREATOR_FOLLOW: Literal["creator_follow"] = "creator_follow"
 DEFAULT_REWARD_PATH_VERSION: str = "7B.v3.4"
 DEFAULT_LINK_RULE_VERSION: str = "event_outcome_lag_horizon_v1"
@@ -626,10 +626,15 @@ def build_attribution_ledger_records(
     if stimulus_time_utc is None:
         stimulus_time_utc = epoch_s_to_utc_datetime(metrics.get("_stimulus_time"))
 
-    expected_rule_text = str(
-        metrics.get("_expected_greeting")
-        or metrics.get("expected_greeting")
-        or snapshot.expected_greeting
+    expected_stimulus_rule = str(
+        metrics.get("_expected_stimulus_rule")
+        or metrics.get("expected_stimulus_rule")
+        or snapshot.expected_stimulus_rule
+    )
+    expected_response_rule = str(
+        metrics.get("_expected_response_rule")
+        or metrics.get("expected_response_rule")
+        or snapshot.expected_response_rule
     )
     active_arm = str(
         metrics.get("_active_arm") or metrics.get("active_arm") or snapshot.selected_arm_id
@@ -637,22 +642,41 @@ def build_attribution_ledger_records(
     if not active_arm:
         return None
     semantic = _semantic_metadata(metrics)
+    response_inference = metrics.get("response_inference")
+    if not isinstance(response_inference, dict):
+        response_inference = {}
+    stimulus_id_raw = metrics.get("_stimulus_id") or metrics.get("stimulus_id")
+    try:
+        stimulus_id = None if stimulus_id_raw is None else uuid.UUID(str(stimulus_id_raw))
+    except (TypeError, ValueError):
+        stimulus_id = None
+    matched_response_time_utc = parse_utc_datetime(metrics.get("matched_response_time_utc"))
+    if matched_response_time_utc is None:
+        matched_response_time_utc = epoch_s_to_utc_datetime(
+            response_inference.get("matched_response_time")
+        )
+    response_registration_status = response_inference.get("registration_status") or metrics.get(
+        "response_registration_status"
+    )
+    response_reason_code = response_inference.get("response_reason_code") or metrics.get(
+        "response_reason_code"
+    )
 
     try:
         event = AttributionEvent(
             event_id=attribution_event_id(
                 session_id=session_id,
                 segment_id=segment_id,
-                event_type=ATTRIBUTION_EVENT_TYPE_GREETING,
+                event_type=ATTRIBUTION_EVENT_TYPE_STIMULUS,
                 reward_path_version=reward_path_version,
             ),
             session_id=uuid.UUID(session_id),
             segment_id=segment_id,
-            event_type=ATTRIBUTION_EVENT_TYPE_GREETING,
+            event_type=ATTRIBUTION_EVENT_TYPE_STIMULUS,
             event_time_utc=event_time,
             stimulus_time_utc=stimulus_time_utc,
             selected_arm_id=active_arm,
-            expected_rule_text_hash=expected_rule_text_hash(expected_rule_text),
+            expected_rule_text_hash=expected_rule_text_hash(expected_stimulus_rule),
             semantic_method=semantic["semantic_method"],
             semantic_method_version=semantic["semantic_method_version"],
             semantic_p_match=semantic["semantic_p_match"],
@@ -663,6 +687,16 @@ def build_attribution_ledger_records(
             finality=finality,  # type: ignore[arg-type]
             schema_version=schema_version,
             created_at=created,
+            stimulus_id=stimulus_id,
+            stimulus_modality=(
+                metrics.get("_stimulus_modality")
+                or metrics.get("stimulus_modality")
+                or snapshot.stimulus_modality
+            ),
+            matched_response_time_utc=matched_response_time_utc,
+            response_registration_status=response_registration_status,
+            response_reason_code=response_reason_code,
+            expected_response_rule_text_hash=expected_rule_text_hash(expected_response_rule),
         )
     except Exception:
         return None

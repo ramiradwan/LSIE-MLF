@@ -68,7 +68,7 @@ def _seed_session(
         status="active",
         started_at_utc=_NOW,
         active_arm="greeting_v1",
-        expected_greeting="hei rakas",
+        expected_response_text="hei rakas",
         is_calibrating=is_calibrating,
         calibration_frames_accumulated=calibration_frames_accumulated,
         calibration_frames_required=calibration_frames_required,
@@ -115,7 +115,7 @@ def test_action_bar_disables_submit_while_stimulus_submitting() -> None:
     store = OperatorStore()
     session = _seed_session(store)
     bar = ActionBar()
-    bar.set_session_context(session.session_id, session.active_arm, session.expected_greeting)
+    bar.set_session_context(session.session_id, session.active_arm, session.expected_response_text)
     # Idle state — the button is enabled because a session is bound.
     assert bar._submit_button.isEnabled() is True  # type: ignore[attr-defined]
     assert "stimulus strategy: greeting_v1" in bar._session_label.text()  # type: ignore[attr-defined]
@@ -149,7 +149,7 @@ def test_action_bar_disables_submit_until_calibration_ready() -> None:
     bar.set_session_context(
         session.session_id,
         session.active_arm,
-        session.expected_greeting,
+        session.expected_response_text,
         operator_ready_for_submit=operator_ready_for_submit(session),
     )
     assert bar._submit_button.isEnabled() is False  # type: ignore[attr-defined]
@@ -162,7 +162,7 @@ def test_action_bar_disables_submit_until_calibration_ready() -> None:
     bar.set_session_context(
         ready_session.session_id,
         ready_session.active_arm,
-        ready_session.expected_greeting,
+        ready_session.expected_response_text,
         operator_ready_for_submit=operator_ready_for_submit(ready_session),
     )
     assert bar._submit_button.isEnabled() is True  # type: ignore[attr-defined]

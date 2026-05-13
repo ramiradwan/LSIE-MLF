@@ -32,7 +32,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, model_serializer, model_validator
 
-from packages.schemas.evaluation import SemanticMethod, SemanticReasonCode
+from packages.schemas.evaluation import SemanticMethod, SemanticReasonCode, StimulusDefinition
 from packages.schemas.inference_handoff import InferenceHandoffPayload
 from services.desktop_app.ipc.shared_buffers import PcmBlockMetadata
 
@@ -90,7 +90,7 @@ class LiveSessionControlMessage(BaseModel):
     stream_url: str | None = Field(default=None, min_length=1)
     experiment_id: str | None = Field(default=None, min_length=1)
     active_arm: str | None = Field(default=None, min_length=1)
-    expected_greeting: str | None = Field(default=None, min_length=1)
+    stimulus_definition: StimulusDefinition | None = None
     stimulus_time_s: float | None = Field(default=None, ge=0.0)
     timestamp_utc: datetime
 
@@ -119,7 +119,7 @@ class VisualAnalyticsStateMessage(BaseModel):
     calibration_frames_accumulated: int = Field(..., ge=0)
     calibration_frames_required: int = Field(..., gt=0)
     active_arm: str | None = Field(default=None, min_length=1)
-    expected_greeting: str | None = Field(default=None, min_length=1)
+    stimulus_definition: StimulusDefinition | None = None
     latest_au12_intensity: float | None = Field(default=None, ge=0.0, le=1.0)
     latest_au12_timestamp_s: float | None = Field(default=None, ge=0.0)
     status: Literal[

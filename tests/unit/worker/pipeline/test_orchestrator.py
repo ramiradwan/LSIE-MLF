@@ -24,10 +24,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from packages.schemas.evaluation import StimulusPayload
 from packages.schemas.inference_handoff import InferenceHandoffPayload
 from packages.schemas.physiology import PhysiologicalChunkEvent, PhysiologicalChunkPayload
 from services.worker.pipeline.orchestrator import (
     BANDIT_POLICY_VERSION,
+    DEFAULT_STIMULUS_DEFINITION,
     FFMPEG_RESAMPLE_CMD,
     LIVE_SESSION_CALIBRATION_FRAMES_REQUIRED,
     LIVE_SESSION_STATE_TTL_S,
@@ -64,21 +66,36 @@ class _FakeMetricsStore:
             "arm": "warm_welcome",
             "alpha_param": 2.0,
             "beta_param": 5.0,
-            "greeting_text": "Warm welcome",
+            "stimulus_definition": {
+                "stimulus_modality": "spoken_greeting",
+                "stimulus_payload": {"content_type": "text", "text": "Warm welcome"},
+                "expected_stimulus_rule": "Deliver the spoken greeting to the creator",
+                "expected_response_rule": "The live streamer acknowledges the greeting",
+            },
         },
         {
             "id": 12,
             "arm": "direct_question",
             "alpha_param": 4.0,
             "beta_param": 3.0,
-            "greeting_text": "Direct question",
+            "stimulus_definition": {
+                "stimulus_modality": "question",
+                "stimulus_payload": {"content_type": "text", "text": "Direct question"},
+                "expected_stimulus_rule": "Ask the streamer a direct question",
+                "expected_response_rule": "The streamer answers the question",
+            },
         },
         {
             "id": 13,
             "arm": "simple_hello",
             "alpha_param": 1.5,
             "beta_param": 2.5,
-            "greeting_text": "Simple hello",
+            "stimulus_definition": {
+                "stimulus_modality": "spoken_greeting",
+                "stimulus_payload": {"content_type": "text", "text": "Simple hello"},
+                "expected_stimulus_rule": "Deliver the spoken greeting to the creator",
+                "expected_response_rule": "The live streamer acknowledges the greeting",
+            },
         },
     ]
 
@@ -268,7 +285,7 @@ class TestOrchestrator:
         mock_redis = MagicMock()
         orch._redis = mock_redis
         orch._active_arm = "arm-a"
-        orch._expected_greeting = "hello there"
+        orch._stimulus_definition = orch._stimulus_definition or DEFAULT_STIMULUS_DEFINITION
         orch._au12_normalizer = type("_Norm", (), {"calibration_buffer": [0.1] * 12})()
 
         orch._publish_live_session_state()
@@ -278,7 +295,7 @@ class TestOrchestrator:
         assert mock_redis.set.call_args.kwargs["ex"] == LIVE_SESSION_STATE_TTL_S
         payload = json.loads(raw_payload)
         assert payload["active_arm"] == "arm-a"
-        assert payload["expected_greeting"] == "hello there"
+        assert payload["stimulus_definition"] == DEFAULT_STIMULUS_DEFINITION.model_dump(mode="json")
         assert payload["is_calibrating"] is True
         assert payload["calibration_frames_accumulated"] == 12
         assert payload["calibration_frames_required"] == LIVE_SESSION_CALIBRATION_FRAMES_REQUIRED
@@ -313,12 +330,19 @@ class TestOrchestrator:
 
         def select_arm() -> None:
             orch._active_arm = "arm-new"
-            orch._expected_greeting = "hello new session"
+            orch._stimulus_definition = DEFAULT_STIMULUS_DEFINITION.model_copy(
+                update={
+                    "stimulus_payload": StimulusPayload(
+                        content_type="text",
+                        text="hello new session",
+                    ),
+                }
+            )
 
         orch._select_experiment_arm = MagicMock(side_effect=select_arm)  # type: ignore[method-assign]
         old_reset_payload = {
             "active_arm": None,
-            "expected_greeting": None,
+            "stimulus_definition": None,
             "is_calibrating": True,
             "calibration_frames_accumulated": 0,
             "calibration_frames_required": LIVE_SESSION_CALIBRATION_FRAMES_REQUIRED,
@@ -327,7 +351,11 @@ class TestOrchestrator:
         # lifecycle start must still write it to the new session-scoped key.
         orch._last_live_session_state_payload = json.dumps(old_reset_payload, sort_keys=True)
         orch._active_arm = "arm-old"
-        orch._expected_greeting = "old greeting"
+        orch._stimulus_definition = DEFAULT_STIMULUS_DEFINITION.model_copy(
+            update={
+                "stimulus_payload": StimulusPayload(content_type="text", text="old greeting"),
+            }
+        )
         orch._is_calibrating = False
         orch._au12_normalizer = type("_Norm", (), {"calibration_buffer": [0.1] * 99})()
 
@@ -353,7 +381,9 @@ class TestOrchestrator:
 
         last_payload = json.loads(last_raw)
         assert last_payload["active_arm"] == "arm-new"
-        assert last_payload["expected_greeting"] == "hello new session"
+        assert last_payload["stimulus_definition"] == orch._stimulus_definition.model_dump(
+            mode="json"
+        )
         assert last_payload["is_calibrating"] is True
         assert last_payload["calibration_frames_accumulated"] == 0
 
@@ -1118,7 +1148,14 @@ class TestOrchestrator:
     def test_bandit_snapshot_copies_pre_update_state_and_keeps_empty_sample_map(self) -> None:
         orch = Orchestrator(session_id="77777777-7777-4777-8777-777777777777")
         orch._active_arm = "arm_a"
-        orch._expected_greeting = "hello before update"
+        orch._stimulus_definition = DEFAULT_STIMULUS_DEFINITION.model_copy(
+            update={
+                "stimulus_payload": StimulusPayload(
+                    content_type="text",
+                    text="hello before update",
+                ),
+            }
+        )
         orch._experiment_row_id = 17
         selection_time = datetime(2026, 3, 13, 12, 0, 0, tzinfo=UTC)
         segment_window_start = datetime(2026, 3, 13, 11, 59, 30, tzinfo=UTC)
@@ -1147,7 +1184,10 @@ class TestOrchestrator:
         assert snapshot["selected_arm_id"] == "arm_a"
         assert snapshot["candidate_arm_ids"] == ["arm_a", "arm_b"]
         assert snapshot["posterior_by_arm"]["arm_a"] == {"alpha": 2.0, "beta": 3.0}
-        assert snapshot["expected_greeting"] == "hello before update"
+        assert snapshot["stimulus_payload"] == {
+            "content_type": "text",
+            "text": "hello before update",
+        }
         assert len(snapshot["decision_context_hash"]) == 64
         assert isinstance(snapshot["random_seed"], int)
         assert snapshot["sampled_theta_by_arm"] == {}

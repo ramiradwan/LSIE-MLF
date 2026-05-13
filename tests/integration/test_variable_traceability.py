@@ -904,6 +904,7 @@ def _discover_variable_producers() -> dict[tuple[str, str], list[VariableEvidenc
     add_alias(("PcmBlockMetadata.sha256",), "SharedMemory Checksum")
     add_alias(("PosteriorDelta.delta_alpha", "PosteriorDelta.delta_beta"), "Posterior Delta")
     add_alias(("PosteriorDelta.event_id",), "Cloud Event ID")
+    add_alias(("stimulus_definition",), "stimulus_modality")
     add_alias(("ResponseInference.is_match",), "response_inference.is_match")
     add_alias(("ResponseInference.confidence_score",), "response_inference.confidence_score")
     add_alias(("ResponseInference.registration_status",), "response_inference.registration_status")
@@ -1020,7 +1021,8 @@ def _discover_variable_producers() -> dict[tuple[str, str], list[VariableEvidenc
         "selection_method",
         "selection_time_utc",
         "decision_context_hash",
-        "expected_greeting",
+        "expected_stimulus_rule",
+        "expected_response_rule",
         "expected_rule_text_hash",
         "expected_response_rule_text_hash",
         "reward_path_version",
@@ -1051,7 +1053,8 @@ def _discover_variable_producers() -> dict[tuple[str, str], list[VariableEvidenc
         "operator_rmssd_mean",
         "window_minutes",
         "label",
-        "greeting_text",
+        "stimulus_modality",
+        "stimulus_payload",
         "enabled",
         "recent_reward_mean",
         "recent_semantic_pass_rate",
@@ -1115,7 +1118,10 @@ def _discover_variable_producers() -> dict[tuple[str, str], list[VariableEvidenc
         "_experiment_code",
         "_active_arm",
         "_experiment_id",
-        "_expected_greeting",
+        "_stimulus_modality",
+        "_stimulus_payload",
+        "_expected_stimulus_rule",
+        "_expected_response_rule",
         "_physiological_context",
     }
     relevant_tokens = {
@@ -1249,6 +1255,10 @@ def _discover_variable_producers() -> dict[tuple[str, str], list[VariableEvidenc
                     continue
                 if surface.module == "F" and variable != "Cloud Event ID":
                     continue
+            if surface.path.endswith("packages/schemas/evaluation.py") and not produced_in_section(
+                variable, "§11.4"
+            ):
+                continue
             if surface.path.endswith("analytics_state_worker.py") and variable != "Posterior Delta":
                 continue
             if surface.path.endswith("packages/ml_core/attribution.py") and not produced_in_section(

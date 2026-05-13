@@ -50,6 +50,18 @@ from services.worker.pipeline.analytics import (  # noqa: E402
     ThompsonSamplingEngine,
 )
 
+_STIMULUS_DEFINITION_HELLO_A = (
+    '{"stimulus_modality":"spoken_greeting","stimulus_payload":{"content_type":"text",'
+    '"text":"Hello A"},"expected_stimulus_rule":"Deliver the spoken greeting to the '
+    'creator","expected_response_rule":"The live streamer acknowledges the greeting"}'
+)
+
+_STIMULUS_DEFINITION_HOW_ARE_YOU = (
+    '{"stimulus_modality":"question","stimulus_payload":{"content_type":"text",'
+    '"text":"How are you?"},"expected_stimulus_rule":"Ask the streamer a direct '
+    'question","expected_response_rule":"The streamer answers the question"}'
+)
+
 
 @pytest.fixture()
 def mock_conn() -> MagicMock:
@@ -596,7 +608,7 @@ class TestMetricsStore:
         from datetime import UTC, datetime
 
         from packages.ml_core.attribution import (
-            ATTRIBUTION_EVENT_TYPE_GREETING,
+            ATTRIBUTION_EVENT_TYPE_STIMULUS,
             DEFAULT_ATTRIBUTION_METHOD_VERSION,
             DEFAULT_LINK_RULE_VERSION,
             DEFAULT_REWARD_PATH_VERSION,
@@ -621,7 +633,10 @@ class TestMetricsStore:
                 "semantic_method_version": "ce-v1.2.3",
             },
             "_active_arm": "arm-a",
-            "_expected_greeting": "hello welcome",
+            "_stimulus_modality": "spoken_greeting",
+            "_stimulus_payload": {"content_type": "text", "text": "hello welcome"},
+            "_expected_stimulus_rule": "Deliver the spoken greeting to the creator",
+            "_expected_response_rule": "The live streamer acknowledges the greeting",
             "_stimulus_time": 1773403200.0,
             "_au12_series": [
                 {"timestamp_s": 1773403195.5, "intensity": 0.10},
@@ -642,7 +657,10 @@ class TestMetricsStore:
                     "arm-b": {"alpha": 4.0, "beta": 5.0},
                 },
                 "sampled_theta_by_arm": {"arm-a": 0.4, "arm-b": 0.2},
-                "expected_greeting": "hello welcome",
+                "stimulus_modality": "spoken_greeting",
+                "stimulus_payload": {"content_type": "text", "text": "hello welcome"},
+                "expected_stimulus_rule": "Deliver the spoken greeting to the creator",
+                "expected_response_rule": "The live streamer acknowledges the greeting",
                 "decision_context_hash": "b" * 64,
                 "random_seed": 123,
             },
@@ -684,7 +702,7 @@ class TestMetricsStore:
         expected_event_id = attribution_event_id(
             session_id=metrics["session_id"],
             segment_id=metrics["segment_id"],
-            event_type=ATTRIBUTION_EVENT_TYPE_GREETING,
+            event_type=ATTRIBUTION_EVENT_TYPE_STIMULUS,
             reward_path_version=DEFAULT_REWARD_PATH_VERSION,
         )
         expected_outcome_id = outcome_event_id(
@@ -793,7 +811,10 @@ class TestMetricsStore:
                 "semantic_method_version": "gray-v2",
             },
             "_active_arm": "arm-b",
-            "_expected_greeting": "hello welcome",
+            "_stimulus_modality": "spoken_greeting",
+            "_stimulus_payload": {"content_type": "text", "text": "hello welcome"},
+            "_expected_stimulus_rule": "Deliver the spoken greeting to the creator",
+            "_expected_response_rule": "The live streamer acknowledges the greeting",
             "_stimulus_time": 1773403200.0,
             "_au12_series": [],
             "_bandit_decision_snapshot": {
@@ -805,7 +826,10 @@ class TestMetricsStore:
                 "candidate_arm_ids": ["arm-b"],
                 "posterior_by_arm": {"arm-b": {"alpha": 1.0, "beta": 1.0}},
                 "sampled_theta_by_arm": {"arm-b": 0.5},
-                "expected_greeting": "hello welcome",
+                "stimulus_modality": "spoken_greeting",
+                "stimulus_payload": {"content_type": "text", "text": "hello welcome"},
+                "expected_stimulus_rule": "Deliver the spoken greeting to the creator",
+                "expected_response_rule": "The live streamer acknowledges the greeting",
                 "decision_context_hash": "b" * 64,
                 "random_seed": 123,
             },
@@ -868,7 +892,10 @@ class TestMetricsStore:
                 "semantic_method_version": "ce-v1.2.3",
             },
             "_active_arm": "arm-a",
-            "_expected_greeting": "hello welcome",
+            "_stimulus_modality": "spoken_greeting",
+            "_stimulus_payload": {"content_type": "text", "text": "hello welcome"},
+            "_expected_stimulus_rule": "Deliver the spoken greeting to the creator",
+            "_expected_response_rule": "The live streamer acknowledges the greeting",
             "_stimulus_time": 1773403200.0,
             "_au12_series": [
                 {"timestamp_s": 1773403195.5, "intensity": 0.10},
@@ -889,7 +916,10 @@ class TestMetricsStore:
                     "arm-b": {"alpha": 4.0, "beta": 5.0},
                 },
                 "sampled_theta_by_arm": {"arm-a": 0.4, "arm-b": 0.2},
-                "expected_greeting": "hello welcome",
+                "stimulus_modality": "spoken_greeting",
+                "stimulus_payload": {"content_type": "text", "text": "hello welcome"},
+                "expected_stimulus_rule": "Deliver the spoken greeting to the creator",
+                "expected_response_rule": "The live streamer acknowledges the greeting",
                 "decision_context_hash": "b" * 64,
                 "random_seed": 123,
             },
@@ -1094,16 +1124,28 @@ class TestMetricsStoreExperiments:
         """Scheduler input excludes disabled/end-dated arms."""
         cursor = mock_conn.cursor.return_value.__enter__.return_value
         cursor.fetchall.return_value = [
-            ("arm_a", 5.0, 3.0),
-            ("arm_b", 2.0, 8.0),
+            (1, "arm_a", _STIMULUS_DEFINITION_HELLO_A, 5.0, 3.0),
+            (2, "arm_b", _STIMULUS_DEFINITION_HOW_ARE_YOU, 2.0, 8.0),
         ]
 
         with patch.object(store, "_experiment_arm_status_columns_available", return_value=True):
             arms = store.get_experiment_arms("exp-1")
 
         assert len(arms) == 2
-        assert arms[0] == {"arm": "arm_a", "alpha_param": 5.0, "beta_param": 3.0}
-        assert arms[1] == {"arm": "arm_b", "alpha_param": 2.0, "beta_param": 8.0}
+        assert arms[0] == {
+            "id": 1,
+            "arm": "arm_a",
+            "stimulus_definition": _STIMULUS_DEFINITION_HELLO_A,
+            "alpha_param": 5.0,
+            "beta_param": 3.0,
+        }
+        assert arms[1] == {
+            "id": 2,
+            "arm": "arm_b",
+            "stimulus_definition": _STIMULUS_DEFINITION_HOW_ARE_YOU,
+            "alpha_param": 2.0,
+            "beta_param": 8.0,
+        }
         sql = cursor.execute.call_args[0][0]
         assert "COALESCE(enabled, TRUE) = TRUE" in sql
         assert "end_dated_at IS NULL" in sql
@@ -1114,7 +1156,7 @@ class TestMetricsStoreExperiments:
         mock_conn: MagicMock,
     ) -> None:
         cursor = mock_conn.cursor.return_value.__enter__.return_value
-        cursor.fetchall.return_value = [("arm_a", 5.0, 3.0)]
+        cursor.fetchall.return_value = [(1, "arm_a", _STIMULUS_DEFINITION_HELLO_A, 5.0, 3.0)]
 
         with patch.object(store, "_experiment_arm_status_columns_available", return_value=False):
             store.get_experiment_arms("exp-1")
@@ -1129,11 +1171,23 @@ class TestMetricsStoreExperiments:
         mock_conn: MagicMock,
     ) -> None:
         cursor = mock_conn.cursor.return_value.__enter__.return_value
-        cursor.fetchone.return_value = ("arm_a", 5.0, 3.0)
+        cursor.fetchone.return_value = (
+            1,
+            "arm_a",
+            _STIMULUS_DEFINITION_HELLO_A,
+            5.0,
+            3.0,
+        )
 
         arm = store.get_experiment_arm("exp-1", "arm_a")
 
-        assert arm == {"arm": "arm_a", "alpha_param": 5.0, "beta_param": 3.0}
+        assert arm == {
+            "id": 1,
+            "arm": "arm_a",
+            "stimulus_definition": _STIMULUS_DEFINITION_HELLO_A,
+            "alpha_param": 5.0,
+            "beta_param": 3.0,
+        }
         sql = cursor.execute.call_args[0][0]
         assert "AND arm = %(arm)s" in sql
         assert "end_dated_at IS NULL" not in sql

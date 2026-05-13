@@ -12,7 +12,7 @@ lifecycle, reward explanation, countdown arithmetic — lives in
 `LiveSessionViewModel`; this file is layout + signal wiring only.
 
 Spec references:
-  §4.C           — `_active_arm`, `_expected_greeting`, authoritative
+  §4.C           — `_active_arm`, `_expected_response_text`, authoritative
                    `_stimulus_time`; header reads from live-session DTO
                    never from the encounter rows, while the calibration
                    pill renders console safe-submit readiness
@@ -374,7 +374,7 @@ class LiveSessionView(QWidget):
         self._session_panel.set_session(
             session,
             active_arm=self._vm.active_arm(),
-            expected_greeting=self._vm.expected_greeting(),
+            expected_response_text=self._vm.expected_response_text(),
             calibration_status=self._vm.calibration_status(),
             start_enabled=self._vm.can_start_session(),
             end_enabled=self._vm.can_end_session(),
@@ -1225,14 +1225,14 @@ class _SessionHeaderPanel(QFrame):
         session: SessionSummary | None,
         *,
         active_arm: str | None,
-        expected_greeting: str | None,
+        expected_response_text: str | None,
         calibration_status: tuple[UiStatusKind, str],
         start_enabled: bool,
         end_enabled: bool,
         start_in_progress: bool,
         end_in_progress: bool,
     ) -> None:
-        del active_arm, expected_greeting
+        del active_arm, expected_response_text
         if session is None:
             self._session_label.setText("No session selected")
             self._session_label.setAccessibleDescription("No session is selected.")
@@ -1496,7 +1496,7 @@ class _EncounterDetailPanel(QFrame):
                 card.set_secondary_text("")
                 card.set_status(UiStatusKind.NEUTRAL, None)
             self._explanation.setText(explanation)
-            self._set_transcription(None)
+            self._set_observed_response_text(None)
             self._set_acoustic(acoustic_detail)
             self._set_semantic_attribution(semantic_detail)
             return
@@ -1555,7 +1555,7 @@ class _EncounterDetailPanel(QFrame):
             self._physiology_card.set_status(UiStatusKind.NEUTRAL, "absent")
 
         self._explanation.setText(explanation)
-        self._set_transcription(encounter.transcription)
+        self._set_observed_response_text(encounter.observed_response_text)
         self._set_acoustic(acoustic_detail)
         self._set_semantic_attribution(semantic_detail)
 
@@ -1600,8 +1600,8 @@ class _EncounterDetailPanel(QFrame):
             value_label.setObjectName("EncounterInputsLabel")
             self._inputs_form.addRow(key_label, value_label)
 
-    def _set_transcription(self, transcription: str | None) -> None:
-        text = transcription.strip() if transcription is not None else ""
+    def _set_observed_response_text(self, observed_response_text: str | None) -> None:
+        text = observed_response_text.strip() if observed_response_text is not None else ""
         self._transcription_text.setText(text or "No spoken response was captured in this window.")
 
     def _set_acoustic(self, detail: AcousticDetailDisplay) -> None:

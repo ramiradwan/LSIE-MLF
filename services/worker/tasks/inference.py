@@ -32,7 +32,13 @@ logger = logging.getLogger(__name__)
 _FORWARD_FIELDS: tuple[str, ...] = (
     "_active_arm",
     "_experiment_id",
-    "_expected_greeting",
+    "_stimulus_modality",
+    "_stimulus_payload",
+    "_expected_stimulus_rule",
+    "_expected_response_rule",
+    "_stimulus_id",
+    "_response_observation_horizon_s",
+    "response_inference",
     "_au12_series",
     "_stimulus_time",
 )
@@ -212,7 +218,7 @@ def _default_semantic_method_version(method: str) -> str:
     try:
         from packages.ml_core.semantic import CROSS_ENCODER_METHOD_VERSION
     except (AttributeError, ImportError):
-        return "lsie-greeting-cross-encoder-v1.0.0+semantic-greeting-calibration-v1.0.0"
+        return "lsie-stimulus-cross-encoder-v1.0.0+semantic-response-calibration-v1.0.0"
 
     return CROSS_ENCODER_METHOD_VERSION
 
@@ -483,11 +489,11 @@ def process_segment(self: Task, payload: dict[str, Any]) -> dict[str, Any]:
             from packages.ml_core.semantic import SemanticEvaluator
 
             evaluator = SemanticEvaluator()
-            # §8.3 — Evaluate against default greeting rule
-            expected_greeting: str = payload.get(
-                "_expected_greeting", "Hello, welcome to the stream!"
+            expected_response_rule: str = payload.get(
+                "_expected_response_rule",
+                "The streamer acknowledges the stimulus.",
             )
-            live_semantic = evaluator.evaluate(expected_greeting, preprocessed_text)
+            live_semantic = evaluator.evaluate(expected_response_rule, preprocessed_text)
             semantic = _normalize_semantic_result(
                 live_semantic,
                 semantic_method=getattr(evaluator, "last_semantic_method", None),
@@ -629,7 +635,7 @@ def persist_metrics(self: Task, metrics: dict[str, Any]) -> None:
     records in memory and retry every 5 seconds before overflow to CSV.
 
     Reward inputs are optional observation telemetry from the Orchestrator Container:
-    `_active_arm`, `_experiment_id`, `_expected_greeting`, `_au12_series`,
+    `_active_arm`, `_experiment_id`, `_expected_response_rule`, `_au12_series`,
     and `_stimulus_time`. When all reward inputs are present, the §7B path
     builds the timestamped AU12 series, applies the post-stimulus response
     window, aggregates P90 intensity, gates it with semantic `is_match`, and

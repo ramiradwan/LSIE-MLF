@@ -137,7 +137,7 @@ EXPECTED_COLUMNS: dict[str, set[str]] = {
     "live_session_state": {
         "session_id",
         "active_arm",
-        "expected_greeting",
+        "stimulus_definition",
         "is_calibrating",
         "calibration_frames_accumulated",
         "calibration_frames_required",
@@ -313,6 +313,136 @@ def test_bootstrap_migrates_existing_pending_uploads_table(tmp_path: Path) -> No
 
     columns = _table_columns(conn, "pending_uploads")
     assert {"payload_sha256", "payload_redacted_at_utc"}.issubset(columns)
+    conn.close()
+
+
+def test_bootstrap_migrates_existing_live_session_state_and_attribution_tables(
+    tmp_path: Path,
+) -> None:
+    conn = sqlite3.connect(str(tmp_path / "desktop.sqlite"), isolation_level=None)
+    conn.execute(
+        """
+        CREATE TABLE sessions (
+            session_id TEXT PRIMARY KEY,
+            stream_url TEXT NOT NULL,
+            started_at TEXT NOT NULL,
+            stimulus_definition TEXT
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE live_session_state (
+            session_id TEXT PRIMARY KEY REFERENCES sessions(session_id),
+            active_arm TEXT,
+            is_calibrating INTEGER NOT NULL,
+            calibration_frames_accumulated INTEGER NOT NULL,
+            calibration_frames_required INTEGER NOT NULL,
+            face_present INTEGER NOT NULL,
+            latest_au12_intensity REAL,
+            latest_au12_timestamp_s REAL,
+            status TEXT NOT NULL,
+            updated_at_utc TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE attribution_event (
+            event_id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL REFERENCES sessions(session_id),
+            segment_id TEXT NOT NULL,
+            event_type TEXT NOT NULL,
+            event_time_utc TEXT NOT NULL,
+            stimulus_time_utc TEXT,
+            stimulus_modality TEXT,
+            selected_arm_id TEXT NOT NULL,
+            expected_rule_text_hash TEXT NOT NULL,
+            semantic_method TEXT NOT NULL,
+            semantic_method_version TEXT NOT NULL,
+            semantic_p_match REAL,
+            semantic_reason_code TEXT,
+            reward_path_version TEXT NOT NULL,
+            bandit_decision_snapshot TEXT NOT NULL,
+            evidence_flags TEXT NOT NULL DEFAULT '[]',
+            finality TEXT NOT NULL,
+            schema_version TEXT NOT NULL
+        )
+        """
+    )
+
+    bootstrap_schema(conn)
+
+    assert "stimulus_definition" in _table_columns(conn, "live_session_state")
+    attribution_columns = _table_columns(conn, "attribution_event")
+    assert {
+        "stimulus_id",
+        "stimulus_modality",
+        "selected_arm_id",
+        "expected_rule_text_hash",
+        "expected_response_rule_text_hash",
+        "semantic_method",
+        "semantic_method_version",
+        "semantic_p_match",
+        "semantic_reason_code",
+        "matched_response_time_utc",
+        "response_registration_status",
+        "response_reason_code",
+        "reward_path_version",
+        "bandit_decision_snapshot",
+        "evidence_flags",
+        "schema_version",
+        "created_at",
+    }.issubset(attribution_columns)
+    conn.close()
+
+
+def test_bootstrap_migrates_existing_experiments_table(tmp_path: Path) -> None:
+    conn = sqlite3.connect(str(tmp_path / "desktop.sqlite"), isolation_level=None)
+    conn.execute(
+        """
+        CREATE TABLE experiments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            experiment_id TEXT NOT NULL,
+            label TEXT,
+            arm TEXT NOT NULL,
+            greeting_text TEXT,
+            alpha_param REAL NOT NULL DEFAULT 1.0,
+            beta_param REAL NOT NULL DEFAULT 1.0,
+            UNIQUE (experiment_id, arm)
+        )
+        """
+    )
+    conn.execute(
+        """
+        INSERT INTO experiments (experiment_id, label, arm, greeting_text, alpha_param, beta_param)
+        VALUES (?, ?, ?, ?, ?, ?)
+        """,
+        (
+            "greeting_line_v1",
+            "Greeting Line V1",
+            "warm_welcome",
+            "Say hello to the creator",
+            2.0,
+            3.0,
+        ),
+    )
+
+    bootstrap_schema(conn)
+
+    columns = _table_columns(conn, "experiments")
+    assert {"stimulus_definition", "enabled", "end_dated_at", "updated_at"}.issubset(columns)
+    row = conn.execute(
+        "SELECT arm, stimulus_definition, alpha_param, beta_param "
+        "FROM experiments WHERE experiment_id = ? AND arm = ?",
+        ("greeting_line_v1", "warm_welcome"),
+    ).fetchone()
+    assert row is not None
+    assert row[0] == "warm_welcome"
+    assert '"stimulus_modality":"spoken_greeting"' in row[1]
+    assert '"text":"Say hello to the creator"' in row[1]
+    assert row[2] == pytest.approx(2.0, abs=1e-12)
+    assert row[3] == pytest.approx(3.0, abs=1e-12)
     conn.close()
 
 

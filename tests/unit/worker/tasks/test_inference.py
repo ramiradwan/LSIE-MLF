@@ -449,7 +449,7 @@ class TestProcessSegment:
         dispatched_metrics = mock_persist.delay.call_args.args[0]
         assert dispatched_metrics["semantic"] == expected_downstream_payload
         mock_semantic.evaluate.assert_called_once_with(
-            "Hello, welcome to the stream!",
+            "The streamer acknowledges the stimulus.",
             "hello welcome",
         )
 

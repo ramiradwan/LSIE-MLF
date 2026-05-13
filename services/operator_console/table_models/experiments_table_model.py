@@ -2,11 +2,11 @@
 
 Backs the Experiments page's arm posterior table. Columns surface the
 exact Thompson Sampling readbacks an operator needs to reason about
-exploration vs exploitation: arm id, greeting text, posterior α/β,
+exploration vs exploitation: arm id, stimulus text, posterior α/β,
 evaluation variance, selection count, and the recent reward mean.
 
-Only human-owned arm metadata is editable from this model. The greeting
-column emits a rename request, and the Enabled checkbox only emits the
+Only human-owned arm metadata is editable from this model. The stimulus
+text column emits an update request, and the Enabled checkbox only emits the
 one-way disable request; posterior-owned numeric fields remain read-only
 and cannot be edited through the operator console.
 
@@ -39,19 +39,19 @@ from services.operator_console.formatters import format_percentage, format_rewar
 
 _EM_DASH = "—"
 _ENABLED_COL = 2
-_GREETING_COL = 1
+_STIMULUS_TEXT_COL = 1
 _POSTERIOR_ALPHA_COL = 3
 
 
 class ExperimentsTableModel(QAbstractTableModel):
     """Thompson Sampling arms table plus safe arm-management intents."""
 
-    greeting_edit_requested = Signal(str, str)  # arm_id, greeting_text
+    stimulus_text_edit_requested = Signal(str, str)  # arm_id, stimulus_text
     disable_requested = Signal(str)  # arm_id
 
     COLUMNS: ClassVar[tuple[str, ...]] = (
         "Arm",
-        "Confirmation text",
+        "Stimulus text",
         "Enabled",
         "Posterior α",
         "Posterior β",
@@ -121,7 +121,7 @@ class ExperimentsTableModel(QAbstractTableModel):
         if row is None:
             return Qt.ItemFlag.NoItemFlags
         flags = super().flags(index)
-        if index.column() == _GREETING_COL:
+        if index.column() == _STIMULUS_TEXT_COL:
             return flags | Qt.ItemFlag.ItemIsEditable
         if index.column() == _ENABLED_COL and row.enabled:
             return flags | Qt.ItemFlag.ItemIsUserCheckable
@@ -149,8 +149,8 @@ class ExperimentsTableModel(QAbstractTableModel):
                 return int(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
             return int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         if role == Qt.ItemDataRole.ToolTipRole:
-            if col == _GREETING_COL:
-                return "Double-click or press F2/Enter to edit confirmation text."
+            if col == _STIMULUS_TEXT_COL:
+                return "Double-click or press F2/Enter to edit stimulus text."
             if col == _ENABLED_COL and row.enabled:
                 return "Uncheck to disable this arm. Disabled arms cannot be re-enabled here."
             if col == _ENABLED_COL:
@@ -176,13 +176,14 @@ class ExperimentsTableModel(QAbstractTableModel):
         if row is None:
             return False
         col = index.column()
-        if col == _GREETING_COL and role == Qt.ItemDataRole.EditRole:
-            greeting_text = str(value).strip()
-            if not greeting_text:
+        if col == _STIMULUS_TEXT_COL and role == Qt.ItemDataRole.EditRole:
+            stimulus_text = str(value).strip()
+            if not stimulus_text:
                 return False
-            if greeting_text == row.greeting_text:
+            current_stimulus_text = row.stimulus_definition.stimulus_payload.text.strip()
+            if stimulus_text == current_stimulus_text:
                 return True
-            self.greeting_edit_requested.emit(row.arm_id, greeting_text)
+            self.stimulus_text_edit_requested.emit(row.arm_id, stimulus_text)
             return True
         if col == _ENABLED_COL and role == Qt.ItemDataRole.CheckStateRole:
             requested_state = _coerce_check_state(value)
@@ -200,7 +201,7 @@ class ExperimentsTableModel(QAbstractTableModel):
         if col == 0:
             return row.arm_id
         if col == 1:
-            return row.greeting_text
+            return row.stimulus_definition.stimulus_payload.text
         if col == 2:
             return "enabled" if row.enabled else "disabled"
         if col == 3:

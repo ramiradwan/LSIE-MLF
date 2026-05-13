@@ -11,6 +11,7 @@ import pytest
 from fastapi import HTTPException
 from pydantic import ValidationError
 
+from packages.schemas.evaluation import StimulusDefinition, StimulusPayload
 from packages.schemas.experiments import (
     ExperimentAdminResponse,
     ExperimentArmAdminResponse,
@@ -50,6 +51,19 @@ def _make_mock_cursor(
     cursor.__enter__ = MagicMock(return_value=cursor)
     cursor.__exit__ = MagicMock(return_value=False)
     return cursor
+
+
+def _stimulus_definition_model(text: str) -> StimulusDefinition:
+    return StimulusDefinition(
+        stimulus_modality="spoken_greeting",
+        stimulus_payload=StimulusPayload(content_type="text", text=text),
+        expected_stimulus_rule=text,
+        expected_response_rule=text,
+    )
+
+
+def _stimulus_definition_payload(text: str) -> dict[str, Any]:
+    return _stimulus_definition_model(text).model_dump(mode="json")
 
 
 class TestSerialize:
@@ -263,7 +277,7 @@ class TestWriteRouteRequestModels:
                     "arms": [
                         {
                             "arm": "hello",
-                            "greeting_text": "Hi",
+                            "stimulus_definition": _stimulus_definition_payload("Hi"),
                             "posterior_alpha": 9.0,
                         }
                     ],
@@ -287,8 +301,14 @@ class TestWriteRouteRequestModels:
                     "experiment_id": "exp-a",
                     "label": "Experiment A",
                     "arms": [
-                        {"arm": "hello", "greeting_text": "Hi"},
-                        {"arm": "hello", "greeting_text": "Hei"},
+                        {
+                            "arm": "hello",
+                            "stimulus_definition": _stimulus_definition_payload("Hi"),
+                        },
+                        {
+                            "arm": "hello",
+                            "stimulus_definition": _stimulus_definition_payload("Hei"),
+                        },
                     ],
                 }
             )
@@ -305,7 +325,7 @@ class TestCreateExperimentRoute:
                     experiment_id="greeting_line_v2",
                     label="Greeting Line V2",
                     arm="warm",
-                    greeting_text="Hi there!",
+                    stimulus_definition=_stimulus_definition_model("Hi there!"),
                     alpha_param=1.0,
                     beta_param=1.0,
                     enabled=True,
@@ -318,7 +338,12 @@ class TestCreateExperimentRoute:
             {
                 "experiment_id": "greeting_line_v2",
                 "label": "Greeting Line V2",
-                "arms": [{"arm": "warm", "greeting_text": "Hi there!"}],
+                "arms": [
+                    {
+                        "arm": "warm",
+                        "stimulus_definition": _stimulus_definition_payload("Hi there!"),
+                    }
+                ],
             }
         )
 
@@ -332,7 +357,7 @@ class TestCreateExperimentRoute:
                     "experiment_id": "greeting_line_v2",
                     "label": "Greeting Line V2",
                     "arm": "warm",
-                    "greeting_text": "Hi there!",
+                    "stimulus_definition": _stimulus_definition_payload("Hi there!"),
                     "alpha_param": 1.0,
                     "beta_param": 1.0,
                     "enabled": True,
@@ -350,7 +375,12 @@ class TestCreateExperimentRoute:
             {
                 "experiment_id": "greeting_line_v2",
                 "label": "Greeting Line V2",
-                "arms": [{"arm": "warm", "greeting_text": "Hi there!"}],
+                "arms": [
+                    {
+                        "arm": "warm",
+                        "stimulus_definition": _stimulus_definition_payload("Hi there!"),
+                    }
+                ],
             }
         )
 
@@ -369,17 +399,21 @@ class TestAddExperimentArmRoute:
             experiment_id="greeting_line_v1",
             label="Greeting Line V1",
             arm="new_arm",
-            greeting_text="Hello there",
+            stimulus_definition=_stimulus_definition_model("Hello there"),
             alpha_param=1.0,
             beta_param=1.0,
             enabled=True,
             end_dated_at=None,
             updated_at=datetime(2026, 4, 17, 12, 5, tzinfo=UTC),
         )
-        request = ExperimentArmCreateRequest(arm="new_arm", greeting_text="Hello there")
+        request = ExperimentArmCreateRequest(
+            arm="new_arm",
+            stimulus_definition=_stimulus_definition_model("Hello there"),
+        )
 
         result = asyncio.run(add_experiment_arm("greeting_line_v1", request=request, service=svc))
 
+        assert result["stimulus_definition"] == _stimulus_definition_payload("Hello there")
         assert result["alpha_param"] == 1.0
         assert result["beta_param"] == 1.0
         assert result["enabled"] is True
@@ -389,7 +423,10 @@ class TestAddExperimentArmRoute:
     def test_duplicate_arm_becomes_409(self) -> None:
         svc = MagicMock()
         svc.add_arm.side_effect = ExperimentArmAlreadyExistsError("duplicate")
-        request = ExperimentArmCreateRequest(arm="new_arm", greeting_text="Hello there")
+        request = ExperimentArmCreateRequest(
+            arm="new_arm",
+            stimulus_definition=_stimulus_definition_model("Hello there"),
+        )
 
         with pytest.raises(Exception) as exc_info:
             asyncio.run(add_experiment_arm("greeting_line_v1", request=request, service=svc))
@@ -401,7 +438,10 @@ class TestAddExperimentArmRoute:
     def test_missing_experiment_becomes_404(self) -> None:
         svc = MagicMock()
         svc.add_arm.side_effect = ExperimentNotFoundError("missing")
-        request = ExperimentArmCreateRequest(arm="new_arm", greeting_text="Hello there")
+        request = ExperimentArmCreateRequest(
+            arm="new_arm",
+            stimulus_definition=_stimulus_definition_model("Hello there"),
+        )
 
         with pytest.raises(Exception) as exc_info:
             asyncio.run(add_experiment_arm("missing", request=request, service=svc))
@@ -418,14 +458,17 @@ class TestPatchExperimentArmRoute:
             experiment_id="greeting_line_v1",
             label="Greeting Line V1",
             arm="warm_welcome",
-            greeting_text="Hei ystävä",
+            stimulus_definition=_stimulus_definition_model("Hei ystävä"),
             alpha_param=5.0,
             beta_param=3.0,
             enabled=False,
             end_dated_at=datetime(2026, 4, 17, 12, 10, tzinfo=UTC),
             updated_at=datetime(2026, 4, 17, 12, 10, tzinfo=UTC),
         )
-        request = ExperimentArmPatchRequest(greeting_text="Hei ystävä", enabled=False)
+        request = ExperimentArmPatchRequest(
+            stimulus_definition=_stimulus_definition_model("Hei ystävä"),
+            enabled=False,
+        )
 
         result = asyncio.run(
             patch_experiment_arm(
@@ -436,7 +479,7 @@ class TestPatchExperimentArmRoute:
             )
         )
 
-        assert result["greeting_text"] == "Hei ystävä"
+        assert result["stimulus_definition"] == _stimulus_definition_payload("Hei ystävä")
         assert result["enabled"] is False
         assert result["alpha_param"] == 5.0
         assert result["beta_param"] == 3.0
@@ -446,7 +489,9 @@ class TestPatchExperimentArmRoute:
     def test_missing_arm_becomes_404(self) -> None:
         svc = MagicMock()
         svc.patch_arm.side_effect = ExperimentArmNotFoundError("missing arm")
-        request = ExperimentArmPatchRequest(greeting_text="Hei ystävä")
+        request = ExperimentArmPatchRequest(
+            stimulus_definition=_stimulus_definition_model("Hei ystävä")
+        )
 
         with pytest.raises(Exception) as exc_info:
             asyncio.run(
@@ -465,7 +510,9 @@ class TestPatchExperimentArmRoute:
     def test_unsupported_mutation_becomes_422(self) -> None:
         svc = MagicMock()
         svc.patch_arm.side_effect = ExperimentMutationValidationError("unsupported")
-        request = ExperimentArmPatchRequest(greeting_text="Hei ystävä")
+        request = ExperimentArmPatchRequest(
+            stimulus_definition=_stimulus_definition_model("Hei ystävä")
+        )
 
         with pytest.raises(Exception) as exc_info:
             asyncio.run(
@@ -495,7 +542,7 @@ class TestDeleteExperimentArmRoute:
                 experiment_id="greeting_line_v1",
                 label="Greeting Line V1",
                 arm="warm_welcome",
-                greeting_text="Hei ystävä",
+                stimulus_definition=_stimulus_definition_model("Hei ystävä"),
                 alpha_param=5.0,
                 beta_param=3.0,
                 enabled=False,
@@ -508,6 +555,9 @@ class TestDeleteExperimentArmRoute:
 
         assert result["deleted"] is False
         assert result["posterior_preserved"] is True
+        assert result["arm_state"]["stimulus_definition"] == _stimulus_definition_payload(
+            "Hei ystävä"
+        )
         assert result["arm_state"]["alpha_param"] == 5.0
         assert result["arm_state"]["beta_param"] == 3.0
         assert result["arm_state"]["enabled"] is False

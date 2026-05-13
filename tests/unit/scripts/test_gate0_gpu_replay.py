@@ -52,7 +52,17 @@ def _write_gate0_inputs(tmp_path: Path) -> tuple[Path, Path, Path, str]:
         "segment_id": expected_segment_id,
         "segment_window_start_utc": start,
         "segment_window_end_utc": end,
-        "_expected_greeting": "Fallback phrase",
+        "_stimulus_modality": "question",
+        "_stimulus_payload": {
+            "content_type": "text",
+            "text": "Hi! What's the best advice today?",
+        },
+        "_expected_stimulus_rule": (
+            "Deliver the direct question to the live streamer exactly as written."
+        ),
+        "_expected_response_rule": (
+            "The live streamer answers or clearly acknowledges the direct question on stream."
+        ),
     }
     (fixture_dir / "segment_000.json").write_text(json.dumps(fixture), encoding="utf-8")
     stimulus_script = tmp_path / "stimulus_script.json"
@@ -63,7 +73,21 @@ def _write_gate0_inputs(tmp_path: Path) -> tuple[Path, Path, Path, str]:
                 "stimuli": [
                     {
                         "segment_index": 0,
-                        "expected_greeting_text": "Hi! What's the best advice today?",
+                        "stimulus_definition": {
+                            "stimulus_modality": "question",
+                            "stimulus_payload": {
+                                "content_type": "text",
+                                "text": "Hi! What's the best advice today?",
+                            },
+                            "expected_stimulus_rule": (
+                                "Deliver the direct question to the live streamer "
+                                "exactly as written."
+                            ),
+                            "expected_response_rule": (
+                                "The live streamer answers or clearly acknowledges "
+                                "the direct question on stream."
+                            ),
+                        },
                     }
                 ],
             }
@@ -145,7 +169,7 @@ def test_run_gate0_replay_validates_fixture_and_transcribes_cuda(
     assert report.gpu_inventory == (GpuInfo("NVIDIA T4", 7.5),)
     assert report.fixture_checks[0].expected_segment_id == expected_segment_id
     assert report.fixture_checks[0].segment_id_matches is True
-    assert report.fixture_checks[0].expected_greeting == "Hi! What's the best advice today?"
+    assert report.fixture_checks[0].expected_stimulus_text == "Hi! What's the best advice today?"
     assert report.phrase_checks[0].passed is True
     assert engine_factory.calls == [{"model_size": "tiny", "device": "cuda"}]
     assert engine_factory.instances[0].calls == [(str(capture_audio), "en")]
@@ -204,22 +228,20 @@ def test_validate_fixture_contract_orders_hashed_fixtures_by_segment_start(tmp_p
         json.dumps(first_fixture),
         encoding="utf-8",
     )
-    stimulus_script.write_text(
-        json.dumps(
-            {
-                "speech_backend": {"used": "espeak-ng"},
-                "stimuli": [
-                    {"segment_index": 0, "expected_greeting_text": "first chronological"},
-                    {"segment_index": 1, "expected_greeting_text": "second chronological"},
-                ],
-            }
-        ),
+    second_fixture["_stimulus_payload"] = {"content_type": "text", "text": "second chronological"}
+    first_fixture["_stimulus_payload"] = {"content_type": "text", "text": "first chronological"}
+    (fixture_dir / "segment_000_first_by_name.json").write_text(
+        json.dumps(second_fixture),
+        encoding="utf-8",
+    )
+    (fixture_dir / "segment_zzz_second_by_name.json").write_text(
+        json.dumps(first_fixture),
         encoding="utf-8",
     )
 
     checks = replay._validate_fixture_contract(fixture_dir, stimulus_script)
 
-    assert [check.expected_greeting for check in checks] == [
+    assert [check.expected_stimulus_text for check in checks] == [
         "first chronological",
         "second chronological",
     ]
@@ -241,7 +263,7 @@ def test_main_writes_failure_report(
                 segment_id="abc",
                 expected_segment_id="abc",
                 segment_id_matches=True,
-                expected_greeting="Hi best advice today",
+                expected_stimulus_text="Hi best advice today",
             ),
         ),
         phrase_checks=(
@@ -306,7 +328,7 @@ def test_write_report_persists_sorted_json(tmp_path: Path) -> None:
                 segment_id="abc",
                 expected_segment_id="abc",
                 segment_id_matches=True,
-                expected_greeting="Hi best advice today",
+                expected_stimulus_text="Hi best advice today",
             ),
         ),
         phrase_checks=(

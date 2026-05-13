@@ -18,6 +18,7 @@ from packages.schemas.cloud import (
     ExperimentBundlePayload,
     PosteriorDelta,
 )
+from packages.schemas.evaluation import StimulusDefinition, StimulusPayload
 from packages.schemas.inference_handoff import InferenceHandoffPayload
 from packages.schemas.operator_console import CloudExperimentRefreshStatus, CloudOperatorErrorCode
 from services.desktop_app.cloud.experiment_bundle import (
@@ -78,9 +79,12 @@ def _bandit_snapshot_data(sample_timestamp: datetime) -> dict[str, Any]:
             "arm_b": {"alpha": 1.0, "beta": 1.0},
         },
         "sampled_theta_by_arm": {"arm_a": 0.72, "arm_b": 0.44},
-        "expected_greeting": "Say hello to the creator",
         "decision_context_hash": DECISION_CONTEXT_HASH,
         "random_seed": 42,
+        "stimulus_modality": "spoken_greeting",
+        "stimulus_payload": {"content_type": "text", "text": "Say hello to the creator"},
+        "expected_stimulus_rule": "Deliver the spoken greeting to the creator",
+        "expected_response_rule": "The live streamer acknowledges the greeting",
     }
 
 
@@ -103,7 +107,10 @@ def _handoff_payload(
         "segments": [],
         "_active_arm": "arm_a",
         "_experiment_id": 101,
-        "_expected_greeting": "Say hello to the creator",
+        "_stimulus_modality": "spoken_greeting",
+        "_stimulus_payload": {"content_type": "text", "text": "Say hello to the creator"},
+        "_expected_stimulus_rule": "Deliver the spoken greeting to the creator",
+        "_expected_response_rule": "The live streamer acknowledges the greeting",
         "_stimulus_time": None,
         "_au12_series": [{"timestamp_s": 0.0, "intensity": 0.62}],
         "_bandit_decision_snapshot": _bandit_snapshot_data(sample_timestamp),
@@ -132,7 +139,7 @@ def _attribution_event(sample_timestamp: datetime) -> AttributionEvent:
         event_id=uuid.UUID("00000000-0000-4000-8000-000000000003"),
         session_id=uuid.UUID(SESSION_ID),
         segment_id=SEGMENT_ID,
-        event_type="greeting_interaction",
+        event_type="stimulus_interaction",
         event_time_utc=sample_timestamp,
         stimulus_time_utc=None,
         selected_arm_id="arm_a",
@@ -166,6 +173,34 @@ def _posterior_delta(sample_timestamp: datetime) -> PosteriorDelta:
     )
 
 
+def _bundle_stimulus_definition() -> StimulusDefinition:
+    return StimulusDefinition(
+        stimulus_modality="spoken_greeting",
+        stimulus_payload=StimulusPayload(
+            content_type="text",
+            text="Hello A",
+        ),
+        expected_stimulus_rule="Deliver the spoken greeting to the creator",
+        expected_response_rule="The live streamer acknowledges the greeting",
+    )
+
+
+def _migrated_cached_stimulus_definition(text: str) -> StimulusDefinition:
+    return StimulusDefinition(
+        stimulus_modality="spoken_greeting",
+        stimulus_payload=StimulusPayload(
+            content_type="text",
+            text=text,
+        ),
+        expected_stimulus_rule=(
+            "Deliver the spoken greeting to the live streamer exactly as written."
+        ),
+        expected_response_rule=(
+            "The live streamer acknowledges the greeting or responds to it on stream."
+        ),
+    )
+
+
 def _bundle(*, signature: str | None = None) -> ExperimentBundle:
     payload = ExperimentBundlePayload(
         bundle_id="bundle-a",
@@ -179,7 +214,7 @@ def _bundle(*, signature: str | None = None) -> ExperimentBundle:
                 arms=[
                     ExperimentBundleArm(
                         arm_id="arm-a",
-                        greeting_text="Hello A",
+                        stimulus_definition=_bundle_stimulus_definition(),
                         posterior_alpha=2.0,
                         posterior_beta=3.0,
                         selection_count=5,
@@ -282,14 +317,16 @@ async def test_periodic_refresh_applies_verified_bundle_and_records_state(
     try:
         row = conn.execute(
             """
-            SELECT greeting_text, alpha_param, beta_param
+            SELECT stimulus_definition, alpha_param, beta_param
             FROM experiments
             WHERE experiment_id = 'experiment-a' AND arm = 'arm-a'
             """
         ).fetchone()
     finally:
         conn.close()
-    assert tuple(row) == ("Hello A", 2.0, 3.0)
+    assert row is not None
+    assert json.loads(str(row[0])) == _bundle_stimulus_definition().model_dump(mode="json")
+    assert tuple(row[1:]) == (2.0, 3.0)
     assert _latest_refresh_state(tmp_path / "desktop.sqlite") == ("applied", None, 0)
 
 
@@ -455,9 +492,6 @@ async def test_periodic_refresh_verification_failure_preserves_existing_cache(
             greeting_text TEXT,
             alpha_param REAL NOT NULL DEFAULT 1.0,
             beta_param REAL NOT NULL DEFAULT 1.0,
-            enabled INTEGER NOT NULL DEFAULT 1,
-            end_dated_at TEXT,
-            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             UNIQUE (experiment_id, arm)
         )
         """
@@ -494,7 +528,7 @@ async def test_periodic_refresh_verification_failure_preserves_existing_cache(
     try:
         row = conn.execute(
             """
-            SELECT greeting_text, alpha_param, beta_param
+            SELECT stimulus_definition, alpha_param, beta_param
             FROM experiments
             WHERE experiment_id = 'experiment-a' AND arm = 'arm-a'
             """
@@ -503,7 +537,11 @@ async def test_periodic_refresh_verification_failure_preserves_existing_cache(
         conn.close()
     assert result is not None
     assert result.error_code == CloudOperatorErrorCode.SIGNATURE_FAILED
-    assert tuple(row) == ("Cached A", 9.0, 8.0)
+    assert row is not None
+    assert json.loads(str(row[0])) == _migrated_cached_stimulus_definition("Cached A").model_dump(
+        mode="json"
+    )
+    assert tuple(row[1:]) == (9.0, 8.0)
     assert _latest_refresh_state(tmp_path / "desktop.sqlite") == ("failed", "signature_failed", 0)
 
 

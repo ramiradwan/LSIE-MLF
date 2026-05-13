@@ -222,7 +222,7 @@ class MainWindow(QMainWindow):
             self._coordinator.create_experiment
         )
         self._experiments_vm.add_arm_requested.connect(self._coordinator.add_experiment_arm)
-        self._experiments_vm.rename_arm_requested.connect(self._coordinator.rename_experiment_arm)
+        self._experiments_vm.update_arm_requested.connect(self._coordinator.rename_experiment_arm)
         self._experiments_vm.disable_arm_requested.connect(self._coordinator.disable_experiment_arm)
         self._physiology_vm = PhysiologyViewModel(self._store, self)
         self._health_vm = HealthViewModel(self._store, self._health_model, self._alerts_model, self)
@@ -390,16 +390,16 @@ class MainWindow(QMainWindow):
         session_id = self._store.selected_session_id()
         live = self._store.live_session()
         active_arm: str | None = None
-        expected_greeting: str | None = None
+        expected_response_text: str | None = None
         operator_ready: bool | None = None
         if live is not None and session_id is not None and live.session_id == session_id:
             active_arm = live.active_arm
-            expected_greeting = live.expected_greeting
+            expected_response_text = live.expected_response_text
             operator_ready = self._live_session_vm.operator_ready_for_submit()
         self._action_bar.set_session_context(
             session_id,
             active_arm,
-            expected_greeting,
+            expected_response_text,
             operator_ready_for_submit=operator_ready,
         )
         self._update_action_bar_progress()

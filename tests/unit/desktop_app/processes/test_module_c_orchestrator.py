@@ -16,6 +16,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from packages.schemas.evaluation import StimulusDefinition, StimulusPayload
 from services.desktop_app.ipc import IpcChannels
 from services.desktop_app.ipc.control_messages import (
     InferenceControlMessage,
@@ -26,6 +27,23 @@ from services.desktop_app.ipc.shared_buffers import read_pcm_block
 from services.desktop_app.processes import module_c_orchestrator
 from services.desktop_app.state.sqlite_schema import bootstrap_schema
 from services.desktop_app.state.sqlite_session_lifecycle_service import _json_default
+
+
+def _stimulus_definition() -> StimulusDefinition:
+    return StimulusDefinition(
+        stimulus_modality="spoken_greeting",
+        stimulus_payload=StimulusPayload(
+            content_type="text",
+            text="Say hello to the creator",
+        ),
+        expected_stimulus_rule=(
+            "Deliver the spoken greeting to the live streamer exactly as written."
+        ),
+        expected_response_rule=(
+            "The live streamer acknowledges the greeting or responds to it on stream."
+        ),
+    )
+
 
 _BANDIT_SNAPSHOT = {
     "selection_method": "thompson_sampling",
@@ -39,7 +57,10 @@ _BANDIT_SNAPSHOT = {
         "warm_welcome": {"alpha": 2.0, "beta": 3.0},
     },
     "sampled_theta_by_arm": {"direct_question": 0.2, "warm_welcome": 0.6},
-    "expected_greeting": "Say hello to the creator",
+    "stimulus_modality": _stimulus_definition().stimulus_modality,
+    "stimulus_payload": _stimulus_definition().stimulus_payload.model_dump(mode="json"),
+    "expected_stimulus_rule": _stimulus_definition().expected_stimulus_rule,
+    "expected_response_rule": _stimulus_definition().expected_response_rule,
     "decision_context_hash": "a" * 64,
     "random_seed": 42,
 }
@@ -65,7 +86,7 @@ def _bootstrap_db(tmp_path: Path) -> Path:
         conn.execute(
             """
             INSERT INTO sessions (
-                session_id, stream_url, experiment_id, active_arm, expected_greeting,
+                session_id, stream_url, experiment_id, active_arm, stimulus_definition,
                 bandit_decision_snapshot, started_at
             )
             VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -75,7 +96,7 @@ def _bootstrap_db(tmp_path: Path) -> Path:
                 "test://stream",
                 "greeting_line_v1",
                 "warm_welcome",
-                "Say hello to the creator",
+                _stimulus_definition().model_dump_json(),
                 json.dumps(
                     _BANDIT_SNAPSHOT,
                     sort_keys=True,
@@ -129,7 +150,7 @@ def _segment() -> module_c_orchestrator.DesktopSegment:
         experiment_row_id=1,
         experiment_id="greeting_line_v1",
         active_arm="warm_welcome",
-        expected_greeting="Say hello to the creator",
+        stimulus_definition=_stimulus_definition(),
         bandit_decision_snapshot=_BANDIT_SNAPSHOT,
         stimulus_time_s=100.0,
     )
@@ -154,7 +175,18 @@ def test_dispatcher_writes_pcm_shared_memory_and_sends_control_message() -> None
     assert message.forward_fields == {"_drift_offset_s": 0.125}
     assert message.handoff["session_id"] == str(segment.session_id)
     assert message.handoff["_active_arm"] == "warm_welcome"
-    assert message.handoff["_expected_greeting"] == "Say hello to the creator"
+    assert message.handoff["_stimulus_modality"] == segment.stimulus_definition.stimulus_modality
+    assert message.handoff[
+        "_stimulus_payload"
+    ] == segment.stimulus_definition.stimulus_payload.model_dump(mode="json")
+    assert (
+        message.handoff["_expected_stimulus_rule"]
+        == segment.stimulus_definition.expected_stimulus_rule
+    )
+    assert (
+        message.handoff["_expected_response_rule"]
+        == segment.stimulus_definition.expected_response_rule
+    )
     assert message.handoff["_stimulus_time"] == segment.stimulus_time_s
     assert message.handoff["_au12_series"] == []
     snapshot = message.handoff["_bandit_decision_snapshot"]
@@ -177,7 +209,7 @@ def test_dispatcher_drops_invalid_handoff_without_shared_memory() -> None:
         experiment_row_id=invalid.experiment_row_id,
         experiment_id=invalid.experiment_id,
         active_arm=invalid.active_arm,
-        expected_greeting=invalid.expected_greeting,
+        stimulus_definition=invalid.stimulus_definition,
         bandit_decision_snapshot=invalid.bandit_decision_snapshot,
         stimulus_time_s=invalid.stimulus_time_s,
     )
@@ -272,12 +304,12 @@ def test_start_control_uses_persisted_lifecycle_selection(tmp_path: Path) -> Non
         conn.execute(
             """
             UPDATE sessions
-            SET active_arm = ?, expected_greeting = ?, bandit_decision_snapshot = ?
+            SET active_arm = ?, stimulus_definition = ?, bandit_decision_snapshot = ?
             WHERE session_id = ?
             """,
             (
                 "warm_welcome",
-                "Say hello to the creator",
+                _stimulus_definition().model_dump_json(),
                 persisted_snapshot_json,
                 str(session_id),
             ),
@@ -293,14 +325,26 @@ def test_start_control_uses_persisted_lifecycle_selection(tmp_path: Path) -> Non
             stream_url="test://stream",
             experiment_id="greeting_line_v1",
             active_arm="simple_hello",
-            expected_greeting="This control value must not override storage",
+            stimulus_definition=StimulusDefinition(
+                stimulus_modality="spoken_greeting",
+                stimulus_payload=StimulusPayload(
+                    content_type="text",
+                    text="This control value must not override storage",
+                ),
+                expected_stimulus_rule=(
+                    "Deliver the spoken greeting to the live streamer exactly as written."
+                ),
+                expected_response_rule=(
+                    "The live streamer acknowledges the greeting or responds to it on stream."
+                ),
+            ),
             timestamp_utc=datetime(2026, 5, 2, 12, 0, tzinfo=UTC),
         ),
     )
 
     assert active is not None
     assert active.active_arm == "warm_welcome"
-    assert active.expected_greeting == "Say hello to the creator"
+    assert active.stimulus_definition == _stimulus_definition()
     assert active.bandit_decision_snapshot == json.loads(persisted_snapshot_json)
 
 
@@ -323,7 +367,7 @@ def test_drain_segment_controls_tracks_start_stimulus_and_end(tmp_path: Path) ->
             stream_url="test://stream",
             experiment_id="greeting_line_v1",
             active_arm="warm_welcome",
-            expected_greeting="Say hello",
+            stimulus_definition=_stimulus_definition(),
             timestamp_utc=now,
         ),
         LiveSessionControlMessage(
@@ -332,7 +376,7 @@ def test_drain_segment_controls_tracks_start_stimulus_and_end(tmp_path: Path) ->
             stream_url="test://stream",
             experiment_id="greeting_line_v1",
             active_arm="warm_welcome",
-            expected_greeting="Say hello",
+            stimulus_definition=_stimulus_definition(),
             stimulus_time_s=now.timestamp(),
             timestamp_utc=now,
         ),
@@ -399,7 +443,7 @@ def test_run_segment_loop_dispatches_audio_for_active_stimulus(
                 stream_url="test://stream",
                 experiment_id="greeting_line_v1",
                 active_arm="warm_welcome",
-                expected_greeting="Say hello to the creator",
+                stimulus_definition=_stimulus_definition(),
                 timestamp_utc=datetime(2026, 5, 2, 12, 0, tzinfo=UTC),
             ).model_dump(mode="json")
         )
@@ -418,7 +462,7 @@ def test_run_segment_loop_dispatches_audio_for_active_stimulus(
                 stream_url="test://stream",
                 experiment_id="greeting_line_v1",
                 active_arm="warm_welcome",
-                expected_greeting="Say hello to the creator",
+                stimulus_definition=_stimulus_definition(),
                 stimulus_time_s=stimulus_time,
                 timestamp_utc=datetime.now(UTC),
             ).model_dump(mode="json")
@@ -444,7 +488,12 @@ def test_run_segment_loop_dispatches_audio_for_active_stimulus(
     assert segment.experiment_row_id > 0
     assert segment.experiment_id == "greeting_line_v1"
     assert segment.active_arm == segment.bandit_decision_snapshot["selected_arm_id"]
-    assert segment.expected_greeting == segment.bandit_decision_snapshot["expected_greeting"]
+    assert segment.stimulus_definition.model_dump(mode="json") == {
+        "stimulus_modality": segment.bandit_decision_snapshot["stimulus_modality"],
+        "stimulus_payload": segment.bandit_decision_snapshot["stimulus_payload"],
+        "expected_stimulus_rule": segment.bandit_decision_snapshot["expected_stimulus_rule"],
+        "expected_response_rule": segment.bandit_decision_snapshot["expected_response_rule"],
+    }
     assert segment.active_arm in segment.bandit_decision_snapshot["candidate_arm_ids"]
     assert segment.stimulus_time_s == pytest.approx(stimulus_time)
     assert len(segment.pcm_s16le_16khz_mono) == 16_000 * 2 * 30
@@ -485,7 +534,7 @@ def test_run_segment_loop_does_not_dispatch_without_stimulus(
                 stream_url="test://stream",
                 experiment_id="greeting_line_v1",
                 active_arm="warm_welcome",
-                expected_greeting="Say hello to the creator",
+                stimulus_definition=_stimulus_definition(),
                 timestamp_utc=datetime(2026, 5, 2, 12, 0, tzinfo=UTC),
             ).model_dump(mode="json")
         )
@@ -509,7 +558,7 @@ def test_stimulus_time_attaches_only_to_segment_covering_baseline_and_measuremen
         experiment_id="greeting_line_v1",
         experiment_row_id=1,
         active_arm="warm_welcome",
-        expected_greeting="Say hello to the creator",
+        stimulus_definition=_stimulus_definition(),
         bandit_decision_snapshot=_BANDIT_SNAPSHOT,
         stimulus_time_s=datetime(2026, 5, 2, 12, 0, 10, tzinfo=UTC).timestamp(),
     )
@@ -540,7 +589,7 @@ def test_stimulus_aligned_segment_start_ends_at_measurement_window_close() -> No
         experiment_id="greeting_line_v1",
         experiment_row_id=1,
         active_arm="warm_welcome",
-        expected_greeting="Say hello to the creator",
+        stimulus_definition=_stimulus_definition(),
         bandit_decision_snapshot=_BANDIT_SNAPSHOT,
         stimulus_time_s=datetime(2026, 5, 2, 12, 0, 40, tzinfo=UTC).timestamp(),
     )
@@ -557,7 +606,7 @@ def test_stimulus_aligned_segment_start_is_anchored_independent_of_buffer_start(
         experiment_id="greeting_line_v1",
         experiment_row_id=1,
         active_arm="warm_welcome",
-        expected_greeting="Say hello to the creator",
+        stimulus_definition=_stimulus_definition(),
         bandit_decision_snapshot=_BANDIT_SNAPSHOT,
         stimulus_time_s=datetime(2026, 5, 2, 12, 0, 8, tzinfo=UTC).timestamp(),
     )

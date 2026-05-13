@@ -61,7 +61,7 @@ def _session(
         status="active",
         started_at_utc=_NOW,
         active_arm="greeting_v7",
-        expected_greeting="hei rakas",
+        expected_response_text="hei rakas",
         is_calibrating=is_calibrating,
         calibration_frames_accumulated=calibration_frames_accumulated,
         calibration_frames_required=calibration_frames_required,
@@ -82,7 +82,7 @@ def _encounter(
     semantic_evaluation: SemanticEvaluationSummary | None = None,
     attribution: AttributionSummary | None = None,
     segment_timestamp_utc: datetime = _NOW,
-    transcription: str | None = None,
+    observed_response_text: str | None = None,
 ) -> EncounterSummary:
     return EncounterSummary(
         encounter_id=encounter_id,
@@ -90,14 +90,14 @@ def _encounter(
         segment_timestamp_utc=segment_timestamp_utc,
         state=state,
         active_arm="greeting_v7",
-        expected_greeting="hei rakas",
+        expected_response_text="hei rakas",
         semantic_gate=semantic_gate,
         semantic_confidence=semantic_confidence,
         p90_intensity=p90,
         gated_reward=gated_reward,
         n_frames_in_window=frames,
         au12_baseline_pre=0.1,
-        transcription=transcription,
+        observed_response_text=observed_response_text,
         observational_acoustic=observational_acoustic,
         semantic_evaluation=semantic_evaluation,
         attribution=attribution,
@@ -492,7 +492,7 @@ def test_live_session_view_detail_pane_shows_reward_explanation() -> None:
                     sync_peak_lag=3,
                     outcome_link_lag_s=15.0,
                 ),
-                transcription="hello welcome to the stream",
+                observed_response_text="hello welcome to the stream",
             )
         ]
     )

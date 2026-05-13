@@ -3,7 +3,7 @@
 This service owns the additive mutation surface behind
 `/api/v1/experiments/*` while keeping posterior-owned numeric state
 read-only. New arms are always initialized at Beta(1,1); patches may
-only change `greeting_text` and/or disable an arm. Explicit DELETE
+only change `stimulus_definition` and/or disable an arm. Explicit DELETE
 requests hard-delete only unused prior arms and soft-disable arms that
 must preserve posterior history.
 """
@@ -14,6 +14,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
+from packages.schemas.evaluation import StimulusDefinition
 from packages.schemas.experiments import (
     ExperimentAdminResponse,
     ExperimentArmAdminResponse,
@@ -73,7 +74,6 @@ class ExperimentAdminService:
         try:
             conn = self._get_conn()
             with conn.cursor() as cur:
-                q.ensure_experiments_admin_schema(cur)
                 existing = q.fetch_experiment_identity(cur, request.experiment_id)
                 if existing is not None:
                     raise ExperimentAlreadyExistsError(
@@ -86,7 +86,7 @@ class ExperimentAdminService:
                         experiment_id=request.experiment_id,
                         label=request.label,
                         arm=arm.arm,
-                        greeting_text=arm.greeting_text,
+                        stimulus_definition=arm.stimulus_definition,
                         alpha_param=_BETA_PRIOR_ALPHA,
                         beta_param=_BETA_PRIOR_BETA,
                         enabled=True,
@@ -118,7 +118,6 @@ class ExperimentAdminService:
         try:
             conn = self._get_conn()
             with conn.cursor() as cur:
-                q.ensure_experiments_admin_schema(cur)
                 identity = q.fetch_experiment_identity(cur, experiment_id)
                 if identity is None:
                     raise ExperimentNotFoundError(f"experiment '{experiment_id}' not found")
@@ -139,7 +138,7 @@ class ExperimentAdminService:
                     experiment_id=experiment_id,
                     label=label,
                     arm=request.arm,
-                    greeting_text=request.greeting_text,
+                    stimulus_definition=request.stimulus_definition,
                     alpha_param=_BETA_PRIOR_ALPHA,
                     beta_param=_BETA_PRIOR_BETA,
                     enabled=True,
@@ -176,7 +175,6 @@ class ExperimentAdminService:
         try:
             conn = self._get_conn()
             with conn.cursor() as cur:
-                q.ensure_experiments_admin_schema(cur)
                 row = q.fetch_experiment_arm_row(cur, experiment_id=experiment_id, arm=arm_id)
                 if row is None:
                     identity = q.fetch_experiment_identity(cur, experiment_id)
@@ -186,7 +184,12 @@ class ExperimentAdminService:
                         f"arm '{arm_id}' not found for experiment '{experiment_id}'"
                     )
 
-                greeting_text = request.greeting_text or str(row.get("greeting_text") or arm_id)
+                stimulus_definition = request.stimulus_definition
+                if stimulus_definition is None:
+                    current_stimulus_definition = row.get("stimulus_definition")
+                    if not isinstance(current_stimulus_definition, StimulusDefinition):
+                        raise TypeError("experiment arm row must carry StimulusDefinition")
+                    stimulus_definition = current_stimulus_definition
                 enabled = bool(row.get("enabled")) if row.get("enabled") is not None else True
                 end_dated_at = row.get("end_dated_at")
 
@@ -199,7 +202,7 @@ class ExperimentAdminService:
                     cur,
                     experiment_id=experiment_id,
                     arm=arm_id,
-                    greeting_text=greeting_text,
+                    stimulus_definition=stimulus_definition,
                     enabled=enabled,
                     end_dated_at=end_dated_at,
                 )
@@ -235,7 +238,6 @@ class ExperimentAdminService:
         try:
             conn = self._get_conn()
             with conn.cursor() as cur:
-                q.ensure_experiments_admin_schema(cur)
                 row = q.fetch_experiment_arm_row(cur, experiment_id=experiment_id, arm=arm_id)
                 if row is None:
                     identity = q.fetch_experiment_identity(cur, experiment_id)
@@ -251,13 +253,15 @@ class ExperimentAdminService:
                     arm=arm_id,
                 )
                 if self._requires_posterior_preservation(row, selection_count):
-                    greeting_text = str(row.get("greeting_text") or arm_id)
+                    stimulus_definition = row.get("stimulus_definition")
+                    if not isinstance(stimulus_definition, StimulusDefinition):
+                        raise TypeError("experiment arm row must carry StimulusDefinition")
                     end_dated_at = row.get("end_dated_at") or self._clock()
                     q.update_experiment_arm_metadata(
                         cur,
                         experiment_id=experiment_id,
                         arm=arm_id,
-                        greeting_text=greeting_text,
+                        stimulus_definition=stimulus_definition,
                         enabled=False,
                         end_dated_at=end_dated_at,
                     )
@@ -331,11 +335,14 @@ class ExperimentAdminService:
     def _build_arm_response(self, row: dict[str, Any]) -> ExperimentArmAdminResponse:
         alpha_param = row.get("alpha_param")
         beta_param = row.get("beta_param")
+        stimulus_definition = row.get("stimulus_definition")
+        if not isinstance(stimulus_definition, StimulusDefinition):
+            raise TypeError("experiment arm row must carry StimulusDefinition")
         return ExperimentArmAdminResponse(
             experiment_id=str(row["experiment_id"]),
             label=str(row.get("label") or row["experiment_id"]),
             arm=str(row["arm"]),
-            greeting_text=str(row.get("greeting_text") or row["arm"]),
+            stimulus_definition=stimulus_definition,
             alpha_param=float(alpha_param) if alpha_param is not None else _BETA_PRIOR_ALPHA,
             beta_param=float(beta_param) if beta_param is not None else _BETA_PRIOR_BETA,
             enabled=bool(row.get("enabled")) if row.get("enabled") is not None else True,

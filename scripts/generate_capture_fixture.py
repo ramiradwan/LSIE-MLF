@@ -9,8 +9,9 @@ The CLI writes three files into a requested fixture directory:
 
 The media is synthetic-only and intentionally small enough for CI fixtures while
 remaining byte-compatible with the worker's capture ingestion contracts.  Speech
-is synthesized offline from the literal ``expected_greeting_text`` values; the
-generator never calls network TTS and never falls back to tone/noise placeholders.
+is synthesized offline from the literal ``stimulus_definition.stimulus_payload.text``
+values; the generator never calls network TTS and never falls back to tone/noise
+placeholders.
 """
 
 from __future__ import annotations
@@ -279,7 +280,16 @@ def _build_stimulus_script(
                 "segment_index": segment_index,
                 "stimulus_offset_s": round(stimulus_offset_s, 6),
                 "expected_arm_id": arm_id,
-                "expected_greeting_text": greeting,
+                "stimulus_definition": {
+                    "stimulus_modality": "spoken_greeting",
+                    "stimulus_payload": {"content_type": "text", "text": greeting},
+                    "expected_stimulus_rule": (
+                        "Deliver the spoken greeting to the live streamer exactly as written."
+                    ),
+                    "expected_response_rule": (
+                        "The live streamer acknowledges the greeting or responds to it on stream."
+                    ),
+                },
                 "expected_peak_au12": round(expected_peak, 6),
                 "expected_semantic_match": True,
             }
@@ -1090,7 +1100,7 @@ def _write_audio(audio_path: Path, script: dict[str, Any], ffmpeg_bin: str) -> N
         segment_start_s = segment_index * segment_duration_s
         stimulus_s = segment_start_s + float(stimulus["stimulus_offset_s"])
         available_s = max(0.05, segment_start_s + segment_duration_s - stimulus_s - 0.06)
-        greeting_text = str(stimulus["expected_greeting_text"])
+        greeting_text = str(stimulus["stimulus_definition"]["stimulus_payload"]["text"])
         greeting_duration_s = _speech_duration_s(greeting_text, available_s)
         waveform = _lexical_speech_waveform(
             greeting_text,

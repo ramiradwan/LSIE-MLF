@@ -1,11 +1,11 @@
 """
-Canonical semantic-evaluation payload contract (§8.3).
+Canonical semantic-evaluation and stimulus-contract payloads (§8.3).
 
-The module defines the bounded reason-code and scorer-method vocabularies plus
-the strict Pydantic model for semantic evaluation output. It accepts only the
-three canonical scorer fields and leaves method/version transport metadata to
-downstream enrichment; it does not persist unbounded semantic rationales or
-alter the §7B reward path (§8.6).
+The module defines the bounded reason-code and scorer-method vocabularies,
+plus the shared typed stimulus definition used across admin, cloud, runtime,
+and attribution surfaces. It accepts only canonical stimulus/response fields
+and leaves method/version transport metadata to downstream enrichment; it does
+not persist unbounded semantic rationales or alter the §7B reward path (§8.6).
 """
 
 from __future__ import annotations
@@ -78,6 +78,26 @@ StimulusModality = Literal[
 ]
 
 
+class StimulusPayload(BaseModel):
+    """Validate the typed payload content for one operator stimulus."""
+
+    content_type: Literal["text"] = "text"
+    text: str = Field(..., min_length=1)
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+
+class StimulusDefinition(BaseModel):
+    """Validate the canonical stimulus definition attached to an experiment arm."""
+
+    stimulus_modality: StimulusModality
+    stimulus_payload: StimulusPayload
+    expected_stimulus_rule: str = Field(..., min_length=1)
+    expected_response_rule: str = Field(..., min_length=1)
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+
 class SemanticEvaluationResult(BaseModel):
     """
     Validate the canonical §8.3 semantic scorer response.
@@ -93,13 +113,17 @@ class SemanticEvaluationResult(BaseModel):
         description="Bounded semantic reason code.",
     )
     is_match: bool = Field(
-        ..., description="Whether the utterance matches the expected greeting rule."
+        ...,
+        description="Whether the observed response matches the expected response rule.",
     )
     confidence_score: float = Field(
         ...,
         ge=0.0,
         le=1.0,
-        description="Semantic match probability/confidence between 0.00 and 1.00.",
+        description=(
+            "Semantic match probability/confidence between the observed response and "
+            "the expected response rule, from 0.00 to 1.00."
+        ),
     )
 
     model_config = ConfigDict(extra="forbid")

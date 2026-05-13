@@ -24,6 +24,7 @@ from __future__ import annotations
 from pydantic import ValidationError
 from PySide6.QtCore import QObject, Signal
 
+from packages.schemas.evaluation import StimulusDefinition, StimulusPayload
 from packages.schemas.experiments import (
     ExperimentArmCreateRequest,
     ExperimentArmSeedRequest,
@@ -46,10 +47,12 @@ class ExperimentsViewModel(ViewModelBase):
     """Owns the arms table and emits safe experiment-management intents."""
 
     # fmt: off
-    create_experiment_requested = Signal(object)      # ExperimentCreateRequest
-    add_arm_requested           = Signal(str, object) # experiment_id, ExperimentArmCreateRequest
-    rename_arm_requested        = Signal(str, str, str)  # experiment_id, arm_id, greeting_text
-    disable_arm_requested       = Signal(str, str)        # experiment_id, arm_id
+    create_experiment_requested = Signal(object)         # ExperimentCreateRequest
+    add_arm_requested           = Signal(str, object)    # experiment_id, ExperimentArmCreateRequest
+    update_arm_requested        = Signal(
+        str, str, object
+    )  # experiment_id, arm_id, stimulus_definition
+    disable_arm_requested       = Signal(str, str)       # experiment_id, arm_id
     # fmt: on
 
     def __init__(
@@ -66,7 +69,7 @@ class ExperimentsViewModel(ViewModelBase):
         store.experiment_changed.connect(self._on_experiment_changed)
         store.error_changed.connect(self._on_error)
         store.error_cleared.connect(self._on_error_cleared)
-        arms_model.greeting_edit_requested.connect(self.rename_arm_greeting)
+        arms_model.stimulus_text_edit_requested.connect(self.update_arm_stimulus_text)
         arms_model.disable_requested.connect(self.disable_arm)
         # Seed from whatever the store already holds.
         self._sync_rows(self._store.experiment())
@@ -129,17 +132,22 @@ class ExperimentsViewModel(ViewModelBase):
         experiment_id: str,
         label: str,
         initial_arm_id: str,
-        initial_greeting_text: str,
+        initial_stimulus_text: str,
     ) -> bool:
         """Validate a create request and emit it for coordinator execution."""
         normalized_experiment_id = experiment_id.strip()
         normalized_label = label.strip()
         normalized_arm = initial_arm_id.strip()
-        normalized_greeting = initial_greeting_text.strip()
+        normalized_stimulus_text = initial_stimulus_text.strip()
         if not all(
-            (normalized_experiment_id, normalized_label, normalized_arm, normalized_greeting)
+            (
+                normalized_experiment_id,
+                normalized_label,
+                normalized_arm,
+                normalized_stimulus_text,
+            )
         ):
-            self.set_error("Experiment id, label, arm id, and confirmation text are required.")
+            self.set_error("Experiment id, label, arm id, and stimulus text are required.")
             return False
         try:
             request = ExperimentCreateRequest(
@@ -148,7 +156,9 @@ class ExperimentsViewModel(ViewModelBase):
                 arms=[
                     ExperimentArmSeedRequest(
                         arm=normalized_arm,
-                        greeting_text=normalized_greeting,
+                        stimulus_definition=_stimulus_definition_from_text(
+                            normalized_stimulus_text
+                        ),
                     )
                 ],
             )
@@ -159,21 +169,21 @@ class ExperimentsViewModel(ViewModelBase):
         self.create_experiment_requested.emit(request)
         return True
 
-    def add_arm(self, arm_id: str, greeting_text: str) -> bool:
+    def add_arm(self, arm_id: str, stimulus_text: str) -> bool:
         """Validate an add-arm request for the currently loaded experiment."""
         experiment_id = self.current_experiment_id()
         if not experiment_id or self._store.experiment() is None:
             self.set_error("Load or create an experiment before adding arms.")
             return False
         normalized_arm = arm_id.strip()
-        normalized_greeting = greeting_text.strip()
-        if not normalized_arm or not normalized_greeting:
-            self.set_error("Arm id and confirmation text are required.")
+        normalized_stimulus_text = stimulus_text.strip()
+        if not normalized_arm or not normalized_stimulus_text:
+            self.set_error("Arm id and stimulus text are required.")
             return False
         try:
             request = ExperimentArmCreateRequest(
                 arm=normalized_arm,
-                greeting_text=normalized_greeting,
+                stimulus_definition=_stimulus_definition_from_text(normalized_stimulus_text),
             )
         except ValidationError as exc:
             self.set_error(_validation_message(exc))
@@ -182,25 +192,30 @@ class ExperimentsViewModel(ViewModelBase):
         self.add_arm_requested.emit(experiment_id, request)
         return True
 
-    def rename_arm_greeting(self, arm_id: str, greeting_text: str) -> bool:
-        """Emit a greeting rename for one arm; no posterior fields are writable."""
+    def update_arm_stimulus_text(self, arm_id: str, stimulus_text: str) -> bool:
+        """Emit a stimulus-definition update for one arm; posterior fields stay read-only."""
         detail = self._store.experiment()
         if detail is None:
-            self.set_error("Load or create an experiment before renaming arms.")
+            self.set_error("Load or create an experiment before updating arms.")
             return False
         arm = self._arms_model.arm_by_id(arm_id)
         if arm is None:
             self.set_error(f"Arm {arm_id!r} is not present in the current experiment.")
             return False
-        normalized_greeting = greeting_text.strip()
-        if not normalized_greeting:
-            self.set_error("Confirmation text is required.")
+        normalized_stimulus_text = stimulus_text.strip()
+        if not normalized_stimulus_text:
+            self.set_error("Stimulus text is required.")
             return False
-        if normalized_greeting == arm.greeting_text:
+        current_stimulus_text = arm.stimulus_definition.stimulus_payload.text.strip()
+        if normalized_stimulus_text == current_stimulus_text:
             self.set_error(None)
             return True
         self.set_error(None)
-        self.rename_arm_requested.emit(detail.experiment_id, arm_id, normalized_greeting)
+        self.update_arm_requested.emit(
+            detail.experiment_id,
+            arm_id,
+            _replace_stimulus_text(arm.stimulus_definition, normalized_stimulus_text),
+        )
         return True
 
     def disable_arm(self, arm_id: str) -> bool:
@@ -244,6 +259,22 @@ class ExperimentsViewModel(ViewModelBase):
     def _on_error_cleared(self, scope: str) -> None:
         if scope == "experiment":
             self.set_error(None)
+
+
+def _stimulus_definition_from_text(text: str) -> StimulusDefinition:
+    return StimulusDefinition(
+        stimulus_modality="spoken_greeting",
+        stimulus_payload=StimulusPayload(text=text),
+        expected_stimulus_rule="Deliver the operator stimulus to the live streamer.",
+        expected_response_rule="The live streamer acknowledges or responds to the stimulus.",
+    )
+
+
+def _replace_stimulus_text(
+    stimulus_definition: StimulusDefinition,
+    text: str,
+) -> StimulusDefinition:
+    return stimulus_definition.model_copy(update={"stimulus_payload": StimulusPayload(text=text)})
 
 
 def _validation_message(exc: ValidationError) -> str:

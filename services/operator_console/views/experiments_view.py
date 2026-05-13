@@ -414,7 +414,7 @@ class _StrategyEvidencePanel(QFrame):
             card.set_title(row.arm_id)
             card.set_primary_text(row.label)
             card.set_secondary_text(
-                f"{row.outcome}\nConfirmation text: {row.greeting_text}\n"
+                f"{row.outcome}\nStimulus text: {row.stimulus_text}\n"
                 f"{row.evidence}\nDecision evidence: {row.decision_evidence}"
             )
             card.set_status(row.status, "active" if row.is_active else None)
@@ -460,8 +460,8 @@ class _ManagePanel(QFrame):
         self._title.setObjectName("PanelTitle")
         self._hint = QLabel(
             "Create or seed the current experiment, add stimulus strategies, double-click "
-            "or press F2/Enter on Confirmation text to rename it, or uncheck Enabled "
-            "to disable an option. Learning-history columns are read-only.",
+            "or press F2/Enter on Stimulus text to edit it, or uncheck Enabled to "
+            "disable an option. Learning-history columns are read-only.",
             self,
         )
         self._hint.setObjectName("PanelSubtitle")
@@ -496,16 +496,16 @@ class _ManagePanel(QFrame):
         )
         self._create_arm_id_label.setBuddy(self._create_arm_id)
 
-        self._create_greeting_label = QLabel("Initial confirmation text", self)
-        self._create_greeting_label.setObjectName("MetricCardSecondary")
-        self._create_greeting = QLineEdit(self)
-        self._create_greeting.setObjectName("CreateInitialGreetingInput")
-        self._create_greeting.setPlaceholderText("initial confirmation text")
-        self._create_greeting.setAccessibleName("Initial confirmation text")
-        self._create_greeting.setAccessibleDescription(
-            "Text used to confirm that the host reacted to the initial stimulus strategy."
+        self._create_stimulus_label = QLabel("Initial stimulus text", self)
+        self._create_stimulus_label.setObjectName("MetricCardSecondary")
+        self._create_stimulus = QLineEdit(self)
+        self._create_stimulus.setObjectName("CreateInitialStimulusInput")
+        self._create_stimulus.setPlaceholderText("initial stimulus text")
+        self._create_stimulus.setAccessibleName("Initial stimulus text")
+        self._create_stimulus.setAccessibleDescription(
+            "Text delivered for the initial stimulus strategy."
         )
-        self._create_greeting_label.setBuddy(self._create_greeting)
+        self._create_stimulus_label.setBuddy(self._create_stimulus)
 
         self._create_button = QPushButton("Create experiment", self)
         self._create_button.setObjectName("CreateExperimentButton")
@@ -526,16 +526,14 @@ class _ManagePanel(QFrame):
         )
         self._add_arm_id_label.setBuddy(self._add_arm_id)
 
-        self._add_greeting_label = QLabel("Confirmation text", self)
-        self._add_greeting_label.setObjectName("MetricCardSecondary")
-        self._add_greeting = QLineEdit(self)
-        self._add_greeting.setObjectName("AddArmGreetingInput")
-        self._add_greeting.setPlaceholderText("confirmation text")
-        self._add_greeting.setAccessibleName("Confirmation text")
-        self._add_greeting.setAccessibleDescription(
-            "Text used to confirm that the host reacted to this stimulus strategy."
-        )
-        self._add_greeting_label.setBuddy(self._add_greeting)
+        self._add_stimulus_label = QLabel("Stimulus text", self)
+        self._add_stimulus_label.setObjectName("MetricCardSecondary")
+        self._add_stimulus = QLineEdit(self)
+        self._add_stimulus.setObjectName("AddArmStimulusInput")
+        self._add_stimulus.setPlaceholderText("stimulus text")
+        self._add_stimulus.setAccessibleName("Stimulus text")
+        self._add_stimulus.setAccessibleDescription("Text delivered for this stimulus strategy.")
+        self._add_stimulus_label.setBuddy(self._add_stimulus)
 
         self._add_button = QPushButton("Add strategy", self)
         self._add_button.setObjectName("AddArmButton")
@@ -557,9 +555,9 @@ class _ManagePanel(QFrame):
             self._create_experiment_id,
             self._create_label,
             self._create_arm_id,
-            self._create_greeting,
+            self._create_stimulus,
             self._add_arm_id,
-            self._add_greeting,
+            self._add_stimulus,
         ):
             edit.textChanged.connect(self._sync_enabled)
         self._create_button.clicked.connect(self._on_create_clicked)
@@ -580,7 +578,7 @@ class _ManagePanel(QFrame):
         if detail is not None and not self._create_label.text():
             self._create_label.setText(detail.label or detail.experiment_id)
         self._add_arm_id.setEnabled(self._has_detail)
-        self._add_greeting.setEnabled(self._has_detail)
+        self._add_stimulus.setEnabled(self._has_detail)
         self._add_button.setToolTip(
             "Add a new strategy with neutral starting history."
             if self._has_detail
@@ -602,16 +600,16 @@ class _ManagePanel(QFrame):
             self._create_row.addWidget(self._create_experiment_id_label, 0, 0)
             self._create_row.addWidget(self._create_label_label, 0, 1)
             self._create_row.addWidget(self._create_arm_id_label, 0, 2)
-            self._create_row.addWidget(self._create_greeting_label, 0, 3)
+            self._create_row.addWidget(self._create_stimulus_label, 0, 3)
             self._create_row.addWidget(self._create_experiment_id, 1, 0)
             self._create_row.addWidget(self._create_label, 1, 1)
             self._create_row.addWidget(self._create_arm_id, 1, 2)
-            self._create_row.addWidget(self._create_greeting, 1, 3)
+            self._create_row.addWidget(self._create_stimulus, 1, 3)
             self._create_row.addWidget(self._create_button, 1, 4)
             self._add_row.addWidget(self._add_arm_id_label, 0, 0)
-            self._add_row.addWidget(self._add_greeting_label, 0, 1, 1, 3)
+            self._add_row.addWidget(self._add_stimulus_label, 0, 1, 1, 3)
             self._add_row.addWidget(self._add_arm_id, 1, 0)
-            self._add_row.addWidget(self._add_greeting, 1, 1, 1, 3)
+            self._add_row.addWidget(self._add_stimulus, 1, 1, 1, 3)
             self._add_row.addWidget(self._add_button, 1, 4)
             create_stretches = (1, 1, 1, 2, 0)
             add_stretches = (1, 2, 0, 0, 0)
@@ -621,14 +619,14 @@ class _ManagePanel(QFrame):
             self._create_row.addWidget(self._create_experiment_id, 1, 0)
             self._create_row.addWidget(self._create_label, 1, 1)
             self._create_row.addWidget(self._create_arm_id_label, 2, 0)
-            self._create_row.addWidget(self._create_greeting_label, 2, 1)
+            self._create_row.addWidget(self._create_stimulus_label, 2, 1)
             self._create_row.addWidget(self._create_arm_id, 3, 0)
-            self._create_row.addWidget(self._create_greeting, 3, 1)
+            self._create_row.addWidget(self._create_stimulus, 3, 1)
             self._create_row.addWidget(self._create_button, 4, 0, 1, 2)
             self._add_row.addWidget(self._add_arm_id_label, 0, 0)
-            self._add_row.addWidget(self._add_greeting_label, 0, 1)
+            self._add_row.addWidget(self._add_stimulus_label, 0, 1)
             self._add_row.addWidget(self._add_arm_id, 1, 0)
-            self._add_row.addWidget(self._add_greeting, 1, 1)
+            self._add_row.addWidget(self._add_stimulus, 1, 1)
             self._add_row.addWidget(self._add_button, 2, 0, 1, 2)
             create_stretches = (1, 1, 0, 0, 0)
             add_stretches = (1, 2, 0, 0, 0)
@@ -639,13 +637,13 @@ class _ManagePanel(QFrame):
             self._create_row.addWidget(self._create_label, 3, 0)
             self._create_row.addWidget(self._create_arm_id_label, 4, 0)
             self._create_row.addWidget(self._create_arm_id, 5, 0)
-            self._create_row.addWidget(self._create_greeting_label, 6, 0)
-            self._create_row.addWidget(self._create_greeting, 7, 0)
+            self._create_row.addWidget(self._create_stimulus_label, 6, 0)
+            self._create_row.addWidget(self._create_stimulus, 7, 0)
             self._create_row.addWidget(self._create_button, 8, 0)
             self._add_row.addWidget(self._add_arm_id_label, 0, 0)
             self._add_row.addWidget(self._add_arm_id, 1, 0)
-            self._add_row.addWidget(self._add_greeting_label, 2, 0)
-            self._add_row.addWidget(self._add_greeting, 3, 0)
+            self._add_row.addWidget(self._add_stimulus_label, 2, 0)
+            self._add_row.addWidget(self._add_stimulus, 3, 0)
             self._add_row.addWidget(self._add_button, 4, 0)
             create_stretches = (1, 0, 0, 0, 0)
             add_stretches = (1, 0, 0, 0, 0)
@@ -660,11 +658,11 @@ class _ManagePanel(QFrame):
             self._create_experiment_id.text(),
             self._create_label.text(),
             self._create_arm_id.text(),
-            self._create_greeting.text(),
+            self._create_stimulus.text(),
         )
 
     def _on_add_clicked(self) -> None:
-        self._vm.add_arm(self._add_arm_id.text(), self._add_greeting.text())
+        self._vm.add_arm(self._add_arm_id.text(), self._add_stimulus.text())
 
     def _sync_enabled(self, *_: object) -> None:
         create_ready = all(
@@ -673,14 +671,14 @@ class _ManagePanel(QFrame):
                 self._create_experiment_id,
                 self._create_label,
                 self._create_arm_id,
-                self._create_greeting,
+                self._create_stimulus,
             )
         )
         self._create_button.setEnabled(create_ready)
         add_ready = (
             self._has_detail
             and bool(self._add_arm_id.text().strip())
-            and bool(self._add_greeting.text().strip())
+            and bool(self._add_stimulus.text().strip())
         )
         self._add_button.setEnabled(add_ready)
 

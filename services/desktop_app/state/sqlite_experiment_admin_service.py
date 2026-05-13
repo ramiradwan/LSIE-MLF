@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
+from packages.schemas.evaluation import StimulusDefinition
 from packages.schemas.experiments import (
     ExperimentAdminResponse,
     ExperimentArmAdminResponse,
@@ -52,7 +53,7 @@ class SqliteExperimentAdminService:
                 conn.execute(
                     """
                     INSERT INTO experiments (
-                        experiment_id, label, arm, greeting_text,
+                        experiment_id, label, arm, stimulus_definition,
                         alpha_param, beta_param, enabled, end_dated_at, updated_at
                     )
                     VALUES (?, ?, ?, ?, ?, ?, 1, NULL, ?)
@@ -61,7 +62,7 @@ class SqliteExperimentAdminService:
                         request.experiment_id,
                         request.label,
                         arm.arm,
-                        arm.greeting_text,
+                        arm.stimulus_definition.model_dump_json(),
                         _BETA_PRIOR_ALPHA,
                         _BETA_PRIOR_BETA,
                         _iso_utc(self._clock()),
@@ -91,7 +92,7 @@ class SqliteExperimentAdminService:
             conn.execute(
                 """
                 INSERT INTO experiments (
-                    experiment_id, label, arm, greeting_text,
+                    experiment_id, label, arm, stimulus_definition,
                     alpha_param, beta_param, enabled, end_dated_at, updated_at
                 )
                 VALUES (?, ?, ?, ?, ?, ?, 1, NULL, ?)
@@ -100,7 +101,7 @@ class SqliteExperimentAdminService:
                     experiment_id,
                     str(identity["label"] or experiment_id),
                     request.arm,
-                    request.greeting_text,
+                    request.stimulus_definition.model_dump_json(),
                     _BETA_PRIOR_ALPHA,
                     _BETA_PRIOR_BETA,
                     _iso_utc(self._clock()),
@@ -128,7 +129,10 @@ class SqliteExperimentAdminService:
             if row is None:
                 _raise_missing_experiment_or_arm(conn, experiment_id, arm_id)
             assert row is not None
-            greeting_text = request.greeting_text or str(row["greeting_text"] or arm_id)
+            stimulus_definition = (
+                request.stimulus_definition
+                or StimulusDefinition.model_validate_json(str(row["stimulus_definition"]))
+            )
             enabled = int(row["enabled"] if row["enabled"] is not None else 1)
             end_dated_at = row["end_dated_at"]
             if request.enabled is False:
@@ -138,11 +142,11 @@ class SqliteExperimentAdminService:
             conn.execute(
                 """
                 UPDATE experiments
-                SET greeting_text = ?, enabled = ?, end_dated_at = ?, updated_at = ?
+                SET stimulus_definition = ?, enabled = ?, end_dated_at = ?, updated_at = ?
                 WHERE experiment_id = ? AND arm = ?
                 """,
                 (
-                    greeting_text,
+                    stimulus_definition.model_dump_json(),
                     enabled,
                     end_dated_at,
                     _iso_utc(self._clock()),
@@ -243,7 +247,7 @@ def _fetch_experiment_rows(
     return list(
         conn.execute(
             """
-            SELECT experiment_id, label, arm, greeting_text, alpha_param, beta_param,
+            SELECT experiment_id, label, arm, stimulus_definition, alpha_param, beta_param,
                    enabled, end_dated_at, updated_at
             FROM experiments
             WHERE experiment_id = ?
@@ -261,7 +265,7 @@ def _fetch_arm_row(
 ) -> sqlite3.Row | None:
     row = conn.execute(
         """
-        SELECT experiment_id, label, arm, greeting_text, alpha_param, beta_param,
+        SELECT experiment_id, label, arm, stimulus_definition, alpha_param, beta_param,
                enabled, end_dated_at, updated_at
         FROM experiments
         WHERE experiment_id = ? AND arm = ?
@@ -312,7 +316,7 @@ def _build_arm_response(row: sqlite3.Row) -> ExperimentArmAdminResponse:
         experiment_id=str(row["experiment_id"]),
         label=str(row["label"] or row["experiment_id"]),
         arm=str(row["arm"]),
-        greeting_text=str(row["greeting_text"] or row["arm"]),
+        stimulus_definition=StimulusDefinition.model_validate_json(str(row["stimulus_definition"])),
         alpha_param=float(row["alpha_param"]),
         beta_param=float(row["beta_param"]),
         enabled=bool(row["enabled"]),

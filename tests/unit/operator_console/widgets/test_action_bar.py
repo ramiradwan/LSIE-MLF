@@ -58,7 +58,7 @@ def test_set_session_context_enables_button() -> None:
     bar.set_session_context(
         session_id=session_id,
         active_arm="greeting_v1",
-        expected_greeting="hei rakas",
+        expected_response_text="hei rakas",
     )
     assert bar._submit_button.isEnabled() is True  # type: ignore[attr-defined]
     # Wide mode renders the abbreviated UUID — full UUIDs wrapped the
@@ -76,7 +76,7 @@ def test_operator_not_ready_session_context_disables_button() -> None:
     bar.set_session_context(
         session_id=uuid4(),
         active_arm="greeting_v1",
-        expected_greeting="hei rakas",
+        expected_response_text="hei rakas",
         operator_ready_for_submit=False,
     )
     assert bar._submit_button.isEnabled() is False  # type: ignore[attr-defined]
@@ -87,7 +87,7 @@ def test_legacy_unknown_readiness_defaults_to_enabled_for_bound_session() -> Non
     bar.set_session_context(
         session_id=uuid4(),
         active_arm="greeting_v1",
-        expected_greeting="hei rakas",
+        expected_response_text="hei rakas",
         operator_ready_for_submit=None,
     )
     assert bar._submit_button.isEnabled() is True  # type: ignore[attr-defined]

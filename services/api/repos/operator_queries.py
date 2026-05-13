@@ -103,7 +103,7 @@ _ATTRIBUTION_EVENT_LATERAL_SQL: str = """
         FROM attribution_event ae
         WHERE ae.session_id = e.session_id
           AND ae.segment_id = e.segment_id
-          AND ae.event_type = 'greeting_interaction'
+          AND ae.event_type = 'stimulus_interaction'
         ORDER BY ae.created_at DESC, ae.event_id DESC
         LIMIT 1
     ) attr ON TRUE
@@ -159,8 +159,9 @@ _LIST_RECENT_SESSIONS_SQL: str = """
         s.ended_at,
         EXTRACT(EPOCH FROM (COALESCE(s.ended_at, NOW()) - s.started_at))::double precision
             AS duration_s,
-        latest_enc.experiment_id,
-        latest_enc.arm AS active_arm,
+        COALESCE(latest_enc.experiment_id, s.experiment_id) AS experiment_id,
+        COALESCE(s.active_arm, latest_enc.arm) AS active_arm,
+        current_arm.stimulus_definition AS stimulus_definition,
         latest_enc.timestamp_utc AS last_segment_completed_at_utc,
         latest_enc.gated_reward AS latest_reward,
         latest_enc.semantic_gate AS latest_semantic_gate,
@@ -176,6 +177,9 @@ _LIST_RECENT_SESSIONS_SQL: str = """
         ORDER BY e.timestamp_utc DESC
         LIMIT 1
     ) latest_enc ON TRUE
+    LEFT JOIN experiments current_arm
+        ON current_arm.experiment_id = COALESCE(latest_enc.experiment_id, s.experiment_id)
+       AND current_arm.arm = COALESCE(s.active_arm, latest_enc.arm)
     ORDER BY s.started_at DESC
     LIMIT %(limit)s
 """
@@ -188,8 +192,9 @@ _GET_SESSION_SQL: str = """
         s.ended_at,
         EXTRACT(EPOCH FROM (COALESCE(s.ended_at, NOW()) - s.started_at))::double precision
             AS duration_s,
-        latest_enc.experiment_id,
-        latest_enc.arm AS active_arm,
+        COALESCE(latest_enc.experiment_id, s.experiment_id) AS experiment_id,
+        COALESCE(s.active_arm, latest_enc.arm) AS active_arm,
+        current_arm.stimulus_definition AS stimulus_definition,
         latest_enc.timestamp_utc AS last_segment_completed_at_utc,
         latest_enc.gated_reward AS latest_reward,
         latest_enc.semantic_gate AS latest_semantic_gate,
@@ -205,6 +210,9 @@ _GET_SESSION_SQL: str = """
         ORDER BY e.timestamp_utc DESC
         LIMIT 1
     ) latest_enc ON TRUE
+    LEFT JOIN experiments current_arm
+        ON current_arm.experiment_id = COALESCE(latest_enc.experiment_id, s.experiment_id)
+       AND current_arm.arm = COALESCE(s.active_arm, latest_enc.arm)
     WHERE s.session_id = %(session_id)s
 """
 
@@ -215,8 +223,9 @@ _GET_ACTIVE_SESSION_SQL: str = """
         s.started_at,
         s.ended_at,
         EXTRACT(EPOCH FROM (NOW() - s.started_at))::double precision AS duration_s,
-        latest_enc.experiment_id,
-        latest_enc.arm AS active_arm,
+        COALESCE(latest_enc.experiment_id, s.experiment_id) AS experiment_id,
+        COALESCE(s.active_arm, latest_enc.arm) AS active_arm,
+        current_arm.stimulus_definition AS stimulus_definition,
         latest_enc.timestamp_utc AS last_segment_completed_at_utc,
         latest_enc.gated_reward AS latest_reward,
         latest_enc.semantic_gate AS latest_semantic_gate,
@@ -232,6 +241,9 @@ _GET_ACTIVE_SESSION_SQL: str = """
         ORDER BY e.timestamp_utc DESC
         LIMIT 1
     ) latest_enc ON TRUE
+    LEFT JOIN experiments current_arm
+        ON current_arm.experiment_id = COALESCE(latest_enc.experiment_id, s.experiment_id)
+       AND current_arm.arm = COALESCE(s.active_arm, latest_enc.arm)
     WHERE s.ended_at IS NULL
     ORDER BY s.started_at DESC
     LIMIT 1
@@ -246,12 +258,16 @@ _GET_ACTIVE_SESSION_SQL: str = """
 _SESSION_ENCOUNTERS_SQL: str = f"""
     SELECT
         e.id, e.session_id, e.segment_id, e.experiment_id,
-        e.arm, e.timestamp_utc, e.gated_reward, e.p90_intensity,
+        e.arm, ex_arm.stimulus_definition AS stimulus_definition,
+        e.timestamp_utc, e.gated_reward, e.p90_intensity,
         e.semantic_gate, e.n_frames_in_window,
         e.au12_baseline_pre, e.stimulus_time, e.created_at,
         {_ACOUSTIC_METRICS_SELECT_SQL},
         {_SEMANTIC_ATTRIBUTION_SELECT_SQL}
     FROM encounter_log e
+    LEFT JOIN experiments ex_arm
+        ON ex_arm.experiment_id = e.experiment_id
+       AND ex_arm.arm = e.arm
     LEFT JOIN LATERAL (
         SELECT
             {_ACOUSTIC_METRICS_LATERAL_SQL}
@@ -274,12 +290,16 @@ _SESSION_ENCOUNTERS_SQL: str = f"""
 _LATEST_ENCOUNTER_SQL: str = f"""
     SELECT
         e.id, e.session_id, e.segment_id, e.experiment_id,
-        e.arm, e.timestamp_utc, e.gated_reward, e.p90_intensity,
+        e.arm, ex_arm.stimulus_definition AS stimulus_definition,
+        e.timestamp_utc, e.gated_reward, e.p90_intensity,
         e.semantic_gate, e.n_frames_in_window,
         e.au12_baseline_pre, e.stimulus_time, e.created_at,
         {_ACOUSTIC_METRICS_SELECT_SQL},
         {_SEMANTIC_ATTRIBUTION_SELECT_SQL}
     FROM encounter_log e
+    LEFT JOIN experiments ex_arm
+        ON ex_arm.experiment_id = e.experiment_id
+       AND ex_arm.arm = e.arm
     LEFT JOIN LATERAL (
         SELECT
             {_ACOUSTIC_METRICS_LATERAL_SQL}
@@ -307,7 +327,7 @@ _LATEST_ENCOUNTER_SQL: str = f"""
 # instead of failing parse-time on missing columns.
 _EXPERIMENT_MANAGEMENT_COLUMNS: tuple[str, ...] = (
     "label",
-    "greeting_text",
+    "stimulus_definition",
     "enabled",
     "end_dated_at",
 )
@@ -316,7 +336,7 @@ _EXPERIMENT_MANAGEMENT_COLUMNS_SQL: str = """
     SELECT column_name
     FROM information_schema.columns
     WHERE table_name = 'experiments'
-      AND column_name IN ('label', 'greeting_text', 'enabled', 'end_dated_at')
+      AND column_name IN ('label', 'stimulus_definition', 'enabled', 'end_dated_at')
 """
 
 # Identify the most-recently-selected arm for an experiment from encounter_log —
@@ -442,8 +462,8 @@ def _experiment_arms_sql(available_columns: set[str]) -> str:
         if "label" in available_columns
         else "ex.experiment_id"
     )
-    greeting_expr = (
-        "COALESCE(ex.greeting_text, ex.arm)" if "greeting_text" in available_columns else "ex.arm"
+    stimulus_definition_expr = (
+        "ex.stimulus_definition" if "stimulus_definition" in available_columns else "NULL"
     )
     enabled_expr = "COALESCE(ex.enabled, TRUE)" if "enabled" in available_columns else "TRUE"
     end_dated_expr = (
@@ -454,7 +474,7 @@ def _experiment_arms_sql(available_columns: set[str]) -> str:
         ex.experiment_id,
         {label_expr} AS label,
         ex.arm,
-        {greeting_expr} AS greeting_text,
+        {stimulus_definition_expr} AS stimulus_definition,
         ex.alpha_param,
         ex.beta_param,
         {enabled_expr} AS enabled,

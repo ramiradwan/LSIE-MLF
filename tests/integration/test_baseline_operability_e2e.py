@@ -26,11 +26,7 @@ from packages.schemas.operator_console import SessionLifecycleAccepted
 from services.api.routes import experiments as experiments_route
 from services.api.routes import sessions as sessions_route
 from services.api.services.session_lifecycle_service import _stable_session_id_for_action
-from services.worker.pipeline.orchestrator import (
-    GREETING_LINES,
-    SEGMENT_WINDOW_SECONDS,
-    Orchestrator,
-)
+from services.worker.pipeline.orchestrator import SEGMENT_WINDOW_SECONDS, Orchestrator
 from services.worker.pipeline.replay_capture import (
     ORCHESTRATOR_AUDIO_SAMPLE_RATE_HZ,
     SAMPLE_WIDTH_BYTES,
@@ -48,6 +44,21 @@ EXPERIMENT_ID = "baseline_operability_two_arm_proof"
 STREAM_URL = "replay://baseline-operability/posterior-proof"
 EPOCH_S = 1_900_000_000.0
 CALIBRATION_FRAMES_REQUIRED = 45
+WARM_WELCOME_TEXT = "Hey! Thanks for streaming, you're awesome!"
+DIRECT_QUESTION_TEXT = "Hi! What's the best advice you've gotten today?"
+
+
+def _stimulus_definition(text: str) -> dict[str, Any]:
+    return {
+        "stimulus_modality": "spoken_greeting",
+        "stimulus_payload": {"content_type": "text", "text": text},
+        "expected_stimulus_rule": (
+            "Deliver the spoken greeting to the live streamer exactly as written."
+        ),
+        "expected_response_rule": (
+            "The live streamer acknowledges the greeting or responds to it on stream."
+        ),
+    }
 
 
 @dataclass
@@ -73,7 +84,7 @@ class _InMemoryE2EState:
                 "experiment_id": experiment_id,
                 "label": str(request.label),
                 "arm": arm_id,
-                "greeting_text": str(arm.greeting_text),
+                "stimulus_definition": arm.stimulus_definition.model_dump(),
                 "alpha_param": 1.0,
                 "beta_param": 1.0,
                 "enabled": True,
@@ -381,7 +392,7 @@ def _baseline_posterior_proof_script(script: dict[str, Any]) -> dict[str, Any]:
             "segment_index": 0,
             "stimulus_offset_s": 2.0,
             "expected_arm_id": "warm_welcome",
-            "expected_greeting_text": GREETING_LINES["warm_welcome"],
+            "stimulus_definition": _stimulus_definition(WARM_WELCOME_TEXT),
             "expected_peak_au12": peak_au12,
             "expected_p90_intensity": peak_au12,
             "expected_reward": peak_au12,
@@ -392,7 +403,7 @@ def _baseline_posterior_proof_script(script: dict[str, Any]) -> dict[str, Any]:
             "segment_index": 1,
             "stimulus_offset_s": 2.0,
             "expected_arm_id": "direct_question",
-            "expected_greeting_text": GREETING_LINES["direct_question"],
+            "stimulus_definition": _stimulus_definition(DIRECT_QUESTION_TEXT),
             "expected_peak_au12": peak_au12,
             "expected_p90_intensity": peak_au12,
             "expected_reward": 0.0,
@@ -403,7 +414,7 @@ def _baseline_posterior_proof_script(script: dict[str, Any]) -> dict[str, Any]:
             "segment_index": 2,
             "stimulus_offset_s": 2.0,
             "expected_arm_id": "warm_welcome",
-            "expected_greeting_text": GREETING_LINES["warm_welcome"],
+            "stimulus_definition": _stimulus_definition(WARM_WELCOME_TEXT),
             "expected_peak_au12": peak_au12,
             "expected_p90_intensity": peak_au12,
             "expected_reward": peak_au12,
@@ -499,6 +510,9 @@ def _fake_metrics_store_class(state: _InMemoryE2EState) -> type[Any]:
                     "arm": arm,
                     "alpha_param": state.experiments[experiment_id][arm]["alpha_param"],
                     "beta_param": state.experiments[experiment_id][arm]["beta_param"],
+                    "stimulus_definition": state.experiments[experiment_id][arm][
+                        "stimulus_definition"
+                    ],
                 }
                 for arm in state.arm_order[experiment_id]
             ]
@@ -511,6 +525,7 @@ def _fake_metrics_store_class(state: _InMemoryE2EState) -> type[Any]:
                 "arm": arm,
                 "alpha_param": row["alpha_param"],
                 "beta_param": row["beta_param"],
+                "stimulus_definition": row["stimulus_definition"],
             }
 
         def update_experiment_arm(
@@ -594,17 +609,17 @@ def _install_worker_seams(
                 assert wav_file.getframerate() == ORCHESTRATOR_AUDIO_SAMPLE_RATE_HZ
             row = current_stimulus["row"]
             assert row is not None
-            return str(row["expected_greeting_text"])
+            return str(row["stimulus_definition"]["stimulus_payload"]["text"])
 
     class FixtureSemanticEvaluator:
-        def evaluate(self, expected_greeting: str, actual_utterance: str) -> dict[str, Any]:
+        def evaluate(self, expected_response_rule: str, actual_utterance: str) -> dict[str, Any]:
             row = current_stimulus["row"]
             assert row is not None
-            assert _normalize_text(expected_greeting) == _normalize_text(
-                str(row["expected_greeting_text"])
+            assert _normalize_text(expected_response_rule) == _normalize_text(
+                str(row["stimulus_definition"]["expected_response_rule"])
             )
             assert _normalize_text(actual_utterance) == _normalize_text(
-                str(row["expected_greeting_text"])
+                str(row["stimulus_definition"]["stimulus_payload"]["text"])
             )
             return {
                 "reasoning": (
@@ -648,7 +663,16 @@ def _install_worker_seams(
         )
 
         assert payload["_active_arm"] == stimulus["expected_arm_id"]
-        assert payload["_expected_greeting"] == stimulus["expected_greeting_text"]
+        assert payload["_stimulus_modality"] == stimulus["stimulus_definition"]["stimulus_modality"]
+        assert payload["_stimulus_payload"] == stimulus["stimulus_definition"]["stimulus_payload"]
+        assert (
+            payload["_expected_stimulus_rule"]
+            == stimulus["stimulus_definition"]["expected_stimulus_rule"]
+        )
+        assert (
+            payload["_expected_response_rule"]
+            == stimulus["stimulus_definition"]["expected_response_rule"]
+        )
         assert payload["_stimulus_time"] == pytest.approx(expected_stimulus_time, abs=tolerance)
         assert payload["_au12_series"], "each encounter must carry reward AU12 inputs"
         dispatched_payloads.append(dict(payload))
@@ -784,7 +808,8 @@ class _ReplayRunDriver:
             self.calibration_completed_before_first_stimulus = True
 
         assert orchestrator._active_arm == stimulus["expected_arm_id"]
-        assert orchestrator._expected_greeting == stimulus["expected_greeting_text"]
+        assert orchestrator._stimulus_definition is not None
+        assert orchestrator._stimulus_definition.model_dump() == stimulus["stimulus_definition"]
         self.current_time_s = EPOCH_S + stimulus_elapsed_s
         orchestrator.record_stimulus_injection()
         assert orchestrator._is_calibrating is False
@@ -862,11 +887,11 @@ def test_baseline_replay_e2e_proves_strong_arm_posterior_improves(
             "arms": [
                 {
                     "arm": strong_arm,
-                    "greeting_text": "Hey! Thanks for streaming, you're awesome!",
+                    "stimulus_definition": _stimulus_definition(WARM_WELCOME_TEXT),
                 },
                 {
                     "arm": weak_arm,
-                    "greeting_text": "Hi! What's the best advice you've gotten today?",
+                    "stimulus_definition": _stimulus_definition(DIRECT_QUESTION_TEXT),
                 },
             ],
         },
@@ -985,7 +1010,16 @@ def test_baseline_replay_e2e_proves_strong_arm_posterior_improves(
     ):
         expected_stimulus_time = EPOCH_S + replay.elapsed_for_stimulus(stimulus)
         assert metrics["_active_arm"] == stimulus["expected_arm_id"]
-        assert metrics["_expected_greeting"] == stimulus["expected_greeting_text"]
+        assert metrics["_stimulus_modality"] == stimulus["stimulus_definition"]["stimulus_modality"]
+        assert metrics["_stimulus_payload"] == stimulus["stimulus_definition"]["stimulus_payload"]
+        assert (
+            metrics["_expected_stimulus_rule"]
+            == stimulus["stimulus_definition"]["expected_stimulus_rule"]
+        )
+        assert (
+            metrics["_expected_response_rule"]
+            == stimulus["stimulus_definition"]["expected_response_rule"]
+        )
         assert reward_call["stimulus_time_s"] == pytest.approx(
             expected_stimulus_time,
             abs=tolerance,

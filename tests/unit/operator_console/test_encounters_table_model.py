@@ -40,7 +40,7 @@ def _make_encounter(
         segment_timestamp_utc=datetime(2026, 4, 17, 12, 0, 0, tzinfo=UTC),
         state=state,
         active_arm=active_arm,
-        expected_greeting="hei rakas",
+        expected_response_text="hei rakas",
         semantic_gate=semantic_gate,
         p90_intensity=p90,
         gated_reward=gated_reward,

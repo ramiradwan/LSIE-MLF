@@ -65,7 +65,7 @@ _CANONICAL_OBSERVATIONAL_ACOUSTIC_COLUMNS: tuple[str, ...] = (
 
 _EXPERIMENT_MANAGEMENT_COLUMNS: tuple[str, ...] = (
     "label",
-    "greeting_text",
+    "stimulus_definition",
     "enabled",
     "end_dated_at",
 )
@@ -105,8 +105,8 @@ SELECT
                                                        AS duration_s,
     COALESCE(le.experiment_id, s.experiment_id)       AS experiment_id,
     COALESCE(live.active_arm, s.active_arm, le.arm)    AS active_arm,
-    COALESCE(live.expected_greeting, s.expected_greeting)
-                                                           AS expected_greeting,
+    COALESCE(live.stimulus_definition, s.stimulus_definition)
+                                                           AS stimulus_definition,
     le.timestamp_utc                                   AS last_segment_completed_at_utc,
     le.gated_reward                                    AS latest_reward,
     le.semantic_gate                                   AS latest_semantic_gate,
@@ -138,8 +138,8 @@ SELECT
                                                        AS duration_s,
     COALESCE(le.experiment_id, s.experiment_id)       AS experiment_id,
     COALESCE(live.active_arm, s.active_arm, le.arm)    AS active_arm,
-    COALESCE(live.expected_greeting, s.expected_greeting)
-                                                           AS expected_greeting,
+    COALESCE(live.stimulus_definition, s.stimulus_definition)
+                                                           AS stimulus_definition,
     le.timestamp_utc                                   AS last_segment_completed_at_utc,
     le.gated_reward                                    AS latest_reward,
     le.semantic_gate                                   AS latest_semantic_gate,
@@ -170,8 +170,8 @@ SELECT
                                                        AS duration_s,
     COALESCE(le.experiment_id, s.experiment_id)       AS experiment_id,
     COALESCE(live.active_arm, s.active_arm, le.arm)    AS active_arm,
-    COALESCE(live.expected_greeting, s.expected_greeting)
-                                                           AS expected_greeting,
+    COALESCE(live.stimulus_definition, s.stimulus_definition)
+                                                           AS stimulus_definition,
     le.timestamp_utc                                   AS last_segment_completed_at_utc,
     le.gated_reward                                    AS latest_reward,
     le.semantic_gate                                   AS latest_semantic_gate,
@@ -225,7 +225,7 @@ transcript_latest AS (
     SELECT
         t.session_id,
         t.segment_id,
-        t.text AS transcription,
+        t.text AS observed_response_text,
         ROW_NUMBER() OVER (
             PARTITION BY t.session_id, t.segment_id
             ORDER BY t.created_at DESC, t.id DESC
@@ -253,7 +253,7 @@ attribution_event_latest AS (
             ORDER BY ae.created_at DESC, ae.event_id DESC
         ) AS rn
     FROM attribution_event ae
-    WHERE ae.event_type = 'greeting_interaction'
+    WHERE ae.event_type = 'stimulus_interaction'
 )
 """
 
@@ -309,7 +309,8 @@ _ENCOUNTERS_CTE_BLOCK: str = (
 _ENCOUNTERS_PROJECTION: str = (
     """
         e.id, e.session_id, e.segment_id, e.experiment_id,
-        e.arm, e.timestamp_utc, e.gated_reward, e.p90_intensity,
+        e.arm, ex_arm.stimulus_definition AS stimulus_definition,
+        e.timestamp_utc, e.gated_reward, e.p90_intensity,
         e.semantic_gate, e.n_frames_in_window,
         e.au12_baseline_pre, e.stimulus_time, e.created_at,
         """
@@ -319,7 +320,7 @@ _ENCOUNTERS_PROJECTION: str = (
         CASE WHEN attr.event_id IS NULL THEN NULL ELSE (e.semantic_gate = 1) END
             AS semantic_is_match,
         attr.semantic_p_match     AS semantic_confidence_score,
-        transcript.transcription  AS transcription,
+        transcript.observed_response_text AS observed_response_text,
         attr.semantic_method      AS semantic_method,
         attr.semantic_method_version AS semantic_method_version,
         attr.finality             AS attribution_finality,
@@ -338,6 +339,9 @@ _ENCOUNTERS_PROJECTION: str = (
 
 _ENCOUNTERS_FROM_BLOCK: str = """
     FROM encounter_log e
+    LEFT JOIN experiments ex_arm
+        ON ex_arm.experiment_id = e.experiment_id
+       AND ex_arm.arm = e.arm
     LEFT JOIN acoustic_latest acoustic
         ON acoustic.session_id = e.session_id
         AND acoustic.segment_id = e.segment_id
@@ -405,7 +409,7 @@ SELECT
     ex.experiment_id,
     COALESCE(ex.label, ex.experiment_id)            AS label,
     ex.arm,
-    COALESCE(ex.greeting_text, ex.arm)              AS greeting_text,
+    COALESCE(ex.stimulus_definition, ex.arm)              AS stimulus_definition,
     ex.alpha_param,
     ex.beta_param,
     COALESCE(ex.enabled, 1)                         AS enabled,
@@ -694,7 +698,7 @@ SELECT
     MAX(le.semantic_gate) AS max_latest_semantic_gate,
     MIN(le.semantic_gate) AS min_latest_semantic_gate,
     MAX(COALESCE(live.active_arm, le.arm)) AS max_active_arm,
-    MAX(live.expected_greeting) AS max_expected_greeting,
+    MAX(live.stimulus_definition) AS max_stimulus_definition,
     MAX(live.is_calibrating) AS max_is_calibrating,
     MIN(live.is_calibrating) AS min_is_calibrating,
     MAX(live.calibration_frames_accumulated) AS max_calibration_frames_accumulated,

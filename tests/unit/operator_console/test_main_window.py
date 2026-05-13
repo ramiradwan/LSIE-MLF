@@ -23,6 +23,7 @@ import pytest
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import QLabel
 
+from packages.schemas.evaluation import StimulusDefinition, StimulusPayload
 from packages.schemas.operator_console import (
     ArmSummary,
     ExperimentBundleRefreshRequest,
@@ -63,6 +64,15 @@ def _make_config() -> OperatorConsoleConfig:
     )
 
 
+def _stimulus_definition(text: str) -> StimulusDefinition:
+    return StimulusDefinition(
+        stimulus_modality="spoken_greeting",
+        stimulus_payload=StimulusPayload(text=text),
+        expected_stimulus_rule="Deliver the spoken greeting to the creator",
+        expected_response_rule="The live streamer acknowledges the greeting",
+    )
+
+
 def _make_window(
     coordinator: PollingCoordinator | None = None,
 ) -> tuple[MainWindow, OperatorStore, PollingCoordinator]:
@@ -84,7 +94,7 @@ def _make_session(
     session_id: UUID,
     *,
     active_arm: str | None = "greeting_v1",
-    expected_greeting: str | None = "hei rakas",
+    expected_response_text: str | None = "hei rakas",
     is_calibrating: bool | None = None,
     calibration_frames_accumulated: int | None = None,
     calibration_frames_required: int | None = None,
@@ -94,7 +104,7 @@ def _make_session(
         status="active",
         started_at_utc=datetime(2026, 4, 17, 12, 0, 0, tzinfo=UTC),
         active_arm=active_arm,
-        expected_greeting=expected_greeting,
+        expected_response_text=expected_response_text,
         is_calibrating=is_calibrating,
         calibration_frames_accumulated=calibration_frames_accumulated,
         calibration_frames_required=calibration_frames_required,
@@ -188,7 +198,7 @@ def test_action_bar_enables_when_session_and_live_match() -> None:
     window, store, _coord = _make_window()
     session_id = uuid4()
     # Selecting a session alone is not enough — live_session DTO must
-    # describe that same session for arm/greeting to surface.
+    # describe that same session for arm/expected-response context to surface.
     store.set_selected_session_id(session_id)
     live = _make_session(session_id)
     store.set_live_session(live)
@@ -239,13 +249,13 @@ def test_action_bar_ignores_live_session_of_other_session() -> None:
     other = uuid4()
     store.set_selected_session_id(selected)
     # A live_session DTO for a *different* session id must not leak its
-    # arm/greeting into the action bar.
+    # arm/expected-response context into the action bar.
     store.set_live_session(_make_session(other))
     bar = window._action_bar
     # Button is still enabled (a session is selected) but the context
     # strings should not come from the mismatched live DTO.
     assert bar._active_arm is None
-    assert bar._expected_greeting is None
+    assert bar._expected_response_text is None
 
 
 # ---------------------------------------------------------------------
@@ -294,7 +304,7 @@ def test_experiment_management_vm_signals_route_to_coordinator() -> None:
             arms=[
                 ArmSummary(
                     arm_id="arm-a",
-                    greeting_text="Hei",
+                    stimulus_definition=_stimulus_definition("Hei"),
                     posterior_alpha=1.0,
                     posterior_beta=1.0,
                 )
@@ -302,14 +312,18 @@ def test_experiment_management_vm_signals_route_to_coordinator() -> None:
         )
     )
     assert vm.add_arm("arm-b", "Moi") is True
-    assert vm.rename_arm_greeting("arm-a", "Hei uusi") is True
+    assert vm.update_arm_stimulus_text("arm-a", "Hei uusi") is True
     assert vm.disable_arm("arm-a") is True
 
     coord.add_experiment_arm.assert_called_once()
     add_experiment_id, add_request = coord.add_experiment_arm.call_args.args
     assert add_experiment_id == "exp-new"
     assert add_request.arm == "arm-b"
-    coord.rename_experiment_arm.assert_called_once_with("exp-new", "arm-a", "Hei uusi")
+    coord.rename_experiment_arm.assert_called_once_with(
+        "exp-new",
+        "arm-a",
+        _stimulus_definition("Hei uusi"),
+    )
     coord.disable_experiment_arm.assert_called_once_with("exp-new", "arm-a")
 
 

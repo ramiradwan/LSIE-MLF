@@ -20,7 +20,7 @@ Three persistent visual signals make the bar safe to operate from:
   `+ note` chip that expands inline when the operator needs it
 
 Spec references:
-  §4.C           — orchestrator-owned `_active_arm`, `_expected_greeting`,
+  §4.C           — orchestrator-owned `_active_arm`, `_expected_response_text`,
                    authoritative `_stimulus_time`
   §4.E.1         — operator-facing action rail
   §7B            — measurement-window countdown applies once accepted
@@ -132,7 +132,7 @@ class ActionBar(QWidget):
 
         self._session_id: UUID | None = None
         self._active_arm: str | None = None
-        self._expected_greeting: str | None = None
+        self._expected_response_text: str | None = None
         self._operator_ready_for_submit: bool = True
         self._compact_mode = False
         self._gating_reason: str | None = None
@@ -222,7 +222,7 @@ class ActionBar(QWidget):
         self,
         session_id: UUID | None,
         active_arm: str | None,
-        expected_greeting: str | None,
+        expected_response_text: str | None,
         operator_ready_for_submit: bool | None = None,
     ) -> None:
         """Update the session header + enable/disable submit.
@@ -235,7 +235,7 @@ class ActionBar(QWidget):
         """
         self._session_id = session_id
         self._active_arm = active_arm
-        self._expected_greeting = expected_greeting
+        self._expected_response_text = expected_response_text
         self._operator_ready_for_submit = operator_ready_for_submit is not False
 
         if session_id is None:
@@ -248,7 +248,7 @@ class ActionBar(QWidget):
         session_display = format_action_bar_session_context(
             session_id,
             active_arm,
-            expected_greeting,
+            expected_response_text,
         )
         self._session_label.setText(self._session_header_text(session_display.session_text))
         if session_display.expected_response_text is not None:
@@ -367,7 +367,7 @@ class ActionBar(QWidget):
             display = format_action_bar_session_context(
                 self._session_id,
                 self._active_arm,
-                self._expected_greeting,
+                self._expected_response_text,
             )
             self._session_label.setText(self._session_header_text(display.session_text))
         self._rebuild_layout()

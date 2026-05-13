@@ -88,8 +88,12 @@ def _build_attribution_ledger(
         "segment_id": message.handoff.segment_id,
         "timestamp_utc": message.handoff.timestamp_utc,
         "_active_arm": message.handoff.active_arm,
-        "_expected_greeting": message.handoff.expected_greeting,
+        "_stimulus_modality": message.handoff.stimulus_modality,
+        "_stimulus_payload": message.handoff.stimulus_payload.model_dump(mode="python"),
+        "_expected_stimulus_rule": message.handoff.expected_stimulus_rule,
+        "_expected_response_rule": message.handoff.expected_response_rule,
         "_stimulus_time": message.handoff.stimulus_time,
+        "_stimulus_id": message.handoff.stimulus_id,
         "_au12_series": [
             observation.model_dump(mode="python") for observation in message.handoff.au12_series
         ],
@@ -98,6 +102,11 @@ def _build_attribution_ledger(
             by_alias=True,
         ),
         "semantic": message.semantic.model_dump(mode="python", by_alias=True),
+        "response_inference": (
+            message.handoff.response_inference.model_dump(mode="python")
+            if message.handoff.response_inference is not None
+            else None
+        ),
     }
     if attribution.outcome_event is not None:
         metrics["_outcome_event"] = attribution.outcome_event
@@ -389,9 +398,12 @@ def _closed_attribution_events_for_replay(
     rows = conn.execute(
         """
         SELECT event_id, session_id, segment_id, event_type, event_time_utc,
-               stimulus_time_utc, selected_arm_id, expected_rule_text_hash,
+               stimulus_time_utc, stimulus_id, stimulus_modality, selected_arm_id,
+               expected_rule_text_hash, expected_response_rule_text_hash,
                semantic_method, semantic_method_version, semantic_p_match,
-               semantic_reason_code, reward_path_version, bandit_decision_snapshot,
+               semantic_reason_code, matched_response_time_utc,
+               response_registration_status, response_reason_code,
+               reward_path_version, bandit_decision_snapshot,
                evidence_flags, schema_version, created_at
         FROM attribution_event
         WHERE finality = ?
@@ -476,12 +488,18 @@ def _offline_final_event_from_row(row: sqlite3.Row) -> AttributionEvent:
             "event_type": str(row["event_type"]),
             "event_time_utc": str(row["event_time_utc"]),
             "stimulus_time_utc": row["stimulus_time_utc"],
+            "stimulus_id": row["stimulus_id"],
+            "stimulus_modality": row["stimulus_modality"],
             "selected_arm_id": str(row["selected_arm_id"]),
             "expected_rule_text_hash": str(row["expected_rule_text_hash"]),
+            "expected_response_rule_text_hash": row["expected_response_rule_text_hash"],
             "semantic_method": str(row["semantic_method"]),
             "semantic_method_version": str(row["semantic_method_version"]),
             "semantic_p_match": row["semantic_p_match"],
             "semantic_reason_code": row["semantic_reason_code"],
+            "matched_response_time_utc": row["matched_response_time_utc"],
+            "response_registration_status": row["response_registration_status"],
+            "response_reason_code": row["response_reason_code"],
             "reward_path_version": str(row["reward_path_version"]),
             "bandit_decision_snapshot": json.loads(str(row["bandit_decision_snapshot"])),
             "evidence_flags": json.loads(str(row["evidence_flags"])),
@@ -521,14 +539,14 @@ def _upsert_live_session_state(
     conn.execute(
         """
         INSERT INTO live_session_state (
-            session_id, active_arm, expected_greeting, is_calibrating,
+            session_id, active_arm, stimulus_definition, is_calibrating,
             calibration_frames_accumulated, calibration_frames_required,
             face_present, latest_au12_intensity, latest_au12_timestamp_s,
             status, updated_at_utc
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(session_id) DO UPDATE SET
             active_arm = excluded.active_arm,
-            expected_greeting = excluded.expected_greeting,
+            stimulus_definition = excluded.stimulus_definition,
             is_calibrating = excluded.is_calibrating,
             calibration_frames_accumulated = excluded.calibration_frames_accumulated,
             calibration_frames_required = excluded.calibration_frames_required,
@@ -541,7 +559,11 @@ def _upsert_live_session_state(
         (
             str(message.session_id),
             message.active_arm,
-            message.expected_greeting,
+            (
+                message.stimulus_definition.model_dump_json()
+                if message.stimulus_definition is not None
+                else None
+            ),
             int(message.is_calibrating),
             message.calibration_frames_accumulated,
             message.calibration_frames_required,
@@ -710,23 +732,32 @@ def _upsert_attribution_ledger(
         """
         INSERT INTO attribution_event (
             event_id, session_id, segment_id, event_type, event_time_utc,
-            stimulus_time_utc, selected_arm_id, expected_rule_text_hash,
+            stimulus_time_utc, stimulus_id, stimulus_modality, selected_arm_id,
+            expected_rule_text_hash, expected_response_rule_text_hash,
             semantic_method, semantic_method_version, semantic_p_match,
-            semantic_reason_code, reward_path_version, bandit_decision_snapshot,
+            semantic_reason_code, matched_response_time_utc,
+            response_registration_status, response_reason_code,
+            reward_path_version, bandit_decision_snapshot,
             evidence_flags, finality, schema_version, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT (event_id) DO UPDATE SET
             session_id = excluded.session_id,
             segment_id = excluded.segment_id,
             event_type = excluded.event_type,
             event_time_utc = excluded.event_time_utc,
             stimulus_time_utc = excluded.stimulus_time_utc,
+            stimulus_id = excluded.stimulus_id,
+            stimulus_modality = excluded.stimulus_modality,
             selected_arm_id = excluded.selected_arm_id,
             expected_rule_text_hash = excluded.expected_rule_text_hash,
+            expected_response_rule_text_hash = excluded.expected_response_rule_text_hash,
             semantic_method = excluded.semantic_method,
             semantic_method_version = excluded.semantic_method_version,
             semantic_p_match = excluded.semantic_p_match,
             semantic_reason_code = excluded.semantic_reason_code,
+            matched_response_time_utc = excluded.matched_response_time_utc,
+            response_registration_status = excluded.response_registration_status,
+            response_reason_code = excluded.response_reason_code,
             reward_path_version = excluded.reward_path_version,
             bandit_decision_snapshot = excluded.bandit_decision_snapshot,
             evidence_flags = excluded.evidence_flags,
@@ -740,12 +771,18 @@ def _upsert_attribution_ledger(
             event["event_type"],
             event["event_time_utc"],
             event.get("stimulus_time_utc"),
+            event.get("stimulus_id"),
+            event.get("stimulus_modality"),
             event["selected_arm_id"],
             event["expected_rule_text_hash"],
+            event.get("expected_response_rule_text_hash"),
             event["semantic_method"],
             event["semantic_method_version"],
             event.get("semantic_p_match"),
             event.get("semantic_reason_code"),
+            event.get("matched_response_time_utc"),
+            event.get("response_registration_status"),
+            event.get("response_reason_code"),
             event["reward_path_version"],
             json.dumps(event["bandit_decision_snapshot"], sort_keys=True, separators=(",", ":")),
             json.dumps(event["evidence_flags"], sort_keys=True, separators=(",", ":")),

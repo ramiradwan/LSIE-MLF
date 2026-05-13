@@ -31,6 +31,8 @@ from unittest.mock import patch
 import numpy as np
 import numpy.typing as npt
 
+from packages.schemas.evaluation import StimulusDefinition
+
 REPO_ROOT: Path = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
@@ -91,7 +93,7 @@ class BenchmarkResult:
 class _SegmentFixture:
     index: int
     active_arm: str
-    expected_greeting: str
+    stimulus_definition: StimulusDefinition
     stimulus_time_s: float
     pcm_s16le_16khz_mono: bytes
     au12_series: tuple[dict[str, float], ...]
@@ -122,8 +124,8 @@ class _BenchmarkSemanticEvaluator:
     last_semantic_method = "cross_encoder"
     last_semantic_method_version = "v4-fixture-benchmark-v1"
 
-    def evaluate(self, expected_greeting: str, actual_utterance: str) -> dict[str, Any]:
-        del expected_greeting, actual_utterance
+    def evaluate(self, expected_response_rule: str, actual_utterance: str) -> dict[str, Any]:
+        del expected_response_rule, actual_utterance
         return {
             "reasoning": "cross_encoder_high_match",
             "is_match": True,
@@ -385,7 +387,7 @@ def _fixture_segments(fixture_path: Path, segment_count: int) -> tuple[_SegmentF
             _SegmentFixture(
                 index=index,
                 active_arm=str(stimulus["expected_arm_id"]),
-                expected_greeting=str(stimulus["expected_greeting_text"]),
+                stimulus_definition=StimulusDefinition.model_validate(stimulus["stimulus_definition"]),
                 stimulus_time_s=(index * segment_duration_s) + stimulus_offset_s,
                 pcm_s16le_16khz_mono=_segment_pcm(pcm, index, segment_duration_s),
                 au12_series=(
@@ -413,7 +415,10 @@ def _benchmark_bandit_snapshot(
         "candidate_arm_ids": [fixture.active_arm],
         "posterior_by_arm": {fixture.active_arm: {"alpha": 1.0, "beta": 1.0}},
         "sampled_theta_by_arm": {fixture.active_arm: 0.5},
-        "expected_greeting": fixture.expected_greeting,
+        "stimulus_modality": fixture.stimulus_definition.stimulus_modality,
+        "stimulus_payload": fixture.stimulus_definition.stimulus_payload.model_dump(mode="json"),
+        "expected_stimulus_rule": fixture.stimulus_definition.expected_stimulus_rule,
+        "expected_response_rule": fixture.stimulus_definition.expected_response_rule,
         "decision_context_hash": "0" * 64,
         "random_seed": 0,
     }
@@ -480,7 +485,7 @@ def _prime_visual_tracker(tracker: Any, session_id: uuid.UUID, fixture: _Segment
             stream_url="fixture://v4-benchmark",
             experiment_id="greeting_line_v1",
             active_arm=fixture.active_arm,
-            expected_greeting=fixture.expected_greeting,
+            stimulus_definition=fixture.stimulus_definition,
             timestamp_utc=timestamp,
         )
     )
@@ -491,7 +496,7 @@ def _prime_visual_tracker(tracker: Any, session_id: uuid.UUID, fixture: _Segment
             stream_url="fixture://v4-benchmark",
             experiment_id="greeting_line_v1",
             active_arm=fixture.active_arm,
-            expected_greeting=fixture.expected_greeting,
+            stimulus_definition=fixture.stimulus_definition,
             stimulus_time_s=fixture.stimulus_time_s,
             timestamp_utc=timestamp,
         )
@@ -556,7 +561,7 @@ def _run_v4_fixture_path(fixtures: Sequence[_SegmentFixture]) -> _BenchmarkTimin
                         experiment_row_id=experiment_row_id,
                         experiment_id="greeting_line_v1",
                         active_arm=fixture.active_arm,
-                        expected_greeting=fixture.expected_greeting,
+                        stimulus_definition=fixture.stimulus_definition,
                         bandit_decision_snapshot=_benchmark_bandit_snapshot(
                             fixture=fixture,
                             experiment_row_id=experiment_row_id,

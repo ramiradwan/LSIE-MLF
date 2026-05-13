@@ -21,10 +21,11 @@ from packages.schemas.evaluation import (
     SemanticMethod,
     SemanticReasonCode,
     StimulusModality,
+    StimulusPayload,
 )
 
 AttributionFinality = Literal["online_provisional", "offline_final"]
-AttributionEventType = Literal["greeting_interaction", "stimulus_interaction"]
+AttributionEventType = Literal["stimulus_interaction"]
 OutcomeEventType = Literal["creator_follow"]
 BanditSelectionMethod = Literal["thompson_sampling"]
 
@@ -79,9 +80,9 @@ class BanditDecisionSnapshot(AttributionBaseModel):
     Validate the pre-update Thompson Sampling BanditDecisionSnapshot (§6.4 / §6.1).
 
     Accepts selection metadata, selected/candidate arm IDs, posterior parameters,
-    sampled theta values, and the expected greeting captured at arm selection
-    time. Produces a replayable decision record for handoff and attribution; it
-    does not perform selection, update posteriors, or compute rewards.
+    sampled theta values, and the expected stimulus/response rules captured at
+    arm selection time. Produces a replayable decision record for handoff and
+    attribution; it does not perform selection, update posteriors, or compute rewards.
     """
 
     selection_method: BanditSelectionMethod
@@ -92,13 +93,12 @@ class BanditDecisionSnapshot(AttributionBaseModel):
     candidate_arm_ids: list[str] = Field(..., min_length=1)
     posterior_by_arm: dict[str, ArmPosterior] = Field(..., min_length=1)
     sampled_theta_by_arm: dict[str, float]
-    expected_greeting: str
     decision_context_hash: str = Field(..., pattern="^[0-9a-f]{64}$")
     random_seed: int = Field(..., ge=0, le=18446744073709551615)
-    stimulus_modality: StimulusModality | None = None
-    expected_stimulus_rule: str | None = None
-    expected_response_rule: str | None = None
-    stimulus_payload: dict[str, object] | None = None
+    stimulus_modality: StimulusModality
+    stimulus_payload: StimulusPayload
+    expected_stimulus_rule: str = Field(..., min_length=1)
+    expected_response_rule: str = Field(..., min_length=1)
 
     @field_validator("candidate_arm_ids")
     @classmethod
@@ -115,7 +115,7 @@ class BanditDecisionSnapshot(AttributionBaseModel):
 
 class AttributionEvent(AttributionBaseModel):
     """
-    Validate a greeting-interaction AttributionEvent record (§6.4.1).
+    Validate a stimulus-interaction AttributionEvent record (§6.4.1).
 
     Accepts caller-provided event identity, segment/session context, semantic
     summary, reward-path version, evidence flags, finality, schema version, and

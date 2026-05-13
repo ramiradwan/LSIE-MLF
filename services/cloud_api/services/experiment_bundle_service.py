@@ -17,6 +17,7 @@ from packages.schemas.cloud import (
     ExperimentBundleExperiment,
     ExperimentBundlePayload,
 )
+from packages.schemas.evaluation import StimulusDefinition
 from services.cloud_api.repos.experiments import fetch_active_experiment_rows
 from services.cloud_api.services.transactions import run_in_transaction
 
@@ -80,7 +81,7 @@ def _row_to_arm(row: dict[str, object]) -> ExperimentBundleArm:
     arm_id = str(row["arm_id"])
     return ExperimentBundleArm(
         arm_id=arm_id,
-        greeting_text=str(row.get("greeting_text") or arm_id),
+        stimulus_definition=StimulusDefinition.model_validate(row["stimulus_definition"]),
         posterior_alpha=float(cast(float | int | str, row["posterior_alpha"])),
         posterior_beta=float(cast(float | int | str, row["posterior_beta"])),
         selection_count=int(cast(int | str, row.get("selection_count") or 0)),

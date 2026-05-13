@@ -19,6 +19,7 @@ from uuid import UUID
 import pytest
 from pydantic import ValidationError
 
+from packages.schemas.evaluation import StimulusDefinition, StimulusPayload
 from packages.schemas.operator_console import (
     AlertEvent,
     AlertKind,
@@ -682,7 +683,12 @@ class TestCompositeDtos:
             arms=[
                 ArmSummary(
                     arm_id="arm-a",
-                    greeting_text="hi",
+                    stimulus_definition=StimulusDefinition(
+                        stimulus_modality="spoken_greeting",
+                        stimulus_payload=StimulusPayload(text="hi"),
+                        expected_stimulus_rule="Deliver the spoken greeting to the creator",
+                        expected_response_rule="The live streamer acknowledges the greeting",
+                    ),
                     posterior_alpha=2.0,
                     posterior_beta=3.0,
                     evaluation_variance=0.04,
@@ -700,7 +706,12 @@ class TestCompositeDtos:
         with pytest.raises(ValidationError):
             ArmSummary(
                 arm_id="arm-a",
-                greeting_text="hi",
+                stimulus_definition=StimulusDefinition(
+                    stimulus_modality="spoken_greeting",
+                    stimulus_payload=StimulusPayload(text="hi"),
+                    expected_stimulus_rule="Deliver the spoken greeting to the creator",
+                    expected_response_rule="The live streamer acknowledges the greeting",
+                ),
                 posterior_alpha=0.0,
                 posterior_beta=1.0,
             )
@@ -767,7 +778,7 @@ class TestRewardExplanationFields:
             segment_timestamp_utc=_utc(),
             state=EncounterState.COMPLETED,
             active_arm="arm-a",
-            expected_greeting="hi there",
+            expected_response_text="hi there",
             stimulus_time_utc=_utc(hour=13),
             semantic_gate=1,
             semantic_confidence=0.92,

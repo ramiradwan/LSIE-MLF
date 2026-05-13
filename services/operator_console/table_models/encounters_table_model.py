@@ -41,7 +41,7 @@ class EncountersTableModel(QAbstractTableModel):
     """Per-segment encounter rows with §7B reward-explanation columns.
 
     Column order is deliberate: timestamp and state anchor the row, the
-    arm identifies which greeting was under test, and the four
+    arm identifies which stimulus strategy was under test, and the four
     reward-explanation fields come next in the order an operator reads
     the §7B formula (inputs → outputs). Physiology flags come last so
     the table reads as a causal narrative.
@@ -161,7 +161,7 @@ class EncountersTableModel(QAbstractTableModel):
             return int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         if role == Qt.ItemDataRole.ToolTipRole and col == 2:
             # Full expected response text on the strategy column — table width stays tight.
-            return row.expected_greeting or ""
+            return row.expected_response_text or ""
         return None
 
     # ------------------------------------------------------------------

@@ -22,6 +22,7 @@ from packages.schemas.evaluation import (
     ResponseReasonCode,
     ResponseRegistrationStatus,
     StimulusModality,
+    StimulusPayload,
 )
 from packages.schemas.physiology import PhysiologicalChunkEvent, PhysiologicalContext
 
@@ -141,10 +142,29 @@ class InferenceHandoffPayload(BaseModel):
         alias="_experiment_id",
         description="Persistent Store experiment row ID for this session.",
     )
-    expected_greeting: str = Field(
+    stimulus_modality: StimulusModality = Field(
         ...,
-        alias="_expected_greeting",
-        description="Greeting rule text assigned to the active arm for semantic evaluation.",
+        alias="_stimulus_modality",
+        description="Stimulus modality assigned to the active arm for this segment.",
+    )
+    stimulus_payload: StimulusPayload = Field(
+        ...,
+        alias="_stimulus_payload",
+        description="Typed stimulus payload assigned to the active arm for this segment.",
+    )
+    expected_stimulus_rule: str = Field(
+        ...,
+        alias="_expected_stimulus_rule",
+        description="Stimulus rule text assigned to the active arm for validation.",
+        min_length=1,
+    )
+    expected_response_rule: str = Field(
+        ...,
+        alias="_expected_response_rule",
+        description=(
+            "Observed-response rule text assigned to the active arm for semantic evaluation."
+        ),
+        min_length=1,
     )
     stimulus_time: float | None = Field(
         ...,
@@ -175,10 +195,6 @@ class InferenceHandoffPayload(BaseModel):
         ),
     )
     stimulus_id: UUID4 | None = Field(default=None, alias="_stimulus_id")
-    stimulus_modality: StimulusModality | None = Field(default=None, alias="_stimulus_modality")
-    stimulus_payload: dict[str, Any] | None = Field(default=None, alias="_stimulus_payload")
-    expected_stimulus_rule: str | None = Field(default=None, alias="_expected_stimulus_rule")
-    expected_response_rule: str | None = Field(default=None, alias="_expected_response_rule")
     response_observation_horizon_s: float | None = Field(
         default=None,
         alias="_response_observation_horizon_s",

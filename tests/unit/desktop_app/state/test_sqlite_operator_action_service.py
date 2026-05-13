@@ -9,6 +9,7 @@ from uuid import UUID
 
 import pytest
 
+from packages.schemas.evaluation import StimulusDefinition, StimulusPayload
 from packages.schemas.operator_console import StimulusRequest
 from services.api.services.operator_action_service import (
     SessionAlreadyEndedError,
@@ -33,19 +34,56 @@ class _Publisher:
         self.messages.append(message)
 
 
+def _stimulus_definition() -> StimulusDefinition:
+    return StimulusDefinition(
+        stimulus_modality="spoken_greeting",
+        stimulus_payload=StimulusPayload(
+            content_type="text",
+            text="hello creator",
+        ),
+        expected_stimulus_rule=(
+            "Deliver the spoken greeting to the live streamer exactly as written."
+        ),
+        expected_response_rule=(
+            "The live streamer acknowledges the greeting or responds to it on stream."
+        ),
+    )
+
+
 def _seed_session(db: Path, *, ended: bool = False) -> None:
     conn = sqlite3.connect(str(db), isolation_level=None)
     try:
         bootstrap_schema(conn)
         conn.execute(
             """
-            INSERT INTO sessions (session_id, stream_url, experiment_id, started_at, ended_at)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO experiments (
+                experiment_id, label, arm, stimulus_definition, alpha_param, beta_param, enabled
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(experiment_id, arm) DO UPDATE SET
+                stimulus_definition = excluded.stimulus_definition,
+                enabled = excluded.enabled
+            """,
+            (
+                "greeting_line_v1",
+                "Greeting line",
+                "warm_welcome",
+                _stimulus_definition().model_dump_json(),
+                1.0,
+                1.0,
+                1,
+            ),
+        )
+        conn.execute(
+            """
+            INSERT INTO sessions (
+                session_id, stream_url, experiment_id, active_arm, started_at, ended_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
             """,
             (
                 str(SESSION_ID),
                 "test://stream",
                 "greeting_line_v1",
+                "warm_welcome",
                 "2026-04-01 12:00:00",
                 "2026-04-01 12:05:00" if ended else None,
             ),
@@ -84,8 +122,9 @@ def test_submit_stimulus_accepts_active_session_without_pool_or_redis(tmp_path: 
     assert publisher.messages[0].stimulus_time_s == _NOW.timestamp()
     assert publisher.messages[0].stream_url == "test://stream"
     assert publisher.messages[0].experiment_id == "greeting_line_v1"
-    assert publisher.messages[0].active_arm is not None
-    assert publisher.messages[0].expected_greeting is not None
+    assert publisher.messages[0].active_arm == "warm_welcome"
+    assert publisher.messages[0].stimulus_definition is not None
+    assert publisher.messages[0].stimulus_definition == _stimulus_definition()
 
 
 def test_submit_stimulus_rejects_missing_session_without_publishing(tmp_path: Path) -> None:

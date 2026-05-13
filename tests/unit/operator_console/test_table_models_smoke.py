@@ -13,6 +13,7 @@ from uuid import uuid4
 import pytest
 from PySide6.QtCore import Qt
 
+from packages.schemas.evaluation import StimulusDefinition, StimulusPayload
 from packages.schemas.operator_console import (
     AlertEvent,
     AlertKind,
@@ -36,6 +37,15 @@ pytestmark = pytest.mark.usefixtures("qt_app")
 # ---------------------------------------------------------------------
 
 
+def _stimulus_definition(text: str) -> StimulusDefinition:
+    return StimulusDefinition(
+        stimulus_modality="spoken_greeting",
+        stimulus_payload=StimulusPayload(text=text),
+        expected_stimulus_rule="Deliver the spoken greeting to the creator",
+        expected_response_rule="The live streamer acknowledges the greeting",
+    )
+
+
 def _arm(
     arm_id: str,
     *,
@@ -45,7 +55,7 @@ def _arm(
 ) -> ArmSummary:
     return ArmSummary(
         arm_id=arm_id,
-        greeting_text=f"greeting {arm_id}",
+        stimulus_definition=_stimulus_definition(f"greeting {arm_id}"),
         posterior_alpha=alpha,
         posterior_beta=beta,
         evaluation_variance=0.01,
@@ -62,13 +72,13 @@ def test_experiments_model_shape_and_lookup() -> None:
     assert model.rowCount() == 2
     assert model.columnCount() == len(ExperimentsTableModel.COLUMNS)
     assert model.headerData(1, Qt.Orientation.Horizontal, Qt.ItemDataRole.DisplayRole) == (
-        "Confirmation text"
+        "Stimulus text"
     )
     assert model.headerData(8, Qt.Orientation.Horizontal, Qt.ItemDataRole.DisplayRole) == (
         "Recent stimulus confirmed"
     )
     assert model.data(model.index(0, 1), Qt.ItemDataRole.ToolTipRole) == (
-        "Double-click or press F2/Enter to edit confirmation text."
+        "Double-click or press F2/Enter to edit stimulus text."
     )
     assert model.arm_by_id("a") is not None
     assert model.arm_by_id("missing") is None
@@ -84,23 +94,23 @@ def test_experiments_model_surfaces_alpha_beta() -> None:
     assert "5" in beta_text
 
 
-def test_experiments_model_emits_greeting_edit_without_mutating_row() -> None:
+def test_experiments_model_emits_stimulus_text_edit_without_mutating_row() -> None:
     model = ExperimentsTableModel()
     model.set_rows([_arm("a")])
     emissions: list[tuple[str, str]] = []
-    model.greeting_edit_requested.connect(lambda *args: emissions.append(tuple(args)))
+    model.stimulus_text_edit_requested.connect(lambda *args: emissions.append(tuple(args)))
 
     assert model.setData(model.index(0, 1), "new greeting", Qt.ItemDataRole.EditRole) is True
     assert emissions == [("a", "new greeting")]
     # The row waits for store/coordinator readback before changing.
-    assert model.row_at(0).greeting_text == "greeting a"  # type: ignore[union-attr]
+    assert model.row_at(0).stimulus_definition.stimulus_payload.text == "greeting a"  # type: ignore[union-attr]
 
 
-def test_experiments_model_allows_disabled_arm_greeting_rename_intent() -> None:
+def test_experiments_model_allows_disabled_arm_stimulus_update_intent() -> None:
     model = ExperimentsTableModel()
     model.set_rows([_arm("a", enabled=False)])
     emissions: list[tuple[str, str]] = []
-    model.greeting_edit_requested.connect(lambda *args: emissions.append(tuple(args)))
+    model.stimulus_text_edit_requested.connect(lambda *args: emissions.append(tuple(args)))
 
     assert bool(model.flags(model.index(0, 1)) & Qt.ItemFlag.ItemIsEditable)
     assert model.setData(model.index(0, 1), "archived greeting", Qt.ItemDataRole.EditRole)

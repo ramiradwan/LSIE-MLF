@@ -11,6 +11,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
+from packages.schemas.evaluation import StimulusDefinition, StimulusPayload
 from packages.schemas.operator_console import (
     ArmDecisionEvidence,
     ArmSummary,
@@ -80,11 +81,20 @@ from services.operator_console.formatters import (
     operator_ready_for_submit,
     semantic_attribution_diagnostics_for_encounter,
     semantic_confidence_for_encounter,
-    truncate_expected_greeting,
+    truncate_expected_response_text,
     ui_status_for_health,
 )
 
 _SESSION_ID = UUID("00000000-0000-0000-0000-000000000005")
+
+
+def _stimulus_definition(text: str) -> StimulusDefinition:
+    return StimulusDefinition(
+        stimulus_modality="spoken_greeting",
+        stimulus_payload=StimulusPayload(text=text),
+        expected_stimulus_rule="Deliver the spoken greeting to the creator",
+        expected_response_rule="The live streamer acknowledges the greeting",
+    )
 
 
 def _utc(year: int, month: int, day: int, hour: int = 0, minute: int = 0) -> datetime:
@@ -180,14 +190,14 @@ class TestPrimitives:
                         action="add",
                         experiment_id="compliment_content",
                         arm_id="new_arm",
-                        cloud_greeting_text="Try this next.",
+                        cloud_stimulus_definition=_stimulus_definition("Try this next."),
                     ),
                     ExperimentBundleRefreshChange(
                         action="update",
                         experiment_id="compliment_content",
                         arm_id="control",
-                        current_greeting_text="Old text",
-                        cloud_greeting_text="New text",
+                        current_stimulus_definition=_stimulus_definition("Old text"),
+                        cloud_stimulus_definition=_stimulus_definition("New text"),
                         current_enabled=True,
                         cloud_enabled=True,
                     ),
@@ -644,7 +654,7 @@ def _encounter(
         segment_timestamp_utc=_utc(2026, 4, 17, 12, 0),
         state=EncounterState.COMPLETED,
         active_arm="arm_a",
-        expected_greeting="hi there",
+        expected_response_text="hi there",
         stimulus_time_utc=_utc(2026, 4, 17, 12, 0),
         semantic_gate=semantic_gate,
         semantic_confidence=semantic_confidence,
@@ -752,14 +762,14 @@ class TestStrategyEvidenceDisplay:
             arms=[
                 ArmSummary(
                     arm_id="a1",
-                    greeting_text="Hei a1",
+                    stimulus_definition=_stimulus_definition("Hei a1"),
                     posterior_alpha=1.0,
                     posterior_beta=1.0,
                     selection_count=0,
                 ),
                 ArmSummary(
                     arm_id="a2",
-                    greeting_text="Hei a2",
+                    stimulus_definition=_stimulus_definition("Hei a2"),
                     posterior_alpha=5.0,
                     posterior_beta=2.0,
                     evaluation_variance=0.01,
@@ -790,7 +800,7 @@ class TestStrategyEvidenceDisplay:
             arms=[
                 ArmSummary(
                     arm_id="disabled",
-                    greeting_text="Hei disabled",
+                    stimulus_definition=_stimulus_definition("Hei disabled"),
                     posterior_alpha=1.0,
                     posterior_beta=1.0,
                     selection_count=2,
@@ -798,7 +808,7 @@ class TestStrategyEvidenceDisplay:
                 ),
                 ArmSummary(
                     arm_id="new",
-                    greeting_text="Hei new",
+                    stimulus_definition=_stimulus_definition("Hei new"),
                     posterior_alpha=1.0,
                     posterior_beta=1.0,
                     selection_count=0,
@@ -1000,7 +1010,7 @@ class TestSessionStimulusContext:
             status="active",
             started_at_utc=_utc(2026, 4, 17, 12, 0),
             active_arm="greeting_v1",
-            expected_greeting="hei rakas",
+            expected_response_text="hei rakas",
             duration_s=65.0,
         )
 
@@ -1050,14 +1060,14 @@ class TestSessionStimulusContext:
 
 
 class TestStimulusConfirmationTruncation:
-    def test_short_expected_greeting_passes_through(self) -> None:
-        assert truncate_expected_greeting("hi there") == "hi there"
+    def test_short_expected_response_text_passes_through(self) -> None:
+        assert truncate_expected_response_text("hi there") == "hi there"
 
-    def test_long_expected_greeting_gets_ellipsis(self) -> None:
+    def test_long_expected_response_text_gets_ellipsis(self) -> None:
         text = "x" * 100
-        out = truncate_expected_greeting(text, limit=20)
+        out = truncate_expected_response_text(text, limit=20)
         assert len(out) == 20
         assert out.endswith("…")
 
     def test_none_returns_em_dash(self) -> None:
-        assert truncate_expected_greeting(None) == "—"
+        assert truncate_expected_response_text(None) == "—"

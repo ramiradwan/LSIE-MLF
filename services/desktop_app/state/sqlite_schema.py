@@ -36,18 +36,19 @@ Divergences from PostgreSQL the writer / reader compensates for:
   ``outcome_event`` deterministic identity) are app-level enforced
   via deterministic UUIDv5 keys upstream of the write.
 
-The ``experiments`` table is locally seeded with the four greeting
-variants from ``data/sql/02-seed-experiments.sql`` so the operator
-console renders immediate read-side data. A future cloud bundle may
-replace this seed source.
+The ``experiments`` table is locally seeded with four canonical stimulus
+variants so the operator console renders immediate read-side data. A
+future cloud bundle may replace this seed source.
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import sqlite3
 from collections.abc import Iterable
-from typing import Final
+from datetime import UTC, datetime
+from typing import Final, cast
 
 logger = logging.getLogger(__name__)
 
@@ -82,7 +83,7 @@ SCHEMA_DDL: Final[tuple[str, ...]] = (
         stream_url      TEXT NOT NULL,
         experiment_id   TEXT,
         active_arm      TEXT,
-        expected_greeting TEXT,
+        stimulus_definition TEXT,
         bandit_decision_snapshot TEXT,
         started_at      TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
         ended_at        TEXT
@@ -147,8 +148,8 @@ SCHEMA_DDL: Final[tuple[str, ...]] = (
         created_at      TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     )
     """,
-    # experiments is a local read-only cache seeded with the current
-    # greeting variants. ``UNIQUE(experiment_id, arm)`` keeps repeated
+    # experiments is a local read-only cache seeded with canonical
+    # stimulus definitions. ``UNIQUE(experiment_id, arm)`` keeps repeated
     # bootstrap runs idempotent.
     """
     CREATE TABLE IF NOT EXISTS experiments (
@@ -156,7 +157,7 @@ SCHEMA_DDL: Final[tuple[str, ...]] = (
         experiment_id   TEXT NOT NULL,
         label           TEXT,
         arm             TEXT NOT NULL,
-        greeting_text   TEXT,
+        stimulus_definition TEXT NOT NULL,
         alpha_param     REAL NOT NULL DEFAULT 1.0,
         beta_param      REAL NOT NULL DEFAULT 1.0,
         enabled         INTEGER NOT NULL DEFAULT 1,
@@ -246,11 +247,14 @@ SCHEMA_DDL: Final[tuple[str, ...]] = (
         event_id                    TEXT PRIMARY KEY,
         session_id                  TEXT NOT NULL REFERENCES sessions(session_id),
         segment_id                  TEXT NOT NULL,
-        event_type                  TEXT NOT NULL CHECK (event_type IN ('greeting_interaction')),
+        event_type                  TEXT NOT NULL CHECK (event_type IN ('stimulus_interaction')),
         event_time_utc              TEXT NOT NULL,
         stimulus_time_utc           TEXT,
+        stimulus_id                 TEXT,
+        stimulus_modality           TEXT,
         selected_arm_id             TEXT NOT NULL,
         expected_rule_text_hash     TEXT NOT NULL,
+        expected_response_rule_text_hash TEXT,
         semantic_method             TEXT NOT NULL CHECK (
             semantic_method IN ('cross_encoder', 'llm_gray_band', 'azure_llm_legacy')
         ),
@@ -259,6 +263,9 @@ SCHEMA_DDL: Final[tuple[str, ...]] = (
             semantic_p_match IS NULL OR (semantic_p_match BETWEEN 0.0 AND 1.0)
         ),
         semantic_reason_code        TEXT,
+        matched_response_time_utc   TEXT,
+        response_registration_status TEXT,
+        response_reason_code        TEXT,
         reward_path_version         TEXT NOT NULL,
         bandit_decision_snapshot    TEXT NOT NULL,
         evidence_flags              TEXT NOT NULL DEFAULT '[]',
@@ -373,7 +380,7 @@ SCHEMA_DDL: Final[tuple[str, ...]] = (
     CREATE TABLE IF NOT EXISTS live_session_state (
         session_id                      TEXT PRIMARY KEY REFERENCES sessions(session_id),
         active_arm                      TEXT,
-        expected_greeting               TEXT,
+        stimulus_definition             TEXT,
         is_calibrating                  INTEGER NOT NULL,
         calibration_frames_accumulated  INTEGER NOT NULL CHECK (
             calibration_frames_accumulated >= 0
@@ -480,15 +487,26 @@ INDEX_DDL: Final[tuple[str, ...]] = (
 )
 
 
-# Local seed for the four §4.E.1 greeting variants. Mirrors
-# ``data/sql/02-seed-experiments.sql`` so the operator console can read
-# experiment rows immediately.
+# Local seed for the four §4.E.1 canonical stimulus variants so the
+# operator console can read experiment rows immediately.
 SEED_EXPERIMENTS: Final[tuple[tuple[str, str, str, str, float, float, int], ...]] = (
     (
         "greeting_line_v1",
         "Greeting Line V1",
         "warm_welcome",
-        "Hey! Thanks for streaming, you're awesome!",
+        json.dumps(
+            {
+                "stimulus_modality": "spoken_greeting",
+                "stimulus_payload": {
+                    "content_type": "text",
+                    "text": "Hey! Thanks for streaming, you're awesome!",
+                },
+                "expected_stimulus_rule": "Deliver a warm welcome and appreciation.",
+                "expected_response_rule": "The streamer acknowledges the welcome or appreciation.",
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
         1.0,
         1.0,
         1,
@@ -497,7 +515,19 @@ SEED_EXPERIMENTS: Final[tuple[tuple[str, str, str, str, float, float, int], ...]
         "greeting_line_v1",
         "Greeting Line V1",
         "direct_question",
-        "Hi! What's the best advice you've gotten today?",
+        json.dumps(
+            {
+                "stimulus_modality": "question",
+                "stimulus_payload": {
+                    "content_type": "text",
+                    "text": "Hi! What's the best advice you've gotten today?",
+                },
+                "expected_stimulus_rule": "Ask the streamer a direct question.",
+                "expected_response_rule": "The streamer answers or acknowledges the question.",
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
         1.0,
         1.0,
         1,
@@ -506,7 +536,21 @@ SEED_EXPERIMENTS: Final[tuple[tuple[str, str, str, str, float, float, int], ...]
         "greeting_line_v1",
         "Greeting Line V1",
         "compliment_content",
-        "Love the energy on this stream! How long have you been live?",
+        json.dumps(
+            {
+                "stimulus_modality": "written_comment",
+                "stimulus_payload": {
+                    "content_type": "text",
+                    "text": "Love the energy on this stream! How long have you been live?",
+                },
+                "expected_stimulus_rule": "Send a compliment followed by an engagement prompt.",
+                "expected_response_rule": (
+                    "The streamer acknowledges the compliment or answers the prompt."
+                ),
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
         1.0,
         1.0,
         1,
@@ -515,7 +559,19 @@ SEED_EXPERIMENTS: Final[tuple[tuple[str, str, str, str, float, float, int], ...]
         "greeting_line_v1",
         "Greeting Line V1",
         "simple_hello",
-        "Hello! Just joined, happy to be here!",
+        json.dumps(
+            {
+                "stimulus_modality": "spoken_greeting",
+                "stimulus_payload": {
+                    "content_type": "text",
+                    "text": "Hello! Just joined, happy to be here!",
+                },
+                "expected_stimulus_rule": "Deliver a simple greeting.",
+                "expected_response_rule": "The streamer acknowledges the greeting.",
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
         1.0,
         1.0,
         1,
@@ -525,7 +581,7 @@ SEED_EXPERIMENTS: Final[tuple[tuple[str, str, str, str, float, float, int], ...]
 
 SEED_EXPERIMENTS_INSERT: Final[str] = (
     "INSERT OR IGNORE INTO experiments "
-    "(experiment_id, label, arm, greeting_text, alpha_param, beta_param, enabled) "
+    "(experiment_id, label, arm, stimulus_definition, alpha_param, beta_param, enabled) "
     "VALUES (?, ?, ?, ?, ?, ?, ?)"
 )
 
@@ -551,6 +607,9 @@ def bootstrap_schema(conn: sqlite3.Connection, *, seed_experiments: bool = True)
     for stmt in SCHEMA_DDL:
         conn.execute(stmt)
     _apply_sessions_migrations(conn)
+    _apply_experiments_migrations(conn)
+    _apply_live_session_state_migrations(conn)
+    _apply_attribution_event_migrations(conn)
     _apply_pending_uploads_migrations(conn)
     for stmt in INDEX_DDL:
         conn.execute(stmt)
@@ -571,10 +630,159 @@ def _apply_sessions_migrations(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE sessions ADD COLUMN experiment_id TEXT")
     if "active_arm" not in columns:
         conn.execute("ALTER TABLE sessions ADD COLUMN active_arm TEXT")
-    if "expected_greeting" not in columns:
-        conn.execute("ALTER TABLE sessions ADD COLUMN expected_greeting TEXT")
+    if "stimulus_definition" not in columns:
+        conn.execute("ALTER TABLE sessions ADD COLUMN stimulus_definition TEXT")
     if "bandit_decision_snapshot" not in columns:
         conn.execute("ALTER TABLE sessions ADD COLUMN bandit_decision_snapshot TEXT")
+
+
+def _apply_experiments_migrations(conn: sqlite3.Connection) -> None:
+    table_info = conn.execute("PRAGMA table_info(experiments)").fetchall()
+    columns = [str(row[1]) for row in table_info]
+    column_set = set(columns)
+    canonical_columns = {
+        "id",
+        "experiment_id",
+        "label",
+        "arm",
+        "stimulus_definition",
+        "alpha_param",
+        "beta_param",
+        "enabled",
+        "end_dated_at",
+        "updated_at",
+    }
+    if canonical_columns.issubset(column_set):
+        return
+
+    conn.execute("DROP TABLE IF EXISTS experiments__migrated")
+    conn.execute(
+        """
+        CREATE TABLE experiments__migrated (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            experiment_id TEXT NOT NULL,
+            label TEXT,
+            arm TEXT NOT NULL,
+            stimulus_definition TEXT NOT NULL,
+            alpha_param REAL NOT NULL DEFAULT 1.0,
+            beta_param REAL NOT NULL DEFAULT 1.0,
+            enabled INTEGER NOT NULL DEFAULT 1,
+            end_dated_at TEXT,
+            updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE (experiment_id, arm)
+        )
+        """
+    )
+    if {"experiment_id", "arm"}.issubset(column_set):
+        legacy_rows = conn.execute("SELECT * FROM experiments").fetchall()
+        migrated_rows: list[
+            tuple[
+                object | None,
+                str,
+                object | None,
+                str,
+                str,
+                float,
+                float,
+                int,
+                object | None,
+                str,
+            ]
+        ] = []
+        now_utc = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        for row in legacy_rows:
+            legacy = dict(zip(columns, row, strict=True))
+            stimulus_definition = legacy.get("stimulus_definition")
+            if stimulus_definition is None:
+                stimulus_text = str(legacy.get("greeting_text") or legacy["arm"])
+                stimulus_definition = json.dumps(
+                    {
+                        "stimulus_modality": "spoken_greeting",
+                        "stimulus_payload": {
+                            "content_type": "text",
+                            "text": stimulus_text,
+                        },
+                        "expected_stimulus_rule": (
+                            "Deliver the spoken greeting to the live streamer exactly as written."
+                        ),
+                        "expected_response_rule": (
+                            "The live streamer acknowledges the greeting or responds "
+                            "to it on stream."
+                        ),
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+            migrated_rows.append(
+                (
+                    legacy.get("id"),
+                    str(legacy["experiment_id"]),
+                    legacy.get("label"),
+                    str(legacy["arm"]),
+                    str(stimulus_definition),
+                    float(legacy.get("alpha_param") or 1.0),
+                    float(legacy.get("beta_param") or 1.0),
+                    int(
+                        cast(
+                            int | str,
+                            legacy.get("enabled") if legacy.get("enabled") is not None else 1,
+                        )
+                    ),
+                    legacy.get("end_dated_at"),
+                    str(legacy.get("updated_at") or now_utc),
+                )
+            )
+        conn.executemany(
+            """
+            INSERT INTO experiments__migrated (
+                id, experiment_id, label, arm, stimulus_definition, alpha_param,
+                beta_param, enabled, end_dated_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            migrated_rows,
+        )
+    conn.execute("DROP TABLE experiments")
+    conn.execute("ALTER TABLE experiments__migrated RENAME TO experiments")
+
+
+def _apply_live_session_state_migrations(conn: sqlite3.Connection) -> None:
+    columns = {
+        str(row[1]) for row in conn.execute("PRAGMA table_info(live_session_state)").fetchall()
+    }
+    if "stimulus_definition" not in columns:
+        conn.execute("ALTER TABLE live_session_state ADD COLUMN stimulus_definition TEXT")
+
+
+def _apply_attribution_event_migrations(conn: sqlite3.Connection) -> None:
+    columns = {
+        str(row[1]) for row in conn.execute("PRAGMA table_info(attribution_event)").fetchall()
+    }
+    replay_columns: tuple[tuple[str, str], ...] = (
+        ("stimulus_id", "TEXT"),
+        ("stimulus_modality", "TEXT"),
+        ("selected_arm_id", "TEXT"),
+        ("expected_rule_text_hash", "TEXT"),
+        ("expected_response_rule_text_hash", "TEXT"),
+        ("semantic_method", "TEXT"),
+        ("semantic_method_version", "TEXT"),
+        ("semantic_p_match", "REAL"),
+        ("semantic_reason_code", "TEXT"),
+        ("matched_response_time_utc", "TEXT"),
+        ("response_registration_status", "TEXT"),
+        ("response_reason_code", "TEXT"),
+        ("reward_path_version", "TEXT"),
+        ("bandit_decision_snapshot", "TEXT"),
+        ("evidence_flags", "TEXT"),
+        ("schema_version", "TEXT"),
+    )
+    for column, column_type in replay_columns:
+        if column not in columns:
+            conn.execute(f"ALTER TABLE attribution_event ADD COLUMN {column} {column_type}")
+    if "created_at" not in columns:
+        conn.execute(
+            "ALTER TABLE attribution_event ADD COLUMN created_at "
+            "TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP"
+        )
 
 
 def _apply_pending_uploads_migrations(conn: sqlite3.Connection) -> None:

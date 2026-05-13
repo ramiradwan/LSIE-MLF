@@ -19,6 +19,7 @@ import json
 import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import cast
 from uuid import UUID
 
 import pytest
@@ -37,6 +38,19 @@ SESSION_A = UUID("00000000-0000-4000-8000-000000000001")
 SESSION_B = UUID("00000000-0000-4000-8000-000000000002")
 
 
+def _stimulus_definition(text: str = "Say hello to the creator") -> dict[str, object]:
+    return {
+        "stimulus_modality": "spoken_greeting",
+        "stimulus_payload": {"content_type": "text", "text": text},
+        "expected_stimulus_rule": (
+            "Deliver the spoken greeting to the live streamer exactly as written."
+        ),
+        "expected_response_rule": (
+            "The live streamer acknowledges the greeting or responds to it on stream."
+        ),
+    }
+
+
 def _decision_snapshot() -> str:
     return json.dumps(
         {
@@ -51,7 +65,14 @@ def _decision_snapshot() -> str:
                 "direct_question": {"alpha": 1.0, "beta": 4.0},
             },
             "sampled_theta_by_arm": {"warm_welcome": 0.7, "direct_question": 0.2},
-            "expected_greeting": "Say hello to the creator",
+            "stimulus_modality": "spoken_greeting",
+            "stimulus_payload": {"content_type": "text", "text": "Say hello to the creator"},
+            "expected_stimulus_rule": (
+                "Deliver the spoken greeting to the live streamer exactly as written."
+            ),
+            "expected_response_rule": (
+                "The live streamer acknowledges the greeting or responds to it on stream."
+            ),
             "decision_context_hash": "a" * 64,
             "random_seed": 42,
         }
@@ -64,6 +85,20 @@ def _build_service(db: Path, *, now: datetime | None = None) -> SqliteOperatorRe
     if now is not None:
         service._clock = lambda: now  # noqa: SLF001 — test injection
     return service
+
+
+def _fetch_stimulus_definition(db: Path, table: str, session_id: UUID) -> dict[str, object] | None:
+    conn = sqlite3.connect(str(db), isolation_level=None)
+    try:
+        row = conn.execute(
+            f"SELECT stimulus_definition FROM {table} WHERE session_id = ?",
+            (str(session_id),),
+        ).fetchone()
+    finally:
+        conn.close()
+    if row is None or row[0] is None:
+        return None
+    return cast("dict[str, object]", json.loads(str(row[0])))
 
 
 def test_get_overview_with_no_sessions_yields_seed_experiments(tmp_path: Path) -> None:
@@ -131,7 +166,9 @@ def test_list_sessions_renders_persisted_selection_before_live_state_or_encounte
                 "stream_url": "test://1",
                 "experiment_id": "greeting_line_v1",
                 "active_arm": "warm_welcome",
-                "expected_greeting": "Say hello to the creator",
+                "stimulus_definition": json.dumps(
+                    _stimulus_definition(), sort_keys=True, separators=(",", ":")
+                ),
                 "bandit_decision_snapshot": _decision_snapshot(),
                 "started_at": "2026-04-01 12:00:00",
             },
@@ -146,15 +183,22 @@ def test_list_sessions_renders_persisted_selection_before_live_state_or_encounte
     overview = service.get_overview()
     experiment = service.get_experiment_detail("greeting_line_v1")
 
+    assert _fetch_stimulus_definition(db, "sessions", SESSION_A) == _stimulus_definition()
     assert len(sessions) == 1
     assert sessions[0].active_arm == "warm_welcome"
-    assert sessions[0].expected_greeting == "Say hello to the creator"
+    assert sessions[0].expected_response_text == (
+        "The live streamer acknowledges the greeting or responds to it on stream."
+    )
     assert detail is not None
     assert detail.active_arm == "warm_welcome"
-    assert detail.expected_greeting == "Say hello to the creator"
+    assert detail.expected_response_text == (
+        "The live streamer acknowledges the greeting or responds to it on stream."
+    )
     assert overview.active_session is not None
     assert overview.active_session.active_arm == "warm_welcome"
-    assert overview.active_session.expected_greeting == "Say hello to the creator"
+    assert overview.active_session.expected_response_text == (
+        "The live streamer acknowledges the greeting or responds to it on stream."
+    )
     assert experiment is not None
     assert experiment.active_arm_id == "warm_welcome"
     assert experiment.decision_evidence is not None
@@ -255,7 +299,7 @@ def test_list_encounters_carries_reward_explanation(tmp_path: Path) -> None:
     assert enc.semantic_gate == 1
     assert enc.n_frames_in_window == 30
     assert enc.au12_baseline_pre == pytest.approx(0.05)
-    assert enc.transcription == "hello welcome to the stream"
+    assert enc.observed_response_text == "hello welcome to the stream"
     # No metrics / attribution rows yet → optional summaries omitted.
     assert enc.observational_acoustic is None
     assert enc.semantic_evaluation is None
@@ -486,7 +530,9 @@ def test_list_sessions_renders_live_calibration_state(tmp_path: Path) -> None:
             {
                 "session_id": str(SESSION_A),
                 "active_arm": "warm_welcome",
-                "expected_greeting": "Say hello to the creator",
+                "stimulus_definition": json.dumps(
+                    _stimulus_definition(), sort_keys=True, separators=(",", ":")
+                ),
                 "is_calibrating": 1,
                 "calibration_frames_accumulated": 4,
                 "calibration_frames_required": 10,
@@ -502,10 +548,13 @@ def test_list_sessions_renders_live_calibration_state(tmp_path: Path) -> None:
     service = _build_service(db)
     sessions = service.list_sessions(limit=10)
 
+    assert _fetch_stimulus_definition(db, "live_session_state", SESSION_A) == _stimulus_definition()
     assert len(sessions) == 1
     session = sessions[0]
     assert session.active_arm == "warm_welcome"
-    assert session.expected_greeting == "Say hello to the creator"
+    assert session.expected_response_text == (
+        "The live streamer acknowledges the greeting or responds to it on stream."
+    )
     assert session.is_calibrating is True
     assert session.calibration_frames_accumulated == 4
     assert session.calibration_frames_required == 10

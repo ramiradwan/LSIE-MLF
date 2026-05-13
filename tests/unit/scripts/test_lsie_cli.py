@@ -8,6 +8,7 @@ from uuid import UUID
 import pytest
 from typer.testing import CliRunner
 
+from packages.schemas.evaluation import StimulusDefinition, StimulusPayload
 from packages.schemas.experiments import (
     ExperimentAdminResponse,
     ExperimentArmAdminResponse,
@@ -61,6 +62,15 @@ runner = CliRunner()
 _SESSION_ID = UUID("00000000-0000-4000-8000-000000000001")
 _ACTION_ID = UUID("11111111-1111-4111-8111-111111111111")
 _NOW = datetime(2026, 4, 17, 12, 0, tzinfo=UTC)
+
+
+def _stimulus_definition(text: str) -> StimulusDefinition:
+    return StimulusDefinition(
+        stimulus_modality="spoken_greeting",
+        stimulus_payload=StimulusPayload(content_type="text", text=text),
+        expected_stimulus_rule=text,
+        expected_response_rule=text,
+    )
 
 
 def _build_fake_client() -> FakeClient:
@@ -266,7 +276,8 @@ class FakeClient:
             self.disabled_arm_id = arm_id
             return _admin_arm(arm_id, enabled=False)
         self.updated_arm_id = arm_id
-        return _admin_arm(arm_id, greeting_text=request.greeting_text)
+        assert request.stimulus_definition is not None
+        return _admin_arm(arm_id, stimulus_definition=request.stimulus_definition)
 
     def delete_experiment_arm(self, experiment_id: str, arm_id: str) -> ExperimentArmDeleteResponse:
         assert experiment_id == "greeting_line_v1"
@@ -294,7 +305,7 @@ def _session() -> SessionSummary:
         duration_s=65,
         experiment_id="greeting_line_v1",
         active_arm="warm_welcome",
-        expected_greeting="hei rakas",
+        expected_response_text="hei rakas",
         latest_reward=0.42,
         latest_semantic_gate=1,
     )
@@ -319,7 +330,7 @@ def _experiment_detail() -> ExperimentDetail:
         arms=[
             ArmSummary(
                 arm_id="warm_welcome",
-                greeting_text="hei rakas",
+                stimulus_definition=_stimulus_definition("hei rakas"),
                 posterior_alpha=3.0,
                 posterior_beta=2.0,
                 evaluation_variance=0.1,
@@ -336,14 +347,14 @@ def _experiment_detail() -> ExperimentDetail:
 def _admin_arm(
     arm_id: str,
     *,
-    greeting_text: str | None = None,
+    stimulus_definition: StimulusDefinition | None = None,
     enabled: bool = True,
 ) -> ExperimentArmAdminResponse:
     return ExperimentArmAdminResponse(
         experiment_id="greeting_line_v1",
         label="Greeting line",
         arm=arm_id,
-        greeting_text=greeting_text or "hei rakas",
+        stimulus_definition=stimulus_definition or _stimulus_definition("hei rakas"),
         alpha_param=1.0,
         beta_param=1.0,
         enabled=enabled,
@@ -358,11 +369,11 @@ def _encounter() -> EncounterSummary:
         segment_timestamp_utc=_NOW,
         state=EncounterState.COMPLETED,
         active_arm="warm_welcome",
-        expected_greeting="hei rakas",
+        expected_response_text="hei rakas",
         stimulus_time_utc=_NOW,
         semantic_gate=1,
         semantic_confidence=0.91,
-        transcription="hei rakas",
+        observed_response_text="hei rakas",
         p90_intensity=0.7,
         gated_reward=0.7,
         n_frames_in_window=42,
@@ -401,7 +412,7 @@ def _latest_encounter() -> LatestEncounterSummary:
         segment_timestamp_utc=encounter.segment_timestamp_utc,
         state=encounter.state,
         active_arm=encounter.active_arm,
-        expected_greeting=encounter.expected_greeting,
+        expected_response_text=encounter.expected_response_text,
         stimulus_time_utc=encounter.stimulus_time_utc,
         semantic_gate=encounter.semantic_gate,
         p90_intensity=encounter.p90_intensity,
@@ -639,7 +650,14 @@ def test_experiment_write_commands(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     add_result = runner.invoke(
         app,
-        ["experiments", "add-arm", "greeting_line_v1", "direct", "--greeting-text", "moi"],
+        [
+            "experiments",
+            "add-arm",
+            "greeting_line_v1",
+            "direct",
+            "--expected-response",
+            "moi",
+        ],
     )
     update_result = runner.invoke(
         app,
@@ -648,7 +666,7 @@ def test_experiment_write_commands(monkeypatch: pytest.MonkeyPatch) -> None:
             "update-arm",
             "greeting_line_v1",
             "direct",
-            "--greeting-text",
+            "--expected-response",
             "hei",
         ],
     )

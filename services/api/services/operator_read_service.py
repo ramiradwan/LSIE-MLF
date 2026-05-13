@@ -19,7 +19,7 @@ Design constraints:
     paths distinctly from hard errors.
 
 Spec references:
-  §4.C     — Orchestrator `_active_arm`, `_expected_greeting`,
+  §4.C     — Orchestrator `_active_arm`, `_stimulus_definition`,
              authoritative `_stimulus_time`.
   §4.C.4   — Physiological State Buffer freshness semantics.
   §4.E.1   — Operator-facing execution details for the PySide6 console.
@@ -44,6 +44,7 @@ from types import ModuleType
 from typing import Any, Literal, Protocol, cast
 from uuid import UUID, uuid4
 
+from packages.schemas.evaluation import StimulusDefinition
 from packages.schemas.operator_console import (
     AlertEvent,
     AlertKind,
@@ -337,8 +338,9 @@ class OperatorReadService:
         experiment_id = row.get("experiment_id")
         live_state = self._fetch_live_session_state(live_state_client, session_id)
         active_arm = _as_str((live_state or {}).get("active_arm")) or _as_str(row.get("active_arm"))
-        expected_greeting = _as_str((live_state or {}).get("expected_greeting")) or _as_str(
-            row.get("expected_greeting")
+        expected_response_text = _expected_response_text(
+            _parse_stimulus_definition((live_state or {}).get("stimulus_definition"))
+            or _parse_stimulus_definition(row.get("stimulus_definition"))
         )
         return SessionSummary(
             session_id=session_id,
@@ -348,7 +350,7 @@ class OperatorReadService:
             duration_s=_as_float(row.get("duration_s")),
             experiment_id=experiment_id if isinstance(experiment_id, str) else None,
             active_arm=active_arm,
-            expected_greeting=expected_greeting,
+            expected_response_text=expected_response_text,
             is_calibrating=_as_optional_bool(
                 (live_state or {}).get("is_calibrating", row.get("is_calibrating"))
             ),
@@ -404,17 +406,21 @@ class OperatorReadService:
         observational_acoustic = self._build_observational_acoustic_summary(row)
         semantic_evaluation = self._build_semantic_evaluation_summary(row)
         attribution = self._build_attribution_summary(row)
+        expected_response_text = _expected_response_text(
+            _parse_stimulus_definition(row.get("stimulus_definition"))
+        )
+        observed_response_text = _as_str(row.get("observed_response_text"))
         return EncounterSummary(
             encounter_id=str(row["id"]),
             session_id=_as_uuid(row["session_id"]),
             segment_timestamp_utc=_ensure_utc_strict(row["timestamp_utc"]),
             state=state,
             active_arm=_as_str(row.get("arm")),
-            expected_greeting=None,
+            expected_response_text=expected_response_text,
             stimulus_time_utc=_stimulus_epoch_to_utc(row.get("stimulus_time")),
             semantic_gate=_as_int(row.get("semantic_gate")),
             semantic_confidence=None,
-            transcription=_as_str(row.get("transcription")),
+            observed_response_text=observed_response_text,
             p90_intensity=_as_float(row.get("p90_intensity")),
             gated_reward=_as_float(row.get("gated_reward")),
             n_frames_in_window=_as_int(row.get("n_frames_in_window")),
@@ -436,13 +442,16 @@ class OperatorReadService:
         observational_acoustic = self._build_observational_acoustic_summary(row)
         semantic_evaluation = self._build_semantic_evaluation_summary(row)
         attribution = self._build_attribution_summary(row)
+        expected_response_text = _expected_response_text(
+            _parse_stimulus_definition(row.get("stimulus_definition"))
+        )
         return LatestEncounterSummary(
             encounter_id=str(row["id"]),
             session_id=_as_uuid(row["session_id"]),
             segment_timestamp_utc=_ensure_utc_strict(row["timestamp_utc"]),
             state=state,
             active_arm=_as_str(row.get("arm")),
-            expected_greeting=None,
+            expected_response_text=expected_response_text,
             stimulus_time_utc=_stimulus_epoch_to_utc(row.get("stimulus_time")),
             semantic_gate=_as_int(row.get("semantic_gate")),
             p90_intensity=_as_float(row.get("p90_intensity")),
@@ -604,9 +613,12 @@ class OperatorReadService:
         # Beta-distribution variance = αβ / ((α+β)² (α+β+1))
         total = alpha + beta
         variance = (alpha * beta) / (total * total * (total + 1.0)) if total > 0 else None
+        stimulus_definition = _parse_stimulus_definition(row.get("stimulus_definition"))
+        if stimulus_definition is None:
+            raise ValueError("experiment arm row must carry canonical stimulus_definition")
         return ArmSummary(
             arm_id=str(row["arm"]),
-            greeting_text=str(row.get("greeting_text") or row["arm"]),
+            stimulus_definition=stimulus_definition,
             posterior_alpha=alpha,
             posterior_beta=beta,
             evaluation_variance=variance,
@@ -1017,6 +1029,23 @@ def _as_json_object(value: Any) -> dict[str, Any] | None:
             return None
         return parsed if isinstance(parsed, dict) else None
     return None
+
+
+def _parse_stimulus_definition(value: Any) -> StimulusDefinition | None:
+    payload = _as_json_object(value)
+    if payload is None:
+        return None
+    try:
+        return StimulusDefinition.model_validate(payload)
+    except Exception:  # noqa: BLE001
+        logger.debug("invalid stimulus definition ignored", exc_info=True)
+        return None
+
+
+def _expected_response_text(stimulus_definition: StimulusDefinition | None) -> str | None:
+    if stimulus_definition is None:
+        return None
+    return stimulus_definition.expected_response_rule
 
 
 def _as_bool(value: Any, *, default: bool = False) -> bool:

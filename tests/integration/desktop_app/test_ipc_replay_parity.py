@@ -31,6 +31,7 @@ from typing import Any, cast
 
 import pytest
 
+from packages.schemas.evaluation import StimulusDefinition
 from packages.schemas.inference_handoff import InferenceHandoffPayload
 from services.desktop_app.ipc import IpcChannels
 from services.desktop_app.ipc.control_messages import (
@@ -76,6 +77,17 @@ def _audio_for_fixture(fixture: dict[str, Any]) -> bytes:
     return (seed * repeats)[:960_000]
 
 
+def _fixture_stimulus_definition(fixture: dict[str, Any]) -> StimulusDefinition:
+    return StimulusDefinition.model_validate(
+        {
+            "stimulus_modality": fixture["_stimulus_modality"],
+            "stimulus_payload": fixture["_stimulus_payload"],
+            "expected_stimulus_rule": fixture["_expected_stimulus_rule"],
+            "expected_response_rule": fixture["_expected_response_rule"],
+        }
+    )
+
+
 class _StubTranscriptionEngine:
     def transcribe(self, audio: object) -> str:
         del audio
@@ -91,8 +103,8 @@ class _StubSemanticEvaluator:
     last_semantic_method = "cross_encoder"
     last_semantic_method_version = "integration-test-v1"
 
-    def evaluate(self, expected_greeting: str, actual_utterance: str) -> dict[str, Any]:
-        del expected_greeting, actual_utterance
+    def evaluate(self, expected_response_rule: str, actual_utterance: str) -> dict[str, Any]:
+        del expected_response_rule, actual_utterance
         return {
             "reasoning": "cross_encoder_high_match",
             "is_match": True,
@@ -166,9 +178,10 @@ def test_ipc_dispatch_round_trips_fixture(fixture: dict[str, Any]) -> None:
     try:
         # Inject the fixture's pre-computed orchestrator state so
         # assemble_segment emits a payload with matching identity.
+        stimulus_definition = _fixture_stimulus_definition(fixture)
         orch._segment_window_anchor_utc = None
         orch._active_arm = fixture["_active_arm"]
-        orch._expected_greeting = fixture["_expected_greeting"]
+        orch._stimulus_definition = stimulus_definition
         orch._stimulus_time = fixture["_stimulus_time"]
         orch._au12_series = list(fixture["_au12_series"])
         orch._bandit_decision_snapshot = dict(fixture["_bandit_decision_snapshot"])
@@ -183,14 +196,26 @@ def test_ipc_dispatch_round_trips_fixture(fixture: dict[str, Any]) -> None:
 
         # Handoff body validates against §6.1.
         validated = InferenceHandoffPayload.model_validate(msg.handoff)
-        # The pre-update §6.4 snapshot carries the greeting from the
-        # *previous* arm selection — fixture's _expected_greeting is the
-        # current segment's, while the snapshot reflects the prior one.
         assert (
-            validated.bandit_decision_snapshot.expected_greeting
-            == fixture["_bandit_decision_snapshot"]["expected_greeting"]
+            validated.bandit_decision_snapshot.stimulus_modality
+            == fixture["_bandit_decision_snapshot"]["stimulus_modality"]
         )
-        assert validated.expected_greeting == fixture["_expected_greeting"]
+        assert (
+            validated.bandit_decision_snapshot.stimulus_payload.model_dump(mode="json")
+            == fixture["_bandit_decision_snapshot"]["stimulus_payload"]
+        )
+        assert (
+            validated.bandit_decision_snapshot.expected_stimulus_rule
+            == fixture["_bandit_decision_snapshot"]["expected_stimulus_rule"]
+        )
+        assert (
+            validated.bandit_decision_snapshot.expected_response_rule
+            == fixture["_bandit_decision_snapshot"]["expected_response_rule"]
+        )
+        assert validated.stimulus_modality == fixture["_stimulus_modality"]
+        assert validated.stimulus_payload.model_dump(mode="json") == fixture["_stimulus_payload"]
+        assert validated.expected_stimulus_rule == fixture["_expected_stimulus_rule"]
+        assert validated.expected_response_rule == fixture["_expected_response_rule"]
         assert validated.au12_series[0].timestamp_s == fixture["_au12_series"][0]["timestamp_s"]
 
         # Audio survives the SharedMemory round trip byte-identically.
@@ -217,6 +242,8 @@ def test_process_graph_queues_route_pcm_ack_and_analytics_to_local_state(
     tmp_path: Path,
 ) -> None:
     fixture = _fixtures()[0]
+    stimulus_definition = _fixture_stimulus_definition(fixture)
+    stimulus_definition_dump = stimulus_definition.model_dump(mode="json")
     audio = _audio_for_fixture(fixture)
     channels = IpcChannels(
         ml_inbox=cast("Any", Queue()),
@@ -238,7 +265,7 @@ def test_process_graph_queues_route_pcm_ack_and_analytics_to_local_state(
         assert experiment_row is not None
         conn.execute(
             "INSERT OR IGNORE INTO sessions ("
-            "session_id, stream_url, experiment_id, active_arm, expected_greeting, "
+            "session_id, stream_url, experiment_id, active_arm, stimulus_definition, "
             "bandit_decision_snapshot"
             ") VALUES (?, ?, ?, ?, ?, ?)",
             (
@@ -246,7 +273,7 @@ def test_process_graph_queues_route_pcm_ack_and_analytics_to_local_state(
                 "replay://synthetic-fixture",
                 "greeting_line_v1",
                 fixture["_active_arm"],
-                fixture["_expected_greeting"],
+                _fixture_stimulus_definition(fixture).model_dump_json(),
                 json.dumps(fixture["_bandit_decision_snapshot"]),
             ),
         )
@@ -282,7 +309,7 @@ def test_process_graph_queues_route_pcm_ack_and_analytics_to_local_state(
             stream_url="replay://synthetic-fixture",
             experiment_id="greeting_line_v1",
             active_arm=str(fixture["_active_arm"]),
-            expected_greeting=str(fixture["_expected_greeting"]),
+            stimulus_definition=stimulus_definition,
             timestamp_utc=control_timestamp,
         )
         stimulus_control = LiveSessionControlMessage(
@@ -290,7 +317,7 @@ def test_process_graph_queues_route_pcm_ack_and_analytics_to_local_state(
             session_id=fixture["session_id"],
             experiment_id="greeting_line_v1",
             active_arm=str(fixture["_active_arm"]),
-            expected_greeting=str(fixture["_expected_greeting"]),
+            stimulus_definition=stimulus_definition,
             stimulus_time_s=float(fixture["_stimulus_time"]),
             timestamp_utc=control_timestamp,
         )
@@ -312,16 +339,19 @@ def test_process_graph_queues_route_pcm_ack_and_analytics_to_local_state(
         visual = [VisualAnalyticsStateMessage.model_validate(raw) for raw in raw_visuals]
         assert [message.session_id for message in visual] == [start_control.session_id] * 2
         assert [message.active_arm for message in visual] == [fixture["_active_arm"]] * 2
-        assert [message.expected_greeting for message in visual] == [
-            fixture["_expected_greeting"]
-        ] * 2
+        assert [
+            message.stimulus_definition.model_dump(mode="json")
+            if message.stimulus_definition is not None
+            else None
+            for message in visual
+        ] == [stimulus_definition_dump] * 2
         assert tracker.stimulus_time_s == fixture["_stimulus_time"]
 
         active = _drain_segment_controls(channels, None, db_path=db)
         assert active is not None
         assert active.session_id == start_control.session_id
         assert active.active_arm == fixture["_active_arm"]
-        assert active.expected_greeting == fixture["_expected_greeting"]
+        assert active.stimulus_definition.model_dump(mode="json") == stimulus_definition_dump
         assert active.bandit_decision_snapshot == fixture["_bandit_decision_snapshot"]
         assert active.stimulus_time_s == fixture["_stimulus_time"]
 
@@ -333,7 +363,7 @@ def test_process_graph_queues_route_pcm_ack_and_analytics_to_local_state(
             experiment_row_id=active.experiment_row_id,
             experiment_id=active.experiment_id,
             active_arm=active.active_arm,
-            expected_greeting=active.expected_greeting,
+            stimulus_definition=active.stimulus_definition,
             bandit_decision_snapshot=active.bandit_decision_snapshot,
             stimulus_time_s=active.stimulus_time_s,
         )
@@ -403,7 +433,8 @@ def test_process_graph_queues_route_pcm_ack_and_analytics_to_local_state(
         conn = sqlite3.connect(str(db), isolation_level=None)
         try:
             live_row = conn.execute(
-                "SELECT active_arm, expected_greeting FROM live_session_state WHERE session_id = ?",
+                "SELECT active_arm, stimulus_definition "
+                "FROM live_session_state WHERE session_id = ?",
                 (str(start_control.session_id),),
             ).fetchone()
             ledger_row = conn.execute(
@@ -412,7 +443,9 @@ def test_process_graph_queues_route_pcm_ack_and_analytics_to_local_state(
             ).fetchone()
         finally:
             conn.close()
-        assert live_row == (fixture["_active_arm"], fixture["_expected_greeting"])
+        assert live_row is not None
+        assert live_row[0] == fixture["_active_arm"]
+        assert json.loads(str(live_row[1])) == stimulus_definition_dump
         assert ledger_row is not None
         assert [kind for kind, _payload in outbox.enqueued] == ["handoff", "posterior_delta"]
 

@@ -17,6 +17,7 @@ from Crypto.PublicKey import ECC
 from Crypto.Signature import eddsa
 
 from packages.schemas.cloud import ExperimentBundle, ExperimentBundlePayload
+from packages.schemas.evaluation import StimulusDefinition
 from packages.schemas.operator_console import (
     CloudActionStatus,
     ExperimentBundleRefreshChange,
@@ -123,7 +124,7 @@ class ExperimentBundleStore:
         preview_token = self.preview_token(bundle)
         local_rows = self._conn.execute(
             """
-            SELECT experiment_id, label, arm, greeting_text, enabled
+            SELECT experiment_id, label, arm, stimulus_definition, enabled
             FROM experiments
             """
         ).fetchall()
@@ -148,7 +149,7 @@ class ExperimentBundleStore:
                             experiment_id=experiment.experiment_id,
                             arm_id=arm.arm_id,
                             label=experiment.label,
-                            cloud_greeting_text=arm.greeting_text,
+                            cloud_stimulus_definition=arm.stimulus_definition,
                             cloud_enabled=arm.enabled,
                             learned_state_preserved=False,
                         )
@@ -156,11 +157,15 @@ class ExperimentBundleStore:
                     continue
                 existing_preserved_count += 1
                 current_enabled = bool(local["enabled"])
-                current_greeting = str(local["greeting_text"] or "")
+                current_stimulus_definition = StimulusDefinition.model_validate_json(
+                    str(local["stimulus_definition"])
+                )
                 label_changed = local["label"] != experiment.label
-                greeting_changed = current_greeting != arm.greeting_text
+                stimulus_changed = current_stimulus_definition.model_dump(
+                    mode="json"
+                ) != arm.stimulus_definition.model_dump(mode="json")
                 enabled_changed = current_enabled != arm.enabled
-                if label_changed or greeting_changed or enabled_changed:
+                if label_changed or stimulus_changed or enabled_changed:
                     updated_count += 1
                     changes.append(
                         ExperimentBundleRefreshChange(
@@ -168,8 +173,8 @@ class ExperimentBundleStore:
                             experiment_id=experiment.experiment_id,
                             arm_id=arm.arm_id,
                             label=experiment.label,
-                            current_greeting_text=current_greeting,
-                            cloud_greeting_text=arm.greeting_text,
+                            current_stimulus_definition=current_stimulus_definition,
+                            cloud_stimulus_definition=arm.stimulus_definition,
                             current_enabled=current_enabled,
                             cloud_enabled=arm.enabled,
                         )
@@ -188,7 +193,9 @@ class ExperimentBundleStore:
                     experiment_id=experiment_id,
                     arm_id=arm_id,
                     label=str(local["label"] or "") or None,
-                    current_greeting_text=str(local["greeting_text"] or ""),
+                    current_stimulus_definition=StimulusDefinition.model_validate_json(
+                        str(local["stimulus_definition"])
+                    ),
                     current_enabled=True,
                     cloud_enabled=False,
                 )
@@ -219,7 +226,7 @@ class ExperimentBundleStore:
     def preview_token(self, bundle: ExperimentBundle) -> str:
         local_rows = self._conn.execute(
             """
-            SELECT experiment_id, label, arm, greeting_text, enabled
+            SELECT experiment_id, label, arm, stimulus_definition, enabled
             FROM experiments
             ORDER BY experiment_id, arm
             """
@@ -229,7 +236,9 @@ class ExperimentBundleStore:
                 "experiment_id": str(row["experiment_id"]),
                 "label": row["label"],
                 "arm": str(row["arm"]),
-                "greeting_text": row["greeting_text"],
+                "stimulus_definition": StimulusDefinition.model_validate_json(
+                    str(row["stimulus_definition"])
+                ).model_dump(mode="json"),
                 "enabled": bool(row["enabled"]),
             }
             for row in local_rows
@@ -258,12 +267,12 @@ class ExperimentBundleStore:
                     self._conn.execute(
                         """
                         INSERT INTO experiments (
-                            experiment_id, label, arm, greeting_text, alpha_param,
+                            experiment_id, label, arm, stimulus_definition, alpha_param,
                             beta_param, enabled, end_dated_at, updated_at
                         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                         ON CONFLICT(experiment_id, arm) DO UPDATE SET
                             label = excluded.label,
-                            greeting_text = excluded.greeting_text,
+                            stimulus_definition = excluded.stimulus_definition,
                             enabled = excluded.enabled,
                             end_dated_at = excluded.end_dated_at,
                             updated_at = excluded.updated_at
@@ -272,7 +281,7 @@ class ExperimentBundleStore:
                             experiment.experiment_id,
                             experiment.label,
                             arm.arm_id,
-                            arm.greeting_text,
+                            arm.stimulus_definition.model_dump_json(),
                             arm.posterior_alpha,
                             arm.posterior_beta,
                             1 if arm.enabled else 0,
@@ -336,7 +345,7 @@ def _stable_bundle_definitions(bundle: ExperimentBundle) -> list[dict[str, objec
                 {
                     "arm_id": arm.arm_id,
                     "enabled": arm.enabled,
-                    "greeting_text": arm.greeting_text,
+                    "stimulus_definition": arm.stimulus_definition.model_dump(mode="json"),
                     "posterior_alpha": arm.posterior_alpha,
                     "posterior_beta": arm.posterior_beta,
                     "selection_count": arm.selection_count,

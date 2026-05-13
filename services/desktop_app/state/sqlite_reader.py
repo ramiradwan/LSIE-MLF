@@ -49,7 +49,7 @@ class SqliteReader:
         touching the route layer.
         """
         sql = (
-            "SELECT id, experiment_id, label, arm, greeting_text, "
+            "SELECT id, experiment_id, label, arm, stimulus_definition, "
             "alpha_param, beta_param, enabled, end_dated_at, updated_at "
             "FROM experiments "
             "WHERE experiment_id = ? "
@@ -62,7 +62,7 @@ class SqliteReader:
     def fetch_active_arm_for_experiment(self, experiment_id: str) -> dict[str, Any] | None:
         """Return the arm with the highest alpha_param posterior, or None."""
         sql = (
-            "SELECT id, experiment_id, label, arm, greeting_text, "
+            "SELECT id, experiment_id, label, arm, stimulus_definition, "
             "alpha_param, beta_param, enabled, end_dated_at, updated_at "
             "FROM experiments "
             "WHERE experiment_id = ? AND enabled = 1 "

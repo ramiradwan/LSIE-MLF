@@ -2,7 +2,7 @@
 Tests for packages/schemas/ contracts.
 
 Verifies InferenceHandoffPayload, event models, semantic evaluation, and
-attribution ledger schemas conform to their v3.4 contract surfaces.
+attribution ledger schemas conform to their v4 stimulus/observed-response surfaces.
 """
 
 from __future__ import annotations
@@ -21,13 +21,27 @@ from packages.schemas.attribution import (
     EventOutcomeLink,
     OutcomeEvent,
 )
-from packages.schemas.evaluation import SEMANTIC_REASON_CODES, SemanticEvaluationResult
+from packages.schemas.evaluation import (
+    SEMANTIC_REASON_CODES,
+    SemanticEvaluationResult,
+    StimulusDefinition,
+    StimulusPayload,
+)
 from packages.schemas.events import ComboEvent, GiftEvent, LiveEvent
 from packages.schemas.inference_handoff import InferenceHandoffPayload, MediaSource
 
 SEGMENT_ID = "a" * 64
 EXPECTED_RULE_TEXT_HASH = "b" * 64
 DECISION_CONTEXT_HASH = "c" * 64
+
+
+def _stimulus_definition_data() -> dict[str, Any]:
+    return {
+        "stimulus_modality": "spoken_greeting",
+        "stimulus_payload": {"content_type": "text", "text": "Say hello to the creator"},
+        "expected_stimulus_rule": "Deliver the spoken greeting to the creator",
+        "expected_response_rule": "The live streamer acknowledges the greeting",
+    }
 
 
 def _bandit_snapshot_data(sample_timestamp: datetime) -> dict[str, Any]:
@@ -43,7 +57,10 @@ def _bandit_snapshot_data(sample_timestamp: datetime) -> dict[str, Any]:
             "arm_b": {"alpha": 1.0, "beta": 1.0},
         },
         "sampled_theta_by_arm": {"arm_a": 0.72, "arm_b": 0.44},
-        "expected_greeting": "Say hello to the creator",
+        "stimulus_modality": "spoken_greeting",
+        "stimulus_payload": {"content_type": "text", "text": "Say hello to the creator"},
+        "expected_stimulus_rule": "Deliver the spoken greeting to the creator",
+        "expected_response_rule": "The live streamer acknowledges the greeting",
         "decision_context_hash": DECISION_CONTEXT_HASH,
         "random_seed": 42,
     }
@@ -84,7 +101,10 @@ def _handoff_payload_data(
         "segments": [],
         "_active_arm": "arm_a",
         "_experiment_id": 101,
-        "_expected_greeting": "Say hello to the creator",
+        "_stimulus_modality": "spoken_greeting",
+        "_stimulus_payload": {"content_type": "text", "text": "Say hello to the creator"},
+        "_expected_stimulus_rule": "Deliver the spoken greeting to the creator",
+        "_expected_response_rule": "The live streamer acknowledges the greeting",
         "_stimulus_time": None,
         "_au12_series": [{"timestamp_s": 0.0, "intensity": 0.62}],
         "_bandit_decision_snapshot": _bandit_snapshot_data(sample_timestamp),
@@ -98,7 +118,7 @@ def _attribution_event_data(sample_timestamp: datetime) -> dict[str, Any]:
         "event_id": uuid.uuid4(),
         "session_id": uuid.uuid4(),
         "segment_id": SEGMENT_ID,
-        "event_type": "greeting_interaction",
+        "event_type": "stimulus_interaction",
         "event_time_utc": sample_timestamp,
         "stimulus_time_utc": sample_timestamp,
         "selected_arm_id": "arm_a",
@@ -116,6 +136,26 @@ def _attribution_event_data(sample_timestamp: datetime) -> dict[str, Any]:
     }
 
 
+class TestStimulusDefinition:
+    def test_stimulus_definition_validates_typed_payload(self) -> None:
+        definition = StimulusDefinition.model_validate(_stimulus_definition_data())
+
+        assert definition.stimulus_modality == "spoken_greeting"
+        assert definition.stimulus_payload.text == "Say hello to the creator"
+        assert definition.expected_stimulus_rule == "Deliver the spoken greeting to the creator"
+        assert definition.expected_response_rule == "The live streamer acknowledges the greeting"
+
+    def test_stimulus_payload_rejects_untyped_extra_fields(self) -> None:
+        with pytest.raises(ValidationError):
+            StimulusPayload.model_validate(
+                {
+                    "content_type": "text",
+                    "text": "Say hello to the creator",
+                    "voice": "operator-a",
+                }
+            )
+
+
 class TestBanditDecisionSnapshot:
     def test_replay_identity_fields_are_required(self, sample_timestamp: datetime) -> None:
         schema = BanditDecisionSnapshot.model_json_schema()
@@ -124,6 +164,10 @@ class TestBanditDecisionSnapshot:
         assert "sampled_theta_by_arm" in required
         assert "decision_context_hash" in required
         assert "random_seed" in required
+        assert "stimulus_modality" in required
+        assert "stimulus_payload" in required
+        assert "expected_stimulus_rule" in required
+        assert "expected_response_rule" in required
 
         missing_theta = _bandit_snapshot_data(sample_timestamp)
         missing_theta.pop("sampled_theta_by_arm")
@@ -144,7 +188,7 @@ class TestBanditDecisionSnapshot:
 class TestInferenceHandoffPayload:
     """§6.1 — InferenceHandoffPayload JSON Schema Draft 07 contract."""
 
-    def test_valid_payload_exposes_v34_surface(
+    def test_valid_payload_exposes_v4_surface(
         self, sample_session_id: str, sample_timestamp: datetime
     ) -> None:
         payload = InferenceHandoffPayload.model_validate(
@@ -154,6 +198,9 @@ class TestInferenceHandoffPayload:
         assert str(payload.session_id) == sample_session_id
         assert payload.segment_id == SEGMENT_ID
         assert payload.active_arm == "arm_a"
+        assert payload.stimulus_modality == "spoken_greeting"
+        assert payload.stimulus_payload.text == "Say hello to the creator"
+        assert payload.expected_response_rule == "The live streamer acknowledges the greeting"
         assert payload.bandit_decision_snapshot.selected_arm_id == "arm_a"
 
         dumped = payload.model_dump(by_alias=True, exclude_none=True)
@@ -162,7 +209,7 @@ class TestInferenceHandoffPayload:
         assert dumped["_bandit_decision_snapshot"]["selection_method"] == "thompson_sampling"
         assert "_physiological_context" not in dumped
 
-    def test_required_v34_fields_are_in_json_schema(self) -> None:
+    def test_required_v4_fields_are_in_json_schema(self) -> None:
         schema = InferenceHandoffPayload.model_json_schema(by_alias=True)
         properties = schema["properties"]
         required = set(schema["required"])
@@ -175,7 +222,10 @@ class TestInferenceHandoffPayload:
             "timestamp_utc",
             "_active_arm",
             "_experiment_id",
-            "_expected_greeting",
+            "_stimulus_modality",
+            "_stimulus_payload",
+            "_expected_stimulus_rule",
+            "_expected_response_rule",
             "_stimulus_time",
             "_au12_series",
             "_bandit_decision_snapshot",
@@ -328,7 +378,7 @@ class TestSemanticEvaluationResult:
     def test_free_form_reasoning_rejected(self) -> None:
         with pytest.raises(ValidationError):
             SemanticEvaluationResult(
-                reasoning=cast(Any, "Semantically equivalent greeting."),
+                reasoning=cast(Any, "Semantically equivalent observed response."),
                 is_match=True,
                 confidence_score=0.95,
             )
@@ -369,10 +419,14 @@ class TestAttributionSchemas:
     ) -> None:
         event = AttributionEvent.model_validate(_attribution_event_data(sample_timestamp))
 
-        assert event.event_type == "greeting_interaction"
+        assert event.event_type == "stimulus_interaction"
         assert event.finality == "online_provisional"
         assert event.schema_version == "v3.4"
         assert event.bandit_decision_snapshot.selection_method == "thompson_sampling"
+        assert (
+            event.bandit_decision_snapshot.expected_response_rule
+            == "The live streamer acknowledges the greeting"
+        )
 
     def test_outcome_link_and_score_models_validate(self, sample_timestamp: datetime) -> None:
         event_id = uuid.uuid4()

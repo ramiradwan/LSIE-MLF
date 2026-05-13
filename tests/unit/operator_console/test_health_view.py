@@ -13,6 +13,7 @@ from datetime import UTC, datetime
 import pytest
 from PySide6.QtWidgets import QApplication, QHeaderView
 
+from packages.schemas.evaluation import StimulusDefinition, StimulusPayload
 from packages.schemas.operator_console import (
     AlertEvent,
     AlertKind,
@@ -45,6 +46,15 @@ pytestmark = pytest.mark.usefixtures("qt_app")
 
 
 _NOW = datetime(2026, 4, 17, 12, 0, 0, tzinfo=UTC)
+
+
+def _stimulus_definition(text: str) -> StimulusDefinition:
+    return StimulusDefinition(
+        stimulus_modality="spoken_greeting",
+        stimulus_payload=StimulusPayload(text=text),
+        expected_stimulus_rule="Deliver the spoken greeting to the creator",
+        expected_response_rule="The live streamer acknowledges the greeting",
+    )
 
 
 def _view() -> tuple[HealthView, OperatorStore]:
@@ -233,7 +243,7 @@ def test_health_view_cloud_buttons_invoke_bound_actions(monkeypatch: pytest.Monk
                     action="add",
                     experiment_id="compliment_content",
                     arm_id="new_arm",
-                    cloud_greeting_text="Try this next.",
+                    cloud_stimulus_definition=_stimulus_definition("Try this next."),
                 ),
             ],
         ),

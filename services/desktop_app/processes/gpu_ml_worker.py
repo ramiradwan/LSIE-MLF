@@ -32,19 +32,10 @@ from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
+from types import ModuleType
 from typing import Any
 
-# The four ML library imports below are intentional at module top
-# level: they prove the v4.0 §9 isolation contract. The canary test
-# imports each non-ML process module in a clean subprocess and asserts
-# these names are absent from ``sys.modules``; re-importing this
-# module DOES bring them in — that is the whole point of routing ML
-# inference into a dedicated child process.
-import ctranslate2  # noqa: F401
-import faster_whisper  # noqa: F401
-import mediapipe  # noqa: F401
-import torch  # noqa: F401
-
+from packages.schemas.evaluation import StimulusDefinition
 from services.desktop_app.ipc import IpcChannels
 from services.desktop_app.ipc.control_messages import (
     AnalyticsResultMessage,
@@ -56,6 +47,31 @@ from services.desktop_app.ipc.control_messages import (
 from services.desktop_app.ipc.shared_buffers import read_pcm_block
 from services.desktop_app.os_adapter import SupervisedProcess, find_executable
 from services.desktop_app.startup_timing import log_startup_milestone
+
+# The four ML library imports below stay at module top level so the v4.0
+# isolation contract remains rooted in this process module. Missing optional
+# ml_backend dependencies must not break base-environment module import or
+# test collection, so import failure is tolerated here and enforced later at the
+# runtime boundary.
+try:
+    import ctranslate2
+except ModuleNotFoundError:
+    ctranslate2 = None
+
+try:
+    import faster_whisper
+except ModuleNotFoundError:
+    faster_whisper = None
+
+try:
+    import mediapipe
+except ModuleNotFoundError:
+    mediapipe = None
+
+try:
+    import torch
+except ModuleNotFoundError:
+    torch = None
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +100,16 @@ _DESKTOP_SCREENRECORD_BIT_RATE = 2_000_000
 _GPU_STATUS_KEY = "gpu_ml_worker"
 _NO_FRAME_DETAIL = "No shared desktop video frames available yet for live face tracking."
 _NO_FRAME_HINT = "Verify Video Capture is recording and keep a visible face on screen."
+_ML_BACKEND_MODULES: tuple[tuple[str, ModuleType | None], ...] = (
+    ("ctranslate2", ctranslate2),
+    ("faster_whisper", faster_whisper),
+    ("mediapipe", mediapipe),
+    ("torch", torch),
+)
+
+
+class MissingMlBackendError(RuntimeError):
+    """Raised when gpu_ml_worker runs without the optional ml_backend extra."""
 
 
 @dataclass(frozen=True)
@@ -243,7 +269,7 @@ class LiveVisualTracker:
     au12_factory: Callable[[], Any] | None = None
     session_id: uuid.UUID | None = None
     active_arm: str | None = None
-    expected_greeting: str | None = None
+    stimulus_definition: StimulusDefinition | None = None
     stimulus_time_s: float | None = None
     _capture: Any = field(default=None, init=False, repr=False)
     _face_mesh: Any = field(default=None, init=False, repr=False)
@@ -276,7 +302,7 @@ class LiveVisualTracker:
             self.close()
             self.session_id = control.session_id
             self.active_arm = control.active_arm
-            self.expected_greeting = control.expected_greeting
+            self.stimulus_definition = control.stimulus_definition
             self.stimulus_time_s = None
             self._ensure_capture_started()
             return self._visual_state(
@@ -287,7 +313,8 @@ class LiveVisualTracker:
             )
         self.session_id = control.session_id
         self.active_arm = control.active_arm or self.active_arm
-        self.expected_greeting = control.expected_greeting or self.expected_greeting
+        if control.stimulus_definition is not None:
+            self.stimulus_definition = control.stimulus_definition
         self.stimulus_time_s = control.stimulus_time_s
         ready = self._calibration_frames_accumulated >= _VISUAL_CALIBRATION_FRAMES_REQUIRED
         return self._visual_state(
@@ -402,7 +429,7 @@ class LiveVisualTracker:
         self._au12 = None
         self.session_id = None
         self.active_arm = None
-        self.expected_greeting = None
+        self.stimulus_definition = None
         self.stimulus_time_s = None
         self._calibration_frames_accumulated = 0
         self._latest_au12_intensity = None
@@ -440,7 +467,7 @@ class LiveVisualTracker:
                 "calibration_frames_accumulated": self._calibration_frames_accumulated,
                 "calibration_frames_required": _VISUAL_CALIBRATION_FRAMES_REQUIRED,
                 "active_arm": self.active_arm,
-                "expected_greeting": self.expected_greeting,
+                "stimulus_definition": self.stimulus_definition,
                 "latest_au12_intensity": self._latest_au12_intensity,
                 "latest_au12_timestamp_s": self._latest_au12_timestamp_s,
                 "status": status,
@@ -502,6 +529,22 @@ class LiveVisualTracker:
                 max(self._calibration_frames_accumulated, len(buffer)),
                 _VISUAL_CALIBRATION_FRAMES_REQUIRED,
             )
+
+
+def _missing_ml_backend_modules() -> tuple[str, ...]:
+    return tuple(name for name, module in _ML_BACKEND_MODULES if module is None)
+
+
+def _require_ml_backend() -> None:
+    missing = _missing_ml_backend_modules()
+    if not missing:
+        return
+    missing_list = ", ".join(missing)
+    raise MissingMlBackendError(
+        "gpu_ml_worker requires the optional ml_backend dependencies "
+        f"({missing_list}). Install the project with the ml_backend extra "
+        "to run the desktop ML worker."
+    )
 
 
 def _default_video_capture_factory(path: str) -> Any:
@@ -929,7 +972,12 @@ def _build_analytics_result(
 
             evaluate_start = time.perf_counter()
             live_semantic = evaluator.evaluate(
-                str(handoff.get("_expected_greeting", "Hello, welcome to the stream!")),
+                str(
+                    handoff.get(
+                        "_expected_response_rule",
+                        "The streamer acknowledges the stimulus.",
+                    )
+                ),
                 preprocessed_text,
             )
             timings["semantic_evaluate"] = (time.perf_counter() - evaluate_start) * 1000.0
@@ -1079,6 +1127,7 @@ def _ml_inbox_poll_timeout(next_visual_tick: float, now_monotonic: float) -> flo
 
 def run(shutdown_event: mpsync.Event, channels: IpcChannels) -> None:
     logger.info("gpu_ml_worker started")
+    _require_ml_backend()
 
     from services.desktop_app.os_adapter import resolve_state_dir
     from services.desktop_app.state.heartbeats import HeartbeatRecorder

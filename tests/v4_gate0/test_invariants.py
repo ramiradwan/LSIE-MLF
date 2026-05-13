@@ -52,8 +52,13 @@ class _Fixture(TypedDict):
     segment_id: str
     segment_window_start_utc: str
     segment_window_end_utc: str
+    _stimulus_modality: str
+    _stimulus_payload: dict[str, object]
+    _expected_stimulus_rule: str
+    _expected_response_rule: str
     _stimulus_time: float
     _au12_series: list[_Au12Obs]
+    _bandit_decision_snapshot: dict[str, object]
 
 
 GATE0_FIXTURE_DIR = Path(__file__).parent.parent / "fixtures" / "v4_gate0"
@@ -120,8 +125,17 @@ def test_gate0_fixture_validates_against_handoff_schema(fixture: _Fixture) -> No
     payload = InferenceHandoffPayload.model_validate(handoff_data)
     snapshot = payload.bandit_decision_snapshot
 
+    assert payload.stimulus_modality == fixture["_stimulus_modality"]
+    assert payload.stimulus_payload.model_dump() == fixture["_stimulus_payload"]
+    assert payload.expected_stimulus_rule == fixture["_expected_stimulus_rule"]
+    assert payload.expected_response_rule == fixture["_expected_response_rule"]
+    assert "_expected_greeting" not in fixture
+    assert "expected_greeting" not in fixture["_bandit_decision_snapshot"]
     assert snapshot.decision_context_hash
     assert isinstance(snapshot.random_seed, int)
+    assert snapshot.expected_stimulus_rule
+    assert snapshot.expected_response_rule
+    assert snapshot.stimulus_payload.text
 
 
 @pytest.mark.parametrize("fixture", _load_fixtures(), ids=_fixture_ids())

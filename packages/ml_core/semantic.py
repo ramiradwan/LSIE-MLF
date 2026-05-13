@@ -1,5 +1,5 @@
 """
-Deterministic semantic scoring for greeting-rule evaluation (§8).
+Deterministic semantic scoring for response-rule evaluation (§8).
 
 The module routes an expected greeting and transcribed utterance through a
 local Cross-Encoder primary scorer, optionally invokes the configured Azure
@@ -46,7 +46,7 @@ SYSTEM_PROMPT: str = (
     "Your only task is to resolve ambiguous utterances that were routed into "
     "the gray band by the primary local semantic scorer.\n\n"
     "Inputs:\n"
-    "1. Expected Greeting Rule\n"
+    "1. Expected Response Rule\n"
     "2. Actual Utterance\n\n"
     "Evaluation constraints:\n"
     "- Minor transcription errors and filler words are acceptable if the "
@@ -164,8 +164,8 @@ def _tokenize_for_fallback(text: str) -> set[str]:
     }
 
 
-def score_lexical_semantic_similarity(expected_greeting: str, actual_utterance: str) -> float:
-    expected_tokens = _tokenize_for_fallback(expected_greeting)
+def score_lexical_semantic_similarity(expected_response_rule: str, actual_utterance: str) -> float:
+    expected_tokens = _tokenize_for_fallback(expected_response_rule)
     actual_tokens = _tokenize_for_fallback(actual_utterance)
     if not expected_tokens or not actual_tokens:
         return 0.0
@@ -290,14 +290,14 @@ class LocalCrossEncoderScorer:
             device=self.device_mode,
         )
 
-    def score(self, expected_greeting: str, actual_utterance: str) -> float:
+    def score(self, expected_response_rule: str, actual_utterance: str) -> float:
         """Return the raw Cross-Encoder score for one greeting/utterance pair."""
 
         if self._model is None:
             self._init_model()
 
         raw_score = self._model.predict(
-            [(expected_greeting, actual_utterance)],
+            [(expected_response_rule, actual_utterance)],
             show_progress_bar=False,
         )
         return _extract_scalar(raw_score)
@@ -305,9 +305,9 @@ class LocalCrossEncoderScorer:
 
 class SemanticEvaluator:
     """
-    Evaluate greeting semantics and emit the canonical §8.3 scorer payload.
+    Evaluate response semantics and emit the canonical §8.3 scorer payload.
 
-    Accepts expected-greeting text and an actual utterance plus an optional primary
+    Accepts expected-response-rule text and an actual utterance plus an optional primary
     scorer and gray-band fallback flag. Produces a dict containing only
     ``reasoning``, ``is_match``, and ``confidence_score`` while retaining method
     metadata on sidecar attributes. It does not persist rationales, expose
@@ -369,11 +369,11 @@ class SemanticEvaluator:
         deployment = self.deployment or "unconfigured"
         return f"azure-openai:{deployment}:{self.api_version}"
 
-    def _score_primary(self, expected_greeting: str, actual_utterance: str) -> float:
+    def _score_primary(self, expected_response_rule: str, actual_utterance: str) -> float:
         scorer = self._primary_scorer
         if isinstance(scorer, LocalCrossEncoderScorer):
-            return scorer.score(expected_greeting, actual_utterance)
-        return _extract_scalar(scorer(expected_greeting, actual_utterance))
+            return scorer.score(expected_response_rule, actual_utterance)
+        return _extract_scalar(scorer(expected_response_rule, actual_utterance))
 
     def _validated_result(
         self,
@@ -436,10 +436,10 @@ class SemanticEvaluator:
 
     def _local_model_unavailable_result(
         self,
-        expected_greeting: str,
+        expected_response_rule: str,
         actual_utterance: str,
     ) -> dict[str, Any]:
-        score = score_lexical_semantic_similarity(expected_greeting, actual_utterance)
+        score = score_lexical_semantic_similarity(expected_response_rule, actual_utterance)
         is_match = score >= MATCH_THRESHOLD
         self._record_attribution(
             semantic_method="cross_encoder",
@@ -453,14 +453,15 @@ class SemanticEvaluator:
 
     def _evaluate_gray_band_fallback(
         self,
-        expected_greeting: str,
+        expected_response_rule: str,
         actual_utterance: str,
         _primary_score: float,
     ) -> dict[str, Any]:
         """Invoke Azure OpenAI for an enabled primary Cross-Encoder gray-band score."""
 
         user_content: str = (
-            f"Expected Greeting Rule: {expected_greeting}\nActual Utterance: {actual_utterance}"
+            f"Expected Response Rule: {expected_response_rule}\n"
+            f"Actual Utterance: {actual_utterance}"
         )
 
         last_error: Exception | None = None
@@ -516,7 +517,7 @@ class SemanticEvaluator:
             return self._fallback_failure_result("semantic_timeout")
         return self._fallback_failure_result("semantic_error")
 
-    def evaluate(self, expected_greeting: str, actual_utterance: str) -> dict[str, Any] | None:
+    def evaluate(self, expected_response_rule: str, actual_utterance: str) -> dict[str, Any] | None:
         """
         Evaluate semantic equivalence between expected and actual utterance.
 
@@ -538,12 +539,12 @@ class SemanticEvaluator:
 
         try:
             primary_score = calibrate_cross_encoder_score(
-                self._score_primary(expected_greeting, actual_utterance)
+                self._score_primary(expected_response_rule, actual_utterance)
             )
         except SemanticModelUnavailableError:
             logger.info("Local semantic Cross-Encoder artifact unavailable; using lexical fallback")
-            result = self._local_model_unavailable_result(expected_greeting, actual_utterance)
-            self._evaluate_shadow(expected_greeting, actual_utterance)
+            result = self._local_model_unavailable_result(expected_response_rule, actual_utterance)
+            self._evaluate_shadow(expected_response_rule, actual_utterance)
             return result
         except Exception:
             logger.warning("Local semantic Cross-Encoder scoring failed", exc_info=True)
@@ -556,7 +557,7 @@ class SemanticEvaluator:
                 is_match=False,
                 confidence_score=0.0,
             )
-            self._evaluate_shadow(expected_greeting, actual_utterance)
+            self._evaluate_shadow(expected_response_rule, actual_utterance)
             return result
 
         # §8.2.1 — score = 0.72 is direct match and is NOT gray-band routed.
@@ -566,19 +567,19 @@ class SemanticEvaluator:
                 semantic_method_version=CROSS_ENCODER_METHOD_VERSION,
             )
             result = self._primary_result(primary_score)
-            self._evaluate_shadow(expected_greeting, actual_utterance)
+            self._evaluate_shadow(expected_response_rule, actual_utterance)
             return result
 
         # §8.1 — Azure is reachable only for explicitly enabled true gray band.
         if self.gray_band_fallback_enabled:
             result = self._evaluate_gray_band_fallback(
-                expected_greeting,
+                expected_response_rule,
                 actual_utterance,
                 primary_score,
             )
         else:
             result = self._gray_band_without_fallback(primary_score)
-        self._evaluate_shadow(expected_greeting, actual_utterance)
+        self._evaluate_shadow(expected_response_rule, actual_utterance)
         return result
 
     def _record_attribution(
@@ -592,7 +593,7 @@ class SemanticEvaluator:
         self.last_semantic_method = semantic_method
         self.last_semantic_method_version = semantic_method_version
 
-    def _evaluate_shadow(self, expected_greeting: str, actual_utterance: str) -> None:
+    def _evaluate_shadow(self, expected_response_rule: str, actual_utterance: str) -> None:
         """Run an optional candidate scorer without changing live semantic outputs."""
         if not self.shadow_mode_enabled or self._shadow_scorer is None:
             return
@@ -600,9 +601,9 @@ class SemanticEvaluator:
         try:
             scorer = self._shadow_scorer
             if isinstance(scorer, LocalCrossEncoderScorer):
-                raw_score = scorer.score(expected_greeting, actual_utterance)
+                raw_score = scorer.score(expected_response_rule, actual_utterance)
             else:
-                raw_score = scorer(expected_greeting, actual_utterance)
+                raw_score = scorer(expected_response_rule, actual_utterance)
             score = calibrate_cross_encoder_score(raw_score)
             is_match = score >= MATCH_THRESHOLD
             self.last_shadow_semantic = {

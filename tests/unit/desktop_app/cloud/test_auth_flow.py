@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 import threading
 from datetime import UTC, datetime
@@ -16,6 +17,7 @@ from packages.schemas.cloud import (
     OAuthTokenRequest,
     OAuthTokenResponse,
 )
+from packages.schemas.evaluation import StimulusDefinition, StimulusPayload
 from packages.schemas.operator_console import (
     CloudActionStatus,
     CloudAuthState,
@@ -45,6 +47,18 @@ def _config() -> AuthFlowConfig:
     )
 
 
+def _stimulus_definition(text: str) -> StimulusDefinition:
+    return StimulusDefinition(
+        stimulus_modality="spoken_greeting",
+        stimulus_payload=StimulusPayload(
+            content_type="text",
+            text=text,
+        ),
+        expected_stimulus_rule="Deliver the spoken greeting to the creator",
+        expected_response_rule="The live streamer acknowledges the greeting",
+    )
+
+
 def _bundle() -> ExperimentBundle:
     return ExperimentBundle(
         bundle_id="bundle-a",
@@ -58,7 +72,7 @@ def _bundle() -> ExperimentBundle:
                 arms=[
                     ExperimentBundleArm(
                         arm_id="arm-a",
-                        greeting_text="Hello A",
+                        stimulus_definition=_stimulus_definition("Hello A"),
                         posterior_alpha=2.0,
                         posterior_beta=3.0,
                         selection_count=5,
@@ -365,10 +379,18 @@ def test_sqlite_cloud_operator_preview_fetches_without_recording_or_mutating(
     conn.execute(
         """
         INSERT INTO experiments (
-            experiment_id, label, arm, greeting_text, alpha_param, beta_param, enabled
+            experiment_id, label, arm, stimulus_definition, alpha_param, beta_param, enabled
         ) VALUES (?, ?, ?, ?, ?, ?, ?)
         """,
-        ("experiment-a", "Experiment A", "arm-a", "Old A", 11.0, 12.0, 1),
+        (
+            "experiment-a",
+            "Experiment A",
+            "arm-a",
+            _stimulus_definition("Old A").model_dump_json(),
+            11.0,
+            12.0,
+            1,
+        ),
     )
     conn.close()
     service = SqliteCloudOperatorService(
@@ -381,7 +403,7 @@ def test_sqlite_cloud_operator_preview_fetches_without_recording_or_mutating(
     conn = sqlite3.connect(str(db_path), isolation_level=None)
     row = conn.execute(
         """
-        SELECT greeting_text, alpha_param, beta_param, enabled
+        SELECT stimulus_definition, alpha_param, beta_param, enabled
         FROM experiments
         WHERE experiment_id = 'experiment-a' AND arm = 'arm-a'
         """
@@ -393,7 +415,9 @@ def test_sqlite_cloud_operator_preview_fetches_without_recording_or_mutating(
     assert preview.updated_count == 1
     assert preview.existing_preserved_count == 1
     assert latest is None
-    assert row == ("Old A", 11.0, 12.0, 1)
+    assert row is not None
+    assert json.loads(row[0]) == _stimulus_definition("Old A").model_dump(mode="json")
+    assert row[1:] == (11.0, 12.0, 1)
 
 
 def test_sqlite_cloud_operator_rejects_apply_when_bundle_changes_after_preview(
@@ -418,7 +442,7 @@ def test_sqlite_cloud_operator_rejects_apply_when_bundle_changes_after_preview(
                     arms=[
                         ExperimentBundleArm(
                             arm_id="arm-a",
-                            greeting_text="Changed A",
+                            stimulus_definition=_stimulus_definition("Changed A"),
                             posterior_alpha=2.0,
                             posterior_beta=3.0,
                             selection_count=5,

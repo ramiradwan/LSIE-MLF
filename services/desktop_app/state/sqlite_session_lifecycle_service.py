@@ -15,6 +15,7 @@ from uuid import UUID
 
 import numpy as np
 
+from packages.schemas.evaluation import StimulusDefinition
 from packages.schemas.operator_console import (
     SessionCreateRequest,
     SessionEndRequest,
@@ -36,7 +37,7 @@ class ThompsonSelection:
     experiment_id: str
     experiment_row_id: int
     arm: str
-    greeting_text: str
+    stimulus_definition: StimulusDefinition
     candidate_arm_ids: list[str]
     posterior_by_arm: dict[str, dict[str, float]]
     sampled_theta_by_arm: dict[str, float]
@@ -92,7 +93,7 @@ class SqliteSessionLifecycleService(SessionLifecycleService):
             cursor = conn.execute(
                 """
                 INSERT OR IGNORE INTO sessions (
-                    session_id, stream_url, experiment_id, active_arm, expected_greeting,
+                    session_id, stream_url, experiment_id, active_arm, stimulus_definition,
                     bandit_decision_snapshot, started_at, ended_at
                 )
                 VALUES (?, ?, ?, ?, ?, ?, ?, NULL)
@@ -102,7 +103,11 @@ class SqliteSessionLifecycleService(SessionLifecycleService):
                     request.stream_url,
                     request.experiment_id,
                     selection.arm if selection is not None else None,
-                    selection.greeting_text if selection is not None else None,
+                    (
+                        selection.stimulus_definition.model_dump_json()
+                        if selection is not None
+                        else None
+                    ),
                     selection_snapshot,
                     _iso_utc(now),
                 ),
@@ -115,7 +120,9 @@ class SqliteSessionLifecycleService(SessionLifecycleService):
                     stream_url=request.stream_url,
                     experiment_id=request.experiment_id,
                     active_arm=selection.arm if selection is not None else None,
-                    expected_greeting=selection.greeting_text if selection is not None else None,
+                    stimulus_definition=(
+                        selection.stimulus_definition if selection is not None else None
+                    ),
                     timestamp_utc=now,
                 )
             )
@@ -218,7 +225,7 @@ def select_thompson_arm(
         return None
     rows = conn.execute(
         """
-        SELECT id, experiment_id, arm, greeting_text, alpha_param, beta_param
+        SELECT id, experiment_id, arm, stimulus_definition, alpha_param, beta_param
         FROM experiments
         WHERE experiment_id = ?
           AND enabled = 1
@@ -255,7 +262,9 @@ def select_thompson_arm(
         experiment_id=str(selected["experiment_id"]),
         experiment_row_id=int(selected["id"]),
         arm=selected_arm,
-        greeting_text=str(selected["greeting_text"]),
+        stimulus_definition=StimulusDefinition.model_validate_json(
+            str(selected["stimulus_definition"])
+        ),
         candidate_arm_ids=candidate_arm_ids,
         posterior_by_arm=posterior_by_arm,
         sampled_theta_by_arm=sampled_theta_by_arm,
@@ -321,7 +330,10 @@ def snapshot_dict(
         "candidate_arm_ids": selection.candidate_arm_ids,
         "posterior_by_arm": selection.posterior_by_arm,
         "sampled_theta_by_arm": selection.sampled_theta_by_arm,
-        "expected_greeting": selection.greeting_text,
+        "stimulus_modality": selection.stimulus_definition.stimulus_modality,
+        "stimulus_payload": selection.stimulus_definition.stimulus_payload.model_dump(mode="json"),
+        "expected_stimulus_rule": selection.stimulus_definition.expected_stimulus_rule,
+        "expected_response_rule": selection.stimulus_definition.expected_response_rule,
         "decision_context_hash": selection.decision_context_hash,
         "random_seed": selection.random_seed,
     }

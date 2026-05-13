@@ -15,6 +15,7 @@ from uuid import UUID, uuid4
 import pytest
 from PySide6.QtCore import Qt
 
+from packages.schemas.evaluation import StimulusDefinition, StimulusPayload
 from packages.schemas.experiments import ExperimentArmCreateRequest, ExperimentCreateRequest
 from packages.schemas.operator_console import (
     AlertEvent,
@@ -67,6 +68,15 @@ pytestmark = pytest.mark.usefixtures("qt_app")
 _NOW = datetime(2026, 4, 17, 12, 0, 0, tzinfo=UTC)
 
 
+def _stimulus_definition(text: str) -> StimulusDefinition:
+    return StimulusDefinition(
+        stimulus_modality="spoken_greeting",
+        stimulus_payload=StimulusPayload(text=text),
+        expected_stimulus_rule="Deliver the spoken greeting to the creator",
+        expected_response_rule="The live streamer acknowledges the greeting",
+    )
+
+
 # ---------------------------------------------------------------------
 # Fixture builders
 # ---------------------------------------------------------------------
@@ -88,7 +98,7 @@ def _session(
         started_at_utc=_NOW,
         ended_at_utc=ended_at_utc,
         active_arm=active_arm,
-        expected_greeting=expected,
+        expected_response_text=expected,
         is_calibrating=is_calibrating,
         calibration_frames_accumulated=calibration_frames_accumulated,
         calibration_frames_required=calibration_frames_required,
@@ -107,7 +117,7 @@ def _encounter(
     stimulus_time: datetime | None = None,
     session_id: UUID | None = None,
     segment_timestamp_utc: datetime = _NOW,
-    transcription: str | None = None,
+    observed_response_text: str | None = None,
 ) -> EncounterSummary:
     return EncounterSummary(
         encounter_id=encounter_id,
@@ -115,14 +125,14 @@ def _encounter(
         segment_timestamp_utc=segment_timestamp_utc,
         state=state,
         active_arm="greeting_v1",
-        expected_greeting="hei rakas",
+        expected_response_text="hei rakas",
         stimulus_time_utc=stimulus_time,
         semantic_gate=semantic_gate,
         semantic_confidence=semantic_confidence,
         p90_intensity=p90,
         gated_reward=gated_reward,
         n_frames_in_window=frames,
-        transcription=transcription,
+        observed_response_text=observed_response_text,
     )
 
 
@@ -259,7 +269,7 @@ def test_live_session_vm_surfaces_active_arm_from_live_session() -> None:
     # Arm must come from live_session DTO, never from table rows.
     store.set_live_session(_session(active_arm="greeting_v7"))
     assert vm.active_arm() == "greeting_v7"
-    assert vm.expected_greeting() == "hei rakas"
+    assert vm.expected_response_text() == "hei rakas"
 
 
 def test_live_session_vm_ttv_state_waits_for_live_session_readback() -> None:
@@ -922,7 +932,7 @@ def test_live_session_vm_selects_completed_stimulus_readback_row() -> None:
                 "old-selected",
                 session_id=selected_session_id,
                 stimulus_time=_NOW,
-                transcription=None,
+                observed_response_text=None,
                 segment_timestamp_utc=_NOW + timedelta(seconds=5),
             )
         ]
@@ -947,14 +957,14 @@ def test_live_session_vm_selects_completed_stimulus_readback_row() -> None:
                 session_id=selected_session_id,
                 state=EncounterState.COMPLETED,
                 stimulus_time=new_stimulus,
-                transcription="hello creator",
+                observed_response_text="hello creator",
                 segment_timestamp_utc=new_stimulus + timedelta(seconds=5),
             ),
             _encounter(
                 "old-selected",
                 session_id=selected_session_id,
                 stimulus_time=_NOW,
-                transcription=None,
+                observed_response_text=None,
                 segment_timestamp_utc=_NOW + timedelta(seconds=5),
             ),
         ]
@@ -963,7 +973,7 @@ def test_live_session_vm_selects_completed_stimulus_readback_row() -> None:
     selected = vm.selected_encounter()
     assert selected is not None
     assert selected.encounter_id == "new-result"
-    assert selected.transcription == "hello creator"
+    assert selected.observed_response_text == "hello creator"
 
 
 def test_live_session_vm_clears_measuring_stimulus_when_session_ends() -> None:
@@ -1171,8 +1181,18 @@ def test_experiments_vm_reflects_active_arm_and_arms() -> None:
         experiment_id="exp1",
         active_arm_id="a2",
         arms=[
-            ArmSummary(arm_id="a1", greeting_text="hi", posterior_alpha=1.0, posterior_beta=1.0),
-            ArmSummary(arm_id="a2", greeting_text="hei", posterior_alpha=2.0, posterior_beta=5.0),
+            ArmSummary(
+                arm_id="a1",
+                stimulus_definition=_stimulus_definition("hi"),
+                posterior_alpha=1.0,
+                posterior_beta=1.0,
+            ),
+            ArmSummary(
+                arm_id="a2",
+                stimulus_definition=_stimulus_definition("hei"),
+                posterior_alpha=2.0,
+                posterior_beta=5.0,
+            ),
         ],
         last_update_summary="arm a2 updated by reward 0.42",
     )
@@ -1230,7 +1250,7 @@ def test_experiments_vm_add_arm_emits_for_current_experiment() -> None:
             arms=[
                 ArmSummary(
                     arm_id="a1",
-                    greeting_text="hi",
+                    stimulus_definition=_stimulus_definition("hi"),
                     posterior_alpha=1.0,
                     posterior_beta=1.0,
                 )
@@ -1255,16 +1275,16 @@ def test_experiments_vm_table_rename_and_disable_emit_safe_commands() -> None:
             arms=[
                 ArmSummary(
                     arm_id="a1",
-                    greeting_text="hi",
+                    stimulus_definition=_stimulus_definition("hi"),
                     posterior_alpha=1.0,
                     posterior_beta=1.0,
                 )
             ],
         )
     )
-    renames: list[tuple[str, str, str]] = []
+    renames: list[tuple[str, str, StimulusDefinition]] = []
     disables: list[tuple[str, str]] = []
-    vm.rename_arm_requested.connect(lambda *args: renames.append(tuple(args)))
+    vm.update_arm_requested.connect(lambda *args: renames.append(tuple(args)))
     vm.disable_arm_requested.connect(lambda *args: disables.append(tuple(args)))
 
     assert model.setData(model.index(0, 1), "hei ystävä") is True
@@ -1276,7 +1296,7 @@ def test_experiments_vm_table_rename_and_disable_emit_safe_commands() -> None:
         )
         is True
     )
-    assert renames == [("exp1", "a1", "hei ystävä")]
+    assert renames == [("exp1", "a1", _stimulus_definition("hei ystävä"))]
     assert disables == [("exp1", "a1")]
 
 
@@ -1290,7 +1310,7 @@ def test_experiments_vm_allows_disabled_arm_greeting_rename() -> None:
             arms=[
                 ArmSummary(
                     arm_id="archived",
-                    greeting_text="old",
+                    stimulus_definition=_stimulus_definition("old"),
                     posterior_alpha=1.0,
                     posterior_beta=1.0,
                     enabled=False,
@@ -1298,11 +1318,11 @@ def test_experiments_vm_allows_disabled_arm_greeting_rename() -> None:
             ],
         )
     )
-    renames: list[tuple[str, str, str]] = []
-    vm.rename_arm_requested.connect(lambda *args: renames.append(tuple(args)))
+    renames: list[tuple[str, str, StimulusDefinition]] = []
+    vm.update_arm_requested.connect(lambda *args: renames.append(tuple(args)))
 
-    assert vm.rename_arm_greeting("archived", "historical label") is True
-    assert renames == [("exp1", "archived", "historical label")]
+    assert vm.update_arm_stimulus_text("archived", "historical label") is True
+    assert renames == [("exp1", "archived", _stimulus_definition("historical label"))]
 
 
 # ---------------------------------------------------------------------

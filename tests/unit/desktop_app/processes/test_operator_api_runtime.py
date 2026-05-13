@@ -14,6 +14,7 @@ from uuid import UUID
 
 import pytest
 
+from packages.schemas.evaluation import StimulusDefinition, StimulusPayload
 from services.desktop_app.ipc import IpcChannels
 from services.desktop_app.ipc.control_messages import LiveSessionControlMessage
 from services.desktop_app.processes import operator_api_runtime
@@ -132,7 +133,19 @@ def test_control_publisher_serializes_to_live_and_segment_queues() -> None:
         stream_url="android://device",
         experiment_id="greeting_line_v1",
         active_arm="compliment_content",
-        expected_greeting="Love the energy on this stream!",
+        stimulus_definition=StimulusDefinition(
+            stimulus_modality="spoken_greeting",
+            stimulus_payload=StimulusPayload(
+                content_type="text",
+                text="Love the energy on this stream!",
+            ),
+            expected_stimulus_rule=(
+                "Deliver the spoken greeting to the live streamer exactly as written."
+            ),
+            expected_response_rule=(
+                "The live streamer acknowledges the greeting or responds to it on stream."
+            ),
+        ),
         timestamp_utc=datetime(2026, 5, 5, 12, 0, tzinfo=UTC),
     )
 

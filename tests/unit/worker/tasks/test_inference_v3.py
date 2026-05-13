@@ -87,7 +87,18 @@ class TestForwardFields:
         forward_data = {
             "_active_arm": "greeting_A",
             "_experiment_id": "greeting_line_v1",
-            "_expected_greeting": "Hello, welcome!",
+            "_stimulus_modality": "spoken_greeting",
+            "_stimulus_payload": {"content_type": "text", "text": "Hello, welcome!"},
+            "_expected_stimulus_rule": "Deliver the spoken greeting to the creator",
+            "_expected_response_rule": "The streamer acknowledges the stimulus.",
+            "_stimulus_id": "11111111-1111-4111-8111-111111111111",
+            "_response_observation_horizon_s": 5.0,
+            "response_inference": {
+                "is_match": True,
+                "confidence_score": 0.9,
+                "registration_status": "observable_response",
+                "response_reason_code": "response_semantic_ack",
+            },
             "_au12_series": [{"timestamp_s": 0.0, "intensity": 0.5}],
             "_stimulus_time": 15.0,
         }
@@ -122,7 +133,10 @@ class TestForwardFields:
 
         assert "_active_arm" in result
         assert "_experiment_id" not in result
-        assert "_expected_greeting" not in result
+        assert "_stimulus_modality" not in result
+        assert "_stimulus_payload" not in result
+        assert "_expected_stimulus_rule" not in result
+        assert "_expected_response_rule" not in result
         assert "_au12_series" not in result
         assert "_stimulus_time" not in result
         _assert_null_acoustic_contract(result)
@@ -143,7 +157,10 @@ class TestForwardFields:
         assert result["_active_arm"] == "arm_B"
         assert result["_experiment_id"] == "exp_v2"
         assert result["_stimulus_time"] == 10.0
-        assert "_expected_greeting" not in result
+        assert "_stimulus_modality" not in result
+        assert "_stimulus_payload" not in result
+        assert "_expected_stimulus_rule" not in result
+        assert "_expected_response_rule" not in result
         assert "_au12_series" not in result
         _assert_null_acoustic_contract(result)
 
@@ -287,7 +304,10 @@ class TestBase64Decode:
             _audio_data=b64_audio,
             _active_arm="arm-a",
             _experiment_id="exp-1",
-            _expected_greeting="hello welcome",
+            _stimulus_modality="spoken_greeting",
+            _stimulus_payload={"content_type": "text", "text": "hello welcome"},
+            _expected_stimulus_rule="Deliver the spoken greeting to the creator",
+            _expected_response_rule="The streamer acknowledges the stimulus.",
             _stimulus_time=100.0,
             _au12_series=[
                 {"timestamp_s": 100.5, "intensity": 0.40},
@@ -431,7 +451,10 @@ class TestPersistMetricsRewardInvariance:
             },
             "_active_arm": "arm-a",
             "_experiment_id": "exp-1",
-            "_expected_greeting": "hello welcome",
+            "_stimulus_modality": "spoken_greeting",
+            "_stimulus_payload": {"content_type": "text", "text": "hello welcome"},
+            "_expected_stimulus_rule": "Deliver the spoken greeting to the creator",
+            "_expected_response_rule": "The streamer acknowledges the stimulus.",
             "_stimulus_time": 100.0,
             "stimulus_time_utc": "2026-03-13T12:00:00+00:00",
             "_bandit_decision_snapshot": {
@@ -446,7 +469,10 @@ class TestPersistMetricsRewardInvariance:
                     "arm-b": {"alpha": 2.0, "beta": 3.0},
                 },
                 "sampled_theta_by_arm": {"arm-a": 0.6, "arm-b": 0.4},
-                "expected_greeting": "hello welcome",
+                "stimulus_modality": "spoken_greeting",
+                "stimulus_payload": {"content_type": "text", "text": "hello welcome"},
+                "expected_stimulus_rule": "Deliver the spoken greeting to the creator",
+                "expected_response_rule": "The streamer acknowledges the stimulus.",
                 "decision_context_hash": "e" * 64,
                 "random_seed": 42,
             },
@@ -539,7 +565,10 @@ class TestPersistMetricsRewardInvariance:
                     "arm-b": {"alpha": 9.0, "beta": 1.0},
                 },
                 "sampled_theta_by_arm": {"arm-a": 0.2, "arm-b": 0.9},
-                "expected_greeting": "hello welcome",
+                "stimulus_modality": "spoken_greeting",
+                "stimulus_payload": {"content_type": "text", "text": "hello welcome"},
+                "expected_stimulus_rule": "Deliver the spoken greeting to the creator",
+                "expected_response_rule": "The streamer acknowledges the stimulus.",
                 "decision_context_hash": "f" * 64,
                 "random_seed": 99,
             },

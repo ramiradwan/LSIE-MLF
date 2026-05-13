@@ -22,6 +22,7 @@ from pydantic import BaseModel, ValidationError
 from rich.console import Console
 from rich.table import Table
 
+from packages.schemas.evaluation import StimulusDefinition, StimulusPayload
 from packages.schemas.experiments import (
     ExperimentArmCreateRequest,
     ExperimentArmPatchRequest,
@@ -228,6 +229,15 @@ def _text(value: object | None) -> str:
     return str(value)
 
 
+def _stimulus_definition(expected_response_text: str) -> StimulusDefinition:
+    return StimulusDefinition(
+        stimulus_modality="spoken_greeting",
+        stimulus_payload=StimulusPayload(content_type="text", text=expected_response_text),
+        expected_stimulus_rule=expected_response_text,
+        expected_response_rule=expected_response_text,
+    )
+
+
 def _health_counts(snapshot: HealthSnapshot | None) -> str:
     if snapshot is None:
         return "health unknown"
@@ -392,7 +402,7 @@ def _render_sessions(rows: Sequence[SessionSummary]) -> None:
                 str(row.session_id),
                 row.status,
                 _text(row.active_arm),
-                _text(row.expected_greeting),
+                _text(row.expected_response_text),
                 format_duration(row.duration_s),
                 format_reward(row.latest_reward),
             ]
@@ -432,7 +442,7 @@ def _render_session_detail(session: SessionSummary) -> None:
     console.print(f"Duration: {format_duration(session.duration_s)}")
     console.print(f"Experiment: {_text(session.experiment_id)}")
     console.print(f"Stimulus strategy: {_text(session.active_arm)}")
-    console.print(f"Expected response: {_text(session.expected_greeting)}")
+    console.print(f"Expected response: {_text(session.expected_response_text)}")
     console.print(f"Latest reward: {format_reward(session.latest_reward)}")
     console.print(f"Stimulus confirmed: {format_semantic_gate(session.latest_semantic_gate)}")
 
@@ -652,7 +662,7 @@ def _render_experiment_detail(detail: ExperimentDetail) -> None:
         (
             [
                 display.arm_id,
-                display.greeting_text,
+                display.stimulus_text,
                 display.label,
                 display.evidence,
                 display.outcome,
@@ -687,34 +697,47 @@ def experiments_create(
 def experiments_add_arm(
     experiment_id: str = typer.Argument(..., help="Experiment identifier"),
     arm_id: str = typer.Argument(..., help="Arm identifier"),
-    greeting_text: str = typer.Option(..., "--greeting-text", help="Expected response text"),
+    expected_response_text: str = typer.Option(
+        ...,
+        "--expected-response",
+        help="Expected response text",
+    ),
 ) -> None:
     """Add one new experiment arm."""
     try:
-        request = ExperimentArmCreateRequest(arm=arm_id, greeting_text=greeting_text)
+        request = ExperimentArmCreateRequest(
+            arm=arm_id,
+            stimulus_definition=_stimulus_definition(expected_response_text),
+        )
     except ValidationError as exc:
         raise typer.BadParameter(str(exc)) from exc
     result = _run_api_call(lambda: _build_client().add_experiment_arm(experiment_id, request))
     console.print(f"Arm added: {result.experiment_id} · {result.arm}")
-    console.print(f"Expected response: {result.greeting_text}")
+    console.print(f"Expected response: {result.stimulus_definition.expected_response_rule}")
 
 
 @experiments_app.command("update-arm")
 def experiments_update_arm(
     experiment_id: str = typer.Argument(..., help="Experiment identifier"),
     arm_id: str = typer.Argument(..., help="Arm identifier"),
-    greeting_text: str = typer.Option(..., "--greeting-text", help="Expected response text"),
+    expected_response_text: str = typer.Option(
+        ...,
+        "--expected-response",
+        help="Expected response text",
+    ),
 ) -> None:
     """Update human-owned arm metadata."""
     try:
-        request = ExperimentArmPatchRequest(greeting_text=greeting_text)
+        request = ExperimentArmPatchRequest(
+            stimulus_definition=_stimulus_definition(expected_response_text)
+        )
     except ValidationError as exc:
         raise typer.BadParameter(str(exc)) from exc
     result = _run_api_call(
         lambda: _build_client().patch_experiment_arm(experiment_id, arm_id, request)
     )
     console.print(f"Arm updated: {result.experiment_id} · {result.arm}")
-    console.print(f"Expected response: {result.greeting_text}")
+    console.print(f"Expected response: {result.stimulus_definition.expected_response_rule}")
 
 
 @experiments_app.command("disable-arm")
@@ -745,11 +768,14 @@ def experiments_delete_arm(
 
 
 def _parse_arm_seed(value: str) -> ExperimentArmSeedRequest:
-    arm_id, separator, greeting_text = value.partition("=")
-    if not separator or not arm_id.strip() or not greeting_text.strip():
+    arm_id, separator, expected_response_text = value.partition("=")
+    if not separator or not arm_id.strip() or not expected_response_text.strip():
         raise typer.BadParameter("--arm must use ARM_ID=EXPECTED_RESPONSE")
     try:
-        return ExperimentArmSeedRequest(arm=arm_id.strip(), greeting_text=greeting_text.strip())
+        return ExperimentArmSeedRequest(
+            arm=arm_id.strip(),
+            stimulus_definition=_stimulus_definition(expected_response_text.strip()),
+        )
     except ValidationError as exc:
         raise typer.BadParameter(str(exc)) from exc
 

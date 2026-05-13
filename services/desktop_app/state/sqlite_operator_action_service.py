@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Protocol
 from uuid import UUID
 
+from packages.schemas.evaluation import StimulusDefinition
 from packages.schemas.operator_console import StimulusAccepted, StimulusRequest
 from services.api.services.operator_action_service import (
     SessionAlreadyEndedError,
@@ -48,10 +49,11 @@ class SqliteOperatorActionService:
             row = conn.execute(
                 """
                 SELECT s.session_id, s.ended_at, s.stream_url, s.experiment_id,
-                       e.arm, e.greeting_text
+                       s.active_arm, e.stimulus_definition
                 FROM sessions s
                 LEFT JOIN experiments e
                     ON e.experiment_id = s.experiment_id
+                   AND e.arm = s.active_arm
                    AND e.enabled = 1
                 WHERE s.session_id = ?
                 ORDER BY e.alpha_param DESC, e.arm ASC
@@ -71,9 +73,11 @@ class SqliteOperatorActionService:
                 experiment_id=(
                     str(row["experiment_id"]) if row["experiment_id"] is not None else None
                 ),
-                active_arm=str(row["arm"]) if row["arm"] is not None else None,
-                expected_greeting=(
-                    str(row["greeting_text"]) if row["greeting_text"] is not None else None
+                active_arm=(str(row["active_arm"]) if row["active_arm"] is not None else None),
+                stimulus_definition=(
+                    StimulusDefinition.model_validate_json(str(row["stimulus_definition"]))
+                    if row["stimulus_definition"] is not None
+                    else None
                 ),
                 stimulus_time_s=now.timestamp(),
                 timestamp_utc=now,

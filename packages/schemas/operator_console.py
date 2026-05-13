@@ -21,6 +21,8 @@ from uuid import UUID
 from pydantic import AnyUrl, ConfigDict, Field, TypeAdapter, field_validator
 from pydantic import BaseModel as PydanticBaseModel
 
+from packages.schemas.evaluation import StimulusDefinition
+
 _STREAM_URL_ADAPTER = TypeAdapter(AnyUrl)
 
 # ----------------------------------------------------------------------
@@ -280,7 +282,7 @@ class SessionSummary(OperatorConsoleModel):
     """Lightweight session card for overview/history surfaces.
 
     Fields mirror §4.E.1 operator concerns: identity, status, duration,
-    the §4.C active arm + expected greeting, the operator-readiness
+    the §4.C active arm + expected response text, the operator-readiness
     calibration summary, and the most recent §7B reward outcome so the
     operator sees adaptive progress at a glance.
     """
@@ -292,7 +294,7 @@ class SessionSummary(OperatorConsoleModel):
     duration_s: float | None = None
     experiment_id: str | None = None
     active_arm: str | None = None
-    expected_greeting: str | None = None
+    expected_response_text: str | None = None
     is_calibrating: bool | None = None
     calibration_frames_accumulated: int | None = Field(default=None, ge=0)
     calibration_frames_required: int | None = Field(default=None, ge=0)
@@ -324,11 +326,11 @@ class EncounterSummary(OperatorConsoleModel):
     segment_timestamp_utc: datetime
     state: EncounterState
     active_arm: str | None = None
-    expected_greeting: str | None = None
+    expected_response_text: str | None = None
     stimulus_time_utc: datetime | None = None
     semantic_gate: int | None = Field(default=None, ge=0, le=1)
     semantic_confidence: float | None = Field(default=None, ge=0.0, le=1.0)
-    transcription: str | None = None
+    observed_response_text: str | None = None
     p90_intensity: float | None = None
     gated_reward: float | None = None
     n_frames_in_window: int | None = Field(default=None, ge=0)
@@ -358,7 +360,7 @@ class LatestEncounterSummary(OperatorConsoleModel):
     segment_timestamp_utc: datetime
     state: EncounterState
     active_arm: str | None = None
-    expected_greeting: str | None = None
+    expected_response_text: str | None = None
     stimulus_time_utc: datetime | None = None
     semantic_gate: int | None = Field(default=None, ge=0, le=1)
     p90_intensity: float | None = None
@@ -407,12 +409,12 @@ class ArmSummary(OperatorConsoleModel):
 
     Posterior parameters (`posterior_alpha`, `posterior_beta`) and
     evaluation variance are read-only readbacks. Human-owned management
-    fields (`greeting_text`, `enabled`, `end_dated_at`) let the operator
+    fields (`stimulus_definition`, `enabled`, `end_dated_at`) let the operator
     see arm metadata without implying posterior edits are supported.
     """
 
     arm_id: str
-    greeting_text: str
+    stimulus_definition: StimulusDefinition
     posterior_alpha: float = Field(..., gt=0.0)
     posterior_beta: float = Field(..., gt=0.0)
     evaluation_variance: float | None = Field(default=None, ge=0.0)
@@ -877,8 +879,8 @@ class ExperimentBundleRefreshChange(OperatorConsoleModel):
     experiment_id: str
     arm_id: str
     label: str | None = None
-    current_greeting_text: str | None = None
-    cloud_greeting_text: str | None = None
+    current_stimulus_definition: StimulusDefinition | None = None
+    cloud_stimulus_definition: StimulusDefinition | None = None
     current_enabled: bool | None = None
     cloud_enabled: bool | None = None
     learned_state_preserved: bool = True

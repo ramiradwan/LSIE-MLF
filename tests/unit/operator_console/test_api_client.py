@@ -28,6 +28,7 @@ from uuid import UUID, uuid4
 
 import pytest
 
+from packages.schemas.evaluation import StimulusDefinition, StimulusPayload
 from packages.schemas.experiments import (
     ExperimentAdminResponse,
     ExperimentArmAdminResponse,
@@ -130,6 +131,15 @@ def _utc(year: int, month: int, day: int, hour: int = 0, minute: int = 0) -> dat
 def _http_error(code: int, detail: str) -> HTTPError:
     payload = io.BytesIO(json.dumps({"detail": detail}).encode("utf-8"))
     return HTTPError("http://api.test", code, "error", Message(), payload)
+
+
+def _stimulus_definition(text: str) -> StimulusDefinition:
+    return StimulusDefinition(
+        stimulus_modality="spoken_greeting",
+        stimulus_payload=StimulusPayload(text=text),
+        expected_stimulus_rule="Deliver the spoken greeting to the creator",
+        expected_response_rule="The live streamer acknowledges the greeting",
+    )
 
 
 # ----------------------------------------------------------------------
@@ -448,7 +458,7 @@ class TestExperimentAdminWrites:
                         "experiment_id": "exp-new",
                         "label": "Greeting v2",
                         "arm": "arm-a",
-                        "greeting_text": "Hei",
+                        "stimulus_definition": _stimulus_definition("Hei").model_dump(mode="json"),
                         "alpha_param": 1.0,
                         "beta_param": 1.0,
                         "enabled": True,
@@ -461,7 +471,12 @@ class TestExperimentAdminWrites:
             ExperimentCreateRequest(
                 experiment_id="exp-new",
                 label="Greeting v2",
-                arms=[ExperimentArmSeedRequest(arm="arm-a", greeting_text="Hei")],
+                arms=[
+                    ExperimentArmSeedRequest(
+                        arm="arm-a",
+                        stimulus_definition=_stimulus_definition("Hei"),
+                    )
+                ],
             )
         )
         assert isinstance(result, ExperimentAdminResponse)
@@ -470,7 +485,12 @@ class TestExperimentAdminWrites:
         assert call.url.endswith("/api/v1/experiments")
         assert call.body is not None
         body = json.loads(call.body.decode("utf-8"))
-        assert body["arms"] == [{"arm": "arm-a", "greeting_text": "Hei"}]
+        assert body["arms"] == [
+            {
+                "arm": "arm-a",
+                "stimulus_definition": _stimulus_definition("Hei").model_dump(mode="json"),
+            }
+        ]
 
     def test_add_arm_posts_to_nested_endpoint(self) -> None:
         transport = FakeTransport()
@@ -479,7 +499,7 @@ class TestExperimentAdminWrites:
                 "experiment_id": "exp-new",
                 "label": "Greeting v2",
                 "arm": "arm-b",
-                "greeting_text": "Moi",
+                "stimulus_definition": _stimulus_definition("Moi").model_dump(mode="json"),
                 "alpha_param": 1.0,
                 "beta_param": 1.0,
                 "enabled": True,
@@ -488,7 +508,10 @@ class TestExperimentAdminWrites:
         client = ApiClient("http://api.test", transport=transport)
         result = client.add_experiment_arm(
             "exp-new",
-            ExperimentArmCreateRequest(arm="arm-b", greeting_text="Moi"),
+            ExperimentArmCreateRequest(
+                arm="arm-b",
+                stimulus_definition=_stimulus_definition("Moi"),
+            ),
         )
         assert isinstance(result, ExperimentArmAdminResponse)
         assert transport.calls[0].method == "POST"
@@ -501,7 +524,7 @@ class TestExperimentAdminWrites:
                 "experiment_id": "exp-new",
                 "label": "Greeting v2",
                 "arm": "arm-b",
-                "greeting_text": "Moi ystävä",
+                "stimulus_definition": _stimulus_definition("Moi ystävä").model_dump(mode="json"),
                 "alpha_param": 3.0,
                 "beta_param": 2.0,
                 "enabled": False,
@@ -511,7 +534,10 @@ class TestExperimentAdminWrites:
         result = client.patch_experiment_arm(
             "exp-new",
             "arm-b",
-            ExperimentArmPatchRequest(greeting_text="Moi ystävä", enabled=False),
+            ExperimentArmPatchRequest(
+                stimulus_definition=_stimulus_definition("Moi ystävä"),
+                enabled=False,
+            ),
         )
         assert isinstance(result, ExperimentArmAdminResponse)
         call = transport.calls[0]
@@ -519,7 +545,10 @@ class TestExperimentAdminWrites:
         assert call.url.endswith("/api/v1/experiments/exp-new/arms/arm-b")
         assert call.body is not None
         body = json.loads(call.body.decode("utf-8"))
-        assert body == {"greeting_text": "Moi ystävä", "enabled": False}
+        assert body == {
+            "stimulus_definition": _stimulus_definition("Moi ystävä").model_dump(mode="json"),
+            "enabled": False,
+        }
         assert "alpha_param" not in body
         assert "beta_param" not in body
 
@@ -536,7 +565,9 @@ class TestExperimentAdminWrites:
                     "experiment_id": "exp-new",
                     "label": "Greeting v2",
                     "arm": "arm-b",
-                    "greeting_text": "Moi ystävä",
+                    "stimulus_definition": _stimulus_definition("Moi ystävä").model_dump(
+                        mode="json"
+                    ),
                     "alpha_param": 3.0,
                     "beta_param": 2.0,
                     "enabled": False,

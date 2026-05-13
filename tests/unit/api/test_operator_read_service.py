@@ -16,6 +16,7 @@ Focus:
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
@@ -24,6 +25,7 @@ from unittest.mock import MagicMock
 import pytest
 from pydantic import ValidationError
 
+from packages.schemas.evaluation import StimulusDefinition, StimulusPayload
 from packages.schemas.operator_console import (
     AlertKind,
     EncounterState,
@@ -94,6 +96,15 @@ class _FakeRedis:
         self.closed = True
 
 
+def _stimulus_definition(text: str) -> dict[str, Any]:
+    return StimulusDefinition(
+        stimulus_modality="spoken_greeting",
+        stimulus_payload=StimulusPayload(content_type="text", text=text),
+        expected_stimulus_rule=text,
+        expected_response_rule=text,
+    ).model_dump(mode="json")
+
+
 # ----------------------------------------------------------------------
 # Live-session Redis overlay
 # ----------------------------------------------------------------------
@@ -140,10 +151,14 @@ class TestLiveSessionOverlay:
         )
         redis = _FakeRedis(
             {
-                f"operator:live_session:{session_id}": (
-                    '{"active_arm":"warm_welcome","expected_greeting":"hei rakas",'
-                    '"is_calibrating":true,"calibration_frames_accumulated":12,'
-                    '"calibration_frames_required":45}'
+                f"operator:live_session:{session_id}": json.dumps(
+                    {
+                        "active_arm": "warm_welcome",
+                        "stimulus_definition": _stimulus_definition("hei rakas"),
+                        "is_calibrating": True,
+                        "calibration_frames_accumulated": 12,
+                        "calibration_frames_required": 45,
+                    }
                 )
             }
         )
@@ -154,7 +169,7 @@ class TestLiveSessionOverlay:
         summary = svc.get_session(uuid.UUID(session_id))
         assert summary is not None
         assert summary.active_arm == "warm_welcome"
-        assert summary.expected_greeting == "hei rakas"
+        assert summary.expected_response_text == "hei rakas"
         assert summary.is_calibrating is True
         assert summary.calibration_frames_accumulated == 12
         assert summary.calibration_frames_required == 45
@@ -495,6 +510,7 @@ _ENC_COLS = [
     "segment_id",
     "experiment_id",
     "arm",
+    "stimulus_definition",
     "timestamp_utc",
     "gated_reward",
     "p90_intensity",
@@ -562,6 +578,7 @@ class TestEncounterExplanation:
                             "seg-1",
                             "greeting_line_v1",
                             "warm_welcome",
+                            _stimulus_definition("hei rakas"),
                             ts,
                             0.88,
                             0.88,
@@ -612,6 +629,7 @@ class TestEncounterExplanation:
                             "seg-acoustic",
                             "greeting_line_v1",
                             "warm_welcome",
+                            _stimulus_definition("hei rakas"),
                             ts,
                             0.91,
                             0.91,
@@ -874,6 +892,7 @@ class TestEncounterExplanation:
                             "seg-2",
                             "greeting_line_v1",
                             "warm_welcome",
+                            _stimulus_definition("hei rakas"),
                             ts,
                             0.0,
                             0.75,
@@ -912,6 +931,7 @@ class TestEncounterExplanation:
                             "seg-3",
                             "greeting_line_v1",
                             "warm_welcome",
+                            _stimulus_definition("hei rakas"),
                             ts,
                             0.0,
                             0.0,
@@ -1061,7 +1081,7 @@ class TestExperimentDetail:
                 # fetch_experiment_arms -> management-column discovery
                 (
                     ["column_name"],
-                    [("label",), ("greeting_text",), ("enabled",), ("end_dated_at",)],
+                    [("label",), ("stimulus_definition",), ("enabled",), ("end_dated_at",)],
                 ),
                 # fetch_experiment_arms -> arm rows
                 (
@@ -1069,7 +1089,7 @@ class TestExperimentDetail:
                         "experiment_id",
                         "label",
                         "arm",
-                        "greeting_text",
+                        "stimulus_definition",
                         "alpha_param",
                         "beta_param",
                         "enabled",
@@ -1084,7 +1104,7 @@ class TestExperimentDetail:
                             "greeting_line_v1",
                             "Greeting v1",
                             "warm_welcome",
-                            "Hei lämmin",
+                            _stimulus_definition("Hei lämmin"),
                             4.0,
                             2.0,
                             True,
@@ -1098,7 +1118,7 @@ class TestExperimentDetail:
                             "greeting_line_v1",
                             "Greeting v1",
                             "simple_hello",
-                            "Hei yksinkertainen",
+                            _stimulus_definition("Hei yksinkertainen"),
                             3.0,
                             3.0,
                             False,
@@ -1128,7 +1148,8 @@ class TestExperimentDetail:
         assert abs(warm.evaluation_variance - (8.0 / (36.0 * 7.0))) < 1e-9
         assert warm.posterior_alpha == 4.0
         assert warm.posterior_beta == 2.0
-        assert warm.greeting_text == "Hei lämmin"
+        assert warm.stimulus_definition.stimulus_payload.text == "Hei lämmin"
+        assert warm.stimulus_definition.expected_response_rule == "Hei lämmin"
         assert warm.enabled is True
         assert detail.label == "Greeting v1"
         disabled = next(a for a in detail.arms if a.arm_id == "simple_hello")
@@ -1141,7 +1162,7 @@ class TestExperimentDetail:
                 # fetch_experiment_arms -> management-column discovery
                 (
                     ["column_name"],
-                    [("label",), ("greeting_text",), ("enabled",), ("end_dated_at",)],
+                    [("label",), ("stimulus_definition",), ("enabled",), ("end_dated_at",)],
                 ),
                 (
                     ["experiment_id"],
@@ -1151,6 +1172,22 @@ class TestExperimentDetail:
         )
         svc = _service(cursor)
         assert svc.get_experiment_detail("missing") is None
+
+    def test_missing_stimulus_definition_column_projects_null_alias(self) -> None:
+        cursor = _cursor(
+            [
+                (["column_name"], [("label",), ("enabled",), ("end_dated_at",)]),
+                (["experiment_id"], []),
+            ]
+        )
+        svc = _service(cursor)
+
+        assert svc.get_experiment_detail("missing") is None
+
+        arm_sql = cursor.execute.call_args_list[1].args[0]
+        assert "NULL AS stimulus_definition" in arm_sql
+        assert "COALESCE(ex.stimulus_definition, ex.arm)" not in arm_sql
+        assert "ex.arm AS stimulus_definition" not in arm_sql
 
     def test_legacy_schema_without_management_columns_still_reads(self) -> None:
         updated = datetime(2026, 4, 17, 11, 50, tzinfo=UTC)
@@ -1164,7 +1201,7 @@ class TestExperimentDetail:
                         "experiment_id",
                         "label",
                         "arm",
-                        "greeting_text",
+                        "stimulus_definition",
                         "alpha_param",
                         "beta_param",
                         "enabled",
@@ -1197,15 +1234,13 @@ class TestExperimentDetail:
         )
         svc = _service(cursor)
 
-        detail = svc.get_experiment_detail("legacy_exp")
+        with pytest.raises(ValueError, match="canonical stimulus_definition"):
+            svc.get_experiment_detail("legacy_exp")
 
-        assert detail is not None
-        assert detail.label == "legacy_exp"
-        assert detail.arms[0].arm_id == "legacy_arm"
-        assert detail.arms[0].greeting_text == "legacy_arm"
-        assert detail.arms[0].enabled is True
         arm_sql = cursor.execute.call_args_list[1].args[0]
         assert "ex.label" not in arm_sql
-        assert "ex.greeting_text" not in arm_sql
+        assert "ex.stimulus_definition" not in arm_sql
+        assert "AS stimulus_definition" in arm_sql
+        assert "NULL AS stimulus_definition" in arm_sql
         assert "ex.enabled" not in arm_sql
         assert "ex.end_dated_at" not in arm_sql

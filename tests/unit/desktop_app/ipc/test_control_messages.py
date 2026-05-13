@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
+from packages.schemas.evaluation import StimulusDefinition, StimulusPayload
 from services.desktop_app.ipc.control_messages import (
     AnalyticsResultMessage,
     AudioBlockRef,
@@ -28,7 +29,24 @@ def _valid_audio_ref() -> AudioBlockRef:
     )
 
 
+def _stimulus_definition() -> StimulusDefinition:
+    return StimulusDefinition(
+        stimulus_modality="spoken_greeting",
+        stimulus_payload=StimulusPayload(
+            content_type="text",
+            text="hello creator",
+        ),
+        expected_stimulus_rule=(
+            "Deliver the spoken greeting to the live streamer exactly as written."
+        ),
+        expected_response_rule=(
+            "The live streamer acknowledges the greeting or responds to it on stream."
+        ),
+    )
+
+
 def _bandit_snapshot(now: datetime) -> dict[str, Any]:
+    stimulus_definition = _stimulus_definition()
     return {
         "selection_method": "thompson_sampling",
         "selection_time_utc": now,
@@ -41,13 +59,17 @@ def _bandit_snapshot(now: datetime) -> dict[str, Any]:
             "arm_b": {"alpha": 1.0, "beta": 2.0},
         },
         "sampled_theta_by_arm": {"arm_a": 0.9, "arm_b": 0.1},
-        "expected_greeting": "hello creator",
+        "stimulus_modality": stimulus_definition.stimulus_modality,
+        "stimulus_payload": stimulus_definition.stimulus_payload.model_dump(mode="json"),
+        "expected_stimulus_rule": stimulus_definition.expected_stimulus_rule,
+        "expected_response_rule": stimulus_definition.expected_response_rule,
         "decision_context_hash": "1" * 64,
         "random_seed": 42,
     }
 
 
 def _valid_handoff(now: datetime) -> dict[str, Any]:
+    stimulus_definition = _stimulus_definition()
     return {
         "session_id": "00000000-0000-4000-8000-000000000001",
         "segment_id": "a" * 64,
@@ -62,7 +84,10 @@ def _valid_handoff(now: datetime) -> dict[str, Any]:
         "segments": [],
         "_active_arm": "arm_a",
         "_experiment_id": 7,
-        "_expected_greeting": "hello creator",
+        "_stimulus_modality": stimulus_definition.stimulus_modality,
+        "_stimulus_payload": stimulus_definition.stimulus_payload.model_dump(mode="json"),
+        "_expected_stimulus_rule": stimulus_definition.expected_stimulus_rule,
+        "_expected_response_rule": stimulus_definition.expected_response_rule,
         "_stimulus_time": now.timestamp() + 3.0,
         "_au12_series": [{"timestamp_s": now.timestamp() + 4.0, "intensity": 0.8}],
         "_bandit_decision_snapshot": _bandit_snapshot(now),
@@ -190,7 +215,7 @@ def test_live_session_control_message_round_trips_through_dump_validate() -> Non
         stream_url="desktop-capture://current",
         experiment_id="greeting_line_v1",
         active_arm="warm_welcome",
-        expected_greeting="hello creator",
+        stimulus_definition=_stimulus_definition(),
         stimulus_time_s=now.timestamp(),
         timestamp_utc=now,
     )

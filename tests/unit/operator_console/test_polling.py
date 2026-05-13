@@ -27,6 +27,7 @@ from uuid import UUID, uuid4
 import pytest
 from PySide6.QtCore import QCoreApplication, QElapsedTimer, QEventLoop, Qt, QThread
 
+from packages.schemas.evaluation import StimulusDefinition, StimulusPayload
 from packages.schemas.experiments import (
     ExperimentAdminResponse,
     ExperimentArmAdminResponse,
@@ -107,6 +108,15 @@ pytestmark = pytest.mark.usefixtures("qt_app")
 
 def _utc(year: int, month: int, day: int, hour: int = 0, minute: int = 0) -> datetime:
     return datetime(year, month, day, hour, minute, tzinfo=UTC)
+
+
+def _stimulus_definition(text: str) -> StimulusDefinition:
+    return StimulusDefinition(
+        stimulus_modality="spoken_greeting",
+        stimulus_payload=StimulusPayload(text=text),
+        expected_stimulus_rule="Deliver the spoken greeting to the creator",
+        expected_response_rule="The live streamer acknowledges the greeting",
+    )
 
 
 def _drain_events_until(app: QCoreApplication, predicate: Callable[[], bool]) -> None:
@@ -1063,7 +1073,7 @@ class TestExperimentManagementOneShot:
                         experiment_id="exp-new",
                         label="Greeting v2",
                         arm="arm-a",
-                        greeting_text="Hei",
+                        stimulus_definition=_stimulus_definition("Hei"),
                         alpha_param=1.0,
                         beta_param=1.0,
                         enabled=True,
@@ -1075,7 +1085,12 @@ class TestExperimentManagementOneShot:
         request = ExperimentCreateRequest(
             experiment_id="exp-new",
             label="Greeting v2",
-            arms=[ExperimentArmSeedRequest(arm="arm-a", greeting_text="Hei")],
+            arms=[
+                ExperimentArmSeedRequest(
+                    arm="arm-a",
+                    stimulus_definition=_stimulus_definition("Hei"),
+                )
+            ],
         )
         with patch("services.operator_console.polling.run_one_shot", fake, create=False):
             coord.create_experiment(request)
@@ -1096,7 +1111,7 @@ class TestExperimentManagementOneShot:
                 arms=[
                     ArmSummary(
                         arm_id="a1",
-                        greeting_text="old",
+                        stimulus_definition=_stimulus_definition("old"),
                         posterior_alpha=2.0,
                         posterior_beta=3.0,
                         selection_count=9,
@@ -1112,13 +1127,16 @@ class TestExperimentManagementOneShot:
             request: ExperimentArmPatchRequest,
         ) -> ExperimentArmAdminResponse:
             assert (experiment_id, arm_id) == ("exp1", "a1")
-            assert request.greeting_text == "new"
+            assert request.stimulus_definition is not None
+            assert request.stimulus_definition.model_dump(mode="json") == _stimulus_definition(
+                "new"
+            ).model_dump(mode="json")
             assert request.enabled is None
             return ExperimentArmAdminResponse(
                 experiment_id="exp1",
                 label="exp1",
                 arm="a1",
-                greeting_text="new",
+                stimulus_definition=_stimulus_definition("new"),
                 alpha_param=2.0,
                 beta_param=3.0,
                 enabled=True,
@@ -1126,12 +1144,14 @@ class TestExperimentManagementOneShot:
 
         coord._client.patch_experiment_arm = fake_patch  # type: ignore[method-assign]
         with patch("services.operator_console.polling.run_one_shot", fake, create=False):
-            coord.rename_experiment_arm("exp1", "a1", "new")
+            coord.rename_experiment_arm("exp1", "a1", _stimulus_definition("new"))
             registry[0].fire()
 
         detail = coord._store.experiment()
         assert detail is not None
-        assert detail.arms[0].greeting_text == "new"
+        assert detail.arms[0].stimulus_definition.model_dump(mode="json") == _stimulus_definition(
+            "new"
+        ).model_dump(mode="json")
         assert detail.arms[0].selection_count == 9
 
     def test_disable_arm_uses_allowed_enabled_false_patch(
@@ -1144,7 +1164,7 @@ class TestExperimentManagementOneShot:
                 arms=[
                     ArmSummary(
                         arm_id="a1",
-                        greeting_text="old",
+                        stimulus_definition=_stimulus_definition("old"),
                         posterior_alpha=2.0,
                         posterior_beta=3.0,
                     )
@@ -1160,12 +1180,12 @@ class TestExperimentManagementOneShot:
         ) -> ExperimentArmAdminResponse:
             assert (experiment_id, arm_id) == ("exp1", "a1")
             assert request.enabled is False
-            assert request.greeting_text is None
+            assert request.stimulus_definition is None
             return ExperimentArmAdminResponse(
                 experiment_id="exp1",
                 label="exp1",
                 arm="a1",
-                greeting_text="old",
+                stimulus_definition=_stimulus_definition("old"),
                 alpha_param=2.0,
                 beta_param=3.0,
                 enabled=False,
@@ -1190,13 +1210,13 @@ class TestExperimentManagementOneShot:
                 arms=[
                     ArmSummary(
                         arm_id="unused",
-                        greeting_text="old",
+                        stimulus_definition=_stimulus_definition("old"),
                         posterior_alpha=1.0,
                         posterior_beta=1.0,
                     ),
                     ArmSummary(
                         arm_id="kept",
-                        greeting_text="hi",
+                        stimulus_definition=_stimulus_definition("hi"),
                         posterior_alpha=2.0,
                         posterior_beta=3.0,
                     ),

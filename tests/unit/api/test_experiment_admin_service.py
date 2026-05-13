@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, call, patch
 
 import pytest
 
+from packages.schemas.evaluation import StimulusDefinition, StimulusPayload
 from packages.schemas.experiments import (
     ExperimentArmCreateRequest,
     ExperimentArmPatchRequest,
@@ -38,6 +39,15 @@ def _service(
     return service, conn, cursor, put_conn
 
 
+def _stimulus_definition(text: str) -> StimulusDefinition:
+    return StimulusDefinition(
+        stimulus_modality="spoken_greeting",
+        stimulus_payload=StimulusPayload(content_type="text", text=text),
+        expected_stimulus_rule=text,
+        expected_response_rule=text,
+    )
+
+
 class TestCreateExperiment:
     def test_initial_arms_seed_beta_one_one(self) -> None:
         service, conn, cursor, put_conn = _service()
@@ -46,8 +56,18 @@ class TestCreateExperiment:
                 "experiment_id": "exp-1",
                 "label": "Experiment 1",
                 "arms": [
-                    {"arm": "a", "greeting_text": "Hello"},
-                    {"arm": "b", "greeting_text": "Hei"},
+                    {
+                        "arm": "a",
+                        "stimulus_definition": StimulusDefinition.model_validate(
+                            _stimulus_definition("Hello")
+                        ),
+                    },
+                    {
+                        "arm": "b",
+                        "stimulus_definition": StimulusDefinition.model_validate(
+                            _stimulus_definition("Hei")
+                        ),
+                    },
                 ],
             }
         )
@@ -56,7 +76,9 @@ class TestCreateExperiment:
                 "experiment_id": "exp-1",
                 "label": "Experiment 1",
                 "arm": "a",
-                "greeting_text": "Hello",
+                "stimulus_definition": StimulusDefinition.model_validate(
+                    _stimulus_definition("Hello")
+                ),
                 "alpha_param": 1.0,
                 "beta_param": 1.0,
                 "enabled": True,
@@ -67,7 +89,9 @@ class TestCreateExperiment:
                 "experiment_id": "exp-1",
                 "label": "Experiment 1",
                 "arm": "b",
-                "greeting_text": "Hei",
+                "stimulus_definition": StimulusDefinition.model_validate(
+                    _stimulus_definition("Hei")
+                ),
                 "alpha_param": 1.0,
                 "beta_param": 1.0,
                 "enabled": True,
@@ -82,14 +106,13 @@ class TestCreateExperiment:
 
             result = service.create_experiment(request)
 
-        q.ensure_experiments_admin_schema.assert_called_once_with(cursor)
         assert q.insert_experiment_arm.call_args_list == [
             call(
                 cursor,
                 experiment_id="exp-1",
                 label="Experiment 1",
                 arm="a",
-                greeting_text="Hello",
+                stimulus_definition=request.arms[0].stimulus_definition,
                 alpha_param=1.0,
                 beta_param=1.0,
                 enabled=True,
@@ -100,7 +123,7 @@ class TestCreateExperiment:
                 experiment_id="exp-1",
                 label="Experiment 1",
                 arm="b",
-                greeting_text="Hei",
+                stimulus_definition=request.arms[1].stimulus_definition,
                 alpha_param=1.0,
                 beta_param=1.0,
                 enabled=True,
@@ -109,8 +132,10 @@ class TestCreateExperiment:
         ]
         assert result.arms[0].alpha_param == 1.0
         assert result.arms[0].beta_param == 1.0
+        assert result.arms[0].stimulus_definition.expected_response_rule == "Hello"
         assert result.arms[1].alpha_param == 1.0
         assert result.arms[1].beta_param == 1.0
+        assert result.arms[1].stimulus_definition.expected_response_rule == "Hei"
         conn.commit.assert_called_once_with()
         conn.rollback.assert_not_called()
         put_conn.assert_called_once_with(conn)
@@ -121,7 +146,14 @@ class TestCreateExperiment:
             {
                 "experiment_id": "exp-1",
                 "label": "Experiment 1",
-                "arms": [{"arm": "a", "greeting_text": "Hello"}],
+                "arms": [
+                    {
+                        "arm": "a",
+                        "stimulus_definition": StimulusDefinition.model_validate(
+                            _stimulus_definition("Hello")
+                        ),
+                    }
+                ],
             }
         )
 
@@ -140,12 +172,15 @@ class TestCreateExperiment:
 class TestAddArm:
     def test_adds_new_arm_without_touching_existing_rows(self) -> None:
         service, conn, cursor, put_conn = _service()
-        request = ExperimentArmCreateRequest(arm="c", greeting_text="Moi")
+        request = ExperimentArmCreateRequest(
+            arm="c",
+            stimulus_definition=_stimulus_definition("Moi"),
+        )
         inserted_row = {
             "experiment_id": "exp-1",
             "label": "Experiment 1",
             "arm": "c",
-            "greeting_text": "Moi",
+            "stimulus_definition": StimulusDefinition.model_validate(_stimulus_definition("Moi")),
             "alpha_param": 1.0,
             "beta_param": 1.0,
             "enabled": True,
@@ -162,13 +197,12 @@ class TestAddArm:
 
             result = service.add_arm("exp-1", request)
 
-        q.ensure_experiments_admin_schema.assert_called_once_with(cursor)
         q.insert_experiment_arm.assert_called_once_with(
             cursor,
             experiment_id="exp-1",
             label="Experiment 1",
             arm="c",
-            greeting_text="Moi",
+            stimulus_definition=request.stimulus_definition,
             alpha_param=1.0,
             beta_param=1.0,
             enabled=True,
@@ -177,13 +211,17 @@ class TestAddArm:
         assert result.arm == "c"
         assert result.alpha_param == 1.0
         assert result.beta_param == 1.0
+        assert result.stimulus_definition.expected_response_rule == "Moi"
         conn.commit.assert_called_once_with()
         conn.rollback.assert_not_called()
         put_conn.assert_called_once_with(conn)
 
     def test_duplicate_arm_raises_conflict(self) -> None:
         service, conn, cursor, put_conn = _service()
-        request = ExperimentArmCreateRequest(arm="c", greeting_text="Moi")
+        request = ExperimentArmCreateRequest(
+            arm="c",
+            stimulus_definition=_stimulus_definition("Moi"),
+        )
 
         with patch("services.api.services.experiment_admin_service.q") as q:
             q.fetch_experiment_identity.return_value = {
@@ -202,7 +240,10 @@ class TestAddArm:
 
     def test_missing_experiment_raises_not_found(self) -> None:
         service, conn, cursor, put_conn = _service()
-        request = ExperimentArmCreateRequest(arm="c", greeting_text="Moi")
+        request = ExperimentArmCreateRequest(
+            arm="c",
+            stimulus_definition=_stimulus_definition("Moi"),
+        )
 
         with patch("services.api.services.experiment_admin_service.q") as q:
             q.fetch_experiment_identity.return_value = None
@@ -217,14 +258,14 @@ class TestAddArm:
 
 
 class TestPatchArm:
-    def test_patch_updates_greeting_text_only(self) -> None:
+    def test_patch_updates_stimulus_definition_only(self) -> None:
         service, conn, cursor, put_conn = _service()
-        request = ExperimentArmPatchRequest(greeting_text="Hei ystävä")
+        request = ExperimentArmPatchRequest(stimulus_definition=_stimulus_definition("Hei ystävä"))
         existing_row = {
             "experiment_id": "exp-1",
             "label": "Experiment 1",
             "arm": "a",
-            "greeting_text": "Hello",
+            "stimulus_definition": StimulusDefinition.model_validate(_stimulus_definition("Hello")),
             "alpha_param": 5.0,
             "beta_param": 3.0,
             "enabled": True,
@@ -232,7 +273,9 @@ class TestPatchArm:
             "updated_at": datetime(2026, 4, 17, 12, 0, tzinfo=UTC),
         }
         updated_row = dict(existing_row)
-        updated_row["greeting_text"] = "Hei ystävä"
+        updated_row["stimulus_definition"] = StimulusDefinition.model_validate(
+            _stimulus_definition("Hei ystävä")
+        )
 
         with patch("services.api.services.experiment_admin_service.q") as q:
             q.fetch_experiment_arm_row.side_effect = [existing_row, updated_row]
@@ -243,13 +286,13 @@ class TestPatchArm:
             cursor,
             experiment_id="exp-1",
             arm="a",
-            greeting_text="Hei ystävä",
+            stimulus_definition=request.stimulus_definition,
             enabled=True,
             end_dated_at=None,
         )
         assert result.alpha_param == 5.0
         assert result.beta_param == 3.0
-        assert result.greeting_text == "Hei ystävä"
+        assert result.stimulus_definition.expected_response_rule == "Hei ystävä"
         conn.commit.assert_called_once_with()
         conn.rollback.assert_not_called()
         put_conn.assert_called_once_with(conn)
@@ -262,7 +305,7 @@ class TestPatchArm:
             "experiment_id": "exp-1",
             "label": "Experiment 1",
             "arm": "a",
-            "greeting_text": "Hello",
+            "stimulus_definition": StimulusDefinition.model_validate(_stimulus_definition("Hello")),
             "alpha_param": 7.0,
             "beta_param": 4.0,
             "enabled": True,
@@ -282,7 +325,7 @@ class TestPatchArm:
             cursor,
             experiment_id="exp-1",
             arm="a",
-            greeting_text="Hello",
+            stimulus_definition=StimulusDefinition.model_validate(_stimulus_definition("Hello")),
             enabled=False,
             end_dated_at=now,
         )
@@ -299,7 +342,7 @@ class TestPatchArm:
 
     def test_missing_arm_raises_not_found(self) -> None:
         service, conn, cursor, put_conn = _service()
-        request = ExperimentArmPatchRequest(greeting_text="Hei")
+        request = ExperimentArmPatchRequest(stimulus_definition=_stimulus_definition("Hei"))
 
         with patch("services.api.services.experiment_admin_service.q") as q:
             q.fetch_experiment_arm_row.return_value = None
@@ -323,7 +366,7 @@ class TestDeleteArm:
             "experiment_id": "exp-1",
             "label": "Experiment 1",
             "arm": "unused",
-            "greeting_text": "Hello",
+            "stimulus_definition": StimulusDefinition.model_validate(_stimulus_definition("Hello")),
             "alpha_param": 1.0,
             "beta_param": 1.0,
             "enabled": True,
@@ -357,7 +400,7 @@ class TestDeleteArm:
             "experiment_id": "exp-1",
             "label": "Experiment 1",
             "arm": "historical",
-            "greeting_text": "Hello",
+            "stimulus_definition": StimulusDefinition.model_validate(_stimulus_definition("Hello")),
             "alpha_param": 7.0,
             "beta_param": 4.0,
             "enabled": True,
@@ -379,7 +422,7 @@ class TestDeleteArm:
             cursor,
             experiment_id="exp-1",
             arm="historical",
-            greeting_text="Hello",
+            stimulus_definition=StimulusDefinition.model_validate(_stimulus_definition("Hello")),
             enabled=False,
             end_dated_at=now,
         )
@@ -392,6 +435,7 @@ class TestDeleteArm:
         assert result.arm_state.alpha_param == 7.0
         assert result.arm_state.beta_param == 4.0
         assert result.arm_state.enabled is False
+        assert result.arm_state.stimulus_definition.expected_response_rule == "Hello"
         conn.commit.assert_called_once_with()
         conn.rollback.assert_not_called()
         put_conn.assert_called_once_with(conn)
@@ -403,7 +447,7 @@ class TestDeleteArm:
             "experiment_id": "exp-1",
             "label": "Experiment 1",
             "arm": "updated",
-            "greeting_text": "Hello",
+            "stimulus_definition": StimulusDefinition.model_validate(_stimulus_definition("Hello")),
             "alpha_param": 1.5,
             "beta_param": 1.0,
             "enabled": True,

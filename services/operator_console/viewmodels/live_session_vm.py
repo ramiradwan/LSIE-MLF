@@ -23,7 +23,7 @@ concerns:
      no direct operator-host local-state coupling is introduced.
 
 Spec references:
-  §4.C           — `_active_arm`, `_expected_greeting`, authoritative
+  §4.C           — `_active_arm`, `_expected_response_text`, authoritative
                    `_stimulus_time`; idempotent writes via client_action_id
   §4.E.1         — Live Session operator surface
   §7B            — r_t = p90_intensity × semantic_gate; reward
@@ -263,9 +263,9 @@ class LiveSessionViewModel(ViewModelBase):
         session = self.session()
         return session.active_arm if session is not None else None
 
-    def expected_greeting(self) -> str | None:
+    def expected_response_text(self) -> str | None:
         session = self.session()
-        return session.expected_greeting if session is not None else None
+        return session.expected_response_text if session is not None else None
 
     def ttv_state(self) -> str:
         return self._ttv_state
@@ -820,7 +820,7 @@ class LiveSessionViewModel(ViewModelBase):
         self.emit_changed()
 
     def _on_live_session_changed(self, session_update: object) -> None:
-        # Arm / expected greeting / session-end readback may have moved.
+        # Arm / expected response / session-end readback may have moved.
         session = self.session()
         selected_session_id = self._store.selected_session_id()
         ended_selected_session = (

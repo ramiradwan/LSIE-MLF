@@ -18,6 +18,7 @@ import pytest
 
 from packages.ml_core.acoustic import AcousticMetrics
 from packages.schemas import inference_handoff as inference_handoff_schema
+from packages.schemas.evaluation import StimulusDefinition, StimulusPayload
 from packages.schemas.inference_handoff import InferenceHandoffPayload
 from packages.schemas.physiology import PhysiologicalChunkEvent
 from services.api.routes import physiology as physiology_route
@@ -34,6 +35,17 @@ PCM_AUDIO = b"\x00\x01" * 64
 STIMULUS_TIME_S = 100.0
 STREAMER_RMSSD_SERIES = [30.0, 40.0, 50.0, 60.0]
 OPERATOR_RMSSD_SERIES = [15.0, 20.0, 25.0, 30.0]
+TEST_STIMULUS_DEFINITION = StimulusDefinition(
+    stimulus_modality="spoken_greeting",
+    stimulus_payload=StimulusPayload(
+        content_type="text",
+        text="hello welcome to the stream",
+    ),
+    expected_stimulus_rule=("Deliver the spoken greeting to the live streamer exactly as written."),
+    expected_response_rule=(
+        "The live streamer acknowledges the greeting or responds to it on stream."
+    ),
+)
 
 
 def _assert_canonical_acoustic_payload(payload: dict[str, Any]) -> None:
@@ -447,8 +459,8 @@ def _fake_ml_modules(
     semantic: Any = ModuleType("packages.ml_core.semantic")
 
     class SemanticEvaluator:
-        def evaluate(self, expected_greeting: str, actual_text: str) -> dict[str, Any]:
-            del expected_greeting
+        def evaluate(self, expected_response_rule: str, actual_text: str) -> dict[str, Any]:
+            del expected_response_rule
             return {
                 "reasoning": "cross_encoder_high_match",
                 "is_match": actual_text == "hello welcome to the stream",
@@ -643,7 +655,7 @@ def test_notification_hydration_chunk_derivation_and_scalar_persistence_end_to_e
     orchestrator = Orchestrator(session_id=session_id, experiment_id="exp-1")
     orchestrator._redis = fake_redis
     orchestrator._active_arm = "arm-a"
-    orchestrator._expected_greeting = "hello welcome to the stream"
+    orchestrator._stimulus_definition = TEST_STIMULUS_DEFINITION
 
     empty_payload = Orchestrator(session_id=session_id, experiment_id="exp-1").assemble_segment(
         PCM_AUDIO,
@@ -819,7 +831,7 @@ def test_reward_pipeline_is_invariant_with_optional_physiology_context() -> None
 
     plain_orchestrator = Orchestrator(session_id=session_id, experiment_id="exp-1")
     plain_orchestrator._active_arm = "arm-a"
-    plain_orchestrator._expected_greeting = "hello welcome to the stream"
+    plain_orchestrator._stimulus_definition = TEST_STIMULUS_DEFINITION
     plain_orchestrator._au12_series = _reward_telemetry()
     plain_orchestrator._stimulus_time = STIMULUS_TIME_S
     payload_without_physio = plain_orchestrator.assemble_segment(PCM_AUDIO, [])
@@ -832,7 +844,7 @@ def test_reward_pipeline_is_invariant_with_optional_physiology_context() -> None
     physio_orchestrator = Orchestrator(session_id=session_id, experiment_id="exp-1")
     physio_orchestrator._redis = physio_redis
     physio_orchestrator._active_arm = "arm-a"
-    physio_orchestrator._expected_greeting = "hello welcome to the stream"
+    physio_orchestrator._stimulus_definition = TEST_STIMULUS_DEFINITION
 
     payload_with_physio, _ = _run_physiology_cycle(
         fake_redis=physio_redis,
@@ -899,7 +911,7 @@ def test_acoustic_invalidity_is_local_and_reward_is_preserved_end_to_end() -> No
     session_id = "00000000-0000-4000-8000-000000000654"
     orchestrator = Orchestrator(session_id=session_id, experiment_id="exp-1")
     orchestrator._active_arm = "arm-a"
-    orchestrator._expected_greeting = "hello welcome to the stream"
+    orchestrator._stimulus_definition = TEST_STIMULUS_DEFINITION
     orchestrator._au12_series = _reward_telemetry()
     orchestrator._stimulus_time = STIMULUS_TIME_S
     payload = orchestrator.assemble_segment(PCM_AUDIO, [])
@@ -1046,7 +1058,7 @@ def _run_physiology_sequence_through_module_e(
     orchestrator = Orchestrator(session_id=session_id, experiment_id="exp-1")
     orchestrator._redis = fake_redis
     orchestrator._active_arm = "arm-a"
-    orchestrator._expected_greeting = "hello welcome to the stream"
+    orchestrator._stimulus_definition = TEST_STIMULUS_DEFINITION
 
     for index, (streamer_rmssd, operator_rmssd) in enumerate(
         zip(streamer_rmssd_series, operator_rmssd_series, strict=True)

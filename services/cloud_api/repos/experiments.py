@@ -10,7 +10,7 @@ _SELECT_EXPERIMENT_ARMS_SQL = """
         experiment_id,
         label,
         arm AS arm_id,
-        greeting_text,
+        stimulus_definition,
         alpha_param AS posterior_alpha,
         beta_param AS posterior_beta,
         enabled,

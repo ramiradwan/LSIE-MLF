@@ -22,6 +22,7 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
+from packages.schemas.evaluation import StimulusDefinition
 from scripts.generate_capture_fixture import (
     EMBEDDED_SPEECH_BACKEND_ID,
     EMBEDDED_SPEECH_BACKEND_VERSION,
@@ -170,15 +171,15 @@ def _assemble(orchestrator: Orchestrator, audio_data: bytes, timestamp_s: float)
 
 def _assert_downstream_semantic_grounded(
     payload: dict[str, Any],
-    expected_greeting_text: str,
+    expected_response_rule_text: str,
     bytes_per_segment: int,
 ) -> None:
     """Exercise Module D semantic wiring without GPU ASR or Azure network calls.
 
     The fake transcriber is intentionally narrow: it asserts that Module D wraps
-    the replay PCM as a 16 kHz WAV, then returns the literal fixture greeting.
-    The fake semantic evaluator accepts only the fixture greeting after the same
-    preprocessing Module D applies before semantic evaluation.
+    the replay PCM as a 16 kHz WAV, then returns the literal stimulus text.
+    The fake semantic evaluator accepts only the expected response rule after the
+    same preprocessing Module D applies before semantic evaluation.
     """
     try:
         from packages.ml_core.preprocessing import TextPreprocessor
@@ -186,9 +187,10 @@ def _assert_downstream_semantic_grounded(
     except ModuleNotFoundError as exc:
         pytest.skip(f"downstream semantic check requires worker task dependencies: {exc}")
 
-    normalized_expected = _normalize_text(expected_greeting_text)
+    expected_stimulus_text = str(payload["_stimulus_payload"]["text"])
+    normalized_expected = _normalize_text(expected_response_rule_text)
     normalized_semantic_input = _normalize_text(
-        TextPreprocessor().preprocess(expected_greeting_text)
+        TextPreprocessor().preprocess(expected_stimulus_text)
     )
 
     class LiteralTranscriptionEngine:
@@ -199,11 +201,11 @@ def _assert_downstream_semantic_grounded(
                 assert wav_file.getsampwidth() == SAMPLE_WIDTH_BYTES
                 assert wav_file.getframerate() == ORCHESTRATOR_AUDIO_SAMPLE_RATE_HZ
                 assert wav_file.getnframes() * SAMPLE_WIDTH_BYTES == bytes_per_segment
-            return expected_greeting_text
+            return expected_stimulus_text
 
     class LiteralSemanticEvaluator:
-        def evaluate(self, expected_greeting: str, actual_utterance: str) -> dict[str, Any]:
-            assert _normalize_text(expected_greeting) == normalized_expected
+        def evaluate(self, expected_response_rule: str, actual_utterance: str) -> dict[str, Any]:
+            assert _normalize_text(expected_response_rule) == normalized_expected
             assert _normalize_text(actual_utterance) == normalized_semantic_input
             return {
                 "reasoning": "cross_encoder_high_match",
@@ -294,7 +296,10 @@ def test_capture_fixture_generation_is_byte_deterministic_and_lexical(tmp_path: 
     assert _fixture_bytes(fixture_a) == _fixture_bytes(fixture_b)
     script = _load_script(fixture_a)
     _assert_embedded_speech_backend(script)
-    assert [stimulus["expected_greeting_text"] for stimulus in script["stimuli"]]
+    assert [
+        stimulus["stimulus_definition"]["stimulus_payload"]["text"]
+        for stimulus in script["stimuli"]
+    ]
     _assert_scripted_speech_energy(fixture_a, script)
 
 
@@ -345,9 +350,9 @@ def test_replay_fixture_drives_orchestrator_segments(
             stimulus_elapsed_s = replay.elapsed_for_stimulus(stimulus)
             stimulus_timestamp_s = epoch_s + stimulus_elapsed_s
             stimulus_recorded = False
-            expected_greeting_text = str(stimulus["expected_greeting_text"])
+            stimulus_definition = StimulusDefinition.model_validate(stimulus["stimulus_definition"])
             orchestrator._active_arm = str(stimulus["expected_arm_id"])
-            orchestrator._expected_greeting = expected_greeting_text
+            orchestrator._stimulus_definition = stimulus_definition
 
             for frame_offset in range(frames_per_segment):
                 elapsed_s = segment_start_s + (frame_offset / fps)
@@ -379,7 +384,12 @@ def test_replay_fixture_drives_orchestrator_segments(
             assert payload["segments"][0]["audio_bytes"] == bytes_per_segment
             assert payload["_stimulus_time"] == pytest.approx(stimulus_timestamp_s, abs=1e-6)
             assert payload["_active_arm"] == stimulus["expected_arm_id"]
-            assert payload["_expected_greeting"] == expected_greeting_text
+            assert payload["_stimulus_modality"] == stimulus_definition.stimulus_modality
+            assert payload["_stimulus_payload"] == stimulus_definition.stimulus_payload.model_dump(
+                mode="json"
+            )
+            assert payload["_expected_stimulus_rule"] == stimulus_definition.expected_stimulus_rule
+            assert payload["_expected_response_rule"] == stimulus_definition.expected_response_rule
             assert payload["media_source"]["codec"] == "h264"
             assert payload["media_source"]["resolution"] == [
                 int(script["video_width"]),
@@ -392,7 +402,7 @@ def test_replay_fixture_drives_orchestrator_segments(
             assert peak_au12 == pytest.approx(float(stimulus["expected_peak_au12"]), abs=0.18)
             _assert_downstream_semantic_grounded(
                 payload,
-                expected_greeting_text,
+                stimulus_definition.expected_response_rule,
                 bytes_per_segment,
             )
     finally:

@@ -30,6 +30,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from packages.schemas.data_tiers import DataTier, mark_data_tier
+from packages.schemas.evaluation import StimulusDefinition, StimulusPayload
 
 logger = logging.getLogger(__name__)
 
@@ -84,13 +85,15 @@ DEFAULT_MEDIA_SOURCE_URI: str = "file:///tmp/ipc/video_stream.mkv"
 DEFAULT_EXPERIMENT_ROW_ID: int = 0
 BANDIT_POLICY_VERSION: str = "thompson_sampling_v1"
 
-GREETING_LINES: dict[str, str] = {
-    "warm_welcome": "Hey! Thanks for streaming, you're awesome!",
-    "direct_question": "Hi! What's the best advice you've gotten today?",
-    "compliment_content": "Love the energy on this stream! How long have you been live?",
-    "simple_hello": "Hello! Just joined, happy to be here!",
-}
-DEFAULT_GREETING_TEXT: str = "Hello, welcome to the stream!"
+DEFAULT_STIMULUS_DEFINITION = StimulusDefinition(
+    stimulus_modality="spoken_greeting",
+    stimulus_payload=StimulusPayload(
+        content_type="text",
+        text="Hello, welcome to the stream!",
+    ),
+    expected_stimulus_rule="Deliver the spoken greeting to the creator",
+    expected_response_rule="The live streamer acknowledges the greeting",
+)
 
 # §2 step 3 — FFmpeg crash restart delay
 FFMPEG_RESTART_DELAY: float = 1.0  # seconds
@@ -271,7 +274,7 @@ class Orchestrator:
         self._experiment_id: str = experiment_id
         self._experiment_row_id: int = DEFAULT_EXPERIMENT_ROW_ID
         self._active_arm: str = ""
-        self._expected_greeting: str = ""
+        self._stimulus_definition: StimulusDefinition | None = None
         self._bandit_decision_snapshot: dict[str, Any] | None = None
         self._segment_window_anchor_utc: datetime | None = None
 
@@ -351,7 +354,9 @@ class Orchestrator:
         required = LIVE_SESSION_CALIBRATION_FRAMES_REQUIRED
         return {
             "active_arm": self._active_arm or None,
-            "expected_greeting": self._expected_greeting or None,
+            "stimulus_definition": self._stimulus_definition.model_dump(mode="json")
+            if self._stimulus_definition is not None
+            else None,
             "is_calibrating": self._is_calibrating,
             "calibration_frames_accumulated": accumulated,
             "calibration_frames_required": required,
@@ -418,10 +423,12 @@ class Orchestrator:
         self._is_calibrating = False
         self._publish_live_session_state()
         logger.info(
-            "Stimulus injected at t=%.3f (arm=%s, greeting='%s')",
+            "Stimulus injected at t=%.3f (arm=%s, expected_response_rule='%s')",
             self._stimulus_time,
             self._active_arm,
-            self._expected_greeting,
+            self._stimulus_definition.expected_response_rule
+            if self._stimulus_definition is not None
+            else DEFAULT_STIMULUS_DEFINITION.expected_response_rule,
         )
 
     def _process_video_frame(self) -> None:
@@ -802,9 +809,9 @@ class Orchestrator:
         evidence carried on the handoff payload.
         """
         if not self._active_arm:
-            self._active_arm = "simple_hello"
-        if not self._expected_greeting:
-            self._expected_greeting = GREETING_LINES.get(self._active_arm, DEFAULT_GREETING_TEXT)
+            self._active_arm = "default_stimulus"
+        if self._stimulus_definition is None:
+            self._stimulus_definition = DEFAULT_STIMULUS_DEFINITION
 
         normalized_candidates = [str(arm_id) for arm_id in candidate_arm_ids]
         if not normalized_candidates:
@@ -833,6 +840,7 @@ class Orchestrator:
             str(arm_id): float(theta) for arm_id, theta in (sampled_theta_by_arm or {}).items()
         }
 
+        stimulus_definition = self._stimulus_definition or DEFAULT_STIMULUS_DEFINITION
         snapshot: dict[str, Any] = {
             "selection_method": "thompson_sampling",
             "selection_time_utc": selection_time_utc,
@@ -842,7 +850,10 @@ class Orchestrator:
             "candidate_arm_ids": normalized_candidates,
             "posterior_by_arm": posterior_copy,
             "sampled_theta_by_arm": normalized_sampled_theta_by_arm,
-            "expected_greeting": self._expected_greeting,
+            "stimulus_modality": stimulus_definition.stimulus_modality,
+            "stimulus_payload": stimulus_definition.stimulus_payload.model_dump(mode="json"),
+            "expected_stimulus_rule": stimulus_definition.expected_stimulus_rule,
+            "expected_response_rule": stimulus_definition.expected_response_rule,
             "decision_context_hash": self._decision_context_hash(
                 candidate_arm_ids=normalized_candidates,
                 posterior_by_arm=posterior_copy,
@@ -871,12 +882,9 @@ class Orchestrator:
                 },
             }
             return
-        fallback_arm = self._active_arm or "simple_hello"
+        fallback_arm = self._active_arm or "default_stimulus"
         self._active_arm = fallback_arm
-        self._expected_greeting = self._expected_greeting or GREETING_LINES.get(
-            fallback_arm,
-            DEFAULT_GREETING_TEXT,
-        )
+        self._stimulus_definition = self._stimulus_definition or DEFAULT_STIMULUS_DEFINITION
         self._capture_bandit_decision_snapshot(
             selection_time_utc=selection_time_utc,
             segment_window_start_utc=segment_window_start_utc,
@@ -970,6 +978,7 @@ class Orchestrator:
             if any(snapshot is not None for snapshot in context.values()):
                 physiological_context = context
 
+        stimulus_definition = self._stimulus_definition or DEFAULT_STIMULUS_DEFINITION
         payload_data: dict[str, Any] = {
             "session_id": uuid.UUID(self._session_id),
             "segment_id": segment_id,
@@ -984,7 +993,10 @@ class Orchestrator:
             "segments": [segment_data],
             "_active_arm": self._active_arm,
             "_experiment_id": int(self._experiment_row_id),
-            "_expected_greeting": self._expected_greeting,
+            "_stimulus_modality": stimulus_definition.stimulus_modality,
+            "_stimulus_payload": stimulus_definition.stimulus_payload.model_dump(mode="json"),
+            "_expected_stimulus_rule": stimulus_definition.expected_stimulus_rule,
+            "_expected_response_rule": stimulus_definition.expected_response_rule,
             "_stimulus_time": self._stimulus_time,
             "_au12_series": au12_series,
             "_bandit_decision_snapshot": self._bandit_decision_snapshot,
@@ -1149,7 +1161,7 @@ class Orchestrator:
         self._au12_series.clear()
         self._stimulus_time = None
         self._active_arm = ""
-        self._expected_greeting = ""
+        self._stimulus_definition = None
         self._experiment_row_id = DEFAULT_EXPERIMENT_ROW_ID
         self._bandit_decision_snapshot = None
         self._segment_window_anchor_utc = None
@@ -1627,12 +1639,29 @@ class Orchestrator:
                     )
 
                 self._active_arm = str(selected_arm_data["arm"])
-                self._expected_greeting = str(
-                    selected_arm_data.get("greeting_text")
-                    or GREETING_LINES.get(self._active_arm, DEFAULT_GREETING_TEXT)
-                )
+                stimulus_definition_value = selected_arm_data["stimulus_definition"]
+                if isinstance(stimulus_definition_value, str):
+                    self._stimulus_definition = StimulusDefinition.model_validate_json(
+                        stimulus_definition_value
+                    )
+                elif isinstance(stimulus_definition_value, dict):
+                    self._stimulus_definition = StimulusDefinition.model_validate(
+                        stimulus_definition_value
+                    )
+                else:
+                    raise TypeError(
+                        "selected arm stimulus_definition must be a JSON string or dict"
+                    )
 
-                row_id = selected_arm_data.get("id") or selected_arm_data.get("experiment_row_id")
+                try:
+                    row_id = selected_arm_data["id"]
+                except (KeyError, IndexError):
+                    row_id = None
+                if row_id is None:
+                    try:
+                        row_id = selected_arm_data["experiment_row_id"]
+                    except (KeyError, IndexError):
+                        row_id = None
                 self._experiment_row_id = (
                     int(row_id)
                     if row_id is not None
@@ -1649,17 +1678,19 @@ class Orchestrator:
                 )
 
                 logger.info(
-                    "Thompson Sampling selected arm '%s' for session %s: \"%s\"",
+                    (
+                        "Thompson Sampling selected arm '%s' for session %s "
+                        "with expected_response_rule='%s'"
+                    ),
                     self._active_arm,
                     self._session_id,
-                    self._expected_greeting,
+                    self._stimulus_definition.expected_response_rule,
                 )
             finally:
                 store.close()
         except Exception as exc:
-            # Fallback: use the stable default greeting if TS unavailable.
-            self._active_arm = "simple_hello"
-            self._expected_greeting = GREETING_LINES["simple_hello"]
+            self._active_arm = "default_stimulus"
+            self._stimulus_definition = DEFAULT_STIMULUS_DEFINITION
             self._experiment_row_id = DEFAULT_EXPERIMENT_ROW_ID
             self._capture_bandit_decision_snapshot(
                 selection_time_utc=selection_time,

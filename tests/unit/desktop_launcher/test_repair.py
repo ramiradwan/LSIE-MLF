@@ -183,7 +183,7 @@ def _seed_sqlite(path: Path) -> None:
                 "event-1",
                 "session-1",
                 "segment-1",
-                "greeting_interaction",
+                "stimulus_interaction",
                 "2026-05-02T10:00:01Z",
                 "arm-a",
                 "0" * 64,

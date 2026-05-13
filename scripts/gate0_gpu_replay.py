@@ -59,7 +59,7 @@ class FixtureCheck:
     segment_id: str
     expected_segment_id: str
     segment_id_matches: bool
-    expected_greeting: str
+    expected_stimulus_text: str
 
     def to_json(self) -> dict[str, Any]:
         return {
@@ -67,7 +67,7 @@ class FixtureCheck:
             "segment_id": self.segment_id,
             "expected_segment_id": self.expected_segment_id,
             "segment_id_matches": self.segment_id_matches,
-            "expected_greeting": self.expected_greeting,
+            "expected_stimulus_text": self.expected_stimulus_text,
         }
 
 
@@ -131,7 +131,7 @@ def run_gate0_replay(
     inventory = tuple(_require_production_gpu())
     speech_device = _require_cuda_speech_device()
     fixture_checks = tuple(_validate_fixture_contract(fixture_dir, stimulus_script))
-    expected_phrases = tuple(check.expected_greeting for check in fixture_checks)
+    expected_phrases = tuple(check.expected_stimulus_text for check in fixture_checks)
     transcript = _run_cuda_transcription(
         capture_audio,
         model_size=model_size,
@@ -219,23 +219,20 @@ def _require_cuda_speech_device() -> str:
 
 
 def _validate_fixture_contract(fixture_dir: Path, stimulus_script: Path) -> list[FixtureCheck]:
+    del stimulus_script
     fixtures = _load_segment_fixtures(fixture_dir)
-    expected_by_segment = _expected_greetings_by_segment(stimulus_script)
     checks: list[FixtureCheck] = []
     for fixture_path, fixture in fixtures:
         segment_id = _require_str(fixture, "segment_id", fixture_path)
         expected_segment_id = _derive_segment_id(fixture, fixture_path)
-        segment_index = len(checks)
-        expected_greeting = expected_by_segment.get(segment_index) or _require_str(
-            fixture, "_expected_greeting", fixture_path
-        )
+        expected_stimulus_text = _require_stimulus_text(fixture, fixture_path)
         checks.append(
             FixtureCheck(
                 fixture_path=fixture_path,
                 segment_id=segment_id,
                 expected_segment_id=expected_segment_id,
                 segment_id_matches=segment_id == expected_segment_id,
-                expected_greeting=expected_greeting,
+                expected_stimulus_text=expected_stimulus_text,
             )
         )
     return checks
@@ -263,22 +260,16 @@ def _load_segment_fixtures(fixture_dir: Path) -> list[tuple[Path, dict[str, Any]
     )
 
 
-def _expected_greetings_by_segment(stimulus_script: Path) -> dict[int, str]:
-    script = json.loads(stimulus_script.read_text(encoding="utf-8"))
-    stimuli = script.get("stimuli")
-    if not isinstance(stimuli, list) or not stimuli:
-        raise Gate0ReplayError(f"stimulus script has no stimuli: {stimulus_script}")
-    expected: dict[int, str] = {}
-    for raw in stimuli:
-        if not isinstance(raw, dict):
-            continue
-        segment_index = raw.get("segment_index")
-        expected_text = raw.get("expected_greeting_text")
-        if isinstance(segment_index, int) and isinstance(expected_text, str):
-            expected[segment_index] = expected_text
-    if not expected:
-        raise Gate0ReplayError(f"stimulus script has no expected greeting text: {stimulus_script}")
-    return expected
+def _require_stimulus_text(fixture: dict[str, Any], fixture_path: Path) -> str:
+    payload = fixture.get("_stimulus_payload")
+    if not isinstance(payload, dict):
+        raise Gate0ReplayError(f"Gate 0 fixture {fixture_path} missing object key _stimulus_payload")
+    text = payload.get("text")
+    if not isinstance(text, str):
+        raise Gate0ReplayError(
+            f"Gate 0 fixture {fixture_path} missing string key _stimulus_payload.text"
+        )
+    return text
 
 
 def _derive_segment_id(fixture: dict[str, Any], fixture_path: Path) -> str:

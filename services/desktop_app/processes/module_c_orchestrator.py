@@ -24,6 +24,7 @@ from uuid import UUID
 
 from pydantic import ValidationError
 
+from packages.schemas.evaluation import StimulusDefinition
 from packages.schemas.inference_handoff import InferenceHandoffPayload
 from services.desktop_app.ipc import IpcChannels
 from services.desktop_app.ipc.control_messages import (
@@ -65,7 +66,7 @@ class DesktopSegment:
     experiment_row_id: int
     experiment_id: str
     active_arm: str
-    expected_greeting: str
+    stimulus_definition: StimulusDefinition
     bandit_decision_snapshot: dict[str, Any]
     stimulus_time_s: float | None
 
@@ -77,7 +78,7 @@ class _ActiveSession:
     experiment_id: str
     experiment_row_id: int
     active_arm: str
-    expected_greeting: str
+    stimulus_definition: StimulusDefinition
     bandit_decision_snapshot: dict[str, Any]
     stimulus_time_s: float | None = None
 
@@ -228,7 +229,10 @@ def _build_handoff(segment: DesktopSegment, *, drift_offset_s: float) -> Inferen
         "segments": [],
         "_active_arm": segment.active_arm,
         "_experiment_id": segment.experiment_row_id,
-        "_expected_greeting": segment.expected_greeting,
+        "_stimulus_modality": segment.stimulus_definition.stimulus_modality,
+        "_stimulus_payload": segment.stimulus_definition.stimulus_payload.model_dump(mode="json"),
+        "_expected_stimulus_rule": segment.stimulus_definition.expected_stimulus_rule,
+        "_expected_response_rule": segment.stimulus_definition.expected_response_rule,
         "_stimulus_time": segment.stimulus_time_s,
         "_au12_series": [],
         "_bandit_decision_snapshot": segment.bandit_decision_snapshot,
@@ -259,8 +263,10 @@ def _fetch_active_session(db_path: Path) -> _ActiveSession | None:
         row = conn.execute(
             """
             SELECT s.session_id, s.stream_url, s.experiment_id, s.started_at,
-                   s.active_arm, s.expected_greeting, s.bandit_decision_snapshot,
-                   e.id AS experiment_row_id, e.arm, e.greeting_text
+                   s.active_arm, s.stimulus_definition, s.bandit_decision_snapshot,
+                   e.id AS experiment_row_id,
+                   e.arm,
+                   e.stimulus_definition AS experiment_stimulus_definition
             FROM sessions s
             LEFT JOIN experiments e
                 ON e.experiment_id = s.experiment_id
@@ -283,8 +289,10 @@ def _fetch_session_by_id(db_path: Path, session_id: UUID) -> _ActiveSession | No
         row = conn.execute(
             """
             SELECT s.session_id, s.stream_url, s.experiment_id, s.started_at,
-                   s.active_arm, s.expected_greeting, s.bandit_decision_snapshot,
-                   e.id AS experiment_row_id, e.arm, e.greeting_text
+                   s.active_arm, s.stimulus_definition, s.bandit_decision_snapshot,
+                   e.id AS experiment_row_id,
+                   e.arm,
+                   e.stimulus_definition AS experiment_stimulus_definition
             FROM sessions s
             LEFT JOIN experiments e
                 ON e.experiment_id = s.experiment_id
@@ -308,29 +316,40 @@ def _active_session_from_row(row: sqlite3.Row) -> _ActiveSession | None:
     selection = _selection_from_session_row(row)
     if selection is None:
         return None
-    experiment_row_id, active_arm, expected_greeting, snapshot = selection
+    experiment_row_id, active_arm, stimulus_definition, snapshot = selection
     return _ActiveSession(
         session_id=session_id,
         stream_url=str(row["stream_url"]),
         experiment_id=experiment_id,
         experiment_row_id=experiment_row_id,
         active_arm=active_arm,
-        expected_greeting=expected_greeting,
+        stimulus_definition=stimulus_definition,
         bandit_decision_snapshot=snapshot,
     )
 
 
 def _selection_from_session_row(
     row: sqlite3.Row,
-) -> tuple[int, str, str, dict[str, Any]] | None:
+) -> tuple[int, str, StimulusDefinition, dict[str, Any]] | None:
     snapshot_json = row["bandit_decision_snapshot"]
     if snapshot_json is None:
         return None
     snapshot = json.loads(str(snapshot_json))
     active_arm = str(row["active_arm"] or snapshot["selected_arm_id"])
-    expected_greeting = str(row["expected_greeting"] or snapshot["expected_greeting"])
+    stimulus_definition_json = row["stimulus_definition"] or row["experiment_stimulus_definition"]
+    if stimulus_definition_json is not None:
+        stimulus_definition = StimulusDefinition.model_validate_json(str(stimulus_definition_json))
+    else:
+        stimulus_definition = StimulusDefinition.model_validate(
+            {
+                "stimulus_modality": snapshot["stimulus_modality"],
+                "stimulus_payload": snapshot["stimulus_payload"],
+                "expected_stimulus_rule": snapshot["expected_stimulus_rule"],
+                "expected_response_rule": snapshot["expected_response_rule"],
+            }
+        )
     experiment_row_id = int(row["experiment_row_id"] or snapshot["experiment_id"])
-    return experiment_row_id, active_arm, expected_greeting, snapshot
+    return experiment_row_id, active_arm, stimulus_definition, snapshot
 
 
 def _parse_sqlite_datetime(value: str) -> datetime:
@@ -346,12 +365,21 @@ def _resolve_control_session(
     active: _ActiveSession | None = None,
 ) -> _ActiveSession | None:
     if active is not None and control.action == "stimulus":
-        return replace(active, stimulus_time_s=control.stimulus_time_s)
+        return replace(
+            active,
+            stimulus_definition=control.stimulus_definition or active.stimulus_definition,
+            stimulus_time_s=control.stimulus_time_s,
+        )
     stored = _fetch_session_by_id(db_path, control.session_id)
     if stored is not None:
         return replace(
             stored,
             stream_url=str(control.stream_url or stored.stream_url),
+            stimulus_definition=(
+                control.stimulus_definition or stored.stimulus_definition
+                if control.action == "stimulus"
+                else stored.stimulus_definition
+            ),
             stimulus_time_s=control.stimulus_time_s,
         )
     logger.error(
@@ -634,7 +662,7 @@ def _segment_from_active_session(
         experiment_row_id=active.experiment_row_id,
         experiment_id=active.experiment_id,
         active_arm=active.active_arm,
-        expected_greeting=active.expected_greeting,
+        stimulus_definition=active.stimulus_definition,
         bandit_decision_snapshot=active.bandit_decision_snapshot,
         stimulus_time_s=resolved_stimulus_time_s,
     )

@@ -30,8 +30,18 @@ DECISION_CONTEXT_HASH = "b" * 64
 SESSION_ID = "00000000-0000-4000-8000-000000000001"
 
 
+def _stimulus_definition(text: str) -> dict[str, object]:
+    return {
+        "stimulus_modality": "spoken_greeting",
+        "stimulus_payload": {"content_type": "text", "text": text},
+        "expected_stimulus_rule": "Deliver the spoken greeting to the creator",
+        "expected_response_rule": "The live streamer acknowledges the greeting",
+    }
+
+
 def _handoff_payload(*, with_physiology: bool = False) -> InferenceHandoffPayload:
     sample_timestamp = datetime(2026, 5, 2, 12, 0, tzinfo=UTC)
+    stimulus_definition = _stimulus_definition("Say hello to the creator")
     payload: dict[str, object] = {
         "session_id": SESSION_ID,
         "segment_id": SEGMENT_ID,
@@ -46,7 +56,10 @@ def _handoff_payload(*, with_physiology: bool = False) -> InferenceHandoffPayloa
         "segments": [],
         "_active_arm": "arm_a",
         "_experiment_id": 101,
-        "_expected_greeting": "Say hello to the creator",
+        "_stimulus_modality": stimulus_definition["stimulus_modality"],
+        "_stimulus_payload": stimulus_definition["stimulus_payload"],
+        "_expected_stimulus_rule": stimulus_definition["expected_stimulus_rule"],
+        "_expected_response_rule": stimulus_definition["expected_response_rule"],
         "_stimulus_time": None,
         "_au12_series": [{"timestamp_s": 0.0, "intensity": 0.62}],
         "_bandit_decision_snapshot": {
@@ -61,7 +74,10 @@ def _handoff_payload(*, with_physiology: bool = False) -> InferenceHandoffPayloa
                 "arm_b": {"alpha": 1.0, "beta": 1.0},
             },
             "sampled_theta_by_arm": {"arm_a": 0.72, "arm_b": 0.44},
-            "expected_greeting": "Say hello to the creator",
+            "stimulus_modality": stimulus_definition["stimulus_modality"],
+            "stimulus_payload": stimulus_definition["stimulus_payload"],
+            "expected_stimulus_rule": stimulus_definition["expected_stimulus_rule"],
+            "expected_response_rule": stimulus_definition["expected_response_rule"],
             "decision_context_hash": DECISION_CONTEXT_HASH,
             "random_seed": 42,
         },

@@ -22,6 +22,7 @@ from datetime import UTC, datetime
 import pytest
 from PySide6.QtCore import Qt
 
+from packages.schemas.evaluation import StimulusDefinition, StimulusPayload
 from packages.schemas.operator_console import ArmSummary, ExperimentDetail
 from services.operator_console.state import OperatorStore
 from services.operator_console.table_models.experiments_table_model import (
@@ -34,6 +35,15 @@ pytestmark = pytest.mark.usefixtures("qt_app")
 
 
 _NOW = datetime(2026, 4, 17, 12, 0, 0, tzinfo=UTC)
+
+
+def _stimulus_definition(text: str) -> StimulusDefinition:
+    return StimulusDefinition(
+        stimulus_modality="spoken_greeting",
+        stimulus_payload=StimulusPayload(text=text),
+        expected_stimulus_rule="Deliver the operator stimulus to the live streamer.",
+        expected_response_rule="The live streamer acknowledges or responds to the stimulus.",
+    )
 
 
 def test_experiments_view_arm_table_renders_posteriors_and_variance() -> None:
@@ -49,7 +59,7 @@ def test_experiments_view_arm_table_renders_posteriors_and_variance() -> None:
         arms=[
             ArmSummary(
                 arm_id="arm-a",
-                greeting_text="hei kulta",
+                stimulus_definition=_stimulus_definition("hei kulta"),
                 posterior_alpha=4.2,
                 posterior_beta=2.1,
                 evaluation_variance=0.03,
@@ -59,7 +69,7 @@ def test_experiments_view_arm_table_renders_posteriors_and_variance() -> None:
             ),
             ArmSummary(
                 arm_id="arm-b",
-                greeting_text="hei rakas",
+                stimulus_definition=_stimulus_definition("hei rakas"),
                 posterior_alpha=2.0,
                 posterior_beta=3.0,
                 evaluation_variance=0.05,

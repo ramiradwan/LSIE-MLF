@@ -10,9 +10,11 @@ This module keeps raw SQL centralized and parameterized.
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from packages.schemas.data_tiers import DataTier, mark_data_tier
+from packages.schemas.evaluation import StimulusDefinition
 
 # ----------------------------------------------------------------------
 # Legacy read shape (preserved)
@@ -47,7 +49,7 @@ _SELECT_EXPERIMENT_ADMIN_ROWS_SQL: str = """
         experiment_id,
         COALESCE(label, experiment_id) AS label,
         arm,
-        COALESCE(greeting_text, arm) AS greeting_text,
+        stimulus_definition,
         alpha_param,
         beta_param,
         COALESCE(enabled, TRUE) AS enabled,
@@ -63,7 +65,7 @@ _SELECT_ARM_ADMIN_ROW_SQL: str = """
         experiment_id,
         COALESCE(label, experiment_id) AS label,
         arm,
-        COALESCE(greeting_text, arm) AS greeting_text,
+        stimulus_definition,
         alpha_param,
         beta_param,
         COALESCE(enabled, TRUE) AS enabled,
@@ -81,7 +83,7 @@ _INSERT_EXPERIMENT_ARM_SQL: str = mark_data_tier(
         experiment_id,
         label,
         arm,
-        greeting_text,
+        stimulus_definition,
         alpha_param,
         beta_param,
         enabled,
@@ -92,7 +94,7 @@ _INSERT_EXPERIMENT_ARM_SQL: str = mark_data_tier(
         %(experiment_id)s,
         %(label)s,
         %(arm)s,
-        %(greeting_text)s,
+        %(stimulus_definition)s,
         %(alpha_param)s,
         %(beta_param)s,
         %(enabled)s,
@@ -107,7 +109,7 @@ _INSERT_EXPERIMENT_ARM_SQL: str = mark_data_tier(
 
 _UPDATE_EXPERIMENT_ARM_METADATA_SQL: str = """
     UPDATE experiments
-    SET greeting_text = %(greeting_text)s,
+    SET stimulus_definition = %(stimulus_definition)s,
         enabled = %(enabled)s,
         end_dated_at = %(end_dated_at)s,
         updated_at = NOW()
@@ -127,26 +129,6 @@ _DELETE_EXPERIMENT_ARM_SQL: str = """
     WHERE experiment_id = %(experiment_id)s
       AND arm = %(arm)s
 """
-
-# ----------------------------------------------------------------------
-# Rollout-safe additive schema support
-# ----------------------------------------------------------------------
-
-# These statements are safe to run repeatedly. They let the admin write
-# surface land against a legacy deployment before a dedicated migration
-# step has been executed.
-_ENSURE_EXPERIMENTS_ADMIN_SCHEMA_SQL: tuple[str, ...] = (
-    "ALTER TABLE experiments ADD COLUMN IF NOT EXISTS label TEXT",
-    "ALTER TABLE experiments ADD COLUMN IF NOT EXISTS greeting_text TEXT",
-    "ALTER TABLE experiments ADD COLUMN IF NOT EXISTS enabled BOOLEAN",
-    "ALTER TABLE experiments ADD COLUMN IF NOT EXISTS end_dated_at TIMESTAMPTZ",
-    "UPDATE experiments SET label = experiment_id WHERE label IS NULL",
-    "UPDATE experiments SET greeting_text = arm WHERE greeting_text IS NULL",
-    "UPDATE experiments SET enabled = TRUE WHERE enabled IS NULL",
-    "ALTER TABLE experiments ALTER COLUMN enabled SET DEFAULT TRUE",
-    "ALTER TABLE experiments ALTER COLUMN enabled SET NOT NULL",
-    "ALTER TABLE experiments ALTER COLUMN end_dated_at SET DEFAULT NULL",
-)
 
 
 # ----------------------------------------------------------------------
@@ -172,15 +154,31 @@ def _rows_to_dicts(cursor: Any) -> list[dict[str, Any]]:
     return [dict(zip(columns, row, strict=True)) for row in rows]
 
 
+def _encode_stimulus_definition(stimulus_definition: StimulusDefinition) -> str:
+    return json.dumps(
+        stimulus_definition.model_dump(mode="json"),
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+
+
+def _decode_stimulus_definition(value: Any) -> StimulusDefinition:
+    if isinstance(value, StimulusDefinition):
+        return value
+    if isinstance(value, str):
+        return StimulusDefinition.model_validate_json(value)
+    return StimulusDefinition.model_validate(value)
+
+
+def _decode_admin_row(row: dict[str, Any]) -> dict[str, Any]:
+    decoded = dict(row)
+    decoded["stimulus_definition"] = _decode_stimulus_definition(row.get("stimulus_definition"))
+    return decoded
+
+
 # ----------------------------------------------------------------------
 # Public fetchers / mutators
 # ----------------------------------------------------------------------
-
-
-def ensure_experiments_admin_schema(cursor: Any) -> None:
-    """Best-effort additive schema upgrade for admin write paths."""
-    for statement in _ENSURE_EXPERIMENTS_ADMIN_SCHEMA_SQL:
-        cursor.execute(statement)
 
 
 def fetch_experiment_ids(cursor: Any) -> list[dict[str, Any]]:
@@ -200,7 +198,7 @@ def fetch_experiment_identity(cursor: Any, experiment_id: str) -> dict[str, Any]
 
 def fetch_experiment_admin_rows(cursor: Any, experiment_id: str) -> list[dict[str, Any]]:
     cursor.execute(_SELECT_EXPERIMENT_ADMIN_ROWS_SQL, {"experiment_id": experiment_id})
-    return _rows_to_dicts(cursor)
+    return [_decode_admin_row(row) for row in _rows_to_dicts(cursor)]
 
 
 def fetch_experiment_arm_row(
@@ -216,7 +214,8 @@ def fetch_experiment_arm_row(
             "arm": arm,
         },
     )
-    return _row_to_dict(cursor)
+    row = _row_to_dict(cursor)
+    return _decode_admin_row(row) if row is not None else None
 
 
 def insert_experiment_arm(
@@ -225,7 +224,7 @@ def insert_experiment_arm(
     experiment_id: str,
     label: str,
     arm: str,
-    greeting_text: str,
+    stimulus_definition: StimulusDefinition,
     alpha_param: float,
     beta_param: float,
     enabled: bool,
@@ -238,7 +237,7 @@ def insert_experiment_arm(
                 "experiment_id": experiment_id,
                 "label": label,
                 "arm": arm,
-                "greeting_text": greeting_text,
+                "stimulus_definition": _encode_stimulus_definition(stimulus_definition),
                 "alpha_param": alpha_param,
                 "beta_param": beta_param,
                 "enabled": enabled,
@@ -256,7 +255,7 @@ def update_experiment_arm_metadata(
     *,
     experiment_id: str,
     arm: str,
-    greeting_text: str,
+    stimulus_definition: StimulusDefinition,
     enabled: bool,
     end_dated_at: Any,
 ) -> None:
@@ -265,7 +264,7 @@ def update_experiment_arm_metadata(
         {
             "experiment_id": experiment_id,
             "arm": arm,
-            "greeting_text": greeting_text,
+            "stimulus_definition": _encode_stimulus_definition(stimulus_definition),
             "enabled": enabled,
             "end_dated_at": end_dated_at,
         },

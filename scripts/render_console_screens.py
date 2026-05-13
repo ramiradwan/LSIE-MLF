@@ -50,6 +50,7 @@ if str(_REPO_ROOT) not in sys.path:
 from PySide6.QtGui import QFont, QFontDatabase  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
+from packages.schemas.evaluation import StimulusDefinition, StimulusPayload  # noqa: E402
 from packages.schemas.operator_console import (  # noqa: E402
     AlertEvent,
     AlertKind,
@@ -99,6 +100,15 @@ _ROUTES: tuple[AppRoute, ...] = (
 )
 
 
+def _stimulus_definition(text: str) -> StimulusDefinition:
+    return StimulusDefinition(
+        stimulus_modality="spoken_greeting",
+        stimulus_payload=StimulusPayload(text=text),
+        expected_stimulus_rule="Deliver the spoken greeting to the creator",
+        expected_response_rule="The live streamer acknowledges the greeting",
+    )
+
+
 def _config() -> OperatorConsoleConfig:
     return OperatorConsoleConfig(
         api_base_url="http://localhost:8000",
@@ -123,7 +133,7 @@ def _session() -> SessionSummary:
         status="active",
         started_at_utc=_NOW - timedelta(minutes=12),
         active_arm="greeting_v1",
-        expected_greeting="hei rakas",
+        expected_response_text="hei rakas",
         duration_s=720.0,
         is_calibrating=False,
         latest_reward=0.62,
@@ -138,11 +148,11 @@ def _encounter(session_id: UUID, *, p90: float = 0.62, gate: int = 1) -> Encount
         segment_timestamp_utc=_NOW - timedelta(seconds=8),
         state=EncounterState.COMPLETED,
         active_arm="greeting_v1",
-        expected_greeting="hei rakas",
+        expected_response_text="hei rakas",
         stimulus_time_utc=_NOW - timedelta(seconds=12),
         semantic_gate=gate,
         semantic_confidence=0.91,
-        transcription="hei rakas",
+        observed_response_text="hei rakas",
         p90_intensity=p90,
         gated_reward=p90 * gate,
         n_frames_in_window=140,
@@ -321,7 +331,7 @@ def _experiment_detail() -> ExperimentDetail:
         arms=[
             ArmSummary(
                 arm_id="greeting_v1",
-                greeting_text="hei rakas",
+                stimulus_definition=_stimulus_definition("hei rakas"),
                 posterior_alpha=42.0,
                 posterior_beta=12.0,
                 evaluation_variance=0.018,
@@ -332,7 +342,7 @@ def _experiment_detail() -> ExperimentDetail:
             ),
             ArmSummary(
                 arm_id="greeting_v2",
-                greeting_text="moi rakas",
+                stimulus_definition=_stimulus_definition("moi rakas"),
                 posterior_alpha=18.0,
                 posterior_beta=22.0,
                 evaluation_variance=0.034,
@@ -343,7 +353,7 @@ def _experiment_detail() -> ExperimentDetail:
             ),
             ArmSummary(
                 arm_id="greeting_v3",
-                greeting_text="hei kulta",
+                stimulus_definition=_stimulus_definition("hei kulta"),
                 posterior_alpha=6.0,
                 posterior_beta=4.0,
                 evaluation_variance=0.07,

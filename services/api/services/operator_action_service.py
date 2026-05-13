@@ -20,7 +20,7 @@ Design constraints:
 
 Spec references:
   §4.C       — Orchestrator stimulus lifecycle (`_active_arm`,
-               `_expected_greeting`, authoritative `_stimulus_time`).
+               `_stimulus_definition`, authoritative `_stimulus_time`).
   §4.E.1     — Operator Intervention route behavior.
   §12        — Error-handling matrix (Redis failure, degraded states).
 """

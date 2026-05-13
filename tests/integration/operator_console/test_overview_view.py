@@ -51,7 +51,7 @@ def _seed(store: OperatorStore) -> UUID:
                 status="active",
                 started_at_utc=_NOW,
                 active_arm="greeting_v2",
-                expected_greeting="hei rakas",
+                expected_response_text="hei rakas",
                 duration_s=180.0,
             ),
             latest_encounter=LatestEncounterSummary(

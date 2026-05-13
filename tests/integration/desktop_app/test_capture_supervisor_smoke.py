@@ -35,6 +35,7 @@ from queue import Empty
 import psutil
 import pytest
 
+from packages.schemas.evaluation import StimulusDefinition
 from services.desktop_app.drift import DriftCorrector
 from services.desktop_app.ipc import IpcChannels
 from services.desktop_app.ipc.control_messages import InferenceControlMessage, PcmBlockAckMessage
@@ -99,6 +100,15 @@ def test_real_device_drift_poll_returns_offset(device_present: None) -> None:
     assert abs(offset) < 5.0, f"drift offset {offset:.3f}s is implausibly large"
 
 
+_STIMULUS_DEFINITION = StimulusDefinition.model_validate(
+    {
+        "stimulus_modality": "spoken_greeting",
+        "stimulus_payload": {"content_type": "text", "text": "Say hello to the creator"},
+        "expected_stimulus_rule": "Deliver the spoken greeting to the creator",
+        "expected_response_rule": "The live streamer acknowledges the greeting",
+    }
+)
+
 _BANDIT_SNAPSHOT = {
     "selection_method": "thompson_sampling",
     "selection_time_utc": datetime(2026, 5, 2, 12, 0, tzinfo=UTC),
@@ -111,7 +121,10 @@ _BANDIT_SNAPSHOT = {
         "warm_welcome": {"alpha": 2.0, "beta": 3.0},
     },
     "sampled_theta_by_arm": {"direct_question": 0.2, "warm_welcome": 0.6},
-    "expected_greeting": "Say hello to the creator",
+    "stimulus_modality": _STIMULUS_DEFINITION.stimulus_modality,
+    "stimulus_payload": _STIMULUS_DEFINITION.stimulus_payload.model_dump(mode="json"),
+    "expected_stimulus_rule": _STIMULUS_DEFINITION.expected_stimulus_rule,
+    "expected_response_rule": _STIMULUS_DEFINITION.expected_response_rule,
     "decision_context_hash": "a" * 64,
     "random_seed": 42,
 }
@@ -229,7 +242,7 @@ def _exercise_replay_ready_pcm(
         experiment_row_id=1,
         experiment_id="greeting_line_v1",
         active_arm="warm_welcome",
-        expected_greeting="Say hello to the creator",
+        stimulus_definition=_STIMULUS_DEFINITION,
         bandit_decision_snapshot=_BANDIT_SNAPSHOT,
         stimulus_time_s=100.0,
     )

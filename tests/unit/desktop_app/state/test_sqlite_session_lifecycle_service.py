@@ -36,7 +36,7 @@ def _fetch_session(db: Path, session_id: UUID) -> sqlite3.Row | None:
     try:
         row = conn.execute(
             """
-            SELECT session_id, stream_url, experiment_id, active_arm, expected_greeting,
+            SELECT session_id, stream_url, experiment_id, active_arm, stimulus_definition,
                    bandit_decision_snapshot, started_at, ended_at
             FROM sessions
             WHERE session_id = ?
@@ -75,8 +75,12 @@ def test_request_session_start_creates_sqlite_session(tmp_path: Path) -> None:
     assert row["started_at"] == "2026-04-01 12:00:00"
     assert row["ended_at"] is None
     snapshot = json.loads(str(row["bandit_decision_snapshot"]))
+    stimulus_definition = json.loads(str(row["stimulus_definition"]))
     assert row["active_arm"] == snapshot["selected_arm_id"]
-    assert row["expected_greeting"] == snapshot["expected_greeting"]
+    assert stimulus_definition["stimulus_modality"] == snapshot["stimulus_modality"]
+    assert stimulus_definition["stimulus_payload"] == snapshot["stimulus_payload"]
+    assert stimulus_definition["expected_stimulus_rule"] == snapshot["expected_stimulus_rule"]
+    assert stimulus_definition["expected_response_rule"] == snapshot["expected_response_rule"]
     assert set(snapshot["candidate_arm_ids"]) == {
         "compliment_content",
         "direct_question",
@@ -91,7 +95,8 @@ def test_request_session_start_creates_sqlite_session(tmp_path: Path) -> None:
     assert publisher.messages[0].stream_url == "test://stream"
     assert publisher.messages[0].experiment_id == "greeting_line_v1"
     assert publisher.messages[0].active_arm == row["active_arm"]
-    assert publisher.messages[0].expected_greeting == row["expected_greeting"]
+    assert publisher.messages[0].stimulus_definition is not None
+    assert publisher.messages[0].stimulus_definition.model_dump(mode="json") == stimulus_definition
 
 
 def test_request_session_start_excludes_disabled_and_end_dated_arms(tmp_path: Path) -> None:

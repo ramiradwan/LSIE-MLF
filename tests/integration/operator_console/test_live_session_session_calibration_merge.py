@@ -45,7 +45,7 @@ def _session(
         status="active",
         started_at_utc=_NOW,
         active_arm="greeting_v1",
-        expected_greeting="Hei rakas — welcome to the stream!",
+        expected_response_text="Hei rakas — welcome to the stream!",
         is_calibrating=is_calibrating,
         calibration_frames_accumulated=calibration_frames_accumulated,
         calibration_frames_required=calibration_frames_required,
@@ -148,7 +148,7 @@ def test_false_and_none_calibration_states_leave_stimulus_submit_ready() -> None
         bar.set_session_context(
             session.session_id,
             session.active_arm,
-            session.expected_greeting,
+            session.expected_response_text,
             operator_ready_for_submit=operator_ready_for_submit(session),
         )
 

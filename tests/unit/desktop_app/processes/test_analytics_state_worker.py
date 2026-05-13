@@ -10,6 +10,7 @@ from typing import Any, cast
 import pytest
 
 from packages.schemas.attribution import AttributionEvent
+from packages.schemas.evaluation import StimulusDefinition, StimulusPayload
 from services.desktop_app.cloud.outbox import CloudOutbox
 from services.desktop_app.ipc.control_messages import (
     AnalyticsResultMessage,
@@ -29,6 +30,22 @@ SESSION_ID = "00000000-0000-4000-8000-000000000001"
 TRANSCRIPTION = "hello creator"
 
 
+def _stimulus_definition() -> StimulusDefinition:
+    return StimulusDefinition(
+        stimulus_modality="spoken_greeting",
+        stimulus_payload=StimulusPayload(
+            content_type="text",
+            text="Say hello to the creator",
+        ),
+        expected_stimulus_rule=(
+            "Deliver the spoken greeting to the live streamer exactly as written."
+        ),
+        expected_response_rule=(
+            "The live streamer acknowledges the greeting or responds to it on stream."
+        ),
+    )
+
+
 def _handoff_payload(*, stimulus_time: float | None = 100.0) -> dict[str, Any]:
     sample_timestamp = datetime(2026, 5, 2, 12, 0, tzinfo=UTC)
     return {
@@ -45,7 +62,10 @@ def _handoff_payload(*, stimulus_time: float | None = 100.0) -> dict[str, Any]:
         "segments": [],
         "_active_arm": "warm_welcome",
         "_experiment_id": 1,
-        "_expected_greeting": "Say hello to the creator",
+        "_stimulus_modality": _stimulus_definition().stimulus_modality,
+        "_stimulus_payload": _stimulus_definition().stimulus_payload.model_dump(mode="json"),
+        "_expected_stimulus_rule": _stimulus_definition().expected_stimulus_rule,
+        "_expected_response_rule": _stimulus_definition().expected_response_rule,
         "_stimulus_time": stimulus_time,
         "_au12_series": [
             {"timestamp_s": 96.0, "intensity": 0.2},
@@ -68,7 +88,10 @@ def _handoff_payload(*, stimulus_time: float | None = 100.0) -> dict[str, Any]:
                 "direct_question": {"alpha": 1.0, "beta": 1.0},
             },
             "sampled_theta_by_arm": {"warm_welcome": 0.72, "direct_question": 0.44},
-            "expected_greeting": "Say hello to the creator",
+            "stimulus_modality": _stimulus_definition().stimulus_modality,
+            "stimulus_payload": _stimulus_definition().stimulus_payload.model_dump(mode="json"),
+            "expected_stimulus_rule": _stimulus_definition().expected_stimulus_rule,
+            "expected_response_rule": _stimulus_definition().expected_response_rule,
             "decision_context_hash": DECISION_CONTEXT_HASH,
             "random_seed": 42,
         },
@@ -135,6 +158,90 @@ def _prepare_db(db: Path) -> None:
     conn.close()
 
 
+def _prepare_legacy_replay_db(db: Path) -> None:
+    conn = sqlite3.connect(str(db), isolation_level=None)
+    conn.execute(
+        """
+        CREATE TABLE sessions (
+            session_id TEXT PRIMARY KEY,
+            stream_url TEXT NOT NULL,
+            started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            ended_at TEXT
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE attribution_event (
+            event_id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL REFERENCES sessions(session_id),
+            segment_id TEXT NOT NULL,
+            event_type TEXT NOT NULL,
+            event_time_utc TEXT NOT NULL,
+            stimulus_time_utc TEXT,
+            finality TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE outcome_event (
+            outcome_id TEXT PRIMARY KEY,
+            session_id TEXT NOT NULL REFERENCES sessions(session_id),
+            outcome_type TEXT NOT NULL,
+            outcome_value REAL NOT NULL,
+            outcome_time_utc TEXT NOT NULL,
+            source_system TEXT NOT NULL,
+            source_event_ref TEXT,
+            confidence REAL NOT NULL,
+            finality TEXT NOT NULL,
+            schema_version TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE event_outcome_link (
+            link_id TEXT PRIMARY KEY,
+            event_id TEXT NOT NULL REFERENCES attribution_event(event_id),
+            outcome_id TEXT NOT NULL REFERENCES outcome_event(outcome_id),
+            lag_s REAL NOT NULL,
+            horizon_s REAL NOT NULL,
+            link_rule_version TEXT NOT NULL,
+            eligibility_flags TEXT NOT NULL DEFAULT '[]',
+            finality TEXT NOT NULL,
+            schema_version TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE attribution_score (
+            score_id TEXT PRIMARY KEY,
+            event_id TEXT NOT NULL REFERENCES attribution_event(event_id),
+            outcome_id TEXT REFERENCES outcome_event(outcome_id),
+            attribution_method TEXT NOT NULL,
+            method_version TEXT NOT NULL,
+            score_raw REAL,
+            score_normalized REAL,
+            confidence REAL,
+            evidence_flags TEXT NOT NULL DEFAULT '[]',
+            finality TEXT NOT NULL,
+            schema_version TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    bootstrap_schema(conn)
+    conn.execute(
+        "INSERT OR IGNORE INTO sessions (session_id, stream_url) VALUES (?, ?)",
+        (SESSION_ID, "https://example.com/stream"),
+    )
+    conn.close()
+
+
 def _visual_state(
     *,
     message_id: str = "00000000-0000-4000-8000-000000000020",
@@ -157,7 +264,7 @@ def _visual_state(
             "calibration_frames_accumulated": calibration_frames_accumulated,
             "calibration_frames_required": calibration_frames_required,
             "active_arm": "warm_welcome",
-            "expected_greeting": "Say hello to the creator",
+            "stimulus_definition": _stimulus_definition(),
             "latest_au12_intensity": latest_au12_intensity,
             "latest_au12_timestamp_s": latest_au12_timestamp_s,
             "status": status,
@@ -216,7 +323,7 @@ def test_processor_upserts_visual_state(tmp_path: Path) -> None:
     conn.row_factory = sqlite3.Row
     row = conn.execute(
         """
-        SELECT session_id, active_arm, expected_greeting, is_calibrating,
+        SELECT session_id, active_arm, stimulus_definition, is_calibrating,
                calibration_frames_accumulated, calibration_frames_required,
                face_present, latest_au12_intensity, latest_au12_timestamp_s,
                status, updated_at_utc
@@ -230,7 +337,9 @@ def test_processor_upserts_visual_state(tmp_path: Path) -> None:
     assert row is not None
     assert row["session_id"] == SESSION_ID
     assert row["active_arm"] == "warm_welcome"
-    assert row["expected_greeting"] == "Say hello to the creator"
+    assert json.loads(str(row["stimulus_definition"])) == _stimulus_definition().model_dump(
+        mode="json"
+    )
     assert row["is_calibrating"] == 1
     assert row["calibration_frames_accumulated"] == 5
     assert row["calibration_frames_required"] == 10
@@ -780,6 +889,63 @@ def test_processor_finalizes_only_closed_horizon_attribution_rows(tmp_path: Path
     assert link_finalities == ["offline_final"]
     assert [str(row["finality"]) for row in score_rows] == ["offline_final"] * len(score_rows)
     assert len(score_ids) == len(set(score_ids))
+
+
+def test_processor_finalizes_closed_horizon_rows_after_bootstrap_migrates_legacy_attribution_event(
+    tmp_path: Path,
+) -> None:
+    db = tmp_path / "desktop.sqlite"
+    _prepare_legacy_replay_db(db)
+    processor = LocalAnalyticsProcessor(db, client_id="desktop-a")
+    message = _analytics_message(
+        handoff=_handoff_payload(stimulus_time=100.0),
+        is_match=True,
+        confidence_score=0.8,
+        attribution={"_creator_follow": True},
+    )
+    enqueue_plan = processor.process(message)
+    assert enqueue_plan is not None
+    assert enqueue_plan.attribution_event is not None
+
+    finalized = processor.finalize_closed_attribution_events(
+        now_utc=datetime(2026, 5, 9, 12, 0, 1, tzinfo=UTC),
+    )
+
+    assert len(finalized) == 1
+    assert finalized[0].stimulus_modality == "spoken_greeting"
+    assert finalized[0].expected_response_rule_text_hash is not None
+    assert finalized[0].finality == "offline_final"
+
+    conn = sqlite3.connect(str(db), isolation_level=None)
+    conn.row_factory = sqlite3.Row
+    row = conn.execute(
+        """
+        SELECT stimulus_id, stimulus_modality, selected_arm_id,
+               expected_rule_text_hash, expected_response_rule_text_hash,
+               semantic_method, semantic_method_version, semantic_p_match,
+               semantic_reason_code, matched_response_time_utc,
+               response_registration_status, response_reason_code,
+               reward_path_version, bandit_decision_snapshot,
+               evidence_flags, schema_version, created_at
+        FROM attribution_event
+        WHERE segment_id = ?
+        """,
+        (SEGMENT_ID,),
+    ).fetchone()
+    conn.close()
+
+    assert row is not None
+    assert row["stimulus_modality"] == "spoken_greeting"
+    assert row["selected_arm_id"] == "warm_welcome"
+    assert row["expected_rule_text_hash"] is not None
+    assert row["expected_response_rule_text_hash"] is not None
+    assert row["semantic_method"] == "cross_encoder"
+    assert row["semantic_method_version"] == "test-v1"
+    assert row["reward_path_version"] is not None
+    assert row["bandit_decision_snapshot"] is not None
+    assert row["evidence_flags"] is not None
+    assert row["schema_version"] is not None
+    assert row["created_at"] is not None
 
 
 def test_run_loop_enqueues_finalized_event_through_existing_outbox_path(tmp_path: Path) -> None:

@@ -28,6 +28,7 @@ from packages.schemas.cloud import (
     TelemetryPosteriorDeltaBatch,
     TelemetrySegmentBatch,
 )
+from packages.schemas.evaluation import StimulusDefinition, StimulusPayload
 from services.cloud_api import main as cloud_main
 from services.cloud_api.main import app
 from services.cloud_api.routes import auth, experiments, health, sessions, telemetry
@@ -219,7 +220,19 @@ class HappyBundleService(ExperimentBundleService):
                     arms=[
                         ExperimentBundleArm(
                             arm_id="arm-a",
-                            greeting_text="Hello",
+                            stimulus_definition=StimulusDefinition(
+                                stimulus_modality="spoken_greeting",
+                                stimulus_payload=StimulusPayload(
+                                    content_type="text",
+                                    text="Hello",
+                                ),
+                                expected_stimulus_rule=(
+                                    "Deliver the spoken greeting to the creator"
+                                ),
+                                expected_response_rule=(
+                                    "The live streamer acknowledges the greeting"
+                                ),
+                            ),
                             posterior_alpha=1.0,
                             posterior_beta=1.0,
                             selection_count=0,
@@ -829,7 +842,7 @@ def test_segment_route_accepts_event_only_batch(protected_client: TestClient) ->
                     "event_id": "00000000-0000-4000-8000-000000000003",
                     "session_id": "00000000-0000-4000-8000-000000000001",
                     "segment_id": SEGMENT_ID,
-                    "event_type": "greeting_interaction",
+                    "event_type": "stimulus_interaction",
                     "event_time_utc": timestamp,
                     "stimulus_time_utc": None,
                     "selected_arm_id": "arm_a",
@@ -851,9 +864,15 @@ def test_segment_route_accepts_event_only_batch(protected_client: TestClient) ->
                             "arm_b": {"alpha": 1.0, "beta": 1.0},
                         },
                         "sampled_theta_by_arm": {"arm_a": 0.72, "arm_b": 0.44},
-                        "expected_greeting": "Say hello to the creator",
                         "decision_context_hash": SEGMENT_ID,
                         "random_seed": 42,
+                        "stimulus_modality": "spoken_greeting",
+                        "stimulus_payload": {
+                            "content_type": "text",
+                            "text": "Say hello to the creator",
+                        },
+                        "expected_stimulus_rule": ("Deliver the spoken greeting to the creator"),
+                        "expected_response_rule": ("The live streamer acknowledges the greeting"),
                     },
                     "evidence_flags": [],
                     "finality": "online_provisional",

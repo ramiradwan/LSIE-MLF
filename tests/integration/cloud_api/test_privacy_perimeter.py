@@ -90,7 +90,10 @@ def _segment_batch(*, codec: str = "h264") -> dict[str, Any]:
                 "segments": [],
                 "_active_arm": "warm_welcome",
                 "_experiment_id": 1,
-                "_expected_greeting": "Say hello to the creator",
+                "_stimulus_modality": "spoken_greeting",
+                "_stimulus_payload": {"content_type": "text", "text": "Say hello to the creator"},
+                "_expected_stimulus_rule": "Deliver the spoken greeting to the creator",
+                "_expected_response_rule": "The live streamer acknowledges the greeting",
                 "_stimulus_time": 100.0,
                 "_au12_series": [
                     {"timestamp_s": 100.1, "intensity": 0.2},
@@ -111,9 +114,15 @@ def _segment_batch(*, codec: str = "h264") -> dict[str, Any]:
                         "warm_welcome": 0.72,
                         "direct_question": 0.44,
                     },
-                    "expected_greeting": "Say hello to the creator",
                     "decision_context_hash": DECISION_CONTEXT_HASH,
                     "random_seed": 42,
+                    "stimulus_modality": "spoken_greeting",
+                    "stimulus_payload": {
+                        "content_type": "text",
+                        "text": "Say hello to the creator",
+                    },
+                    "expected_stimulus_rule": "Deliver the spoken greeting to the creator",
+                    "expected_response_rule": "The live streamer acknowledges the greeting",
                 },
             }
         ],

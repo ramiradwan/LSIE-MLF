@@ -3,7 +3,7 @@
 These models describe the additive experiment/arm management contract.
 Posterior-owned numeric state remains read-only: callers may create arms
 (which always start at Beta(1,1)) and may edit only human-owned arm
-metadata (`greeting_text`) plus one-way disable semantics
+metadata (`stimulus_definition`) plus one-way disable semantics
 (`enabled=false`).
 """
 
@@ -12,6 +12,8 @@ from __future__ import annotations
 from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from packages.schemas.evaluation import StimulusDefinition
 
 
 class ExperimentAdminModel(BaseModel):
@@ -24,7 +26,7 @@ class ExperimentArmSeedRequest(ExperimentAdminModel):
     """One arm to create under a new or existing experiment."""
 
     arm: str = Field(..., min_length=1)
-    greeting_text: str = Field(..., min_length=1)
+    stimulus_definition: StimulusDefinition
 
 
 class ExperimentCreateRequest(ExperimentAdminModel):
@@ -49,17 +51,17 @@ class ExperimentArmCreateRequest(ExperimentArmSeedRequest):
 class ExperimentArmPatchRequest(ExperimentAdminModel):
     """Mutable subset of arm fields.
 
-    Only `greeting_text` and one-way disable (`enabled=false`) are
+    Only `stimulus_definition` and one-way disable (`enabled=false`) are
     accepted. Posterior-owned fields are intentionally absent and, via
     `extra='forbid'`, rejected at validation time.
     """
 
-    greeting_text: str | None = Field(default=None, min_length=1)
+    stimulus_definition: StimulusDefinition | None = None
     enabled: bool | None = None
 
     @model_validator(mode="after")
     def _supported_mutations_only(self) -> ExperimentArmPatchRequest:
-        if self.greeting_text is None and self.enabled is None:
+        if self.stimulus_definition is None and self.enabled is None:
             raise ValueError("at least one supported arm field must be provided")
         if self.enabled is True:
             raise ValueError("enabled=true is not supported; use enabled=false to disable an arm")
@@ -72,7 +74,7 @@ class ExperimentArmAdminResponse(ExperimentAdminModel):
     experiment_id: str
     label: str
     arm: str
-    greeting_text: str
+    stimulus_definition: StimulusDefinition
     alpha_param: float = Field(..., gt=0.0)
     beta_param: float = Field(..., gt=0.0)
     enabled: bool = True

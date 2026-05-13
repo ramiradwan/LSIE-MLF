@@ -14,6 +14,7 @@ import pytest
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QHeaderView, QWidget
 
+from packages.schemas.evaluation import StimulusDefinition, StimulusPayload
 from packages.schemas.operator_console import (
     ArmDecisionEvidence,
     ArmSummary,
@@ -42,6 +43,15 @@ def _grid_widget(grid: object, row: int, column: int) -> QWidget:
     return cast(QWidget, widget)
 
 
+def _stimulus_definition(text: str) -> StimulusDefinition:
+    return StimulusDefinition(
+        stimulus_modality="spoken_greeting",
+        stimulus_payload=StimulusPayload(text=text),
+        expected_stimulus_rule="Deliver the spoken greeting to the creator",
+        expected_response_rule="The live streamer acknowledges the greeting",
+    )
+
+
 def _arm(
     arm_id: str,
     *,
@@ -54,7 +64,7 @@ def _arm(
 ) -> ArmSummary:
     return ArmSummary(
         arm_id=arm_id,
-        greeting_text=f"Hei {arm_id}",
+        stimulus_definition=_stimulus_definition(f"Hei {arm_id}"),
         posterior_alpha=alpha,
         posterior_beta=beta,
         evaluation_variance=0.01,
@@ -132,7 +142,7 @@ def test_experiments_view_strategy_evidence_panel_ranks_active_arm() -> None:
     assert "Active · Lower uncertainty so far" in cards[0]._primary.text()  # type: ignore[attr-defined]
     secondary = cards[0]._secondary.text()  # type: ignore[attr-defined]
     assert "stimulus confirmed 60%" in secondary
-    assert "Confirmation text: Hei a1" in secondary
+    assert "Stimulus text: Hei a1" in secondary
     assert "Decision evidence: picked with decision-time history 2.000/3.000" in secondary
     assert "sample 73%" in secondary
     subtitle = view._strategy_panel._subtitle.text()  # type: ignore[attr-defined]
@@ -224,7 +234,7 @@ def test_experiments_view_add_arm_button_follows_loaded_detail_and_inputs() -> N
     assert panel._add_button.text() == "Add strategy"  # type: ignore[attr-defined]
     assert "neutral starting history" in panel._add_button.toolTip()  # type: ignore[attr-defined]
     panel._add_arm_id.setText("a3")  # type: ignore[attr-defined]
-    panel._add_greeting.setText("Hei uusi")  # type: ignore[attr-defined]
+    panel._add_stimulus.setText("Hei uusi")  # type: ignore[attr-defined]
     assert panel._add_button.isEnabled() is True  # type: ignore[attr-defined]
 
 
@@ -235,13 +245,13 @@ def test_experiments_manage_panel_labels_write_fields() -> None:
     assert panel._create_experiment_id_label.buddy() is panel._create_experiment_id  # type: ignore[attr-defined]
     assert panel._create_label_label.buddy() is panel._create_label  # type: ignore[attr-defined]
     assert panel._create_arm_id_label.buddy() is panel._create_arm_id  # type: ignore[attr-defined]
-    assert panel._create_greeting_label.buddy() is panel._create_greeting  # type: ignore[attr-defined]
+    assert panel._create_stimulus_label.buddy() is panel._create_stimulus  # type: ignore[attr-defined]
     assert panel._add_arm_id_label.buddy() is panel._add_arm_id  # type: ignore[attr-defined]
-    assert panel._add_greeting_label.buddy() is panel._add_greeting  # type: ignore[attr-defined]
+    assert panel._add_stimulus_label.buddy() is panel._add_stimulus  # type: ignore[attr-defined]
     assert panel._create_arm_id.accessibleName() == "Initial strategy ID"  # type: ignore[attr-defined]
     assert "stimulus strategy" in panel._create_arm_id.accessibleDescription()  # type: ignore[attr-defined]
-    assert panel._add_greeting.accessibleName() == "Confirmation text"  # type: ignore[attr-defined]
-    assert "host reacted" in panel._add_greeting.accessibleDescription()  # type: ignore[attr-defined]
+    assert panel._add_stimulus.accessibleName() == "Stimulus text"  # type: ignore[attr-defined]
+    assert "delivered for this stimulus strategy" in panel._add_stimulus.accessibleDescription()  # type: ignore[attr-defined]
 
 
 def test_experiments_view_reflects_rename_disable_create_readback() -> None:
@@ -302,7 +312,7 @@ def test_experiments_view_wide_width_shows_friendly_learning_headers() -> None:
     assert model is not None
     assert table.isColumnHidden(1) is False
     assert table.isColumnHidden(8) is False
-    assert model.headerData(1, Qt.Orientation.Horizontal) == "Confirmation text"
+    assert model.headerData(1, Qt.Orientation.Horizontal) == "Stimulus text"
     assert model.headerData(8, Qt.Orientation.Horizontal) == "Recent stimulus confirmed"
     header = table.horizontalHeader()
     assert header.sectionResizeMode(1) == QHeaderView.ResizeMode.Stretch
@@ -321,14 +331,14 @@ def test_experiments_manage_panel_reflows_for_medium_and_narrow_widths() -> None
     assert _grid_widget(create_row, 1, 0) is panel._create_experiment_id  # type: ignore[attr-defined]
     assert _grid_widget(create_row, 1, 1) is panel._create_label  # type: ignore[attr-defined]
     assert _grid_widget(create_row, 2, 0) is panel._create_arm_id_label  # type: ignore[attr-defined]
-    assert _grid_widget(create_row, 2, 1) is panel._create_greeting_label  # type: ignore[attr-defined]
+    assert _grid_widget(create_row, 2, 1) is panel._create_stimulus_label  # type: ignore[attr-defined]
     assert _grid_widget(create_row, 3, 0) is panel._create_arm_id  # type: ignore[attr-defined]
-    assert _grid_widget(create_row, 3, 1) is panel._create_greeting  # type: ignore[attr-defined]
+    assert _grid_widget(create_row, 3, 1) is panel._create_stimulus  # type: ignore[attr-defined]
     assert _grid_widget(create_row, 4, 0) is panel._create_button  # type: ignore[attr-defined]
     assert _grid_widget(add_row, 0, 0) is panel._add_arm_id_label  # type: ignore[attr-defined]
-    assert _grid_widget(add_row, 0, 1) is panel._add_greeting_label  # type: ignore[attr-defined]
+    assert _grid_widget(add_row, 0, 1) is panel._add_stimulus_label  # type: ignore[attr-defined]
     assert _grid_widget(add_row, 1, 0) is panel._add_arm_id  # type: ignore[attr-defined]
-    assert _grid_widget(add_row, 1, 1) is panel._add_greeting  # type: ignore[attr-defined]
+    assert _grid_widget(add_row, 1, 1) is panel._add_stimulus  # type: ignore[attr-defined]
     assert _grid_widget(add_row, 2, 0) is panel._add_button  # type: ignore[attr-defined]
 
     panel.apply_responsive_width(620)
@@ -338,11 +348,11 @@ def test_experiments_manage_panel_reflows_for_medium_and_narrow_widths() -> None
     assert _grid_widget(create_row, 3, 0) is panel._create_label  # type: ignore[attr-defined]
     assert _grid_widget(create_row, 4, 0) is panel._create_arm_id_label  # type: ignore[attr-defined]
     assert _grid_widget(create_row, 5, 0) is panel._create_arm_id  # type: ignore[attr-defined]
-    assert _grid_widget(create_row, 6, 0) is panel._create_greeting_label  # type: ignore[attr-defined]
-    assert _grid_widget(create_row, 7, 0) is panel._create_greeting  # type: ignore[attr-defined]
+    assert _grid_widget(create_row, 6, 0) is panel._create_stimulus_label  # type: ignore[attr-defined]
+    assert _grid_widget(create_row, 7, 0) is panel._create_stimulus  # type: ignore[attr-defined]
     assert _grid_widget(create_row, 8, 0) is panel._create_button  # type: ignore[attr-defined]
     assert _grid_widget(add_row, 0, 0) is panel._add_arm_id_label  # type: ignore[attr-defined]
     assert _grid_widget(add_row, 1, 0) is panel._add_arm_id  # type: ignore[attr-defined]
-    assert _grid_widget(add_row, 2, 0) is panel._add_greeting_label  # type: ignore[attr-defined]
-    assert _grid_widget(add_row, 3, 0) is panel._add_greeting  # type: ignore[attr-defined]
+    assert _grid_widget(add_row, 2, 0) is panel._add_stimulus_label  # type: ignore[attr-defined]
+    assert _grid_widget(add_row, 3, 0) is panel._add_stimulus  # type: ignore[attr-defined]
     assert _grid_widget(add_row, 4, 0) is panel._add_button  # type: ignore[attr-defined]

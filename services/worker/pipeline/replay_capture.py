@@ -131,7 +131,7 @@ class ReplayCaptureSource:
             "segment_index",
             "stimulus_offset_s",
             "expected_arm_id",
-            "expected_greeting_text",
+            "stimulus_definition",
             "expected_peak_au12",
             "expected_semantic_match",
         }

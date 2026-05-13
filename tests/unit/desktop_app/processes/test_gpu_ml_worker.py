@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 import pytest
 
+from packages.schemas.evaluation import StimulusDefinition, StimulusPayload
 from services.desktop_app.ipc import IpcChannels
 from services.desktop_app.ipc.control_messages import (
     AnalyticsResultMessage,
@@ -55,8 +56,8 @@ class StubSemanticEvaluator:
     last_semantic_method = "cross_encoder"
     last_semantic_method_version = "test-v1"
 
-    def evaluate(self, expected_greeting: str, actual_utterance: str) -> dict[str, Any]:
-        del expected_greeting, actual_utterance
+    def evaluate(self, expected_response_rule: str, actual_utterance: str) -> dict[str, Any]:
+        del expected_response_rule, actual_utterance
         return {
             "reasoning": "cross_encoder_high_match",
             "is_match": True,
@@ -123,6 +124,22 @@ class _HangingThread:
         self.join_timeout = timeout
 
 
+def _stimulus_definition() -> StimulusDefinition:
+    return StimulusDefinition(
+        stimulus_modality="spoken_greeting",
+        stimulus_payload=StimulusPayload(
+            content_type="text",
+            text="Say hello to the creator",
+        ),
+        expected_stimulus_rule=(
+            "Deliver the spoken greeting to the live streamer exactly as written."
+        ),
+        expected_response_rule=(
+            "The live streamer acknowledges the greeting or responds to it on stream."
+        ),
+    )
+
+
 def _handoff() -> dict[str, Any]:
     timestamp = datetime(2026, 5, 2, 12, 0, tzinfo=UTC).isoformat()
     return {
@@ -139,7 +156,10 @@ def _handoff() -> dict[str, Any]:
         "segments": [],
         "_active_arm": "warm_welcome",
         "_experiment_id": 1,
-        "_expected_greeting": "Say hello to the creator",
+        "_stimulus_modality": _stimulus_definition().stimulus_modality,
+        "_stimulus_payload": _stimulus_definition().stimulus_payload.model_dump(mode="json"),
+        "_expected_stimulus_rule": _stimulus_definition().expected_stimulus_rule,
+        "_expected_response_rule": _stimulus_definition().expected_response_rule,
         "_stimulus_time": 100.0,
         "_au12_series": [
             {"timestamp_s": 100.1, "intensity": 0.2},
@@ -160,7 +180,10 @@ def _handoff() -> dict[str, Any]:
                 "warm_welcome": 0.72,
                 "direct_question": 0.44,
             },
-            "expected_greeting": "Say hello to the creator",
+            "stimulus_modality": _stimulus_definition().stimulus_modality,
+            "stimulus_payload": _stimulus_definition().stimulus_payload.model_dump(mode="json"),
+            "expected_stimulus_rule": _stimulus_definition().expected_stimulus_rule,
+            "expected_response_rule": _stimulus_definition().expected_response_rule,
             "decision_context_hash": DECISION_CONTEXT_HASH,
             "random_seed": 42,
         },
@@ -187,9 +210,22 @@ def _start_control(now: datetime) -> LiveSessionControlMessage:
         stream_url="test://stream",
         experiment_id="greeting_line_v1",
         active_arm="warm_welcome",
-        expected_greeting="Say hello to the creator",
+        stimulus_definition=_stimulus_definition(),
         timestamp_utc=now,
     )
+
+
+def test_gpu_ml_worker_tracker_keeps_stimulus_definition_typed_until_visual_boundary() -> None:
+    now = datetime(2026, 5, 2, 12, 0, tzinfo=UTC)
+    tracker = LiveVisualTracker(
+        video_capture_factory=lambda _path: FakeVideoCapture([]),
+    )
+
+    visual = tracker.handle_control(_start_control(now))
+
+    assert tracker.stimulus_definition == _stimulus_definition()
+    assert isinstance(tracker.stimulus_definition, StimulusDefinition)
+    assert visual.stimulus_definition == _stimulus_definition()
 
 
 def test_gpu_ml_worker_drains_live_control_to_visual_state_messages() -> None:
@@ -209,7 +245,7 @@ def test_gpu_ml_worker_drains_live_control_to_visual_state_messages() -> None:
             stream_url="test://stream",
             experiment_id="greeting_line_v1",
             active_arm="warm_welcome",
-            expected_greeting="Say hello to the creator",
+            stimulus_definition=_stimulus_definition(),
             stimulus_time_s=100.0,
             timestamp_utc=now,
         ),
@@ -241,7 +277,7 @@ def test_gpu_ml_worker_drains_live_control_to_visual_state_messages() -> None:
     assert visual[0].face_present is False
     assert visual[0].latest_au12_intensity is None
     assert visual[0].active_arm == "warm_welcome"
-    assert visual[0].expected_greeting == "Say hello to the creator"
+    assert visual[0].stimulus_definition == _stimulus_definition()
     assert visual[1].active_arm == "warm_welcome"
     assert visual[1].latest_au12_intensity is None
 
@@ -329,7 +365,7 @@ def test_gpu_ml_worker_stimulus_control_preserves_calibrated_visual_state(
             stream_url="test://stream",
             experiment_id="greeting_line_v1",
             active_arm="warm_welcome",
-            expected_greeting="Say hello to the creator",
+            stimulus_definition=_stimulus_definition(),
             stimulus_time_s=now.timestamp(),
             timestamp_utc=now,
         )

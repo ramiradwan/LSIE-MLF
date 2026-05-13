@@ -46,6 +46,7 @@ from uuid import UUID, uuid4
 
 from PySide6.QtCore import QMetaObject, QObject, Qt, QThread, QTimer, Signal, Slot
 
+from packages.schemas.evaluation import StimulusDefinition
 from packages.schemas.experiments import (
     ExperimentAdminResponse,
     ExperimentArmAdminResponse,
@@ -557,13 +558,13 @@ class PollingCoordinator(QObject):
         self,
         experiment_id: str,
         arm_id: str,
-        greeting_text: str,
+        stimulus_definition: StimulusDefinition,
     ) -> OneShotSignals:
-        """Rename arm greeting text; posterior-owned fields are not writable."""
+        """Update arm stimulus definition; posterior-owned fields are not writable."""
         return self.patch_experiment_arm(
             experiment_id,
             arm_id,
-            ExperimentArmPatchRequest(greeting_text=greeting_text),
+            ExperimentArmPatchRequest(stimulus_definition=stimulus_definition),
         )
 
     def disable_experiment_arm(self, experiment_id: str, arm_id: str) -> OneShotSignals:
@@ -1215,7 +1216,7 @@ def _arm_from_admin_response(
     )
     return ArmSummary(
         arm_id=payload.arm,
-        greeting_text=payload.greeting_text,
+        stimulus_definition=payload.stimulus_definition,
         posterior_alpha=payload.alpha_param,
         posterior_beta=payload.beta_param,
         evaluation_variance=variance,

@@ -16,6 +16,7 @@ from packages.schemas.cloud import (
     PosteriorDelta,
     TelemetryPosteriorDeltaBatch,
 )
+from packages.schemas.evaluation import StimulusDefinition, StimulusPayload
 
 SEGMENT_ID = "a" * 64
 DECISION_CONTEXT_HASH = "b" * 64
@@ -35,6 +36,15 @@ def _posterior_delta_data(**overrides: Any) -> dict[str, Any]:
     }
     data.update(overrides)
     return data
+
+
+def _stimulus_definition() -> StimulusDefinition:
+    return StimulusDefinition(
+        stimulus_modality="spoken_greeting",
+        stimulus_payload=StimulusPayload(content_type="text", text="hello"),
+        expected_stimulus_rule="Deliver the spoken greeting",
+        expected_response_rule="The live streamer acknowledges the greeting",
+    )
 
 
 class TestCloudSchemas:
@@ -112,7 +122,7 @@ class TestCloudSchemas:
     ) -> None:
         arm = ExperimentBundleArm(
             arm_id="arm-a",
-            greeting_text="hello",
+            stimulus_definition=_stimulus_definition(),
             posterior_alpha=1.0,
             posterior_beta=1.0,
         )

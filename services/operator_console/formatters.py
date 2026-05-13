@@ -38,6 +38,7 @@ from datetime import UTC, datetime
 from typing import Literal
 from uuid import UUID
 
+from packages.schemas.evaluation import StimulusDefinition
 from packages.schemas.operator_console import (
     ArmDecisionEvidence,
     ArmSummary,
@@ -247,7 +248,7 @@ class StrategyEvidenceDisplay:
     """Plain-language Thompson Sampling arm readback for strategy panels."""
 
     arm_id: str
-    greeting_text: str
+    stimulus_text: str
     status: UiStatusKind
     label: str
     evidence: str
@@ -966,11 +967,11 @@ def format_stimulus_progress_message(
     return "Keep a clearly visible face on the phone screen until live analysis is ready."
 
 
-def truncate_expected_greeting(greeting: str | None, *, limit: int = 60) -> str:
-    """Short-form stimulus-confirmation text for compact table cells."""
-    if greeting is None:
+def truncate_expected_response_text(text: str | None, *, limit: int = 60) -> str:
+    """Short-form expected-response text for compact table cells."""
+    if text is None:
         return _EM_DASH
-    stripped = greeting.strip()
+    stripped = text.strip()
     if len(stripped) <= limit:
         return stripped
     return stripped[: max(0, limit - 1)] + "…"
@@ -980,7 +981,7 @@ def format_active_session_readback(session: SessionSummary) -> str:
     """Overview readback for the selected session's stimulus context."""
 
     strategy_part = session.active_arm if session.active_arm else "no active strategy"
-    expected_response = truncate_expected_greeting(session.expected_greeting, limit=42)
+    expected_response = truncate_expected_response_text(session.expected_response_text, limit=42)
     return (
         f"id {session.session_id} · stimulus strategy {strategy_part} · "
         f"expected response “{expected_response}” · {format_duration(session.duration_s)}"
@@ -990,15 +991,15 @@ def format_active_session_readback(session: SessionSummary) -> str:
 def format_action_bar_session_context(
     session_id: UUID,
     active_arm: str | None,
-    expected_greeting: str | None,
+    expected_response_text: str | None,
 ) -> ActionBarSessionDisplay:
     """Action rail readback for the current stimulus strategy."""
 
     strategy_part = active_arm if active_arm else "no active strategy"
-    expected_response = truncate_expected_greeting(expected_greeting, limit=80)
+    expected_response = truncate_expected_response_text(expected_response_text, limit=80)
     response_text = (
         None
-        if expected_greeting is None or not expected_greeting.strip()
+        if expected_response_text is None or not expected_response_text.strip()
         else (f"Expected response: “{expected_response}”")
     )
     return ActionBarSessionDisplay(
@@ -1129,12 +1130,14 @@ def format_experiment_bundle_preview_copy(
 def _format_experiment_bundle_preview_change(change: ExperimentBundleRefreshChange) -> str:
     arm = f"{change.experiment_id}/{change.arm_id}"
     if change.action == "add":
-        return f"Add {arm}: {change.cloud_greeting_text or 'definition'}"
+        return f"Add {arm}: {_stimulus_text(change.cloud_stimulus_definition) or 'definition'}"
     if change.action == "disable":
         return f"Disable {arm}: local arm is not in the verified cloud bundle"
     parts: list[str] = []
-    if change.current_greeting_text != change.cloud_greeting_text:
-        parts.append("prompt text")
+    if change.current_stimulus_definition != change.cloud_stimulus_definition:
+        current_text = _stimulus_text(change.current_stimulus_definition)
+        cloud_text = _stimulus_text(change.cloud_stimulus_definition)
+        parts.append("prompt text" if current_text != cloud_text else "definition")
     if change.current_enabled != change.cloud_enabled:
         target = "enabled" if change.cloud_enabled else "disabled"
         parts.append(target)
@@ -1542,6 +1545,13 @@ def _cause_effect_voice_summary(summary: ObservationalAcousticSummary | None) ->
     return " · ".join(parts) if parts else "Voice signal was not stable enough to summarize."
 
 
+def _stimulus_text(stimulus_definition: StimulusDefinition | None) -> str | None:
+    if stimulus_definition is None:
+        return None
+    text = stimulus_definition.stimulus_payload.text.strip()
+    return text or None
+
+
 def _strategy_evidence_for_arm(
     arm: ArmSummary,
     *,
@@ -1582,7 +1592,7 @@ def _strategy_evidence_for_arm(
     decision_evidence = format_decision_evidence(arm.decision_evidence)
     return StrategyEvidenceDisplay(
         arm_id=arm.arm_id,
-        greeting_text=arm.greeting_text,
+        stimulus_text=_stimulus_text(arm.stimulus_definition) or _EM_DASH,
         status=status,
         label=label,
         evidence=evidence,

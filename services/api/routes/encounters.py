@@ -82,7 +82,7 @@ async def list_encounters(
     §2 step 7 — Parameterized queries.
 
     Args:
-        experiment_id: Filter by experiment (e.g., "greeting_line_v1").
+        experiment_id: Filter by experiment (e.g., "stimulus_definition_v1").
         arm: Filter by specific arm (e.g., "warm_welcome").
         valid_only: If True, return only encounters with measurement-window frames.
         limit: Maximum rows (1-1000, default 100).
@@ -132,7 +132,7 @@ async def get_encounter_summary(experiment_id: str) -> list[dict[str, Any]]:
     distributions across arms.
 
     Args:
-        experiment_id: The experiment to summarize (e.g., "greeting_line_v1").
+        experiment_id: The experiment to summarize (e.g., "stimulus_definition_v1").
     """
     conn = None
     try:

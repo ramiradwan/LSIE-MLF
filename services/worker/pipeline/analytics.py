@@ -290,7 +290,7 @@ _QUERY_RECENT_PHYSIOLOGY_SQL: str = """
 
 # §4.E.1 — SELECT experiment arms for Thompson Sampling scheduler input
 _SELECT_ACTIVE_ARMS_SQL: str = """
-    SELECT arm, alpha_param, beta_param FROM experiments
+    SELECT id, arm, stimulus_definition, alpha_param, beta_param FROM experiments
     WHERE experiment_id = %(experiment_id)s
       AND COALESCE(enabled, TRUE) = TRUE
       AND end_dated_at IS NULL
@@ -299,7 +299,7 @@ _SELECT_ACTIVE_ARMS_SQL: str = """
 
 # Legacy fallback when rollout-safe arm-status columns are not present yet.
 _SELECT_ARMS_SQL: str = """
-    SELECT arm, alpha_param, beta_param FROM experiments
+    SELECT id, arm, stimulus_definition, alpha_param, beta_param FROM experiments
     WHERE experiment_id = %(experiment_id)s
     ORDER BY arm ASC
 """
@@ -308,7 +308,7 @@ _SELECT_ARMS_SQL: str = """
 # reward that arrives after an arm is disabled still updates the row that was
 # active at selection time.
 _SELECT_ARM_SQL: str = """
-    SELECT arm, alpha_param, beta_param FROM experiments
+    SELECT id, arm, stimulus_definition, alpha_param, beta_param FROM experiments
     WHERE experiment_id = %(experiment_id)s
       AND arm = %(arm)s
 """
@@ -542,7 +542,16 @@ class MetricsStore:
             with conn.cursor() as cur:
                 cur.execute(sql, {"experiment_id": experiment_id})
                 rows = cur.fetchall()
-            return [{"arm": row[0], "alpha_param": row[1], "beta_param": row[2]} for row in rows]
+            return [
+                {
+                    "id": row[0],
+                    "arm": row[1],
+                    "stimulus_definition": row[2],
+                    "alpha_param": row[3],
+                    "beta_param": row[4],
+                }
+                for row in rows
+            ]
         finally:
             self._put_conn(conn)
 
@@ -561,7 +570,13 @@ class MetricsStore:
                 row = cur.fetchone()
             if row is None:
                 return None
-            return {"arm": row[0], "alpha_param": row[1], "beta_param": row[2]}
+            return {
+                "id": row[0],
+                "arm": row[1],
+                "stimulus_definition": row[2],
+                "alpha_param": row[3],
+                "beta_param": row[4],
+            }
         finally:
             self._put_conn(conn)
 
