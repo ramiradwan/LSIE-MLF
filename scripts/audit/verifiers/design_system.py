@@ -272,16 +272,23 @@ def _collect_visual_manifest_issues(repo_root: Path) -> list[str]:
                         f"{_relative(repo_root, designer_manifest_path)} must define "
                         f"contract_hashes.{key} as a sha256 value"
                     )
-            tokens_hash = hashes.get("contract/tokens.json")
-            if (
-                isinstance(tokens_hash, str)
-                and tokens_path.exists()
-                and tokens_hash != _sha256(tokens_path)
-            ):
+            generated_hashes = manifest.get("generated_hashes")
+            if not isinstance(generated_hashes, Mapping):
                 issues.append(
-                    f"{_relative(repo_root, designer_manifest_path)} tokens.json hash "
-                    f"does not match {_relative(repo_root, tokens_path)}"
+                    f"{_relative(repo_root, designer_manifest_path)} must define generated_hashes"
                 )
+            else:
+                tokens_hash = generated_hashes.get("tokens.json")
+                if (
+                    isinstance(tokens_hash, str)
+                    and tokens_path.exists()
+                    and tokens_hash != _sha256(tokens_path)
+                ):
+                    issues.append(
+                        f"{_relative(repo_root, designer_manifest_path)} "
+                        "generated_hashes.tokens.json does not match "
+                        f"{_relative(repo_root, tokens_path)}"
+                    )
 
     if not baselines_manifest_path.exists():
         issues.append(f"{_relative(repo_root, baselines_manifest_path)} is missing")

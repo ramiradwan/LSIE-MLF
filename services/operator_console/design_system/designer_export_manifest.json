@@ -1,13 +1,16 @@
 {
   "$schema": "https://lsie-mlf.local/operator-console/designer-export-manifest.schema.json",
   "version": 1,
-  "export_id": "bootstrap-2026-05-14",
-  "export_ref": "design-system-spec@6e8a746d06f8e850f9de190779130d301f200dac:exports/bootstrap-2026-05-14",
+  "export_id": "bootstrap-2026-05-14-fix1",
+  "export_ref": "design-system-spec@53afa6551b79556fc1fa6cd27b8c232e0f768701:exports/bootstrap-2026-05-14-fix1",
   "artifact_uri": null,
   "contract_hashes": {
-    "contract/tokens.json": "sha256:9d22a6220083e318a28c7195476535ba348d9984bd8679ebaab05436f0bb5d47",
-    "contract/reference_capture_manifest.json": "sha256:c757c78476fbd8a79d1a90b2d50103ff842105dd3c3ee0a3b82f296a57e16649",
-    "contract/reference_to_qt_mapping.json": "sha256:c60284574a2174d308e82e44aa2feb1d9a42fc5fd74988098b13e03837b8317b"
+    "contract/tokens.json": "sha256:0bcabbf5c3202c668fa9a236c82c1444e88bc31f3533fed2cf78925e8ff6d11d",
+    "contract/reference_capture_manifest.json": "sha256:ac52f9b09f7d3eb2dc0cfd6da408b57470ac25717a5949ad3f8b783d98ef8f6e",
+    "contract/reference_to_qt_mapping.json": "sha256:b328fb6f67546fe98e87d1bcd6cde54384b94bd482824f80c60c724c3bf3f6fa"
+  },
+  "generated_hashes": {
+    "tokens.json": "sha256:9d22a6220083e318a28c7195476535ba348d9984bd8679ebaab05436f0bb5d47"
   },
   "generated_files": {
     "tokens.py": "services/operator_console/design_system/tokens.py",

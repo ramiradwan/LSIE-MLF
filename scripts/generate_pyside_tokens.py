@@ -104,9 +104,15 @@ def _verify_contract_hashes(export_dir: Path, manifest: Mapping[str, object]) ->
             )
 
 
-def _verify_manifest(export_dir: Path, manifest_path: Path) -> tuple[dict[str, object], Path]:
+def _verify_manifest(
+    export_dir: Path,
+    manifest_path: Path,
+    *,
+    verify_contract_hashes: bool,
+) -> tuple[dict[str, object], Path]:
     manifest = _read_json(manifest_path)
-    _verify_contract_hashes(export_dir, manifest)
+    if verify_contract_hashes:
+        _verify_contract_hashes(export_dir, manifest)
     return manifest, _export_tokens_path(export_dir)
 
 
@@ -213,7 +219,12 @@ def run_generation(
     *,
     check: bool,
 ) -> int:
-    _, tokens_path = _verify_manifest(export_dir, manifest_path)
+    verify_contract_hashes = export_dir.resolve() != output_root.resolve()
+    _, tokens_path = _verify_manifest(
+        export_dir,
+        manifest_path,
+        verify_contract_hashes=verify_contract_hashes,
+    )
     tokens = _read_json(tokens_path)
     _extract_tokens(tokens)
     if check:

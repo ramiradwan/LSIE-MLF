@@ -98,9 +98,12 @@ def _build_repo_fixture(repo_root: Path) -> Path:
                 "export_ref": "unit-test",
                 "artifact_uri": None,
                 "contract_hashes": {
-                    "contract/tokens.json": _sha256(tokens_path),
+                    "contract/tokens.json": "sha256:" + "2" * 64,
                     "contract/reference_capture_manifest.json": "sha256:" + "0" * 64,
                     "contract/reference_to_qt_mapping.json": "sha256:" + "1" * 64,
+                },
+                "generated_hashes": {
+                    "tokens.json": _sha256(tokens_path),
                 },
                 "generated_files": {
                     "tokens.py": "services/operator_console/design_system/tokens.py",
