@@ -70,6 +70,19 @@ class StubSemanticEvaluator:
         }
 
 
+class FreeFormSemanticEvaluator:
+    last_semantic_method = "cross_encoder"
+    last_semantic_method_version = "test-v1"
+
+    def evaluate(self, expected_response_rule: str, actual_utterance: str) -> dict[str, Any]:
+        del expected_response_rule, actual_utterance
+        return {
+            "reasoning": "the creator greeted us with arbitrary text",
+            "is_match": True,
+            "confidence_score": 0.91,
+        }
+
+
 class FakeVideoCapture:
     def __init__(self, frames: list[object]) -> None:
         self.frames = frames
@@ -909,6 +922,10 @@ def test_gpu_ml_worker_publishes_bounded_result_while_speech_model_warms() -> No
         assert analytics.transcription == ""
         assert analytics.semantic.is_match is False
         assert analytics.semantic.reasoning == "semantic_error"
+        assert analytics.handoff.response_inference is not None
+        assert analytics.handoff.response_inference.is_match is False
+        assert analytics.handoff.response_inference.registration_status == "no_observable_response"
+        assert analytics.handoff.response_inference.response_reason_code == "no_observable_response"
         assert [status.state for status in statuses] == ["ok"]
     finally:
         block.close_and_unlink()
@@ -1007,9 +1024,126 @@ def test_gpu_ml_worker_publishes_analytics_result_to_inbox() -> None:
         assert analytics.handoff.segment_id == SEGMENT_ID
         assert analytics.semantic.is_match is True
         assert analytics.transcription == "hello creator"
+        assert analytics.handoff.response_inference is not None
+        assert analytics.handoff.response_inference.is_match is True
+        assert analytics.handoff.response_inference.confidence_score == pytest.approx(0.91)
+        assert analytics.handoff.response_inference.registration_status == "observable_response"
+        assert analytics.handoff.response_inference.response_reason_code == "response_semantic_ack"
+        assert analytics.handoff.response_inference.matched_response_time is None
         dumped = analytics.model_dump(mode="json")
         assert "_audio_data" not in dumped
         assert "_frame_data" not in dumped
+    finally:
+        block.close_and_unlink()
+
+
+def test_gpu_ml_worker_omits_response_inference_without_stimulus_window() -> None:
+    ctx = mp.get_context("spawn")
+    channels = IpcChannels(
+        ml_inbox=ctx.Queue(),
+        drift_updates=ctx.Queue(),
+        analytics_inbox=ctx.Queue(),
+        pcm_acks=ctx.Queue(),
+    )
+    handoff = _handoff()
+    handoff["_stimulus_time"] = None
+    msg, block = _control_message(handoff=handoff)
+    try:
+        with (
+            patch("packages.ml_core.audio_pipe.pcm_to_wav_bytes", return_value=b"RIFF"),
+            patch("packages.ml_core.preprocessing.TextPreprocessor", StubTextPreprocessor),
+            patch("packages.ml_core.semantic.SemanticEvaluator", StubSemanticEvaluator),
+        ):
+            _publish_analytics_result(
+                channels,
+                msg,
+                transcription_engine=StubTranscriptionEngine(),
+            )
+
+        raw = channels.analytics_inbox.get(timeout=1.0)
+        analytics = AnalyticsResultMessage.model_validate(raw)
+        assert analytics.semantic.is_match is True
+        assert analytics.handoff.stimulus_time is None
+        assert analytics.handoff.response_inference is None
+        dumped = analytics.handoff.model_dump(mode="json", by_alias=True, exclude_none=True)
+        assert "response_inference" not in dumped
+    finally:
+        block.close_and_unlink()
+
+
+def test_gpu_ml_worker_preserves_existing_response_inference_metadata() -> None:
+    ctx = mp.get_context("spawn")
+    channels = IpcChannels(
+        ml_inbox=ctx.Queue(),
+        drift_updates=ctx.Queue(),
+        analytics_inbox=ctx.Queue(),
+        pcm_acks=ctx.Queue(),
+    )
+    handoff = _handoff()
+    handoff["response_inference"] = {
+        "is_match": True,
+        "confidence_score": 0.77,
+        "registration_status": "observable_response",
+        "response_reason_code": "response_semantic_ack",
+        "response_type": "semantic_ack",
+        "matched_response_time": 100.75,
+        "evidence_span_ref": "segment:response-window",
+    }
+    msg, block = _control_message(handoff=handoff)
+    try:
+        with (
+            patch("packages.ml_core.audio_pipe.pcm_to_wav_bytes", return_value=b"RIFF"),
+            patch("packages.ml_core.preprocessing.TextPreprocessor", StubTextPreprocessor),
+            patch("packages.ml_core.semantic.SemanticEvaluator", StubSemanticEvaluator),
+        ):
+            _publish_analytics_result(
+                channels,
+                msg,
+                transcription_engine=StubTranscriptionEngine(),
+            )
+
+        raw = channels.analytics_inbox.get(timeout=1.0)
+        analytics = AnalyticsResultMessage.model_validate(raw)
+        assert analytics.semantic.confidence_score == pytest.approx(0.91)
+        assert analytics.handoff.response_inference is not None
+        assert analytics.handoff.response_inference.confidence_score == pytest.approx(0.77)
+        assert analytics.handoff.response_inference.response_type == "semantic_ack"
+        assert analytics.handoff.response_inference.matched_response_time == pytest.approx(100.75)
+        assert analytics.handoff.response_inference.evidence_span_ref == "segment:response-window"
+    finally:
+        block.close_and_unlink()
+
+
+def test_gpu_ml_worker_bounds_free_form_semantic_output_before_response_inference() -> None:
+    ctx = mp.get_context("spawn")
+    channels = IpcChannels(
+        ml_inbox=ctx.Queue(),
+        drift_updates=ctx.Queue(),
+        analytics_inbox=ctx.Queue(),
+        pcm_acks=ctx.Queue(),
+    )
+    msg, block = _control_message()
+    try:
+        with (
+            patch("packages.ml_core.audio_pipe.pcm_to_wav_bytes", return_value=b"RIFF"),
+            patch("packages.ml_core.preprocessing.TextPreprocessor", StubTextPreprocessor),
+            patch("packages.ml_core.semantic.SemanticEvaluator", FreeFormSemanticEvaluator),
+        ):
+            _publish_analytics_result(
+                channels,
+                msg,
+                transcription_engine=StubTranscriptionEngine(),
+            )
+
+        raw = channels.analytics_inbox.get(timeout=1.0)
+        analytics = AnalyticsResultMessage.model_validate(raw)
+        assert analytics.semantic.reasoning == "semantic_error"
+        assert analytics.semantic.is_match is False
+        assert analytics.handoff.response_inference is not None
+        assert analytics.handoff.response_inference.registration_status == "ambiguous_response"
+        assert analytics.handoff.response_inference.response_reason_code == "ambiguous_response"
+        dumped = analytics.model_dump(mode="json")
+        assert "the creator greeted us with arbitrary text" not in str(dumped)
     finally:
         block.close_and_unlink()
 
@@ -1135,5 +1269,10 @@ def test_gpu_ml_worker_publishes_bounded_result_for_empty_transcription() -> Non
         assert analytics.semantic.is_match is False
         assert analytics.semantic.reasoning == "semantic_error"
         assert analytics.semantic.confidence_score == 0.0
+        assert analytics.handoff.response_inference is not None
+        assert analytics.handoff.response_inference.is_match is False
+        assert analytics.handoff.response_inference.confidence_score == 0.0
+        assert analytics.handoff.response_inference.registration_status == "no_observable_response"
+        assert analytics.handoff.response_inference.response_reason_code == "no_observable_response"
     finally:
         block.close_and_unlink()

@@ -36,7 +36,7 @@ from types import ModuleType
 from typing import Any
 
 from packages.schemas.evaluation import StimulusDefinition
-from packages.schemas.inference_handoff import InferenceHandoffPayload
+from packages.schemas.inference_handoff import InferenceHandoffPayload, ResponseInference
 from services.desktop_app.ipc import IpcChannels
 from services.desktop_app.ipc.control_messages import (
     DESKTOP_LIVE_VISUAL_SOURCE_CONTRACT,
@@ -755,11 +755,14 @@ def _handoff_with_tracker_au12(
             enriched["_au12_series"] = observations
         elif visual_source_contract is not None:
             enriched["_au12_series"] = []
-    return InferenceHandoffPayload.model_validate(enriched).model_dump(
+    payload = InferenceHandoffPayload.model_validate(enriched).model_dump(
         mode="json",
         by_alias=True,
         exclude_none=True,
     )
+    if enriched.get("_stimulus_time") is None:
+        payload["_stimulus_time"] = None
+    return payload
 
 
 def _normalize_semantic_result(
@@ -776,21 +779,55 @@ def _normalize_semantic_result(
     if method not in SEMANTIC_METHODS:
         method = "cross_encoder"
     reasoning = semantic.get("reasoning")
+    is_match = bool(semantic.get("is_match", False))
     if reasoning not in SEMANTIC_REASON_CODES:
         reasoning = "semantic_error"
+        is_match = False
     confidence = _finite_float_or_none(semantic.get("confidence_score"))
     if confidence is None:
         confidence = 0.0
     confidence = min(1.0, max(0.0, confidence))
     return {
         "reasoning": reasoning,
-        "is_match": bool(semantic.get("is_match", False)),
+        "is_match": is_match,
         "confidence_score": confidence,
         "semantic_method": method,
         "semantic_method_version": semantic_method_version
         or semantic.get("semantic_method_version")
         or "desktop-gpu-worker-v1",
     }
+
+
+def _response_inference_from_semantic(
+    semantic: dict[str, Any],
+    *,
+    transcription: str,
+) -> dict[str, Any]:
+    confidence = _finite_float_or_none(semantic.get("confidence_score"))
+    if confidence is None:
+        confidence = 0.0
+    confidence = min(1.0, max(0.0, confidence))
+    is_match = bool(semantic.get("is_match", False))
+    if not transcription.strip():
+        registration_status = "no_observable_response"
+        response_reason_code = "no_observable_response"
+    elif semantic.get("reasoning") == "semantic_error":
+        registration_status = "ambiguous_response"
+        response_reason_code = "ambiguous_response"
+    elif is_match:
+        registration_status = "observable_response"
+        response_reason_code = "response_semantic_ack"
+    else:
+        registration_status = "no_observable_response"
+        response_reason_code = "response_timeout"
+
+    payload: dict[str, Any] = {
+        "is_match": is_match,
+        "confidence_score": confidence,
+        "registration_status": registration_status,
+        "response_reason_code": response_reason_code,
+    }
+    return ResponseInference.model_validate(payload).model_dump(mode="json", exclude_none=True)
 
 
 def _analytics_message_id(segment_id: str) -> uuid.UUID:
@@ -1028,6 +1065,11 @@ def _build_analytics_result(
     if semantic is None:
         return None
 
+    if stimulus_time is not None and handoff.get("response_inference") is None:
+        handoff["response_inference"] = _response_inference_from_semantic(
+            semantic,
+            transcription=transcription,
+        )
     payload: dict[str, Any] = {
         "message_id": str(_analytics_message_id(segment_id)),
         "handoff": handoff,

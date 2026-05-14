@@ -12,9 +12,18 @@ rewards.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Any, cast
 
-from pydantic import UUID4, AnyUrl, BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    UUID4,
+    AnyUrl,
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_serializer,
+    model_validator,
+)
 from pydantic.json_schema import SkipJsonSchema
 
 from packages.schemas.attribution import BanditDecisionSnapshot
@@ -74,11 +83,19 @@ class ResponseInference(BaseModel):
     confidence_score: float = Field(..., ge=0.0, le=1.0)
     registration_status: ResponseRegistrationStatus
     response_reason_code: ResponseReasonCode
-    response_type: str | None = None
-    matched_response_time: float | None = None
-    evidence_span_ref: str | None = None
+    response_type: str | None = Field(default=None, min_length=1)
+    matched_response_time: float | None = Field(default=None, ge=0.0)
+    evidence_span_ref: str | None = Field(default=None, min_length=1)
 
     model_config = ConfigDict(extra="forbid")
+
+    @model_serializer(mode="wrap")
+    def _serialize_without_absent_optionals(self, handler: Any) -> dict[str, Any]:
+        data = cast(dict[str, Any], handler(self))
+        for key in ("response_type", "matched_response_time", "evidence_span_ref"):
+            if data.get(key) is None:
+                data.pop(key, None)
+        return data
 
 
 class AU12Observation(BaseModel):

@@ -46,9 +46,13 @@ def _stimulus_definition() -> StimulusDefinition:
     )
 
 
-def _handoff_payload(*, stimulus_time: float | None = 100.0) -> dict[str, Any]:
+def _handoff_payload(
+    *,
+    stimulus_time: float | None = 100.0,
+    response_inference: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     sample_timestamp = datetime(2026, 5, 2, 12, 0, tzinfo=UTC)
-    return {
+    payload = {
         "session_id": SESSION_ID,
         "segment_id": SEGMENT_ID,
         "segment_window_start_utc": sample_timestamp.isoformat(),
@@ -96,6 +100,9 @@ def _handoff_payload(*, stimulus_time: float | None = 100.0) -> dict[str, Any]:
             "random_seed": 42,
         },
     }
+    if response_inference is not None:
+        payload["response_inference"] = response_inference
+    return payload
 
 
 def _acoustic_payload() -> dict[str, Any]:
@@ -750,6 +757,67 @@ def test_enqueue_plan_persists_handoff_and_delta_after_local_update(tmp_path: Pa
     assert delta_stored["segment_id"] == SEGMENT_ID
     assert delta_stored["delta_alpha"] == pytest.approx(0.82, abs=1e-12)
     assert delta_stored["delta_beta"] == pytest.approx(0.18, abs=1e-12)
+
+
+def test_processor_preserves_response_inference_in_cloud_and_attribution_paths(
+    tmp_path: Path,
+) -> None:
+    db = tmp_path / "desktop.sqlite"
+    _prepare_db(db)
+    processor = LocalAnalyticsProcessor(db, client_id="desktop-a")
+    response_inference = {
+        "is_match": True,
+        "confidence_score": 0.91,
+        "registration_status": "observable_response",
+        "response_reason_code": "response_semantic_ack",
+        "matched_response_time": 100.75,
+        "evidence_span_ref": "segment:response-window",
+    }
+
+    enqueue_plan = processor.process(
+        _analytics_message(
+            handoff=_handoff_payload(
+                stimulus_time=100.0,
+                response_inference=response_inference,
+            ),
+            is_match=True,
+            confidence_score=0.8,
+            attribution={"_creator_follow": True},
+        )
+    )
+
+    assert enqueue_plan is not None
+    assert enqueue_plan.handoff.response_inference is not None
+    assert enqueue_plan.handoff.response_inference.registration_status == "observable_response"
+    assert enqueue_plan.handoff.response_inference.response_reason_code == "response_semantic_ack"
+    assert enqueue_plan.attribution_event is not None
+    assert enqueue_plan.attribution_event.response_registration_status == "observable_response"
+    assert enqueue_plan.attribution_event.response_reason_code == "response_semantic_ack"
+    assert enqueue_plan.attribution_event.matched_response_time_utc == datetime.fromtimestamp(
+        100.75,
+        tz=UTC,
+    )
+    outbox = CloudOutbox(db)
+    try:
+        outbox.enqueue_inference_handoff(enqueue_plan.handoff)
+        upload = outbox.fetch_ready_batch("telemetry_segments", limit=1)[0]
+    finally:
+        outbox.close()
+    segment_stored = json.loads(upload.payload_json)
+    assert segment_stored["response_inference"] == response_inference
+
+    conn = sqlite3.connect(str(db), isolation_level=None)
+    conn.row_factory = sqlite3.Row
+    event = conn.execute(
+        "SELECT matched_response_time_utc, response_registration_status, response_reason_code "
+        "FROM attribution_event WHERE segment_id = ?",
+        (SEGMENT_ID,),
+    ).fetchone()
+    conn.close()
+    assert event is not None
+    assert event["matched_response_time_utc"] == "1970-01-01T00:01:40.750000Z"
+    assert event["response_registration_status"] == "observable_response"
+    assert event["response_reason_code"] == "response_semantic_ack"
 
 
 def test_processor_builds_attribution_event_when_inputs_exist(tmp_path: Path) -> None:

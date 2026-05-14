@@ -39,7 +39,11 @@ def _stimulus_definition(text: str) -> dict[str, object]:
     }
 
 
-def _handoff_payload(*, with_physiology: bool = False) -> InferenceHandoffPayload:
+def _handoff_payload(
+    *,
+    with_physiology: bool = False,
+    response_inference: dict[str, object] | None = None,
+) -> InferenceHandoffPayload:
     sample_timestamp = datetime(2026, 5, 2, 12, 0, tzinfo=UTC)
     stimulus_definition = _stimulus_definition("Say hello to the creator")
     payload: dict[str, object] = {
@@ -98,6 +102,8 @@ def _handoff_payload(*, with_physiology: bool = False) -> InferenceHandoffPayloa
                 "is_valid": True,
             }
         }
+    if response_inference is not None:
+        payload["response_inference"] = response_inference
     return InferenceHandoffPayload.model_validate(payload)
 
 
@@ -160,6 +166,33 @@ def test_outbox_omits_absent_physiological_context_marker(tmp_path: Path) -> Non
     stored = json.loads(upload.payload_json)
     assert "_stimulus_time" in stored
     assert "_physiological_context" not in stored
+
+
+def test_outbox_omits_absent_response_inference_optional_metadata(tmp_path: Path) -> None:
+    outbox = CloudOutbox(tmp_path / "desktop.sqlite")
+    try:
+        outbox.enqueue_inference_handoff(
+            _handoff_payload(
+                response_inference={
+                    "is_match": False,
+                    "confidence_score": 0.0,
+                    "registration_status": "no_observable_response",
+                    "response_reason_code": "no_observable_response",
+                }
+            )
+        )
+        upload = outbox.fetch_ready_batch("telemetry_segments", limit=10)[0]
+    finally:
+        outbox.close()
+
+    stored = json.loads(upload.payload_json)
+    response_inference = stored["response_inference"]
+    assert response_inference == {
+        "is_match": False,
+        "confidence_score": 0.0,
+        "registration_status": "no_observable_response",
+        "response_reason_code": "no_observable_response",
+    }
 
 
 def test_outbox_enqueue_dedupes_by_payload_type_and_dedupe_key(tmp_path: Path) -> None:
