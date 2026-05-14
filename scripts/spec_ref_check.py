@@ -8,10 +8,10 @@ currently committed tech-spec PDF, then scans the project for all spec_ref usage
 and reports which refs resolve, which don't, which indexed content paths are
 broken, and which content paths have no ref pointing at them.
 
-The content.json can be loaded from three sources (tried in order):
-  1. An explicit PDF passed with --from-pdf
-  2. An explicit standalone content.json file passed with --content
-  3. The single docs/tech-spec-v*.pdf file discovered in the repo root
+The default content source is the payload embedded in the single
+committed docs/tech-spec-v*.pdf file discovered in the repo root. Explicit
+--from-pdf and --content arguments are diagnostic overrides; standalone
+content.json files are never discovered implicitly.
 
 The index is built in two layers:
   1. STRUCTURAL (auto-generated): Walks the payload and infers refs from
@@ -45,9 +45,9 @@ import argparse
 import json
 import re
 import sys
+from contextlib import suppress
 from pathlib import Path
 from typing import Any, cast
-
 
 # =====================================================================
 # Content Source: PDF Extraction
@@ -85,13 +85,13 @@ def extract_content_from_pdf(pdf_path: Path) -> dict[str, Any]:
                 continue
 
             stream_start = stream_marker + len(b"stream")
-            if raw_pdf[stream_start:stream_start + 2] == b"\r\n":
+            if raw_pdf[stream_start : stream_start + 2] == b"\r\n":
                 stream_start += 2
-            elif raw_pdf[stream_start:stream_start + 1] == b"\n":
+            elif raw_pdf[stream_start : stream_start + 1] == b"\n":
                 stream_start += 1
 
             length = int(length_match.group(1))
-            raw_bytes = raw_pdf[stream_start:stream_start + length]
+            raw_bytes = raw_pdf[stream_start : stream_start + length]
             try:
                 if b"/FlateDecode" in header:
                     raw_bytes = zlib.decompress(raw_bytes)
@@ -130,8 +130,7 @@ def extract_content_from_pdf(pdf_path: Path) -> dict[str, Any]:
 
         if target_name is None:
             raise ValueError(
-                f"No content.json attachment found in {pdf_path}. "
-                f"Available attachments: {names}"
+                f"No content.json attachment found in {pdf_path}. Available attachments: {names}"
             )
 
         raw_bytes = doc.embfile_get(target_name)
@@ -148,19 +147,8 @@ def extract_content_from_pdf(pdf_path: Path) -> dict[str, Any]:
 
 
 # =====================================================================
-# Content Source: File Discovery
+# Content Source: Loading
 # =====================================================================
-
-
-def find_content_json(repo_root: Path) -> Path | None:
-    """Locate content.json in the repo."""
-    for candidate in [
-        repo_root / "docs" / "content.json",
-        repo_root / "content.json",
-    ]:
-        if candidate.is_file():
-            return candidate
-    return None
 
 
 def load_content(
@@ -193,8 +181,7 @@ def load_content(
 
     matches = ", ".join(str(path.relative_to(repo_root)) for path in spec_pdfs)
     raise FileExistsError(
-        f"Expected exactly one docs/tech-spec-v*.pdf match; found {len(spec_pdfs)}: "
-        f"{matches}"
+        f"Expected exactly one docs/tech-spec-v*.pdf match; found {len(spec_pdfs)}: {matches}"
     )
 
 
@@ -309,7 +296,10 @@ _MATH_TOPIC_LETTER: dict[str, str] = {
 _LEGACY_DATA_GOVERNANCE_ALIASES: dict[str, tuple[str, str]] = {
     "5.1.6": ("Vault parameter — Key storage location", "data_governance.secret_storage_rule"),
     "5.1.7": ("Vault parameter — Key lifecycle", "data_governance.volatile_memory_controls"),
-    "5.1.8": ("Vault parameter — Secure deletion method", "data_governance.volatile_memory_controls"),
+    "5.1.8": (
+        "Vault parameter — Secure deletion method",
+        "data_governance.volatile_memory_controls",
+    ),
     "5.1.9": ("Vault parameter — Retention period", "data_governance.vault_parameters"),
 }
 
@@ -324,40 +314,115 @@ _LEGACY_ERROR_HANDLING_ALIASES: dict[str, tuple[str, str]] = {
     "12.2.2": ("Legacy Module B — Hardware Device Loss alias", "error_handling.matrix"),
     "12.2.3": ("Legacy Module B — Worker Process Crash alias", "error_handling.matrix"),
     "12.2.4": ("Legacy Module B — Queue Overload alias", "error_handling.matrix"),
-    "12.3": ("Legacy Module C failure handling alias", "error_handling.matrix[module=module_c_orchestrator]"),
-    "12.3.1": ("Legacy Module C — Network Disconnection alias", "error_handling.matrix[module=module_c_orchestrator]"),
-    "12.3.2": ("Legacy Module C — Hardware Device Loss alias", "error_handling.matrix[module=module_c_orchestrator]"),
-    "12.3.3": ("Legacy Module C — Worker Process Crash alias", "error_handling.matrix[module=module_c_orchestrator]"),
-    "12.3.4": ("Legacy Module C — Queue Overload alias", "error_handling.matrix[module=module_c_orchestrator]"),
-    "12.4": ("Legacy Module D failure handling alias", "error_handling.matrix[module=gpu_ml_worker]"),
-    "12.4.1": ("Legacy Module D — Network Disconnection alias", "error_handling.matrix[module=gpu_ml_worker]"),
-    "12.4.2": ("Legacy Module D — Hardware Device Loss alias", "error_handling.matrix[module=gpu_ml_worker]"),
-    "12.4.3": ("Legacy Module D — Worker Process Crash alias", "error_handling.matrix[module=gpu_ml_worker]"),
-    "12.4.4": ("Legacy Module D — Queue Overload alias", "error_handling.matrix[module=gpu_ml_worker]"),
-    "12.5": ("Legacy Module E failure handling alias", "error_handling.matrix[module=analytics_state_worker]"),
-    "12.5.1": ("Legacy Module E — Network Disconnection alias", "error_handling.matrix[module=analytics_state_worker]"),
-    "12.5.2": ("Legacy Module E — Hardware Device Loss alias", "error_handling.matrix[module=analytics_state_worker]"),
-    "12.5.3": ("Legacy Module E — Worker Process Crash alias", "error_handling.matrix[module=analytics_state_worker]"),
-    "12.5.4": ("Legacy Module E — Queue Overload alias", "error_handling.matrix[module=analytics_state_worker]"),
-    "12.6": ("Legacy Module F failure handling alias", "error_handling.matrix[module=cloud_sync_worker]"),
-    "12.6.1": ("Legacy Module F — Network Disconnection alias", "error_handling.matrix[module=cloud_sync_worker]"),
-    "12.6.2": ("Legacy Module F — Hardware Device Loss alias", "error_handling.matrix[module=cloud_sync_worker]"),
-    "12.6.3": ("Legacy Module F — Worker Process Crash alias", "error_handling.matrix[module=cloud_sync_worker]"),
-    "12.6.4": ("Legacy Module F — Queue Overload alias", "error_handling.matrix[module=cloud_sync_worker]"),
+    "12.3": (
+        "Legacy Module C failure handling alias",
+        "error_handling.matrix[module=module_c_orchestrator]",
+    ),
+    "12.3.1": (
+        "Legacy Module C — Network Disconnection alias",
+        "error_handling.matrix[module=module_c_orchestrator]",
+    ),
+    "12.3.2": (
+        "Legacy Module C — Hardware Device Loss alias",
+        "error_handling.matrix[module=module_c_orchestrator]",
+    ),
+    "12.3.3": (
+        "Legacy Module C — Worker Process Crash alias",
+        "error_handling.matrix[module=module_c_orchestrator]",
+    ),
+    "12.3.4": (
+        "Legacy Module C — Queue Overload alias",
+        "error_handling.matrix[module=module_c_orchestrator]",
+    ),
+    "12.4": (
+        "Legacy Module D failure handling alias",
+        "error_handling.matrix[module=gpu_ml_worker]",
+    ),
+    "12.4.1": (
+        "Legacy Module D — Network Disconnection alias",
+        "error_handling.matrix[module=gpu_ml_worker]",
+    ),
+    "12.4.2": (
+        "Legacy Module D — Hardware Device Loss alias",
+        "error_handling.matrix[module=gpu_ml_worker]",
+    ),
+    "12.4.3": (
+        "Legacy Module D — Worker Process Crash alias",
+        "error_handling.matrix[module=gpu_ml_worker]",
+    ),
+    "12.4.4": (
+        "Legacy Module D — Queue Overload alias",
+        "error_handling.matrix[module=gpu_ml_worker]",
+    ),
+    "12.5": (
+        "Legacy Module E failure handling alias",
+        "error_handling.matrix[module=analytics_state_worker]",
+    ),
+    "12.5.1": (
+        "Legacy Module E — Network Disconnection alias",
+        "error_handling.matrix[module=analytics_state_worker]",
+    ),
+    "12.5.2": (
+        "Legacy Module E — Hardware Device Loss alias",
+        "error_handling.matrix[module=analytics_state_worker]",
+    ),
+    "12.5.3": (
+        "Legacy Module E — Worker Process Crash alias",
+        "error_handling.matrix[module=analytics_state_worker]",
+    ),
+    "12.5.4": (
+        "Legacy Module E — Queue Overload alias",
+        "error_handling.matrix[module=analytics_state_worker]",
+    ),
+    "12.6": (
+        "Legacy Module F failure handling alias",
+        "error_handling.matrix[module=cloud_sync_worker]",
+    ),
+    "12.6.1": (
+        "Legacy Module F — Network Disconnection alias",
+        "error_handling.matrix[module=cloud_sync_worker]",
+    ),
+    "12.6.2": (
+        "Legacy Module F — Hardware Device Loss alias",
+        "error_handling.matrix[module=cloud_sync_worker]",
+    ),
+    "12.6.3": (
+        "Legacy Module F — Worker Process Crash alias",
+        "error_handling.matrix[module=cloud_sync_worker]",
+    ),
+    "12.6.4": (
+        "Legacy Module F — Queue Overload alias",
+        "error_handling.matrix[module=cloud_sync_worker]",
+    ),
 }
 
 _LEGACY_AUDIT_ALIASES: dict[str, tuple[str, str]] = {
     "13.20": ("Co-modulation determinism", "math_specifications.topics[2]"),
     "13.21": ("Reward pipeline invariance", "math_specifications.topics[1]"),
     "13.22": ("Observational acoustic validity contract", "math_specifications.topics[3]"),
-    "13.23": ("Observational acoustic payload/storage conformance", "data_governance.local_state.forbidden_content"),
-    "13.24": ("Attribution ledger schema conformance", "interface_contracts.attribution_event_schema"),
+    "13.23": (
+        "Observational acoustic payload/storage conformance",
+        "data_governance.local_state.forbidden_content",
+    ),
+    "13.24": (
+        "Attribution ledger schema conformance",
+        "interface_contracts.attribution_event_schema",
+    ),
     "13.25": ("Stable segment identity", "interface_contracts.schema_definition"),
-    "13.26": ("Bandit decision snapshot capture", "interface_contracts.bandit_decision_snapshot_schema"),
+    "13.26": (
+        "Bandit decision snapshot capture",
+        "interface_contracts.bandit_decision_snapshot_schema",
+    ),
     "13.27": ("Semantic scorer shadow/primary separation", "llm_prompt.intro_paragraphs"),
-    "13.28": ("Attribution backfill idempotency", "math_specifications.topics[4].derivation_steps[5]"),
+    "13.28": (
+        "Attribution backfill idempotency",
+        "math_specifications.topics[4].derivation_steps[5]",
+    ),
     "13.29": ("Outcome linker determinism", "math_specifications.topics[4].derivation_steps[1]"),
-    "13.30": ("Derived-only attribution persistence compliance", "data_governance.local_state.forbidden_content"),
+    "13.30": (
+        "Derived-only attribution persistence compliance",
+        "data_governance.local_state.forbidden_content",
+    ),
     "13.31": ("Attribution reward-path invariance", "math_specifications.topics[4]"),
 }
 
@@ -383,7 +448,8 @@ def build_index(spec: dict[str, Any]) -> dict[str, _IndexEntry]:
             continue
         title = (
             section.get("section_title", key.replace("_", " ").title())
-            if isinstance(section, dict) else key
+            if isinstance(section, dict)
+            else key
         )
         index[section_num] = _IndexEntry(
             title=f"§{section_num} — {title}",
@@ -603,6 +669,7 @@ def _add_legacy_aliases(index: dict[str, _IndexEntry]) -> None:
 # Content Path Resolution / Validation
 # =====================================================================
 
+
 def _split_content_path(path: str) -> list[str]:
     """
     Split a content path on dots that are outside bracket selectors.
@@ -674,9 +741,7 @@ def resolve_content_path(spec: dict[str, Any], path: str) -> Any:
         key, rest = m.groups()
 
         if not isinstance(cur, dict):
-            raise TypeError(
-                f"Key '{key}' applied to non-dict object while resolving '{path}'"
-            )
+            raise TypeError(f"Key '{key}' applied to non-dict object while resolving '{path}'")
         if key not in cur:
             raise KeyError(f"Missing key '{key}' while resolving '{path}'")
 
@@ -710,20 +775,14 @@ def resolve_content_path(spec: dict[str, Any], path: str) -> Any:
                 value = value.strip()
 
                 if not isinstance(cur, list):
-                    raise TypeError(
-                        f"Selector [{selector}] applied to non-list in '{path}'"
-                    )
+                    raise TypeError(f"Selector [{selector}] applied to non-list in '{path}'")
 
                 matches = [
-                    item
-                    for item in cur
-                    if isinstance(item, dict) and str(item.get(field)) == value
+                    item for item in cur if isinstance(item, dict) and str(item.get(field)) == value
                 ]
 
                 if not matches:
-                    raise KeyError(
-                        f"No match for selector [{selector}] while resolving '{path}'"
-                    )
+                    raise KeyError(f"No match for selector [{selector}] while resolving '{path}'")
 
                 cur = matches[0] if len(matches) == 1 else matches
                 continue
@@ -865,9 +924,7 @@ def validate_refs(
         ref = finding["ref"]
         used_refs.add(ref)
         if ref in index:
-            resolved.append(
-                {**finding, "target": index[ref].content_path, "resolution": "direct"}
-            )
+            resolved.append({**finding, "target": index[ref].content_path, "resolution": "direct"})
         else:
             parent = ref.rsplit(".", 1)[0] if "." in ref else None
             if parent and parent in index:
@@ -885,12 +942,8 @@ def validate_refs(
         "stats": {
             "total_refs_found": len(findings),
             "unique_refs": len(used_refs),
-            "resolved_direct": sum(
-                1 for r in resolved if r.get("resolution") == "direct"
-            ),
-            "resolved_parent": sum(
-                1 for r in resolved if r.get("resolution") == "parent"
-            ),
+            "resolved_direct": sum(1 for r in resolved if r.get("resolution") == "direct"),
+            "resolved_parent": sum(1 for r in resolved if r.get("resolution") == "parent"),
             "unresolved": len(unresolved),
             "index_size": len(index),
             "index_explicit": sum(1 for e in index.values() if e.explicit),
@@ -931,25 +984,23 @@ def main() -> int:
     for _stream in (sys.stdout, sys.stderr):
         reconfigure = getattr(_stream, "reconfigure", None)
         if reconfigure is not None:
-            try:
+            with suppress(ValueError, OSError):
                 reconfigure(encoding="utf-8")
-            except (ValueError, OSError):
-                pass
 
     parser = argparse.ArgumentParser(
-        description="Resolve and validate spec references against content.json",
+        description="Resolve and validate spec references against the signed spec payload",
     )
     parser.add_argument(
         "--from-pdf",
         type=Path,
         default=None,
-        help="Extract content.json from this PDF.",
+        help="Diagnostic override: extract content.json from this PDF.",
     )
     parser.add_argument(
         "--content",
         type=Path,
         default=None,
-        help="Path to standalone content.json.",
+        help="Diagnostic override: path to standalone draft content.json.",
     )
     parser.add_argument(
         "--repo",
@@ -1114,7 +1165,10 @@ def main() -> int:
             return 1 if report["unresolved"] or broken_targets else 0
 
         print(f"Validation Report\n{'=' * 72}")
-        print(f"  Refs found in project:    {stats['total_refs_found']} ({stats['unique_refs']} unique)")
+        print(
+            "  Refs found in project:    "
+            f"{stats['total_refs_found']} ({stats['unique_refs']} unique)"
+        )
         print(f"  Resolved (direct):        {stats['resolved_direct']}")
         print(f"  Resolved (parent):        {stats['resolved_parent']}")
         print(f"  Unresolved:               {stats['unresolved']}")

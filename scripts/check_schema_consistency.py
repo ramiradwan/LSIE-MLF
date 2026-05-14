@@ -25,6 +25,10 @@ A non-zero exit code is returned whenever any divergence is detected.
 Usage::
 
     python scripts/check_schema_consistency.py
+    python scripts/check_schema_consistency.py --content docs/content.json
+
+Default runs load the embedded payload from the committed signed spec PDF. Use
+``--content`` only for draft payload diagnostics.
 
 The implementation is split into pure helpers so unit tests can seed
 each source with synthetic known-good or known-bad payloads — see
@@ -650,6 +654,7 @@ from scripts.spec_ref_check import load_content  # noqa: E402
 def load_default_sources(
     registry: tuple[EntityMapping, ...] = DEFAULT_REGISTRY,
     repo_root: Path = REPO_ROOT,
+    content_path: Path | None = None,
 ) -> tuple[
     dict[str, EntitySpec],
     dict[str, EntitySpec],
@@ -669,33 +674,24 @@ def load_default_sources(
             warnings.append(f"Could not load pydantic model {mapping.pydantic_class}: {exc}")
 
     json_schema_entities: dict[str, EntitySpec] = {}
-    candidates = [
-        repo_root / "docs" / "content.json",
-        repo_root / "content.json",
-    ]
-    content_path = next((path for path in candidates if path.is_file()), None)
     content_source = ""
-    if content_path is None:
-        try:
+    try:
+        if content_path is None:
             content = load_content(repo_root=repo_root)
             content_source = "embedded content payload in docs/tech-spec-v*.pdf"
-        except Exception as exc:
-            warnings.append(
-                "content.json not found "
-                f"(looked at: {[str(path) for path in candidates]}) and could not load "
-                f"embedded spec payload: {exc}"
-            )
-            content = {}
-    else:
-        content_source = str(content_path)
-        try:
-            raw = content_path.read_text(encoding="utf-8").strip()
-            content = json.loads(raw) if raw else {}
-        except json.JSONDecodeError as exc:
-            warnings.append(f"content.json is not valid JSON ({content_path}): {exc}")
-            content = {}
-        if not content:
-            warnings.append(f"content.json is empty: {content_path}")
+        else:
+            content = load_content(content_path=content_path, repo_root=repo_root)
+            content_source = str(content_path)
+    except Exception as exc:
+        source = "embedded spec payload" if content_path is None else str(content_path)
+        warnings.append(f"Could not load {source}: {exc}")
+        content = {}
+
+    ignored_draft_content = repo_root / "docs" / "content.json"
+    if content_path is None and ignored_draft_content.is_file():
+        warnings.append(
+            f"Ignored draft content payload {ignored_draft_content}; pass --content to validate it."
+        )
 
     schemas = extract_json_schemas(content)
     for mapping in registry:
@@ -778,11 +774,18 @@ def main(argv: list[str] | None = None) -> int:
         default=REPO_ROOT,
         help="Repository root (default: detected from script location).",
     )
+    parser.add_argument(
+        "--content",
+        type=Path,
+        default=None,
+        help="Draft content.json payload to validate instead of the committed signed PDF.",
+    )
     args = parser.parse_args(argv)
 
     pydantic_entities, json_schema_entities, sql_entities, warnings = load_default_sources(
         DEFAULT_REGISTRY,
         args.repo_root,
+        args.content,
     )
 
     issues = check_consistency(

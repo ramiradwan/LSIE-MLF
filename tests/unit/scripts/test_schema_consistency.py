@@ -206,23 +206,25 @@ class TestJsonSchemaLoader:
             "FallbackSchema": {"title": "FallbackSchema", "type": "object"}
         }
 
-    def test_load_default_sources_prefers_active_content_index(self, tmp_path: Path) -> None:
+    def test_load_default_sources_ignores_draft_content_by_default(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         import json
 
-        active_content = {
+        draft_content = {
             "interface_contracts": {
                 "schemas": {
-                    "ActiveSchema": {
+                    "DraftSchema": {
                         "type": "object",
                         "properties": {"value": {"type": "string"}},
                     }
                 }
             }
         }
-        frozen_content = {
+        embedded_content = {
             "interface_contracts": {
                 "schemas": {
-                    "FrozenSchema": {
+                    "PdfSchema": {
                         "type": "object",
                         "properties": {"value": {"type": "integer"}},
                     }
@@ -231,35 +233,80 @@ class TestJsonSchemaLoader:
         }
 
         docs_dir = tmp_path / "docs"
-        artifacts_dir = docs_dir / "artifacts"
-        artifacts_dir.mkdir(parents=True)
-        (docs_dir / "content.json").write_text(json.dumps(active_content), encoding="utf-8")
-        (artifacts_dir / "content.json").write_text(json.dumps(frozen_content), encoding="utf-8")
+        docs_dir.mkdir(parents=True)
+        (docs_dir / "content.json").write_text(json.dumps(draft_content), encoding="utf-8")
 
         registry = (
             EntityMapping(
-                name="ActiveSchema",
+                name="DraftSchema",
                 pydantic_class=None,
-                json_schema_key="ActiveSchema",
+                json_schema_key="DraftSchema",
             ),
             EntityMapping(
-                name="FrozenSchema",
+                name="PdfSchema",
                 pydantic_class=None,
-                json_schema_key="FrozenSchema",
+                json_schema_key="PdfSchema",
             ),
         )
 
+        def fake_load_content(
+            pdf_path: Path | None = None,
+            content_path: Path | None = None,
+            repo_root: Path = Path("."),
+        ) -> dict[str, Any]:
+            assert pdf_path is None
+            assert content_path is None
+            assert repo_root == tmp_path
+            return embedded_content
+
+        monkeypatch.setattr("scripts.check_schema_consistency.load_content", fake_load_content)
+
         _, json_schema_entities, sql_entities, warnings = load_default_sources(registry, tmp_path)
 
-        assert "ActiveSchema" in json_schema_entities
+        assert "PdfSchema" in json_schema_entities
+        assert "DraftSchema" not in json_schema_entities
         assert sql_entities == {}
-        assert "FrozenSchema" not in json_schema_entities
-        assert not any("docs/artifacts/content.json" in warning for warning in warnings)
+        assert any("Ignored draft content payload" in warning for warning in warnings)
 
-    def test_load_default_sources_falls_back_to_embedded_spec_payload(
+    def test_load_default_sources_uses_explicit_draft_content(self, tmp_path: Path) -> None:
+        import json
+
+        draft_content = {
+            "interface_contracts": {
+                "schemas": {
+                    "DraftSchema": {
+                        "type": "object",
+                        "properties": {"value": {"type": "string"}},
+                    }
+                }
+            }
+        }
+
+        content_path = tmp_path / "docs" / "content.json"
+        content_path.parent.mkdir(parents=True)
+        content_path.write_text(json.dumps(draft_content), encoding="utf-8")
+        registry = (
+            EntityMapping(
+                name="DraftSchema",
+                pydantic_class=None,
+                json_schema_key="DraftSchema",
+            ),
+        )
+
+        _, json_schema_entities, sql_entities, warnings = load_default_sources(
+            registry,
+            tmp_path,
+            content_path,
+        )
+
+        assert "DraftSchema" in json_schema_entities
+        assert sql_entities == {}
+        assert warnings == []
+
+    def test_load_default_sources_uses_signed_pdf_payload_by_default(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        fallback_content = {
+        embedded_content = {
             "interface_contracts": {
                 "schemas": {
                     "PdfSchema": {
@@ -286,7 +333,7 @@ class TestJsonSchemaLoader:
             assert pdf_path is None
             assert content_path is None
             assert repo_root == tmp_path
-            return fallback_content
+            return embedded_content
 
         monkeypatch.setattr("scripts.check_schema_consistency.load_content", fake_load_content)
 
@@ -655,9 +702,10 @@ class TestReporting:
         assert "Inconsistencies" not in out
 
     def test_warnings_are_rendered(self) -> None:
-        out = format_report(issues=[], warnings=["content.json is empty"])
+        warning = "Could not load embedded spec payload: missing attachment"
+        out = format_report(issues=[], warnings=[warning])
         assert "Warnings:" in out
-        assert "content.json is empty" in out
+        assert warning in out
 
     def test_issues_are_grouped_by_entity(self) -> None:
         issues = [
@@ -678,7 +726,9 @@ class TestMain:
         from scripts import check_schema_consistency as mod
 
         def fake_loader(
-            registry: tuple[EntityMapping, ...], repo_root: Path
+            registry: tuple[EntityMapping, ...],
+            repo_root: Path,
+            content_path: Path | None = None,
         ) -> tuple[
             dict[str, EntitySpec],
             dict[str, EntitySpec],
@@ -702,7 +752,9 @@ class TestMain:
         from scripts import check_schema_consistency as mod
 
         def fake_loader(
-            registry: tuple[EntityMapping, ...], repo_root: Path
+            registry: tuple[EntityMapping, ...],
+            repo_root: Path,
+            content_path: Path | None = None,
         ) -> tuple[
             dict[str, EntitySpec],
             dict[str, EntitySpec],
@@ -755,17 +807,23 @@ class TestDefaultRegistry:
             if mapping.sql_table is not None and mapping.sql_table not in sql_entities
         ]
 
+        unexpected_warnings = [
+            warning for warning in warnings if "Ignored draft content payload" not in warning
+        ]
         diagnostics = "\n".join(warnings)
-        assert warnings == [], diagnostics
+        assert unexpected_warnings == [], diagnostics
         assert missing_pydantic == []
         assert missing_json_schema == []
         assert missing_sql == []
 
-    def test_default_registry_sources_are_currently_consistent(self) -> None:
+    def test_default_registry_sources_are_consistent_with_signed_payload(self) -> None:
         pydantic_entities, json_schema_entities, sql_entities, warnings = load_default_sources(
             DEFAULT_REGISTRY
         )
-        assert warnings == [], "\n".join(warnings)
+        unexpected_warnings = [
+            warning for warning in warnings if "Ignored draft content payload" not in warning
+        ]
+        assert unexpected_warnings == [], "\n".join(warnings)
 
         issues = check_consistency(
             DEFAULT_REGISTRY,

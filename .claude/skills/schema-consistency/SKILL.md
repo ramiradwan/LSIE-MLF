@@ -10,7 +10,7 @@ description: Run scripts/check_schema_consistency.py and interpret its output wh
 The codebase carries three contract-bearing schema sources that can drift independently:
 
 1. **Pydantic models** in `packages/schemas/` — runtime payload validation (`InferenceHandoffPayload`, `PhysiologicalSnapshot`, `SemanticEvaluationResult`, etc.).
-2. **JSON Schema blocks** under `interface_contracts` in the signed spec content payload — loaded from the committed `docs/tech-spec-v*.pdf` and optionally inspected via generated `docs/content.json`.
+2. **JSON Schema blocks** under `interface_contracts` in the signed spec content payload — loaded from the committed `docs/tech-spec-v*.pdf`; draft `docs/content.json` is used only when explicitly passed with `--content`.
 3. **Cloud PostgreSQL tables** from `services.cloud_api.db.schema` — the cloud persistence surface for contract-bearing records.
 
 A field rename in one source without the others causes silent drift. The script normalizes every source onto a common `{name, canonical_type, nullable}` representation and reports any divergence.
@@ -23,7 +23,7 @@ Run the script:
 
 - Before committing any change under `packages/schemas/`.
 - Before merging a PR that touches Pydantic schemas or the signed spec payload.
-- After regenerating ignored `docs/content.json` from the signed PDF for local inspection (`python scripts/spec_ref_check.py --extract > docs/content.json`).
+- After regenerating the signed PDF or when explicitly comparing a draft payload (`python scripts/check_schema_consistency.py --content docs/content.json`).
 - As Standing Post-Merge Chore #3 in the playbook (Schema-Code Consistency Verification).
 - As CI gate step in `scripts/check.sh` (already wired — non-zero exit fails the local check suite).
 
@@ -46,7 +46,7 @@ The report has three sections:
 1. **Header** — banner.
 2. **Warnings** (optional) — sources that could not be loaded. A missing source is reported but does not by itself cause a failure (a source that doesn't exist can't drift). Common warnings:
    - `Could not load pydantic model …: No module named 'packages'` — the script's `sys.path` shim failed; run from the repo root.
-   - `content.json is empty: …` — the spec content payload has not been extracted from the PDF.
+   - `Could not load embedded spec payload: …` — the committed spec PDF is missing, ambiguous, or lacks a valid embedded payload.
 3. **Inconsistencies** — grouped by entity, one line per finding:
    ```
    [X] <field>  <kind>  <detail>
