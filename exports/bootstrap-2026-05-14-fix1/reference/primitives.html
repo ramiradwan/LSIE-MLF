@@ -1,0 +1,552 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="robots" content="noindex, nofollow">
+<title>Operator Console · Primitives</title>
+<link rel="stylesheet" href="tokens.css">
+<style>
+  body { padding: 48px 56px 80px; }
+  .doc { max-width: 1180px; margin: 0 auto; }
+
+  h1 { font-size: 28px; font-weight: 600; margin: 0 0 6px; letter-spacing: -0.01em; }
+  .lede {
+    color: var(--text-muted); font-size: 14px; max-width: 720px;
+    margin: 0 0 48px; line-height: 1.55;
+  }
+
+  h2 {
+    font-size: 11px; font-weight: 600; letter-spacing: 0.12em;
+    text-transform: uppercase; color: var(--text-muted);
+    margin: 56px 0 6px; padding-bottom: 10px;
+    border-bottom: 1px solid var(--border);
+  }
+  h2:first-of-type { margin-top: 0; }
+  .section-meta {
+    display: flex; gap: 16px; align-items: baseline;
+    color: var(--text-muted); font-size: 12px;
+    margin-bottom: 20px;
+  }
+  .section-meta .name {
+    font-family: var(--font-mono); font-size: 12px;
+    color: var(--text-primary);
+    background: var(--surface-raised);
+    padding: 2px 8px; border-radius: 3px;
+  }
+  .desc {
+    color: var(--text-muted); font-size: 13px; line-height: 1.6;
+    max-width: 680px; margin: 0 0 24px;
+  }
+  .desc code {
+    font-family: var(--font-mono); font-size: 12px;
+    background: var(--surface-raised); padding: 1px 5px;
+    border-radius: 3px; color: var(--text-primary);
+  }
+
+  /* Stage — neutral surface around live primitive demos */
+  .stage {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: 24px;
+    display: flex; flex-direction: column; gap: 20px;
+  }
+  .stage-header {
+    display: flex; gap: 8px; align-items: center;
+    font-size: 11px; color: var(--text-muted);
+    font-family: var(--font-mono);
+    text-transform: uppercase; letter-spacing: 0.08em;
+    margin-bottom: -6px;
+  }
+  .stage-header::before {
+    content: ""; width: 8px; height: 8px;
+    border-radius: 50%; background: var(--border);
+  }
+
+  /* ============================================================ */
+  /* MetricCard                                                   */
+  /* ============================================================ */
+  .metric-grid {
+    display: grid; gap: 12px;
+    grid-template-columns: repeat(3, 1fr);
+  }
+  .metric-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: 14px 16px 16px;
+    display: flex; flex-direction: column; gap: 6px;
+    min-height: 96px;
+    cursor: default;
+  }
+  .metric-card.clickable {
+    cursor: pointer;
+  }
+  .metric-card.clickable:hover {
+    border-color: var(--accent);
+  }
+  .mc-title {
+    color: var(--text-muted);
+    font-size: 12px; font-weight: 600;
+    text-transform: none;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .mc-primary {
+    color: var(--text-primary);
+    font-size: 16px; font-weight: 600;
+  }
+  .mc-secondary {
+    color: var(--text-muted);
+    font-size: 12px; line-height: 1.4;
+    margin-top: auto;
+  }
+
+  /* StatusPill (inline) */
+  .pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 2px 8px 2px 6px;
+    background: var(--surface-raised);
+    border-radius: 999px; height: 18px;
+  }
+  .pill .dot { width: 6px; height: 6px; border-radius: 50%; }
+  .pill .lbl { font-size: 11px; font-weight: 600; color: var(--text-primary); }
+  .pill.ok          .dot { background: var(--status-ok); }
+  .pill.warn        .dot { background: var(--status-warn); }
+  .pill.bad         .dot { background: var(--status-bad); }
+  .pill.recovering  .dot { background: var(--status-recovering); }
+  .pill.degraded    .dot { background: var(--status-degraded); }
+  .pill.accent      .dot { background: var(--accent); }
+  .pill.muted       .dot { background: var(--text-muted); }
+
+  /* StatusPill standalone (larger) */
+  .pill-row { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+  .pill-lg {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 4px 12px 4px 10px;
+    background: var(--surface-raised);
+    border-radius: 999px; height: 24px;
+  }
+  .pill-lg .dot { width: 8px; height: 8px; border-radius: 50%; }
+  .pill-lg .lbl { font-size: 12px; font-weight: 600; color: var(--text-primary); }
+  .pill-lg.ok          .dot { background: var(--status-ok); }
+  .pill-lg.warn        .dot { background: var(--status-warn); }
+  .pill-lg.bad         .dot { background: var(--status-bad); }
+  .pill-lg.recovering  .dot { background: var(--status-recovering); }
+  .pill-lg.degraded    .dot { background: var(--status-degraded); }
+  .pill-lg.accent      .dot { background: var(--accent); }
+  .pill-lg.muted       .dot { background: var(--text-muted); }
+
+  /* AlertBanner */
+  .banner {
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 12px 14px;
+    display: flex; align-items: center; gap: 12px;
+  }
+  .banner.info {
+    background: var(--tint-info); border-color: var(--accent);
+  }
+  .banner.warn {
+    background: var(--tint-warn); border-color: var(--status-warn);
+  }
+  .banner.crit {
+    background: var(--tint-critical); border-color: var(--status-bad);
+  }
+  .banner .glyph {
+    width: 22px; height: 22px;
+    border-radius: 50%;
+    display: inline-flex; align-items: center; justify-content: center;
+    font-size: 13px; font-weight: 700;
+    color: var(--text-primary);
+    background: rgba(255,255,255,0.06);
+    flex-shrink: 0;
+  }
+  .banner .msg {
+    color: var(--text-primary); font-size: 13px; line-height: 1.4;
+  }
+  .banner .meta {
+    margin-left: auto;
+    color: var(--text-muted); font-size: 11px;
+    font-family: var(--font-mono);
+  }
+
+  /* EmptyState */
+  .empty {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: 56px 24px;
+    text-align: center;
+    display: flex; flex-direction: column;
+    align-items: center; gap: 8px;
+  }
+  .empty .es-mark {
+    width: 36px; height: 36px;
+    border: 1.5px dashed var(--border);
+    border-radius: 50%;
+    margin-bottom: 4px;
+  }
+  .empty .es-title {
+    font-size: 15px; font-weight: 600; color: var(--text-primary);
+  }
+  .empty .es-msg {
+    color: var(--text-muted); font-size: 13px;
+    max-width: 380px; line-height: 1.5;
+  }
+
+  /* SectionHeader */
+  .sh { display: flex; flex-direction: column; gap: 2px; padding: 4px 0; }
+  .sh-title { font-size: 15px; font-weight: 600; color: var(--text-primary); }
+  .sh-sub   { font-size: 12px; color: var(--text-muted); line-height: 1.4; }
+
+  /* EventTimeline (table) */
+  .timeline {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+  }
+  .timeline table { width: 100%; border-collapse: collapse; }
+  .timeline th, .timeline td {
+    padding: 8px 12px;
+    text-align: left;
+    font-size: 13px;
+    border-bottom: 1px solid var(--border);
+  }
+  .timeline tbody tr:last-child td { border-bottom: none; }
+  .timeline th {
+    background: var(--surface-raised);
+    color: var(--text-muted);
+    font-weight: 500; font-size: 12px;
+    text-transform: none;
+  }
+  .timeline td.t {
+    font-family: var(--font-mono); color: var(--text-muted);
+    font-size: 12px; width: 90px;
+  }
+  .timeline td.subj {
+    color: var(--text-primary); font-weight: 500;
+    width: 180px;
+  }
+  .timeline td.detail {
+    color: var(--text-muted); font-size: 12px;
+  }
+  .timeline tbody tr.selected td {
+    background: rgba(91,141,239,0.10);
+    color: var(--text-primary);
+  }
+  .timeline tbody tr:hover td {
+    background: var(--surface-raised);
+  }
+
+  /* Health row swatches */
+  .health-rows {
+    display: grid; gap: 1px;
+    grid-template-columns: repeat(5, 1fr);
+    background: var(--border);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    overflow: hidden;
+  }
+  .hrow {
+    background: var(--surface);
+    padding: 14px 16px;
+    display: flex; flex-direction: column; gap: 6px;
+  }
+  .hrow .word {
+    font-weight: 600; font-size: 14px;
+  }
+  .hrow .word.ok          { color: var(--status-ok); }
+  .hrow .word.warn        { color: var(--status-warn); }
+  .hrow .word.bad         { color: var(--status-bad); }
+  .hrow .word.degraded    { color: var(--status-degraded); }
+  .hrow .word.recovering  { color: var(--status-recovering); }
+  .hrow .obj {
+    font-family: var(--font-mono); font-size: 11px;
+    color: var(--text-muted);
+  }
+
+  /* Token reference under primitives */
+  .tokens {
+    display: grid; gap: 8px;
+    grid-template-columns: repeat(2, 1fr);
+    margin-top: 18px;
+  }
+  .tok {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 10px 12px;
+    font-family: var(--font-mono); font-size: 12px;
+    color: var(--text-muted);
+  }
+  .tok strong { color: var(--text-primary); font-weight: 600; }
+</style>
+</head>
+<body>
+<div class="doc">
+
+<h1>Primitives</h1>
+<p class="lede">Seven shared primitives carry every screen of the console. Each has a fixed object-name set used by the QSS selector layer; any new selector must register in <code>design_system.json</code>. Together they enforce a single way to show a value, a state, a banner, an empty surface, a heading, and a timeline.</p>
+
+<!-- ============================================================ -->
+<h2>SectionHeader</h2>
+<div class="section-meta">
+  <span class="name">SectionHeader</span>
+  <span>title + optional subtitle · layout-only · accessible name synced from visible copy</span>
+</div>
+<p class="desc">The page or panel heading. Always title-case-ish — short, factual, no marketing voice. The subtitle, when present, gives the operator one sentence of context for the surface they just landed on.</p>
+
+<div class="stage">
+  <div class="stage-header">SectionHeader · large</div>
+  <div class="sh">
+    <div class="sh-title" style="font-size:18px">Live Session</div>
+    <div class="sh-sub">Primary action and trust surface for the active session</div>
+  </div>
+  <div class="stage-header">SectionHeader · panel</div>
+  <div class="sh">
+    <div class="sh-title">Latest encounter</div>
+    <div class="sh-sub">Reward inputs used by the pipeline at 14:32:08</div>
+  </div>
+  <div class="stage-header">SectionHeader · no subtitle</div>
+  <div class="sh">
+    <div class="sh-title">Attention queue</div>
+  </div>
+</div>
+
+<div class="tokens">
+  <div class="tok"><strong>SectionHeaderTitle</strong> · 15 / 600 · text_primary</div>
+  <div class="tok"><strong>SectionHeaderSubtitle</strong> · 12 / 400 · text_muted</div>
+</div>
+
+<!-- ============================================================ -->
+<h2>MetricCard</h2>
+<div class="section-meta">
+  <span class="name">MetricCard</span>
+  <span>title · primary value · optional secondary · optional StatusPill · optional clickable</span>
+</div>
+<p class="desc">The most-used readback primitive in the console. A card explains a single value, with a muted label, a primary number, and a brief secondary explanation. Cards are <em>not</em> KPI tiles — they are operator readback. When clickable (e.g. Active Session on Overview), hover ring uses <code>--accent</code>.</p>
+
+<div class="stage">
+  <div class="stage-header">MetricCard · grid</div>
+  <div class="metric-grid">
+    <div class="metric-card clickable">
+      <div class="mc-title">Active session <span class="pill ok"><span class="dot"></span><span class="lbl">measuring</span></span></div>
+      <div class="mc-primary">sess_4f12 · arm_b</div>
+      <div class="mc-secondary">Started 12:04:11 · 18 encounters · greeting confirmed</div>
+    </div>
+    <div class="metric-card">
+      <div class="mc-title">Physiology</div>
+      <div class="mc-primary">RMSSD 38.4 ms</div>
+      <div class="mc-secondary">Fresh — Oura snapshot 6s ago</div>
+    </div>
+    <div class="metric-card">
+      <div class="mc-title">Health <span class="pill recovering"><span class="dot"></span><span class="lbl">recovering</span></span></div>
+      <div class="mc-primary">5 ok · 1 recovering</div>
+      <div class="mc-secondary">Worker resumed after transient retry</div>
+    </div>
+  </div>
+
+  <div class="stage-header">MetricCard · with absent state</div>
+  <div class="metric-grid">
+    <div class="metric-card">
+      <div class="mc-title">Latest encounter</div>
+      <div class="mc-primary">p90_intensity 0.42</div>
+      <div class="mc-secondary">semantic gate held · 18 frames in window</div>
+    </div>
+    <div class="metric-card">
+      <div class="mc-title">Co-modulation</div>
+      <div class="mc-primary" style="color:var(--text-muted)">null-valid</div>
+      <div class="mc-secondary">Insufficient aligned pairs — operator vs streamer</div>
+    </div>
+    <div class="metric-card">
+      <div class="mc-title">Heart rate</div>
+      <div class="mc-primary" style="color:var(--text-muted)">no rmssd yet</div>
+      <div class="mc-secondary">Snapshot present but variability not derived</div>
+    </div>
+  </div>
+</div>
+
+<div class="tokens">
+  <div class="tok"><strong>MetricCard</strong> · surface · 1px border · radius 6</div>
+  <div class="tok"><strong>MetricCardTitle</strong> · 12 / 600 · text_muted</div>
+  <div class="tok"><strong>MetricCardPrimary</strong> · 16 / 600 · text_primary</div>
+  <div class="tok"><strong>MetricCardSecondary</strong> · 12 / 400 · text_muted</div>
+</div>
+
+<!-- ============================================================ -->
+<h2>StatusPill</h2>
+<div class="section-meta">
+  <span class="name">StatusPill</span>
+  <span>colored dot + text · driven by UiStatusKind</span>
+</div>
+<p class="desc">The console's tightest contract: every state shown to the operator goes through the same pill, keyed from <code>UiStatusKind</code>. The dot carries the hue; the label carries the word. <strong>Never</strong> rely on color alone — the word always rides with the dot.</p>
+
+<div class="stage">
+  <div class="stage-header">StatusPill · UiStatusKind buckets</div>
+  <div class="pill-row">
+    <span class="pill-lg ok"><span class="dot"></span><span class="lbl">ok</span></span>
+    <span class="pill-lg warn"><span class="dot"></span><span class="lbl">warn</span></span>
+    <span class="pill-lg bad"><span class="dot"></span><span class="lbl">bad</span></span>
+    <span class="pill-lg recovering"><span class="dot"></span><span class="lbl">recovering</span></span>
+    <span class="pill-lg degraded"><span class="dot"></span><span class="lbl">degraded</span></span>
+  </div>
+  <div class="stage-header">StatusPill · stimulus lifecycle</div>
+  <div class="pill-row">
+    <span class="pill-lg muted"><span class="dot"></span><span class="lbl">idle</span></span>
+    <span class="pill-lg accent"><span class="dot"></span><span class="lbl">submitting</span></span>
+    <span class="pill-lg ok"><span class="dot"></span><span class="lbl">accepted</span></span>
+    <span class="pill-lg warn"><span class="dot"></span><span class="lbl">measuring</span></span>
+    <span class="pill-lg ok"><span class="dot"></span><span class="lbl">completed</span></span>
+    <span class="pill-lg bad"><span class="dot"></span><span class="lbl">failed</span></span>
+  </div>
+  <div class="stage-header">StatusPill · readiness</div>
+  <div class="pill-row">
+    <span class="pill-lg ok"><span class="dot"></span><span class="lbl">adb</span></span>
+    <span class="pill-lg ok"><span class="dot"></span><span class="lbl">ml backend</span></span>
+    <span class="pill-lg recovering"><span class="dot"></span><span class="lbl">orchestrator</span></span>
+    <span class="pill-lg muted"><span class="dot"></span><span class="lbl">not configured</span></span>
+  </div>
+</div>
+
+<div class="tokens">
+  <div class="tok"><strong>StatusPill</strong> · transparent host · pill bg = surface_raised</div>
+  <div class="tok"><strong>StatusPillLabel</strong> · 12 / 600 · text_primary</div>
+  <div class="tok"><strong>dot</strong> · 8px · status_* by UiStatusKind</div>
+  <div class="tok"><strong>height</strong> · 24px standalone · 18px inline</div>
+</div>
+
+<!-- ============================================================ -->
+<h2>AlertBanner</h2>
+<div class="section-meta">
+  <span class="name">AlertBanner</span>
+  <span>severity-coded · hidden when clear · glyph + message</span>
+</div>
+<p class="desc">Page-scoped feedback. Banners never collapse into one global error state — they live on the page that owns the failure. Severity is encoded in both the tinted background and the border. Glyph is a plain character, no decorative iconography.</p>
+
+<div class="stage">
+  <div class="stage-header">AlertBannerInfo</div>
+  <div class="banner info">
+    <span class="glyph">i</span>
+    <span class="msg">Polling cadence reduced while orchestrator reconnects.</span>
+    <span class="meta">overview · scoped</span>
+  </div>
+
+  <div class="stage-header">AlertBannerWarning</div>
+  <div class="banner warn">
+    <span class="glyph">!</span>
+    <span class="msg">Latest physiology snapshot is 48s stale — Oura provider degraded.</span>
+    <span class="meta">physiology · scoped</span>
+  </div>
+
+  <div class="stage-header">AlertBannerCritical</div>
+  <div class="banner crit">
+    <span class="glyph">×</span>
+    <span class="msg">Worker fetch failed — repair install required to resume inference.</span>
+    <span class="meta">health · scoped</span>
+  </div>
+</div>
+
+<div class="tokens">
+  <div class="tok"><strong>AlertBannerInfo</strong> · tint-info · accent border</div>
+  <div class="tok"><strong>AlertBannerWarning</strong> · tint-warn · status_warn border</div>
+  <div class="tok"><strong>AlertBannerCritical</strong> · tint-critical · status_bad border</div>
+  <div class="tok"><strong>AlertBannerGlyph</strong> · 16 / 700 · text_primary</div>
+</div>
+
+<!-- ============================================================ -->
+<h2>EmptyStateWidget</h2>
+<div class="section-meta">
+  <span class="name">EmptyState</span>
+  <span>centered title + explanatory message · shown instead of blanks</span>
+</div>
+<p class="desc">Blank surfaces erode trust. When a page or panel has no current data, the empty state explains <em>why</em> — and what action, if any, will populate it. Copy is operator-language: causal, non-speculative, never marketing.</p>
+
+<div class="stage">
+  <div class="stage-header">EmptyState · no session selected</div>
+  <div class="empty">
+    <div class="es-mark"></div>
+    <div class="es-title">No session selected</div>
+    <div class="es-msg">Start a session from this page, or pick one from Sessions, to see live telemetry and encounter detail.</div>
+  </div>
+
+  <div class="stage-header">EmptyState · no experiment</div>
+  <div class="empty">
+    <div class="es-mark"></div>
+    <div class="es-title">No active experiment</div>
+    <div class="es-msg">Create an experiment in the management panel to see arm evidence and recent updates.</div>
+  </div>
+</div>
+
+<div class="tokens">
+  <div class="tok"><strong>EmptyStateTitle</strong> · 15 / 600 · text_primary</div>
+  <div class="tok"><strong>EmptyStateMessage</strong> · 13 / 400 · text_muted</div>
+</div>
+
+<!-- ============================================================ -->
+<h2>EventTimelineWidget</h2>
+<div class="section-meta">
+  <span class="name">EventTimeline</span>
+  <span>generic table wrapper · width-band column policies · scroll_to_latest()</span>
+</div>
+<p class="desc">A reusable table for live timelines and history (encounters, alerts, probes). Rows are dense (8/12px padding); the timestamp column is monospaced; the latest row autoscrolls into view on Live Session. Selection background uses the accent at low alpha.</p>
+
+<div class="stage">
+  <div class="stage-header">EventTimeline · encounters</div>
+  <div class="timeline">
+    <table>
+      <thead><tr>
+        <th>time</th><th>encounter</th><th>reward</th><th>detail</th>
+      </tr></thead>
+      <tbody>
+        <tr>
+          <td class="t">14:32:08</td>
+          <td class="subj">enc_91d2 · arm_b</td>
+          <td><span class="pill ok"><span class="dot"></span><span class="lbl">counted</span></span></td>
+          <td class="detail">p90_intensity 0.42 · 18 frames · semantic gate confirmed</td>
+        </tr>
+        <tr class="selected">
+          <td class="t">14:31:54</td>
+          <td class="subj">enc_91d1 · arm_b</td>
+          <td><span class="pill warn"><span class="dot"></span><span class="lbl">held</span></span></td>
+          <td class="detail">measured 0.39 · semantic gate did not confirm</td>
+        </tr>
+        <tr>
+          <td class="t">14:31:39</td>
+          <td class="subj">enc_91d0 · arm_a</td>
+          <td><span class="pill bad"><span class="dot"></span><span class="lbl">no frames</span></span></td>
+          <td class="detail">no usable face frames in response window</td>
+        </tr>
+        <tr>
+          <td class="t">14:31:22</td>
+          <td class="subj">enc_91cf · arm_a</td>
+          <td><span class="pill ok"><span class="dot"></span><span class="lbl">counted</span></span></td>
+          <td class="detail">p90_intensity 0.51 · 22 frames · semantic gate confirmed</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="tokens">
+  <div class="tok"><strong>EventTimeline</strong> · transparent host</div>
+  <div class="tok"><strong>EventTimelineTable</strong> · surface · 1px border</div>
+  <div class="tok">QHeaderView · surface_raised · text_muted · 12 / 500</div>
+  <div class="tok">selection · accent @ 10% bg · text_primary</div>
+</div>
+
+<!-- ============================================================ -->
+<h2>Health rows — semantic word pairs</h2>
+<p class="desc">Five named selectors carry the central UX distinction across Health: <strong>recovering ≠ degraded ≠ error</strong>. The word color matches the dot color in the matching StatusPill, never reused for anything decorative.</p>
+
+<div class="health-rows">
+  <div class="hrow"><span class="word ok">ok</span><span class="obj">HealthRowOk · #4ecb71</span></div>
+  <div class="hrow"><span class="word warn">warn</span><span class="obj">HealthRowWarn · #e7b34a</span></div>
+  <div class="hrow"><span class="word bad">error</span><span class="obj">HealthRowBad · #e26a6a</span></div>
+  <div class="hrow"><span class="word degraded">degraded</span><span class="obj">HealthRowDegraded · #d59b4a</span></div>
+  <div class="hrow"><span class="word recovering">recovering</span><span class="obj">HealthRowRecovering · #6cc3d5</span></div>
+</div>
+
+</div>
+</body>
+</html>

@@ -1,0 +1,411 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="robots" content="noindex, nofollow">
+<title>Operator Console · Design System</title>
+<link rel="stylesheet" href="tokens.css">
+<style>
+  body { padding: 0; min-height: 100vh; }
+  .doc { max-width: 1180px; margin: 0 auto; padding: 64px 56px 96px; }
+
+  /* ===== Hero ===== */
+  .hero {
+    display: grid;
+    grid-template-columns: 1.4fr 1fr;
+    gap: 56px;
+    align-items: end;
+    padding-bottom: 56px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 56px;
+  }
+  .eyebrow {
+    font-family: var(--font-mono); font-size: 11px;
+    color: var(--text-muted); letter-spacing: 0.12em;
+    text-transform: uppercase;
+    margin-bottom: 14px;
+    display: flex; align-items: center; gap: 10px;
+  }
+  .eyebrow .dot {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: var(--accent);
+  }
+  h1 {
+    font-size: 44px; font-weight: 600; letter-spacing: -0.02em;
+    margin: 0 0 18px; line-height: 1.05;
+  }
+  h1 .em { color: var(--accent); }
+  .lede {
+    font-size: 15px; color: var(--text-muted);
+    line-height: 1.6; max-width: 560px;
+  }
+  .hero-meta {
+    display: flex; flex-direction: column; gap: 12px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: 20px;
+  }
+  .hero-meta .row {
+    display: grid;
+    grid-template-columns: 100px 1fr;
+    gap: 12px; align-items: baseline;
+    font-size: 12px;
+    border-bottom: 1px dashed var(--border);
+    padding-bottom: 10px;
+  }
+  .hero-meta .row:last-child { border-bottom: none; padding-bottom: 0; }
+  .hero-meta .k {
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    text-transform: uppercase; letter-spacing: 0.08em;
+  }
+  .hero-meta .v { color: var(--text-primary); line-height: 1.5; }
+  .hero-meta .v code {
+    font-family: var(--font-mono); font-size: 11px;
+    background: var(--surface-raised);
+    padding: 1px 6px; border-radius: 3px;
+    color: var(--text-primary);
+  }
+
+  /* ===== Section heads ===== */
+  h2 {
+    font-size: 11px; font-weight: 600; letter-spacing: 0.12em;
+    text-transform: uppercase; color: var(--text-muted);
+    margin: 56px 0 18px; padding-bottom: 10px;
+    border-bottom: 1px solid var(--border);
+  }
+  h2:first-of-type { margin-top: 0; }
+  h2 + .desc {
+    margin-top: -8px;
+  }
+  .desc {
+    color: var(--text-muted); font-size: 13px; line-height: 1.6;
+    max-width: 760px; margin: 0 0 22px;
+  }
+  .desc code {
+    font-family: var(--font-mono); font-size: 12px;
+    background: var(--surface-raised); padding: 1px 5px;
+    border-radius: 3px; color: var(--text-primary);
+  }
+
+  /* ===== Page tiles ===== */
+  .pages {
+    display: grid; gap: 14px;
+    grid-template-columns: repeat(2, 1fr);
+  }
+  .tile {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: 22px 24px;
+    display: flex; flex-direction: column; gap: 10px;
+    text-decoration: none;
+    color: inherit;
+    cursor: pointer;
+    transition: border-color 80ms linear, background 80ms linear;
+    min-height: 168px;
+  }
+  .tile:hover {
+    border-color: var(--accent);
+    background: var(--surface-raised);
+  }
+  .tile .top {
+    display: flex; align-items: center; gap: 10px;
+    color: var(--text-muted);
+    font-family: var(--font-mono); font-size: 11px;
+    text-transform: uppercase; letter-spacing: 0.1em;
+  }
+  .tile .top .num {
+    background: var(--surface-raised);
+    padding: 2px 8px; border-radius: 3px;
+    color: var(--text-primary);
+  }
+  .tile h3 {
+    margin: 0;
+    font-size: 18px; font-weight: 600;
+    color: var(--text-primary);
+  }
+  .tile p {
+    margin: 0;
+    font-size: 13px; color: var(--text-muted); line-height: 1.55;
+    flex: 1;
+  }
+  .tile .tags {
+    display: flex; flex-wrap: wrap; gap: 6px;
+    margin-top: 6px;
+  }
+  .tile .tag {
+    font-family: var(--font-mono); font-size: 11px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+    padding: 2px 8px; border-radius: 3px;
+  }
+  .tile:hover .tag {
+    border-color: var(--accent);
+    color: var(--text-primary);
+  }
+  .tile .arrow {
+    margin-left: auto;
+    color: var(--text-muted);
+    font-family: var(--font-mono);
+  }
+  .tile:hover .arrow { color: var(--accent); }
+
+  /* Token preview strip in hero */
+  .swatch-strip {
+    display: flex; gap: 1px; margin-top: 16px;
+    border-radius: var(--radius-sm); overflow: hidden;
+    border: 1px solid var(--border);
+  }
+  .swatch-strip .sw {
+    flex: 1; height: 32px;
+    display: flex; align-items: flex-end; padding: 4px 6px;
+    font-family: var(--font-mono); font-size: 9px;
+    color: rgba(0,0,0,0.55);
+  }
+  .swatch-strip .sw.dark { color: var(--text-muted); }
+
+  /* Hard rules block */
+  .rules {
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    overflow: hidden;
+  }
+  .rules .rule {
+    display: grid;
+    grid-template-columns: 50px 1fr;
+    align-items: baseline;
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--border);
+    gap: 14px;
+  }
+  .rules .rule:last-child { border-bottom: none; }
+  .rules .num {
+    font-family: var(--font-mono); font-size: 12px;
+    color: var(--text-muted);
+    background: var(--surface-raised);
+    padding: 4px 10px; border-radius: 3px;
+    width: fit-content;
+  }
+  .rules .text {
+    font-size: 13px; color: var(--text-primary); line-height: 1.55;
+  }
+  .rules .text code {
+    font-family: var(--font-mono); font-size: 12px;
+    background: var(--surface-raised); padding: 1px 5px;
+    border-radius: 3px; color: var(--text-primary);
+  }
+  .rules .text em {
+    color: var(--text-muted); font-style: normal;
+  }
+
+  /* Source map */
+  .srcmap {
+    display: grid; gap: 10px;
+    grid-template-columns: repeat(2, 1fr);
+  }
+  .src {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 12px 14px;
+    font-family: var(--font-mono); font-size: 11px;
+    color: var(--text-muted);
+    line-height: 1.5;
+  }
+  .src strong {
+    display: block;
+    color: var(--text-primary);
+    font-family: var(--font-ui);
+    font-size: 12px; font-weight: 600;
+    margin-bottom: 4px;
+  }
+  .src .path { color: var(--text-primary); }
+
+  /* Footer note */
+  .foot {
+    margin-top: 80px;
+    padding-top: 28px;
+    border-top: 1px solid var(--border);
+    color: var(--text-muted); font-size: 12px;
+    display: flex; justify-content: space-between; gap: 20px;
+  }
+  .foot .l { font-family: var(--font-mono); }
+</style>
+</head>
+<body>
+<div class="doc">
+
+<!-- ============= Hero ============= -->
+<section class="hero">
+  <div>
+    <div class="eyebrow"><span class="dot"></span>LSIE-MLF · services/operator_console</div>
+    <h1>Operator Console<br><span class="em">Design System</span></h1>
+    <p class="lede">A dark, data-dense, trust-oriented Qt shell for live multimodal inference. Six pages, three shells, seven primitives, one persistent ActionBar — and a vocabulary that distinguishes <em>recovering</em> from <em>degraded</em> from <em>error</em> on every surface.</p>
+    <div class="swatch-strip">
+      <div class="sw" style="background:#0f1115">#0f1115</div>
+      <div class="sw" style="background:#171a21">#171a21</div>
+      <div class="sw" style="background:#1d2029">#1d2029</div>
+      <div class="sw dark" style="background:#5b8def">#5b8def</div>
+      <div class="sw" style="background:#4ecb71">#4ecb71</div>
+      <div class="sw" style="background:#e7b34a">#e7b34a</div>
+      <div class="sw" style="background:#e26a6a">#e26a6a</div>
+      <div class="sw" style="background:#6cc3d5">#6cc3d5</div>
+      <div class="sw" style="background:#d59b4a">#d59b4a</div>
+    </div>
+  </div>
+
+  <div class="hero-meta">
+    <div class="row"><span class="k">version</span><span class="v">0.1.0</span></div>
+    <div class="row"><span class="k">audit</span><span class="v"><code>docs/artifacts/OPERATOR_CONSOLE_UI_UX_AUDIT.md</code></span></div>
+    <div class="row"><span class="k">spec</span><span class="v">§4.E.1 · §7B · §12</span></div>
+    <div class="row"><span class="k">stack</span><span class="v">PySide6 · QSS · single composed stylesheet</span></div>
+    <div class="row"><span class="k">tokens</span><span class="v"><code>services/operator_console/design_system/tokens.py</code></span></div>
+    <div class="row"><span class="k">runtime</span><span class="v">desktop · loopback API · operator host</span></div>
+  </div>
+</section>
+
+<!-- ============= Pages ============= -->
+<h2>Reference</h2>
+<p class="desc">Five working documents. Open any tile to see the rendered tokens, primitives, compounds, shells, and language patterns the console is built from.</p>
+<div class="pages">
+  <a class="tile" href="foundations.html">
+    <div class="top"><span class="num">01</span><span>Foundations</span><span class="arrow">→</span></div>
+    <h3>Palette, type, surfaces</h3>
+    <p>The three near-black neutrals that form the surface ladder, the five status hues that carry every trust signal, the type ramp, the spacing scale, the two radii.</p>
+    <div class="tags">
+      <span class="tag">tokens.py</span>
+      <span class="tag">UiStatusKind</span>
+      <span class="tag">surface ladder</span>
+    </div>
+  </a>
+  <a class="tile" href="primitives.html">
+    <div class="top"><span class="num">02</span><span>Primitives</span><span class="arrow">→</span></div>
+    <h3>The seven shared widgets</h3>
+    <p>SectionHeader, MetricCard, StatusPill, AlertBanner, EmptyState, EventTimeline, plus the responsive metric grid. Each with its object-name set and live examples.</p>
+    <div class="tags">
+      <span class="tag">MetricCard</span>
+      <span class="tag">StatusPill</span>
+      <span class="tag">AlertBanner</span>
+      <span class="tag">+4</span>
+    </div>
+  </a>
+  <a class="tile" href="action-bar.html">
+    <div class="top"><span class="num">03</span><span>ActionBar</span><span class="arrow">→</span></div>
+    <h3>The persistent stimulus rail</h3>
+    <p>The console's only persistent write surface. Six lifecycle states from idle through measuring to completed, each with fixed copy and pill mapping.</p>
+    <div class="tags">
+      <span class="tag">StimulusUiContext</span>
+      <span class="tag">compact &lt; 1024px</span>
+      <span class="tag">retry path</span>
+    </div>
+  </a>
+  <a class="tile" href="shells.html">
+    <div class="top"><span class="num">04</span><span>Shells</span><span class="arrow">→</span></div>
+    <h3>The three layout archetypes</h3>
+    <p>SidebarStackShell wraps the app. MetricGridPlusTimelineShell and TableWithDrillDownShell compose every page inside it. New pages pick one — they don't invent a fourth.</p>
+    <div class="tags">
+      <span class="tag">SidebarStackShell</span>
+      <span class="tag">MetricGrid+Timeline</span>
+      <span class="tag">Table+DrillDown</span>
+    </div>
+  </a>
+  <a class="tile" href="operator-language.html">
+    <div class="top"><span class="num">05</span><span>Operator language</span><span class="arrow">→</span></div>
+    <h3>Trust copy · readback over abstraction</h3>
+    <p>How the console talks. Six writing principles, the wrong-vs-right table that catches drift, the four enum vocabularies, and a phrase library of canonical sentences from <code>formatters.py</code>.</p>
+    <div class="tags">
+      <span class="tag">formatters.py</span>
+      <span class="tag">UiStatusKind</span>
+      <span class="tag">AlertSeverity</span>
+      <span class="tag">+2</span>
+    </div>
+  </a>
+  <a class="tile" href="setup-launcher.html">
+    <div class="top"><span class="num">06</span><span>Setup launcher</span><span class="arrow">→</span></div>
+    <h3>First-run + repair surface</h3>
+    <p>The PySide6 setup window now unified with the console palette. Five lifecycle states, three context-dependent action buttons, and a phrase library that keeps the install moment honest.</p>
+    <div class="tags">
+      <span class="tag">SetupPanel</span>
+      <span class="tag">install_setup_stylesheet</span>
+      <span class="tag">desktop_launcher</span>
+    </div>
+  </a>
+</div>
+
+<!-- ============= Reports ============= -->
+<h2>Reports</h2>
+<p class="desc">Working documents the design system uses to stay aligned with the running app. These change between releases.</p>
+<div class="pages">
+  <a class="tile" href="handoff-to-engineering.html">
+    <div class="top"><span class="num">R1</span><span>UX handoff to engineering</span><span class="arrow">→</span></div>
+    <h3>22 UI-only recommendations <span style="font-size:11px; color:var(--status-ok); font-weight:500; margin-left:6px;">✓ shipped</span></h3>
+    <p>The original handoff: prioritized layout, microcopy, and accessibility changes ranging from one-line QSS fixes to coordinated Live Session work. Every item now lives in <code>qss_builder.py</code> and the widget tree.</p>
+    <div class="tags">
+      <span class="tag">UX-01..UX-22</span>
+      <span class="tag">quick win · medium · later</span>
+    </div>
+  </a>
+  <a class="tile" href="runtime-drift.html">
+    <div class="top"><span class="num">R2</span><span>Runtime drift report</span><span class="arrow">→</span></div>
+    <h3>7 residual findings after the handoff <span style="font-size:11px; color:var(--status-warn); font-weight:500; margin-left:6px;">v2 · open</span></h3>
+    <p>What the captures reveal that static gates miss: a tokens-vs-widget disagreement on <em>recovering</em>, font fallback to a serif, undocumented status words, copy capitalization, and a Live Session layout overlap.</p>
+    <div class="tags">
+      <span class="tag">DR-02..DR-08</span>
+      <span class="tag">1 critical</span>
+      <span class="tag">DR-01 closed</span>
+    </div>
+  </a>
+</div>
+
+<!-- ============= Hard rules ============= -->
+<h2>Hard rules</h2>
+<p class="desc">From <code>services/operator_console/design_system/DESIGN_SYSTEM.md</code>. These are checked by the design-system audit helper, not negotiated per page.</p>
+<div class="rules">
+  <div class="rule">
+    <span class="num">01</span>
+    <span class="text">Do not compose QSS inline in <code>views/</code> or <code>widgets/</code>. <em>The single composed stylesheet from <code>build_stylesheet()</code> is the only place styles are written.</em></span>
+  </div>
+  <div class="rule">
+    <span class="num">02</span>
+    <span class="text">Keep hex literals in <code>tokens.py</code> only. <em>Every other module references the typed <code>Palette</code> dataclass.</em></span>
+  </div>
+  <div class="rule">
+    <span class="num">03</span>
+    <span class="text">Add any new QSS <code>#ObjectName</code> selector to <code>design_system.json</code>. <em>The manifest is the source of truth for what selectors exist.</em></span>
+  </div>
+  <div class="rule">
+    <span class="num">04</span>
+    <span class="text">Use <code>UiStatusKind</code> for status mapping rather than ad-hoc string categories. <em>Never invent a new status word — pick a bucket.</em></span>
+  </div>
+  <div class="rule">
+    <span class="num">05</span>
+    <span class="text">Keep views bound to viewmodels and formatter helpers, not API clients. <em>The shell does not talk to the API; it pushes route and selection state into <code>OperatorStore</code>.</em></span>
+  </div>
+</div>
+
+<!-- ============= Source map ============= -->
+<h2>Source map</h2>
+<p class="desc">The files this design system lives in. Anything that contradicts these is a bug in the contradicting code, not in the system.</p>
+<div class="srcmap">
+  <div class="src"><strong>Tokens</strong><span class="path">services/operator_console/design_system/tokens.py</span><br><span class="path">services/operator_console/design_system/tokens.json</span></div>
+  <div class="src"><strong>Stylesheet builder</strong><span class="path">services/operator_console/design_system/qss_builder.py</span></div>
+  <div class="src"><strong>Component registry</strong><span class="path">services/operator_console/design_system/components.py</span><br><span class="path">services/operator_console/design_system/design_system.json</span></div>
+  <div class="src"><strong>Shells</strong><span class="path">services/operator_console/design_system/shells.py</span></div>
+  <div class="src"><strong>Operator language</strong><span class="path">services/operator_console/formatters.py</span></div>
+  <div class="src"><strong>Status vocabulary</strong><span class="path">services/operator_console/state.py</span></div>
+  <div class="src"><strong>Shared widgets</strong><span class="path">services/operator_console/widgets/*.py</span></div>
+  <div class="src"><strong>Audit · current state</strong><span class="path">docs/artifacts/OPERATOR_CONSOLE_UI_UX_AUDIT.md</span></div>
+</div>
+
+<div class="foot">
+  <span class="l">LSIE-MLF · operator console · v0.1.0</span>
+  <span>This system is grounded in the current-state audit. Future migration guidance lives in the spec, not here.</span>
+</div>
+
+</div>
+</body>
+</html>

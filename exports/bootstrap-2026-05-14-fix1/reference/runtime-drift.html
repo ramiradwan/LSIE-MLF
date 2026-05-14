@@ -1,0 +1,395 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="robots" content="noindex, nofollow">
+<title>Operator Console · Runtime drift v2</title>
+<link rel="stylesheet" href="tokens.css">
+<style>
+  body { padding: 56px 64px 96px; }
+  .doc { max-width: 1100px; margin: 0 auto; }
+
+  .eyebrow {
+    font-family: var(--font-mono); font-size: 11px;
+    color: var(--text-muted); letter-spacing: 0.12em;
+    text-transform: uppercase;
+    margin-bottom: 14px;
+    display: flex; align-items: center; gap: 10px;
+  }
+  .eyebrow .dot { width:6px; height:6px; border-radius:50%; background: var(--status-warn); }
+
+  h1 { font-size: 38px; font-weight: 600; letter-spacing: -0.02em; margin: 0 0 14px; line-height: 1.05; }
+  .lede { color: var(--text-muted); font-size: 14px; line-height: 1.65; max-width: 800px; margin: 0 0 24px; }
+  .lede code { font-family: var(--font-mono); font-size: 12px; background: var(--surface-raised); padding: 1px 5px; border-radius: 3px; color: var(--text-primary); }
+
+  .ack {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--status-ok);
+    border-radius: var(--radius-md);
+    padding: 18px 22px;
+    margin-bottom: 36px;
+    display: grid; grid-template-columns: 24px 1fr;
+    gap: 14px; align-items: start;
+  }
+  .ack .g {
+    width: 22px; height: 22px; border-radius: 50%;
+    background: rgba(78,203,113,0.16);
+    display: inline-flex; align-items: center; justify-content: center;
+    font-size: 12px; font-weight: 700; color: var(--status-ok);
+  }
+  .ack .t { color: var(--text-primary); font-size: 13px; line-height: 1.55; }
+  .ack .t strong { font-weight: 600; }
+  .ack .t code { font-family: var(--font-mono); font-size: 12px; background: var(--surface-raised); padding: 1px 5px; border-radius: 3px; }
+
+  h2 {
+    font-size: 11px; font-weight: 600; letter-spacing: 0.12em;
+    text-transform: uppercase; color: var(--text-muted);
+    margin: 56px 0 14px; padding-bottom: 10px;
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: baseline; gap: 12px;
+  }
+  h2 .count {
+    font-family: var(--font-mono); color: var(--text-primary);
+    background: var(--surface-raised); padding: 2px 8px; border-radius: 3px;
+    letter-spacing: 0;
+  }
+  h2 .name { font-family: var(--font-mono); font-size: 13px; color: var(--text-primary); text-transform: none; letter-spacing: 0; }
+
+  .scorecard {
+    display: grid; grid-template-columns: repeat(4, 1fr);
+    gap: 12px; margin-bottom: 32px;
+  }
+  .sc {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: 16px 18px;
+    display: flex; flex-direction: column; gap: 4px;
+  }
+  .sc .k { font-size: 11px; color: var(--text-muted); font-family: var(--font-mono); text-transform: uppercase; letter-spacing: 0.08em; }
+  .sc .v { font-size: 26px; font-weight: 600; color: var(--text-primary); font-variant-numeric: tabular-nums; }
+  .sc .s { font-size: 12px; color: var(--text-muted); }
+  .sc.crit { border-left: 3px solid var(--status-bad); }
+  .sc.warn { border-left: 3px solid var(--status-warn); }
+  .sc.med  { border-left: 3px solid var(--status-degraded); }
+  .sc.ok   { border-left: 3px solid var(--status-ok); }
+
+  .find {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    margin-bottom: 16px;
+    overflow: hidden;
+  }
+  .find.crit { border-left: 3px solid var(--status-bad); }
+  .find.warn { border-left: 3px solid var(--status-warn); }
+  .find.med  { border-left: 3px solid var(--status-degraded); }
+  .find.copy { border-left: 3px solid var(--accent); }
+  .find.ok   { border-left: 3px solid var(--status-ok); }
+  .find.closed { border-left: 3px solid var(--text-muted); opacity: 0.85; }
+
+  .find-head {
+    padding: 16px 22px 12px;
+    display: flex; align-items: center; gap: 14px;
+    border-bottom: 1px solid var(--border);
+  }
+  .find-id {
+    font-family: var(--font-mono); font-size: 11px;
+    color: var(--text-muted);
+    background: var(--surface-raised);
+    padding: 3px 8px; border-radius: 3px;
+  }
+  .find-title { font-size: 15px; font-weight: 600; color: var(--text-primary); flex: 1; }
+  .find-tag {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 3px 10px 3px 8px;
+    background: var(--surface-raised);
+    border-radius: 999px;
+  }
+  .find-tag .d { width: 7px; height: 7px; border-radius: 50%; }
+  .find-tag .l { font-size: 11px; font-weight: 600; color: var(--text-primary); text-transform: uppercase; letter-spacing: 0.04em; }
+  .find-tag.crit .d { background: var(--status-bad); }
+  .find-tag.warn .d { background: var(--status-warn); }
+  .find-tag.med  .d { background: var(--status-degraded); }
+  .find-tag.copy .d { background: var(--accent); }
+  .find-tag.ok   .d { background: var(--status-ok); }
+  .find-tag.closed .d { background: var(--text-muted); }
+
+  .find-body {
+    display: grid;
+    grid-template-columns: 180px 1fr;
+    gap: 0;
+  }
+  .row { display: contents; }
+  .k {
+    padding: 12px 22px;
+    font-family: var(--font-mono); font-size: 11px;
+    color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.06em;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg);
+  }
+  .v {
+    padding: 12px 22px;
+    font-size: 13px; color: var(--text-primary);
+    line-height: 1.6;
+    border-bottom: 1px solid var(--border);
+  }
+  .row:last-child .k, .row:last-child .v { border-bottom: none; }
+  .v code {
+    font-family: var(--font-mono); font-size: 12px;
+    background: var(--surface-raised); padding: 1px 5px;
+    border-radius: 3px; color: var(--text-primary);
+  }
+
+  .pre {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 12px 14px;
+    font-family: var(--font-mono); font-size: 12px;
+    color: var(--text-primary);
+    line-height: 1.5;
+    margin: 8px 0 0;
+    overflow-x: auto;
+    white-space: pre;
+  }
+  .pre .c { color: var(--text-muted); }
+  .pre .s { color: var(--status-ok); }
+  .pre .e { color: var(--status-bad); }
+  .pre .a { color: var(--accent); }
+  .pre .k { color: var(--status-warn); padding: 0; background: transparent; border: none; }
+
+  .ipill {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 3px 10px 3px 8px;
+    background: var(--surface-raised);
+    border-radius: 999px;
+  }
+  .ipill .d { width: 7px; height: 7px; border-radius: 50%; }
+  .ipill .lbl { font-size: 11px; font-weight: 600; color: var(--text-primary); }
+  .ipill.ok         .d { background: var(--status-ok); }
+  .ipill.warn       .d { background: var(--status-warn); }
+  .ipill.bad        .d { background: var(--status-bad); }
+  .ipill.recovering .d { background: var(--status-recovering); }
+  .ipill.degraded   .d { background: var(--status-degraded); }
+  .ipill.accent     .d { background: var(--accent); }
+  .ipill.muted      .d { background: var(--text-muted); }
+
+  .compare {
+    display: grid; grid-template-columns: 1fr 1fr;
+    gap: 12px; margin-top: 4px;
+  }
+  .compare .col {
+    background: var(--surface-raised);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 10px 12px;
+    font-size: 12px;
+  }
+  .compare .col .h {
+    font-family: var(--font-mono); font-size: 11px;
+    color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.06em;
+    margin-bottom: 6px;
+  }
+  .compare .col.obs  { border-left: 2px solid var(--status-bad); }
+  .compare .col.spec { border-left: 2px solid var(--status-ok); }
+
+  .foot {
+    margin-top: 80px; padding-top: 28px;
+    border-top: 1px solid var(--border);
+    color: var(--text-muted); font-size: 12px;
+    display: flex; justify-content: space-between;
+  }
+  .foot .l { font-family: var(--font-mono); }
+</style>
+</head>
+<body>
+<div class="doc">
+
+<div class="eyebrow"><span class="dot"></span>Drift report · v2 · post-handoff</div>
+<h1>Drift findings after the<br>22-item handoff landed</h1>
+<p class="lede">Comparing runtime captures (1024×768) against the codebase at commit <code>a67e1ee</code>. The handoff implementation is comprehensive — every UX-XX item is wired and the design-system manifest has grown to match. This pass focuses on a smaller set of <strong>residual visual drift</strong> that static gates (ruff, mypy, run_audit.py) don't catch, plus three things the audit no longer reflects.</p>
+
+<div class="ack">
+  <div class="g">✓</div>
+  <div class="t">
+    <strong>Acknowledged ·</strong> UX-01..UX-22 are present in <code>qss_builder.py</code> (which has grown 3×), <code>design_system.json</code>, and the widget code. Visible in the captures: section-header level ramp, MetricCardChevron, NowTrust groupings, Physiology freshness card, Sessions filter input, Experiments Manage entry point, readiness strip with severity tints. <strong>Closed:</strong> DR-01 (cloud sign-in / outbox cards are now intentional in-shell). The remaining findings below are real and visible in the captured runtime — not contradictions of the audit, but cases the audit and the new selectors don't cover.
+  </div>
+</div>
+
+<div class="scorecard">
+  <div class="sc crit"><span class="k">Critical</span><span class="v">1</span><span class="s">tokens / widget disagree</span></div>
+  <div class="sc warn"><span class="k">Warn</span><span class="v">3</span><span class="s">visual contract drift</span></div>
+  <div class="sc med"><span class="k">Medium</span><span class="v">3</span><span class="s">copy / consistency</span></div>
+  <div class="sc ok"><span class="k">Closed since v1</span><span class="v">1</span><span class="s">DR-01 cloud UI now intentional</span></div>
+</div>
+
+<!-- ================== CRITICAL ================== -->
+<h2>Critical <span class="count">1</span> <span class="name">— design tokens and widget code disagree</span></h2>
+
+<div class="find crit">
+  <div class="find-head">
+    <span class="find-id">DR-02</span>
+    <span class="find-title">"recovering" pill renders in accent blue — <code>StatusPill</code> bypasses the <code>status_recovering</code> token</span>
+    <span class="find-tag crit"><span class="d"></span><span class="l">critical</span></span>
+  </div>
+  <div class="find-body">
+    <div class="row"><div class="k">Where it lands</div><div class="v">Health · "Getting ready" card. Live Session readiness strip · ml probe. Anywhere the <code>StatusPill</code> widget is asked to show a recovering state.</div></div>
+    <div class="row"><div class="k">Root cause</div><div class="v">Two contradictions in <code>widgets/status_pill.py</code>:<br><br>
+      <strong>1.</strong> <code>UiStatusKind</code> has no <code>RECOVERING</code> bucket — only OK / INFO / WARN / ERROR / NEUTRAL / PROGRESS / MUTED. So "recovering" must arrive as <code>INFO</code> or <code>PROGRESS</code>, both of which map to <code>PALETTE.accent</code>.<br><br>
+      <strong>2.</strong> An explicit comment in the file says the choice is intentional:
+      <div class="pre"><span class="c"># §12 status colouring. RECOVERING picks the accent colour so it reads</span>
+<span class="c"># as "self-healing in progress" rather than "warning" (which would</span>
+<span class="c"># conflate it with DEGRADED).</span></div>
+    </div></div>
+    <div class="row"><div class="k">Why it matters</div><div class="v">The design tokens declare a unique hue for this state — <code>status_recovering = #6cc3d5</code> (teal) — and the QSS uses it for <code>HealthRowRecovering</code> table cells. So the table-cell variant and the pill variant of the same status now render in <em>different colors</em>. The audit (§11.3) names recovering as a distinct color contract; today it's distinct in QSS, accent-collapsed in widgets.
+      <div class="compare">
+        <div class="col obs"><div class="h">Runtime · StatusPill</div><span class="ipill accent"><span class="d"></span><span class="lbl">recovering</span></span><div style="margin-top:6px;color:var(--text-muted)">accent #5b8def — same as focus rings and the submit button</div></div>
+        <div class="col spec"><div class="h">QSS · HealthRowRecovering</div><span class="ipill recovering"><span class="d"></span><span class="lbl">recovering</span></span><div style="margin-top:6px;color:var(--text-muted)">status_recovering #6cc3d5 — distinct teal</div></div>
+      </div>
+    </div></div>
+    <div class="row"><div class="k">Decision needed</div><div class="v">This is a <em>design-system question</em>, not a bug. Pick one:<ul style="margin:4px 0;padding-left:18px;line-height:1.7;">
+      <li><strong>Option A (recommended) — fix the widget.</strong> Add <code>UiStatusKind.RECOVERING</code>, map it to <code>PALETTE.status_recovering</code>, update <code>formatters.py</code> to emit it where appropriate. Restores the audit's color contract.</li>
+      <li><strong>Option B — fix the design system.</strong> Drop the <code>status_recovering</code> token and remove <code>HealthRowRecovering</code>; recovering is just accent-with-a-label throughout. Smaller code change but loses a documented UX distinction.</li>
+    </ul></div></div>
+    <div class="row"><div class="k">Files</div><div class="v"><code>packages/schemas/operator_console/ui_status_kind.py</code> · <code>widgets/status_pill.py</code> · <code>formatters.py</code> (or <code>tokens.py</code> + <code>qss_builder.py</code> if Option B)</div></div>
+  </div>
+</div>
+
+<!-- ================== WARN ================== -->
+<h2>Warn <span class="count">3</span> <span class="name">— visible runtime drift, single-file fixes</span></h2>
+
+<div class="find warn">
+  <div class="find-head">
+    <span class="find-id">DR-04</span>
+    <span class="find-title">Body type falls through to a serif fallback on Linux hosts</span>
+    <span class="find-tag warn"><span class="d"></span><span class="l">warn</span></span>
+  </div>
+  <div class="find-body">
+    <div class="row"><div class="k">Where</div><div class="v">Everywhere. Sidebar subtitle "Operator Console", ActionBar italic "Expected response: hei rakas", body copy across all six pages.</div></div>
+    <div class="row"><div class="k">Spec</div><div class="v"><code>qss_builder.py</code>: <code>font-family: "Segoe UI", "Inter", system-ui, sans-serif</code>. Neither Segoe UI nor Inter is installed on the capture host; the fallback chain lands on a serif (likely DejaVu Serif or Liberation Serif).</div></div>
+    <div class="row"><div class="k">Why static gates miss it</div><div class="v">QSS is valid; the font load is host-dependent. <code>run_audit.py --strict</code> can't tell whether the resolved font is sans or serif.</div></div>
+    <div class="row"><div class="k">Fix</div><div class="v">Ship <em>Inter</em> as a Qt resource and load it at app boot via <code>QFontDatabase.addApplicationFont(":/fonts/Inter-Regular.ttf")</code> + the bold/italic variants. Guarantees identical rendering on Windows / macOS / Linux. As a stopgap, add <em>DejaVu Sans</em> before <code>sans-serif</code> in the fallback chain so Linux hosts at least land on a sans family.</div></div>
+    <div class="row"><div class="k">Files</div><div class="v"><code>app.py</code> · <code>design_system/qss_builder.py</code> · <code>services/operator_console/resources/fonts/</code> (new)</div></div>
+  </div>
+</div>
+
+<div class="find warn">
+  <div class="find-head">
+    <span class="find-id">DR-03</span>
+    <span class="find-title">"sampling" is an undocumented status word — violates hard-rule #4</span>
+    <span class="find-tag warn"><span class="d"></span><span class="l">warn</span></span>
+  </div>
+  <div class="find-body">
+    <div class="row"><div class="k">Where</div><div class="v">Experiments · "Experiment" card → pill labelled <em>sampling</em> in accent blue. Same on Overview · "Experiment" card.</div></div>
+    <div class="row"><div class="k">Spec</div><div class="v"><code>DESIGN_SYSTEM.md</code> hard-rule #4: <em>"Use UiStatusKind for status mapping rather than ad-hoc string categories."</em> "sampling" is not one of the seven enum values.</div></div>
+    <div class="row"><div class="k">Why it matters</div><div class="v">"sampling" is a <em>lifecycle phase</em> of an experiment (the strategy is currently selecting arms), not a health or trust state. Painting it identically to recovering/info pills puts it on the same vocabulary tier as the audit-blessed words. Operators now have eight buckets to memorize, not seven.</div></div>
+    <div class="row"><div class="k">Fix</div><div class="v">Two paths, in order of preference:<ul style="margin:4px 0;padding-left:18px;line-height:1.7;">
+      <li><strong>Demote the phase</strong> from a pill to a small mono-12 label next to the experiment ID. Phase is a label, not a status.</li>
+      <li><strong>If it must be a pill</strong>, use <code>UiStatusKind.OK</code> with literal copy "sampling" — preserves the color contract while keeping the operator-language word the strategy team prefers.</li>
+    </ul></div></div>
+    <div class="row"><div class="k">Files</div><div class="v"><code>views/experiments_view.py</code> · <code>views/overview_view.py</code> · <code>formatters.py</code></div></div>
+  </div>
+</div>
+
+<div class="find warn">
+  <div class="find-head">
+    <span class="find-id">DR-05</span>
+    <span class="find-title">Live Session: encounter panel overlaps the metric cards above it</span>
+    <span class="find-tag warn"><span class="d"></span><span class="l">warn</span></span>
+  </div>
+  <div class="find-body">
+    <div class="row"><div class="k">Where</div><div class="v">Live Session at 1024×768 — the panel containing "Why this observed response counted" paints over the bottom of "Ready for a stimulus" and "Live response ticker".</div></div>
+    <div class="row"><div class="k">Likely cause</div><div class="v">UX-09 introduced a <code>QSplitter(Vertical)</code> with a default 45/55 ratio persisted via QSettings. The captures suggest the splitter's top region is sized smaller than the content's minimum height, and the content's <code>QSizePolicy</code> is <code>Fixed</code> or <code>Preferred</code> rather than <code>MinimumExpanding</code> — so the content extends past the splitter region rather than being clipped or scrolled.</div></div>
+    <div class="row"><div class="k">Fix</div><div class="v">Set <code>QSizePolicy(MinimumExpanding, MinimumExpanding)</code> on the metric grid container, set a sensible <code>minimumHeight</code> on the splitter's top widget, and consider wrapping the top region in a <code>QScrollArea</code> when its content exceeds the splitter region. Also: persist a sensible minimum splitter handle position so a previous narrow session doesn't trap the layout on relaunch.</div></div>
+    <div class="row"><div class="k">Files</div><div class="v"><code>views/live_session_view.py</code></div></div>
+  </div>
+</div>
+
+<!-- ================== MEDIUM ================== -->
+<h2>Medium <span class="count">3</span> <span class="name">— copy and consistency, single-line fixes</span></h2>
+
+<div class="find med">
+  <div class="find-head">
+    <span class="find-id">DR-07</span>
+    <span class="find-title">"Healthy" (capitalized) breaks the lower-case status word principle</span>
+    <span class="find-tag med"><span class="d"></span><span class="l">medium</span></span>
+  </div>
+  <div class="find-body">
+    <div class="row"><div class="k">Where</div><div class="v">Live Session · Session panel reads "<em>Status: Healthy</em>". Every other status word in the console is lower-case (ok, degraded, recovering, idle, fresh, sampling…).</div></div>
+    <div class="row"><div class="k">Spec</div><div class="v">Operator-language principle #5: <em>"Short, lower-case, no marketing voice."</em></div></div>
+    <div class="row"><div class="k">Fix</div><div class="v">Normalise via <code>formatters.py</code>: "Healthy" → "ok" (preferred — matches <code>UiStatusKind</code>) or "healthy" (if the team wants to keep the word). The fact that this slipped through suggests the formatter for session status isn't routing through the same lowercase pipe as the rest.</div></div>
+    <div class="row"><div class="k">Files</div><div class="v"><code>formatters.py</code></div></div>
+  </div>
+</div>
+
+<div class="find med">
+  <div class="find-head">
+    <span class="find-id">DR-06</span>
+    <span class="find-title">Live Session readiness strip mixes probe vocabulary with action vocabulary</span>
+    <span class="find-tag med"><span class="d"></span><span class="l">medium</span></span>
+  </div>
+  <div class="find-body">
+    <div class="row"><div class="k">Where</div><div class="v">Top strip on Live Session.</div></div>
+    <div class="row"><div class="k">Observed</div><div class="v">Left side carries subsystem probes — <code>phone</code>, <code>ml</code>, <code>audio</code>, <code>video</code>. Right side carries <code>submit</code>, which is an <code>StimulusActionState</code> lifecycle value. Both render with identical <code>StatusPill</code> styling, so the operator must read each label to know which kind of thing it describes.</div></div>
+    <div class="row"><div class="k">Fix</div><div class="v">Pull "submit" off the readiness strip. Submit lifecycle belongs in the ActionBar (already covered there). If the strip is meant to surface the <em>safe-submit gate result</em>, label it as <code>safe-submit</code> and place it apart from the probes — perhaps a narrow divider then the gate pill, the same way the audit calls out distinguishing categories visually.</div></div>
+    <div class="row"><div class="k">Files</div><div class="v"><code>views/live_session_view.py</code></div></div>
+  </div>
+</div>
+
+<div class="find med">
+  <div class="find-head">
+    <span class="find-id">DR-08</span>
+    <span class="find-title">Health rollup cards duplicate state: primary text <em>is</em> the pill word</span>
+    <span class="find-tag med"><span class="d"></span><span class="l">medium</span></span>
+  </div>
+  <div class="find-body">
+    <div class="row"><div class="k">Where</div><div class="v">Health page — "Overall · degraded · <em>degraded</em>", "Needs attention · 1 · <em>degraded</em>", "Getting ready · 1 · <em>recovering</em>". The card's primary text repeats the embedded pill word.</div></div>
+    <div class="row"><div class="k">Recommendation</div><div class="v">Add a rule in <code>widgets/metric_card.py</code>: <em>skip the embedded pill when <code>primary.lower()</code> already equals the pill's status word</em>. For count-primaries ("1", "0"), keep the pill — count and status convey different things.</div></div>
+    <div class="row"><div class="k">Files</div><div class="v"><code>widgets/metric_card.py</code> · <code>views/health_view.py</code></div></div>
+  </div>
+</div>
+
+<!-- ================== CLOSED ================== -->
+<h2>Closed since v1 <span class="count">1</span> <span class="name">— design system updated to reflect reality</span></h2>
+
+<div class="find closed">
+  <div class="find-head">
+    <span class="find-id">DR-01 ✕</span>
+    <span class="find-title">Cloud sign-in / Cloud outbox UI on Health</span>
+    <span class="find-tag closed"><span class="d"></span><span class="l">closed</span></span>
+  </div>
+  <div class="find-body">
+    <div class="row"><div class="k">Resolution</div><div class="v">Cloud API wiring has shipped; the cards and toolbar buttons (<code>CloudSignInButton</code>, <code>ExperimentBundleRefreshButton</code>, <code>RepairInstallButton</code>) are now registered selectors in <code>design_system.json</code>. The audit's §14.4 / §15 caveat is outdated. <strong>Action:</strong> update the audit so it stops listing cloud sign-in as "not currently wired" — keeping that stale assertion is worse than dropping it.</div></div>
+    <div class="row"><div class="k">Follow-up</div><div class="v">The two cards still read <em>"Unknown · waiting for cloud status / outbox summary"</em> in the captures. Once cloud is wired, "Unknown" should be a brief boot state, not a steady state. If those cards stay in "Unknown" for &gt; 30s after launch, that's a separate bug worth filing — but it's API/wiring, not design system.</div></div>
+  </div>
+</div>
+
+<!-- ================== Order ================== -->
+<h2>Suggested fix order</h2>
+<div class="find">
+  <div class="find-body" style="grid-template-columns: 1fr">
+    <div class="row"><div class="v" style="border:none">
+      <ol style="line-height:1.8; padding-left:20px;">
+        <li><strong>DR-07</strong> — Lowercase "Healthy". One line in <code>formatters.py</code>. <em>Today.</em></li>
+        <li><strong>DR-02</strong> — Decide A or B. If A, add <code>UiStatusKind.RECOVERING</code> and remap. If B, simplify tokens. Either way the table-cell vs pill split has to be closed. <em>This week — needs a design-system call.</em></li>
+        <li><strong>DR-04</strong> — Ship Inter as a Qt resource. Fixes typography across the entire app including the launcher. <em>This week.</em></li>
+        <li><strong>DR-03</strong> — Demote "sampling" out of the status-pill tier. <em>This sprint.</em></li>
+        <li><strong>DR-08</strong> — One-line guard in <code>widgets/metric_card.py</code>. <em>This sprint.</em></li>
+        <li><strong>DR-06</strong> — Separate the readiness strip vocabulary. <em>This sprint.</em></li>
+        <li><strong>DR-05</strong> — Splitter min-height + size policy. <em>Next sprint, with the Live Session polish pass.</em></li>
+        <li><strong>Audit update</strong> — Remove cloud-sign-in from the "not wired" list in <code>OPERATOR_CONSOLE_UI_UX_AUDIT.md §14.4 / §15</code>.</li>
+      </ol>
+    </div></div>
+  </div>
+</div>
+
+<div class="foot">
+  <span class="l">Drift report · v2 · 7 open + 1 closed · post-handoff</span>
+  <span>Static gates didn't catch these — all were observable only at runtime.</span>
+</div>
+
+</div>
+</body>
+</html>

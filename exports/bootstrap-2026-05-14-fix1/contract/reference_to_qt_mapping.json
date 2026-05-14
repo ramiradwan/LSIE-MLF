@@ -1,0 +1,110 @@
+{
+  "primitives": [
+    {
+      "reference_id": "SectionHeader",
+      "qt_object_names": [
+        "SectionHeader",
+        "SectionHeaderTitle",
+        "SectionHeaderSubtitle"
+      ]
+    },
+    {
+      "reference_id": "MetricCard",
+      "qt_object_names": [
+        "MetricCard",
+        "MetricCardTitle",
+        "MetricCardPrimary",
+        "MetricCardSecondary",
+        "MetricCardChevron"
+      ]
+    },
+    {
+      "reference_id": "StatusPill",
+      "qt_object_names": [
+        "StatusPill",
+        "StatusPillLabel"
+      ]
+    },
+    {
+      "reference_id": "AlertBanner",
+      "qt_object_names": [
+        "AlertBanner",
+        "AlertBannerInfo",
+        "AlertBannerWarning",
+        "AlertBannerCritical",
+        "AlertBannerGlyph",
+        "AlertBannerMessage"
+      ]
+    },
+    {
+      "reference_id": "EmptyState",
+      "qt_object_names": [
+        "EmptyState",
+        "EmptyStateTitle",
+        "EmptyStateMessage"
+      ]
+    },
+    {
+      "reference_id": "EventTimeline",
+      "qt_object_names": [
+        "EventTimeline",
+        "EventTimelineTable"
+      ]
+    },
+    {
+      "reference_id": "ActionBar",
+      "qt_object_names": [
+        "ActionBar",
+        "ActionBarSession",
+        "ActionBarGreeting",
+        "ActionBarNote",
+        "ActionBarSubmit",
+        "ActionBarCountdown",
+        "ActionBarMessage",
+        "ActionBarNoteToggle",
+        "ActionBarProgress"
+      ]
+    },
+    {
+      "reference_id": "LauncherSetupSurface",
+      "qt_object_names": [
+        "SetupRoot",
+        "SetupPanel",
+        "SetupTitle",
+        "SetupStatus",
+        "SetupProgress",
+        "SetupLog",
+        "SetupRetry",
+        "SetupLaunch",
+        "SetupReinstall"
+      ]
+    }
+  ],
+  "routes": [
+    {
+      "reference_id": "overview",
+      "qt_route": "overview"
+    },
+    {
+      "reference_id": "live-session",
+      "qt_route": "live_session"
+    },
+    {
+      "reference_id": "experiments",
+      "qt_route": "experiments"
+    },
+    {
+      "reference_id": "physiology",
+      "qt_route": "physiology"
+    },
+    {
+      "reference_id": "health",
+      "qt_route": "health"
+    },
+    {
+      "reference_id": "sessions",
+      "qt_route": "sessions"
+    }
+  ],
+  "version": 1
+}

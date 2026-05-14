@@ -1,0 +1,516 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="robots" content="noindex, nofollow">
+<title>Operator Console · Setup launcher</title>
+<link rel="stylesheet" href="tokens.css">
+<style>
+  body { padding: 48px 56px 80px; }
+  .doc { max-width: 1180px; margin: 0 auto; }
+  h1 { font-size: 28px; font-weight: 600; margin: 0 0 6px; letter-spacing: -0.01em; }
+  .lede { color: var(--text-muted); font-size: 14px; max-width: 760px; margin: 0 0 48px; line-height: 1.55; }
+  .lede code, .desc code {
+    font-family: var(--font-mono); font-size: 12px;
+    background: var(--surface-raised); padding: 1px 5px; border-radius: 3px; color: var(--text-primary);
+  }
+  h2 {
+    font-size: 11px; font-weight: 600; letter-spacing: 0.12em;
+    text-transform: uppercase; color: var(--text-muted);
+    margin: 56px 0 6px; padding-bottom: 10px;
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: baseline; gap: 12px;
+  }
+  h2:first-of-type { margin-top: 0; }
+  h2 .name { font-family: var(--font-mono); font-size: 13px; color: var(--text-primary); text-transform: none; letter-spacing: 0; }
+  .desc { color: var(--text-muted); font-size: 13px; line-height: 1.6; max-width: 800px; margin: 0 0 22px; }
+
+  /* ===== Setup window mock ===== */
+  .setup-frame {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    overflow: hidden;
+  }
+  .titlebar {
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    padding: 8px 14px;
+    display: flex; align-items: center; gap: 10px;
+    font-size: 11px; color: var(--text-muted); font-family: var(--font-mono);
+  }
+  .titlebar .dots { display: flex; gap: 6px; }
+  .titlebar .dots span {
+    width: 9px; height: 9px; border-radius: 50%;
+    background: var(--surface-raised);
+    border: 1px solid var(--border);
+  }
+  .titlebar .t { color: var(--text-primary); font-weight: 600; }
+  .titlebar .env { margin-left: auto; }
+
+  .setup-root {
+    background: var(--bg);
+    padding: 36px;
+    min-height: 460px;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .setup-panel {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 14px;     /* per qss_builder: 14px */
+    padding: 28px 32px;
+    width: 100%;
+    max-width: 680px;
+    display: flex; flex-direction: column; gap: 18px;
+  }
+  .s-title {
+    color: var(--text-primary);
+    font-size: 24px;
+    font-weight: 700;
+    text-align: center;
+  }
+  .s-status {
+    color: var(--text-muted);
+    font-size: 14px;
+    text-align: center;
+  }
+  .s-progress {
+    background: var(--surface-raised);
+    border: 1px solid var(--border);
+    border-radius: 8px;       /* per qss_builder: 8px */
+    min-height: 24px;
+    overflow: hidden;
+    position: relative;
+  }
+  .s-progress .bar {
+    background: var(--accent);
+    height: 100%;
+    min-height: 24px;
+    border-radius: 7px;
+    width: var(--w, 65%);
+  }
+  .s-progress .pct {
+    position: absolute; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    color: var(--text-primary); font-size: 12px; font-weight: 600;
+  }
+  .s-log {
+    background: var(--surface-raised);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text-primary);
+    font-family: var(--font-mono);
+    font-size: 12px;
+    padding: 12px;
+    height: 140px;
+    overflow: auto;
+    line-height: 1.45;
+  }
+  .s-log .ln { color: var(--text-muted); }
+  .s-log .ok { color: var(--status-ok); }
+  .s-log .warn { color: var(--status-warn); }
+  .s-log .info { color: var(--accent); }
+
+  .s-btnrow {
+    display: flex; justify-content: center;
+  }
+  .btn {
+    border-radius: 6px;
+    padding: 8px 18px;
+    font: 600 13px var(--font-ui);
+    cursor: pointer;
+    border: 1px solid transparent;
+  }
+  .btn-retry  { background: var(--accent);    color: var(--text-inverse); border-color: var(--accent); }
+  .btn-launch { background: var(--status-ok); color: var(--text-inverse); border-color: var(--status-ok); }
+  .btn-reinst { background: transparent; color: var(--text-muted); border-color: var(--border); }
+  .btn-reinst:hover { color: var(--text-primary); border-color: var(--accent); }
+
+  /* Variants grid */
+  .variants {
+    display: grid; gap: 18px;
+    grid-template-columns: 1fr 1fr;
+  }
+  .variant-label {
+    font-family: var(--font-mono); font-size: 11px;
+    color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.08em;
+    margin: 0 0 10px 4px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .variant-label::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--text-muted); }
+  .variant-label.b-active::before { background: var(--accent); }
+  .variant-label.b-ok::before     { background: var(--status-ok); }
+  .variant-label.b-err::before    { background: var(--status-bad); }
+  .variant-label.b-ready::before  { background: var(--status-ok); }
+
+  /* Small setup mockup for variants — scaled down */
+  .mini {
+    transform-origin: top left;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: 24px;
+    display: flex; align-items: center; justify-content: center;
+    min-height: 340px;
+  }
+  .mini .setup-panel {
+    padding: 20px 24px;
+    max-width: 100%;
+    gap: 12px;
+  }
+  .mini .s-title { font-size: 18px; }
+  .mini .s-status { font-size: 12px; }
+  .mini .s-progress { min-height: 18px; }
+  .mini .s-progress .bar { min-height: 18px; }
+  .mini .s-progress .pct { font-size: 11px; }
+  .mini .s-log { height: 80px; font-size: 11px; padding: 8px; }
+  .mini .btn { padding: 6px 14px; font-size: 12px; }
+
+  /* States timeline */
+  .states {
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    overflow: hidden;
+  }
+  .states .row {
+    display: grid;
+    grid-template-columns: 140px 100px 1fr 220px;
+    align-items: baseline;
+    padding: 14px 18px;
+    border-bottom: 1px solid var(--border);
+    gap: 16px;
+  }
+  .states .row.head {
+    background: var(--surface-raised); color: var(--text-muted);
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em;
+  }
+  .states .row:last-child { border-bottom: none; }
+  .states .state { font-family: var(--font-mono); font-size: 12px; color: var(--text-primary); font-weight: 600; }
+  .states .progress {
+    background: var(--surface-raised);
+    border-radius: 999px;
+    height: 6px;
+    overflow: hidden;
+  }
+  .states .progress .b { background: var(--accent); height: 100%; }
+  .states .progress .b.ok { background: var(--status-ok); }
+  .states .progress .b.err { background: var(--status-bad); }
+  .states .copy { color: var(--text-muted); font-size: 13px; line-height: 1.5; }
+  .states .copy strong { color: var(--text-primary); font-weight: 600; }
+  .states .buttons { display: flex; gap: 6px; flex-wrap: wrap; }
+  .states .buttons .b {
+    font-family: var(--font-mono); font-size: 11px;
+    background: var(--surface-raised); border: 1px solid var(--border);
+    padding: 2px 8px; border-radius: 3px;
+    color: var(--text-primary);
+  }
+  .states .buttons .b.hidden { color: var(--text-muted); text-decoration: line-through; opacity: 0.6; }
+  .states .buttons .b.accent { border-color: var(--accent); color: var(--accent); }
+  .states .buttons .b.ok { border-color: var(--status-ok); color: var(--status-ok); }
+
+  /* Tokens */
+  .tokens {
+    display: grid; gap: 8px;
+    grid-template-columns: repeat(2, 1fr);
+    margin-top: 12px;
+  }
+  .tok {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 10px 12px;
+    font-family: var(--font-mono); font-size: 12px;
+    color: var(--text-muted);
+  }
+  .tok strong { color: var(--text-primary); font-weight: 600; }
+
+  /* Relationship note */
+  .relation {
+    background: var(--tint-info);
+    border: 1px solid var(--accent);
+    border-radius: var(--radius-md);
+    padding: 16px 20px;
+    display: grid;
+    grid-template-columns: 24px 1fr;
+    gap: 14px;
+    align-items: start;
+    margin-bottom: 24px;
+  }
+  .relation .g {
+    width: 22px; height: 22px;
+    border-radius: 50%;
+    background: rgba(255,255,255,0.06);
+    display: inline-flex; align-items: center; justify-content: center;
+    font-size: 13px; font-weight: 700; color: var(--text-primary);
+  }
+  .relation .t {
+    font-size: 13px; color: var(--text-primary); line-height: 1.55;
+  }
+  .relation .t code {
+    font-family: var(--font-mono); font-size: 12px;
+    background: rgba(0,0,0,0.25); padding: 1px 5px; border-radius: 3px;
+    color: var(--text-primary);
+  }
+</style>
+</head>
+<body>
+<div class="doc">
+
+<h1>Setup launcher</h1>
+<p class="lede">The first-run + repair surface that runs before the Operator Console proper. Built in PySide6 like the rest of the console, but lives in <code>services/desktop_launcher/</code> with its own object-name family. The styling now sits inside <code>design_system/qss_builder.py</code> as a sibling builder — same palette, intentionally larger radii and bolder type to suit the install moment.</p>
+
+<div class="relation">
+  <div class="g">i</div>
+  <div class="t">
+    <strong>Now unified with the design system.</strong> Per commit <code>a67e1ee</code>, the launcher imports <code>install_setup_stylesheet()</code> from the same module that styles the console. The audit's §11.4 caveat — <em>"setup styling is adjacent to the console's visual system… not yet unified"</em> — no longer holds. The setup surface and the main console now share <code>tokens.py</code> as a single source of truth.
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<h2>
+  <span class="name">SetupWindow</span>
+  <span>Centered panel · progress · log · context-dependent action buttons</span>
+</h2>
+<p class="desc">A single centered <code>SetupPanel</code> on the dark app background. The panel hosts a tall heading, a one-line status, a determinate progress bar, a rolling install log, and one of three action buttons depending on lifecycle state. Minimum window size is 680×460.</p>
+
+<div class="setup-frame">
+  <div class="titlebar">
+    <span class="dots"><span></span><span></span><span></span></span>
+    <span class="t">LSIE-MLF Setup</span>
+    <span class="env">680×460 · QMainWindow</span>
+  </div>
+  <div class="setup-root">
+    <div class="setup-panel" id="SetupPanel">
+      <div class="s-title" id="SetupTitle">Preparing LSIE-MLF</div>
+      <div class="s-status" id="SetupStatus">Downloading the desktop runtime — step 2 / 4</div>
+      <div class="s-progress" id="SetupProgress" style="--w:65%">
+        <div class="bar"></div>
+        <div class="pct">65%</div>
+      </div>
+      <div class="s-log" id="SetupLog">
+<span class="ln">[14:02:11] preflight · checking system prerequisites</span><br>
+<span class="ok">[14:02:11] preflight · ok</span><br>
+<span class="ln">[14:02:12] manifest · resolving manifest from cache</span><br>
+<span class="ok">[14:02:12] manifest · sha256 b8e2a4… verified</span><br>
+<span class="ln">[14:02:13] download · runtime-linux-x64.tar.zst · 184 MB</span><br>
+<span class="ln">[14:02:38] download · 65% (119 MB / 184 MB)</span><br>
+<span class="info">[14:02:38] download · 4.7 MB/s</span>
+      </div>
+      <div class="s-btnrow"><button class="btn btn-launch" id="SetupLaunch" style="visibility:hidden">Launch LSIE-MLF</button></div>
+    </div>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<h2>
+  <span class="name">SetupActionState</span>
+  <span>Five states · one button visible at a time</span>
+</h2>
+<p class="desc">The setup window shows exactly one action button at a time. Lifecycle is driven by <code>InstallManager.signals</code> — the UI does not own state. Buttons hide rather than disable; the operator should never wonder whether to click again.</p>
+
+<div class="states">
+  <div class="row head">
+    <span>State</span>
+    <span>Progress</span>
+    <span>Status + log</span>
+    <span>Action buttons</span>
+  </div>
+  <div class="row">
+    <span class="state">starting</span>
+    <span class="progress"><span class="b" style="width:8%"></span></span>
+    <span class="copy"><strong>"Starting setup…"</strong> · log clears, progress 0</span>
+    <span class="buttons">
+      <span class="b hidden">Retry</span>
+      <span class="b hidden">Launch</span>
+      <span class="b hidden">Reinstall</span>
+    </span>
+  </div>
+  <div class="row">
+    <span class="state">installing</span>
+    <span class="progress"><span class="b" style="width:65%"></span></span>
+    <span class="copy"><strong>"Downloading the desktop runtime…"</strong> · log streams from manager</span>
+    <span class="buttons">
+      <span class="b hidden">Retry</span>
+      <span class="b hidden">Launch</span>
+      <span class="b hidden">Reinstall</span>
+    </span>
+  </div>
+  <div class="row">
+    <span class="state">failed</span>
+    <span class="progress"><span class="b err" style="width:65%"></span></span>
+    <span class="copy"><strong>"Setup needs attention"</strong> · error appended to log</span>
+    <span class="buttons">
+      <span class="b accent">Retry setup</span>
+      <span class="b hidden">Launch</span>
+      <span class="b hidden">Reinstall</span>
+    </span>
+  </div>
+  <div class="row">
+    <span class="state">finished</span>
+    <span class="progress"><span class="b ok" style="width:100%"></span></span>
+    <span class="copy"><strong>"Setup complete! Ready to launch."</strong></span>
+    <span class="buttons">
+      <span class="b hidden">Retry</span>
+      <span class="b ok">Launch LSIE-MLF</span>
+      <span class="b hidden">Reinstall</span>
+    </span>
+  </div>
+  <div class="row">
+    <span class="state">already-installed</span>
+    <span class="progress"><span class="b ok" style="width:100%"></span></span>
+    <span class="copy"><strong>"LSIE-MLF is installed and ready to launch."</strong> · shown when launcher detects a current runtime</span>
+    <span class="buttons">
+      <span class="b hidden">Retry</span>
+      <span class="b ok">Launch LSIE-MLF</span>
+      <span class="b">Reinstall runtime</span>
+    </span>
+  </div>
+  <div class="row">
+    <span class="state">launching</span>
+    <span class="progress"><span class="b ok" style="width:100%"></span></span>
+    <span class="copy"><strong>"Launching LSIE-MLF…"</strong> · Launch button disabled, window will close on successful handoff</span>
+    <span class="buttons">
+      <span class="b hidden">Retry</span>
+      <span class="b ok">Launch · disabled</span>
+      <span class="b">Reinstall</span>
+    </span>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<h2>
+  <span class="name">Variants · live</span>
+  <span>How the panel reads at each lifecycle state</span>
+</h2>
+
+<div class="variants">
+
+  <div>
+    <div class="variant-label b-active">installing · 65%</div>
+    <div class="mini">
+      <div class="setup-panel">
+        <div class="s-title">Preparing LSIE-MLF</div>
+        <div class="s-status">Downloading the desktop runtime — step 2 / 4</div>
+        <div class="s-progress" style="--w:65%"><div class="bar"></div><div class="pct">65%</div></div>
+        <div class="s-log">
+<span class="ln">[14:02:13] download · runtime-linux-x64.tar.zst · 184 MB</span><br>
+<span class="ln">[14:02:38] download · 65% (119 MB / 184 MB)</span><br>
+<span class="info">[14:02:38] download · 4.7 MB/s</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div>
+    <div class="variant-label b-err">failed · Retry setup</div>
+    <div class="mini">
+      <div class="setup-panel">
+        <div class="s-title">Preparing LSIE-MLF</div>
+        <div class="s-status">Setup needs attention</div>
+        <div class="s-progress" style="--w:42%"><div class="bar" style="background:var(--status-bad)"></div><div class="pct">42%</div></div>
+        <div class="s-log">
+<span class="warn">[14:02:38] download · failed</span><br>
+<span class="ln">  reason · network unreachable · cdn.lsie-mlf.io</span><br>
+<span class="ln">  retry · backoff exhausted after 3 attempts</span><br>
+<span class="info">[14:02:39] manager · awaiting operator retry</span>
+        </div>
+        <div class="s-btnrow"><button class="btn btn-retry">Retry setup</button></div>
+      </div>
+    </div>
+  </div>
+
+  <div>
+    <div class="variant-label b-ok">finished · Launch</div>
+    <div class="mini">
+      <div class="setup-panel">
+        <div class="s-title">Preparing LSIE-MLF</div>
+        <div class="s-status">Setup complete! Ready to launch.</div>
+        <div class="s-progress" style="--w:100%"><div class="bar" style="background:var(--status-ok)"></div><div class="pct">100%</div></div>
+        <div class="s-log">
+<span class="ln">[14:03:02] hydrate · runtime extracted to active/</span><br>
+<span class="ln">[14:03:02] hydrate · symlink current → 2026.04.12</span><br>
+<span class="ok">[14:03:03] hydrate · ok</span>
+        </div>
+        <div class="s-btnrow"><button class="btn btn-launch">Launch LSIE-MLF</button></div>
+      </div>
+    </div>
+  </div>
+
+  <div>
+    <div class="variant-label b-ready">already installed · Launch · Reinstall</div>
+    <div class="mini">
+      <div class="setup-panel">
+        <div class="s-title">Preparing LSIE-MLF</div>
+        <div class="s-status">LSIE-MLF is installed and ready to launch.</div>
+        <div class="s-progress" style="--w:100%"><div class="bar" style="background:var(--status-ok)"></div><div class="pct">100%</div></div>
+        <div class="s-log">
+<span class="ln">[14:01:00] launcher · detected current runtime · 2026.04.12</span><br>
+<span class="ok">[14:01:00] launcher · runtime usable</span>
+        </div>
+        <div class="s-btnrow" style="gap:10px;">
+          <button class="btn btn-launch">Launch LSIE-MLF</button>
+          <button class="btn btn-reinst">Reinstall runtime</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<!-- ============================================================ -->
+<h2>
+  <span class="name">Tokens</span>
+  <span>shared palette · two intentional geometry deviations</span>
+</h2>
+<p class="desc">Setup uses the same palette as the console — same neutrals, same accent, same <code>status_ok</code> green. It intentionally diverges from console geometry on two points: the panel radius is <strong>14px</strong> (vs. console's 6px panel radius) and progress / log use <strong>8px</strong> radii. The bigger radii signal "this is a moment, not a tool" — appropriate for first-run and repair, jarring on a dashboard. Buttons stay at the console's 6px.</p>
+<div class="tokens">
+  <div class="tok"><strong>SetupRoot</strong> · background</div>
+  <div class="tok"><strong>SetupPanel</strong> · surface · 1px border · radius 14</div>
+  <div class="tok"><strong>SetupTitle</strong> · 24 / 700 · text_primary · centered</div>
+  <div class="tok"><strong>SetupStatus</strong> · 14 · text_muted · centered</div>
+  <div class="tok"><strong>SetupProgress</strong> · surface_raised · 1px border · radius 8 · min-h 24</div>
+  <div class="tok"><strong>SetupProgress::chunk</strong> · accent · radius 7</div>
+  <div class="tok"><strong>SetupLog</strong> · mono 12 · surface_raised · 1px border · radius 8</div>
+  <div class="tok"><strong>SetupRetry</strong> · accent · text_inverse · radius 6</div>
+  <div class="tok"><strong>SetupLaunch</strong> · status_ok · text_inverse · radius 6</div>
+  <div class="tok"><strong>SetupReinstall</strong> · ghost · 1px border · text_muted · radius 6</div>
+</div>
+
+<!-- ============================================================ -->
+<h2>
+  <span class="name">Operator copy</span>
+  <span>Setup phrase library</span>
+</h2>
+<p class="desc">Setup follows the same readback-over-abstraction principle as the rest of the console. The status line never says "an error occurred"; it says what step failed and what's next.</p>
+<div class="tokens" style="grid-template-columns: 200px 1fr;">
+  <div class="tok"><strong>title</strong></div>
+  <div class="tok" style="color:var(--text-primary)">"Preparing LSIE-MLF"</div>
+
+  <div class="tok"><strong>status · starting</strong></div>
+  <div class="tok" style="color:var(--text-primary)">"Starting setup…"</div>
+
+  <div class="tok"><strong>status · installing</strong></div>
+  <div class="tok" style="color:var(--text-primary)">"Downloading the desktop runtime…"</div>
+
+  <div class="tok"><strong>status · failed</strong></div>
+  <div class="tok" style="color:var(--text-primary)">"Setup needs attention"  <span style="color:var(--text-muted)">+ specific reason appended to log</span></div>
+
+  <div class="tok"><strong>status · finished</strong></div>
+  <div class="tok" style="color:var(--text-primary)">"Setup complete! Ready to launch."</div>
+
+  <div class="tok"><strong>status · already-installed</strong></div>
+  <div class="tok" style="color:var(--text-primary)">"LSIE-MLF is installed and ready to launch."</div>
+
+  <div class="tok"><strong>status · launching</strong></div>
+  <div class="tok" style="color:var(--text-primary)">"Launching LSIE-MLF…"</div>
+
+  <div class="tok"><strong>status · launch-fail</strong></div>
+  <div class="tok" style="color:var(--text-primary)">"Launch failed"  <span style="color:var(--text-muted)">+ exit code and pointer to <code>desktop-launch.log</code></span></div>
+
+  <div class="tok"><strong>buttons</strong></div>
+  <div class="tok" style="color:var(--text-primary)">"Retry setup" · "Launch LSIE-MLF" · "Reinstall runtime"</div>
+</div>
+
+</div>
+</body>
+</html>

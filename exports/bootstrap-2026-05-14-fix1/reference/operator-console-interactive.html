@@ -1,0 +1,1210 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="robots" content="noindex, nofollow">
+<title>Operator Console · Interactive Reference</title>
+<link rel="stylesheet" href="tokens.css">
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 0; overflow: hidden; font-family: var(--font-ui); }
+  
+  /* ============= Shell Container ============= */
+  .shell {
+    display: flex;
+    flex-direction: column;
+    height: 100vh;
+    background: var(--bg);
+  }
+
+  /* Titlebar */
+  .titlebar {
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    padding: 8px 14px;
+    display: flex; align-items: center; gap: 10px;
+    font-size: 11px; color: var(--text-muted);
+    font-family: var(--font-mono);
+    flex-shrink: 0;
+  }
+  .dots { display: flex; gap: 6px; }
+  .dots span {
+    width: 9px; height: 9px; border-radius: 50%;
+    background: var(--surface-raised);
+    border: 1px solid var(--border);
+  }
+  .titlebar .title { color: var(--text-primary); font-weight: 600; }
+  .titlebar .env {
+    margin-left: auto;
+    color: var(--text-muted);
+  }
+
+  /* Main body: sidebar + content */
+  .body {
+    display: grid;
+    grid-template-columns: 200px 1fr;
+    flex: 1;
+    min-height: 0;
+  }
+
+  /* ============= Sidebar ============= */
+  .sidebar {
+    background: var(--surface);
+    border-right: 1px solid var(--border);
+    padding: 18px 0 12px;
+    display: flex; flex-direction: column;
+    overflow-y: auto;
+  }
+  .sidebar .brand {
+    padding: 0 18px 16px;
+  }
+  .sidebar .brand .t { font-size: 16px; font-weight: 700; color: var(--text-primary); }
+  .sidebar .brand .s { font-size: 11px; color: var(--text-muted); margin-top: 2px; font-family: var(--font-mono); }
+  .nav {
+    display: flex; flex-direction: column;
+  }
+  .nav .item {
+    padding: 9px 18px;
+    color: var(--text-muted);
+    border-left: 2px solid transparent;
+    font-size: 13px; font-weight: 500;
+    cursor: pointer;
+    display: flex; align-items: center; gap: 10px;
+  }
+  .nav .item:hover { color: var(--text-primary); background: var(--surface-raised); }
+  .nav .item.active {
+    color: var(--text-primary); background: var(--surface-raised);
+    border-left-color: var(--accent);
+  }
+  .nav .item .badge {
+    margin-left: auto;
+    font-size: 10px; font-family: var(--font-mono);
+    background: var(--surface);
+    padding: 1px 6px; border-radius: 3px;
+    color: var(--text-muted);
+  }
+  .nav .item.active .badge { background: var(--bg); color: var(--text-primary); }
+
+  /* ============= Stack Area (pages) ============= */
+  .stack-area {
+    display: flex; flex-direction: column;
+    min-width: 0;
+    overflow: hidden;
+  }
+  .stack-content {
+    flex: 1;
+    padding: 18px 22px 22px;
+    overflow-y: auto;
+    overflow-x: hidden;
+    display: flex; flex-direction: column; gap: 14px;
+  }
+  .page { display: none; }
+  .page.active { display: flex; flex-direction: column; gap: 14px; flex: 1; }
+
+  /* ============= Common Elements ============= */
+  .stack-header {
+    display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
+  }
+  .stack-header .h { font-size: 18px; font-weight: 600; color: var(--text-primary); }
+  .stack-header .sub { font-size: 12px; color: var(--text-muted); }
+  .stack-header .pills { margin-left: auto; display: flex; gap: 8px; flex-wrap: wrap; }
+
+  /* Pills */
+  .mp {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 2px 8px 2px 6px;
+    background: var(--surface-raised);
+    border-radius: 999px; height: 18px;
+    font-size: 11px; font-weight: 600; color: var(--text-primary);
+  }
+  .mp .d { width: 6px; height: 6px; border-radius: 50%; }
+  .mp.ok .d { background: var(--status-ok); }
+  .mp.warn .d { background: var(--status-warn); }
+  .mp.bad .d { background: var(--status-bad); }
+  .mp.recovering .d { background: var(--status-recovering); }
+  .mp.degraded .d { background: var(--status-degraded); }
+  .mp.accent .d { background: var(--accent); }
+  .mp.muted .d { background: var(--text-muted); }
+
+  /* Metric card */
+  .mcard {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: 12px 14px;
+    display: flex; flex-direction: column; gap: 4px;
+    min-height: 80px;
+  }
+  .mcard.clickable {
+    cursor: pointer;
+  }
+  .mcard.clickable:hover {
+    border-color: var(--accent);
+  }
+  .mcard .t { font-size: 11px; font-weight: 600; color: var(--text-muted); display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .mcard .p { font-size: 14px; font-weight: 600; color: var(--text-primary); }
+  .mcard .s { font-size: 11px; color: var(--text-muted); margin-top: auto; line-height: 1.4; }
+
+  .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+  .grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+
+  /* Panel */
+  .panel {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+  .panel .pt {
+    padding: 10px 14px 8px;
+    font-size: 13px; font-weight: 600; color: var(--text-primary);
+    border-bottom: 1px solid var(--border);
+    background: var(--surface);
+    display: flex; align-items: center; gap: 10px;
+  }
+  .panel .pt .pmeta {
+    margin-left: auto; font-family: var(--font-mono);
+    font-size: 11px; color: var(--text-muted);
+  }
+  .panel .pb { padding: 12px 14px; }
+
+  /* Table */
+  .mtl { width: 100%; border-collapse: collapse; }
+  .mtl th, .mtl td {
+    padding: 6px 12px; text-align: left;
+    font-size: 12px;
+    border-bottom: 1px solid var(--border);
+  }
+  .mtl tbody tr:last-child td { border-bottom: none; }
+  .mtl th {
+    background: var(--surface-raised); color: var(--text-muted);
+    font-weight: 500; font-size: 11px;
+  }
+  .mtl td.t { font-family: var(--font-mono); color: var(--text-muted); width: 70px; }
+  .mtl td.s { color: var(--text-primary); font-weight: 500; }
+  .mtl tbody tr.sel td { background: rgba(91,141,239,0.10); color: var(--text-primary); }
+  .mtl tbody tr:hover td { background: var(--surface-raised); }
+
+  /* Banner */
+  .banner {
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 8px 12px;
+    display: flex; align-items: center; gap: 10px;
+    font-size: 12px;
+  }
+  .banner.warn { background: var(--tint-warn); border-color: var(--status-warn); }
+  .banner.info { background: var(--tint-info); border-color: var(--accent); }
+  .banner.crit { background: var(--tint-critical); border-color: var(--status-bad); }
+  .banner .g {
+    width: 18px; height: 18px; border-radius: 50%;
+    background: rgba(255,255,255,0.06);
+    display: inline-flex; align-items: center; justify-content: center;
+    font-size: 11px; font-weight: 700;
+  }
+
+  /* Split layout (for drilldown) */
+  .split {
+    display: grid; grid-template-columns: 1.5fr 1fr;
+    gap: 12px; flex: 1;
+    min-height: 0;
+  }
+
+  /* Section bands */
+  .band {
+    display: flex; flex-direction: column; gap: 8px;
+  }
+  .band-title {
+    font-size: 11px; font-weight: 600; letter-spacing: 0.08em;
+    text-transform: uppercase; color: var(--text-muted);
+    padding-bottom: 4px;
+  }
+
+  /* ActionBar */
+  .action-bar {
+    background: var(--surface);
+    border-top: 1px solid var(--border);
+    padding: 10px 16px;
+    display: grid;
+    grid-template-columns: 1fr 200px 130px;
+    gap: 14px; align-items: center;
+    flex-shrink: 0;
+  }
+  .action-bar .ctx { display: flex; flex-direction: column; gap: 1px; }
+  .action-bar .ctx .a { color: var(--text-primary); font-weight: 600; font-size: 12px; }
+  .action-bar .ctx .b { color: var(--text-muted); font-style: italic; font-size: 11px; }
+  .action-bar .note {
+    background: var(--surface-raised); border: 1px solid var(--border);
+    border-radius: var(--radius-sm); padding: 5px 8px;
+    color: var(--text-muted); font-size: 11px; height: 26px;
+    display: flex; align-items: center;
+  }
+  .action-bar .submit {
+    background: var(--accent); color: var(--text-inverse);
+    border: none; border-radius: var(--radius-sm);
+    padding: 6px 14px; font: 600 12px var(--font-ui);
+    height: 28px; display: flex; align-items: center; justify-content: center;
+    gap: 8px; cursor: pointer;
+  }
+  .action-bar .submit .ico {
+    width: 4px; height: 4px; border-radius: 50%; background: var(--text-inverse);
+  }
+
+  /* Status bar */
+  .statusbar {
+    background: var(--surface); border-top: 1px solid var(--border);
+    padding: 6px 16px;
+    font-family: var(--font-mono); font-size: 11px;
+    color: var(--text-muted);
+    display: flex; gap: 16px;
+    flex-shrink: 0;
+  }
+  .statusbar span.sep::before { content: "·"; margin-right: 14px; color: var(--border); }
+
+  /* Button */
+  .btn {
+    background: var(--surface-raised);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 6px 12px;
+    font: 600 12px var(--font-ui);
+    color: var(--text-primary);
+    cursor: pointer;
+  }
+  .btn:hover {
+    border-color: var(--accent);
+  }
+
+  /* Input */
+  .input {
+    background: var(--surface-raised);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 6px 10px;
+    font: 400 12px var(--font-ui);
+    color: var(--text-primary);
+    width: 100%;
+  }
+  .input::placeholder {
+    color: var(--text-muted);
+  }
+  .input:focus {
+    outline: none;
+    border-color: var(--accent);
+  }
+
+  /* ============= Modal / Slide-over ============= */
+  .modal-scrim {
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0, 0, 0, 0.4);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+  }
+  .modal-scrim.active {
+    display: flex;
+  }
+
+  /* Dialog modal */
+  .modal {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    max-width: 480px;
+    width: 90%;
+    max-height: 80vh;
+    overflow: auto;
+  }
+  .modal-header {
+    padding: 16px 18px 12px;
+    border-bottom: 1px solid var(--border);
+  }
+  .modal-title {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--text-primary);
+  }
+  .modal-body {
+    padding: 16px 18px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .modal-footer {
+    padding: 12px 18px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    gap: 10px;
+    justify-content: flex-end;
+  }
+  .form-group {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .form-label {
+    font-size: 11px;
+    color: var(--text-muted);
+    font-weight: 600;
+  }
+
+  /* Slide-over panel */
+  .slide-over {
+    position: fixed;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    width: 360px;
+    max-width: 90%;
+    background: var(--surface);
+    border-left: 1px solid var(--border);
+    display: none;
+    flex-direction: column;
+    z-index: 1001;
+    box-shadow: -4px 0 16px rgba(0,0,0,0.2);
+  }
+  .slide-over.active {
+    display: flex;
+  }
+  .slide-over-header {
+    padding: 14px 18px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .slide-over-title {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--text-primary);
+    flex: 1;
+  }
+  .slide-over-close {
+    background: transparent;
+    border: none;
+    color: var(--text-muted);
+    font-size: 18px;
+    cursor: pointer;
+    padding: 4px 8px;
+  }
+  .slide-over-close:hover {
+    color: var(--text-primary);
+  }
+  .slide-over-body {
+    flex: 1;
+    overflow-y: auto;
+    padding: 16px 18px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+  .slide-over-section {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .slide-over-hint {
+    font-size: 12px;
+    color: var(--text-muted);
+    line-height: 1.5;
+  }
+
+  @media (max-width: 1200px) {
+    .grid-3 { grid-template-columns: repeat(2, 1fr); }
+  }
+  @media (max-width: 800px) {
+    .grid-3 { grid-template-columns: 1fr; }
+    .split { grid-template-columns: 1fr; }
+  }
+
+  /* ============= Modal / Slide-over ============= */
+  .modal-scrim {
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0, 0, 0, 0.4);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+  }
+  .modal-scrim.active { display: flex; }
+
+  .modal {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    max-width: 480px;
+    width: 90%;
+    max-height: 80vh;
+    overflow: auto;
+  }
+  .modal-header {
+    padding: 16px 18px 12px;
+    border-bottom: 1px solid var(--border);
+  }
+  .modal-title {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--text-primary);
+  }
+  .modal-body {
+    padding: 16px 18px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .modal-footer {
+    padding: 12px 18px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    gap: 10px;
+    justify-content: flex-end;
+  }
+  .form-group {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .form-label {
+    font-size: 11px;
+    color: var(--text-muted);
+    font-weight: 600;
+  }
+
+  .slide-over {
+    position: fixed;
+    top: 0; right: -370px;
+    bottom: 0;
+    width: 360px;
+    max-width: 90%;
+    background: var(--surface);
+    border-left: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    z-index: 1001;
+    box-shadow: -4px 0 16px rgba(0,0,0,0.2);
+    transition: right 0.3s ease;
+  }
+  .slide-over.active { right: 0; }
+  .slide-over-header {
+    padding: 14px 18px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .slide-over-title {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--text-primary);
+    flex: 1;
+  }
+  .slide-over-close {
+    background: transparent;
+    border: none;
+    color: var(--text-muted);
+    font-size: 18px;
+    cursor: pointer;
+    padding: 4px 8px;
+  }
+  .slide-over-body {
+    flex: 1;
+    overflow-y: auto;
+    padding: 16px 18px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+</style>
+</head>
+<body>
+<div class="shell">
+  <div class="titlebar">
+    <span class="dots"><span></span><span></span><span></span></span>
+    <span class="title">LSIE-MLF · Operator Console</span>
+    <span class="env">env staging · API http://localhost:8000</span>
+  </div>
+
+  <div class="body">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="t">Operator</div>
+        <div class="s">desktop · v4</div>
+      </div>
+      <nav class="nav">
+        <div class="item" data-page="overview">Overview <span class="badge">⌘1</span></div>
+        <div class="item active" data-page="live-session">Live Session <span class="badge">⌘2</span></div>
+        <div class="item" data-page="experiments">Experiments <span class="badge">⌘3</span></div>
+        <div class="item" data-page="physiology">Physiology <span class="badge">⌘4</span></div>
+        <div class="item" data-page="health">Health <span class="badge">⌘5</span></div>
+        <div class="item" data-page="sessions">Sessions <span class="badge">⌘6</span></div>
+      </nav>
+    </aside>
+
+    <div class="stack-area">
+      <div class="stack-content">
+        
+        <!-- ============= OVERVIEW ============= -->
+        <div class="page" id="overview">
+          <div class="stack-header">
+            <span class="h">Overview</span>
+            <span class="sub">At-a-glance summary of what's active and what needs attention</span>
+          </div>
+
+          <div class="band">
+            <div class="band-title">Now</div>
+            <div class="grid-3">
+              <div class="mcard clickable" onclick="goToPage('live-session')">
+                <div class="t">Active session <span class="mp ok"><span class="d"></span>measuring</span></div>
+                <div class="p">sess_4f12 · arm_b</div>
+                <div class="s">12:04:11 · 18 encounters · greeting confirmed</div>
+              </div>
+              <div class="mcard">
+                <div class="t">Experiment</div>
+                <div class="p">exp_arms_v3</div>
+                <div class="s">arm_b active · 247 confirmations</div>
+              </div>
+              <div class="mcard">
+                <div class="t">Latest encounter</div>
+                <div class="p">p90 0.42 · counted</div>
+                <div class="s">18 frames · semantic gate confirmed</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="band">
+            <div class="band-title">Trust</div>
+            <div class="grid-3">
+              <div class="mcard">
+                <div class="t">Physiology <span class="mp warn"><span class="d"></span>stale</span></div>
+                <div class="p">RMSSD 38.4 ms</div>
+                <div class="s">snapshot 48s old</div>
+              </div>
+              <div class="mcard">
+                <div class="t">Health <span class="mp recovering"><span class="d"></span>recovering</span></div>
+                <div class="p">5 ok · 1 recovering</div>
+                <div class="s">worker resumed after retry</div>
+              </div>
+              <div class="mcard">
+                <div class="t">Attention</div>
+                <div class="p">2 items</div>
+                <div class="s">stale physiology · recovering worker</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="panel" style="flex:1;">
+            <div class="pt">Attention queue <span class="pmeta">preview · open Health for full alert history</span></div>
+            <div class="pb" style="padding:0;">
+              <table class="mtl">
+                <tbody>
+                  <tr><td class="t">14:31</td><td class="s">physiology</td><td><span class="mp warn"><span class="d"></span>stale</span></td><td>Oura provider snapshot 48s old</td></tr>
+                  <tr><td class="t">14:28</td><td class="s">worker</td><td><span class="mp recovering"><span class="d"></span>recovering</span></td><td>resumed after transient retry</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- ============= LIVE SESSION ============= -->
+        <div class="page active" id="live-session">
+          <div class="stack-header">
+            <span class="h">Live Session</span>
+            <span class="sub" id="live-session-subtitle">No session selected</span>
+            <span class="pills">
+              <button class="btn" onclick="openStartSession()" id="start-session-btn">Start session</button>
+              <button class="btn" onclick="endSession()" id="end-session-btn" style="display: none;">End session</button>
+            </span>
+          </div>
+
+          <!-- Gate panel (no session / waiting for device) -->
+          <div id="live-session-gate-panel" style="display: none;">
+            <div style="padding: 60px 40px; text-align: center; max-width: 600px; margin: 0 auto;">
+              <div style="font-size: 11px; color: var(--text-muted); margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.5px;" id="setup-step-label">Step 1 of 3</div>
+              <div style="font-size: 18px; font-weight: 600; color: var(--text-primary); margin-bottom: 12px;" id="setup-title">Setup not ready</div>
+              <div style="font-size: 14px; color: var(--text-primary); margin-bottom: 12px; font-weight: 500;" id="setup-message">Start or select a Live Session to begin live analysis.</div>
+              <div style="font-size: 12px; color: var(--text-muted); line-height: 1.6;" id="setup-detail">Connect the Android phone with USB debugging allowed.</div>
+            </div>
+          </div>
+
+          <!-- Active session content -->
+          <div id="live-session-content">
+            <div class="banner warn" id="calibration-banner" style="display: none;">
+              <span class="g">!</span>
+              <span>Keep a clearly visible face on the phone screen · collecting baseline frames for AU12 calibration</span>
+            </div>
+            <div class="banner warn" id="session-banner">
+              <span class="g">!</span>
+              <span>Latest physiology snapshot is 48s stale — Oura provider degraded.</span>
+            </div>
+            <div class="grid-3">
+              <div class="mcard"><div class="t">Readiness <span class="mp ok"><span class="d"></span>ready</span></div><div class="p">safe-submit ok</div><div class="s">Greeting bundle loaded for arm_b.</div></div>
+              <div class="mcard"><div class="t">Response signal</div><div class="p">p90 0.42</div><div class="s">strongest in last 18 frames</div></div>
+              <div class="mcard"><div class="t">Reward gate</div><div class="p">held</div><div class="s">semantic gate did not confirm</div></div>
+            </div>
+
+            <div class="shell-title" id="trust-title">Why this observed response counted</div>
+            
+            <div class="panel" style="flex:1; display:flex; flex-direction:column;">
+              <div class="pt">Encounters · live <span class="pmeta">auto-scroll latest</span></div>
+              <div class="pb" style="padding:0;">
+                <table class="mtl">
+                  <thead><tr><th>time</th><th>encounter</th><th>reward</th><th>detail</th></tr></thead>
+                  <tbody>
+                    <tr><td class="t">14:32:08</td><td class="s">enc_91d2</td><td><span class="mp ok"><span class="d"></span>counted</span></td><td>p90 0.42 · 18 frames · gate confirmed</td></tr>
+                    <tr class="sel"><td class="t">14:31:54</td><td class="s">enc_91d1</td><td><span class="mp warn"><span class="d"></span>held</span></td><td>0.39 · gate did not confirm</td></tr>
+                    <tr><td class="t">14:31:39</td><td class="s">enc_91d0</td><td><span class="mp bad"><span class="d"></span>no frames</span></td><td>no usable face frames</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ============= EXPERIMENTS ============= -->
+        <div class="page" id="experiments">
+          <div class="stack-header">
+            <span class="h">Experiments</span>
+            <span class="sub">Adaptive strategy · arms and recent evidence for exp_arms_v3</span>
+            <span class="pills">
+              <button class="btn" onclick="openManagePanel()">Manage</button>
+            </span>
+          </div>
+          <div class="split">
+            <div class="panel" style="display:flex; flex-direction:column;">
+              <div class="pt">Arms <span class="pmeta">3 active · selection drives detail</span></div>
+              <div class="pb" style="padding:0;">
+                <table class="mtl">
+                  <thead><tr><th>arm</th><th>selections</th><th>α / β</th><th>last reward</th></tr></thead>
+                  <tbody>
+                    <tr><td class="s">arm_a</td><td>312</td><td>164 / 148</td><td>0.38</td></tr>
+                    <tr class="sel"><td class="s">arm_b</td><td>419</td><td>247 / 172</td><td>0.51</td></tr>
+                    <tr><td class="s">arm_c</td><td>104</td><td>49 / 55</td><td>0.22</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+            <div class="panel" style="display:flex; flex-direction:column;">
+              <div class="pt">arm_b · evidence</div>
+              <div class="pb" style="display:flex; flex-direction:column; gap: 10px;">
+                <div class="mcard" style="background:var(--surface-raised)"><div class="t">Confirmation rate</div><div class="p">59%</div><div class="s">posterior_alpha 247 · posterior_beta 172</div></div>
+                <div class="mcard" style="background:var(--surface-raised)"><div class="t">Strongest recent reward</div><div class="p">0.51</div><div class="s">enc_91cf · 22 frames · gate confirmed</div></div>
+                <div class="mcard" style="background:var(--surface-raised)"><div class="t">Greeting</div><div class="p" style="font-size:13px">"Hey, glad you made it…"</div><div class="s">last renamed 2 days ago by R. Ramirez</div></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ============= PHYSIOLOGY ============= -->
+        <div class="page" id="physiology">
+          <div class="stack-header">
+            <span class="h">Physiology</span>
+            <span class="sub">Streamer and operator readiness markers</span>
+          </div>
+
+          <div class="mcard" style="border-left: 3px solid var(--status-ok);">
+            <div class="t">Physiology freshness <span class="mp ok"><span class="d"></span>fresh</span></div>
+            <div class="p">streamer 12s · operator 8s</div>
+            <div class="s">Both Oura snapshots current — last streamer update 14:32:04, last operator update 14:32:08</div>
+          </div>
+
+          <div class="grid-3">
+            <div class="mcard"><div class="t">RMSSD (streamer)</div><div class="p">42.1 ms</div><div class="s">HRV within normal range</div></div>
+            <div class="mcard"><div class="t">RMSSD (operator)</div><div class="p">38.4 ms</div><div class="s">HRV within normal range</div></div>
+            <div class="mcard"><div class="t">Co-modulation index</div><div class="p">0.68</div><div class="s">12 aligned pairs in last 180s</div></div>
+          </div>
+
+          <div class="grid-3">
+            <div class="mcard"><div class="t">Heart rate (streamer)</div><div class="p">68 bpm</div><div class="s">resting baseline 64 bpm</div></div>
+            <div class="mcard"><div class="t">Heart rate (operator)</div><div class="p">72 bpm</div><div class="s">resting baseline 70 bpm</div></div>
+            <div class="mcard"><div class="t">Readiness score</div><div class="p">81 / 100</div><div class="s">streamer readiness from Oura</div></div>
+          </div>
+
+          <div class="panel" style="flex:1;">
+            <div class="pt">Recent snapshots <span class="pmeta">last 8 updates · streamer + operator</span></div>
+            <div class="pb" style="padding:0;">
+              <table class="mtl">
+                <thead><tr><th>time</th><th>role</th><th>RMSSD</th><th>HR</th><th>status</th></tr></thead>
+                <tbody>
+                  <tr><td class="t">14:32:08</td><td class="s">operator</td><td>38.4 ms</td><td>72 bpm</td><td><span class="mp ok"><span class="d"></span>ok</span></td></tr>
+                  <tr><td class="t">14:32:04</td><td class="s">streamer</td><td>42.1 ms</td><td>68 bpm</td><td><span class="mp ok"><span class="d"></span>ok</span></td></tr>
+                  <tr><td class="t">14:31:52</td><td class="s">operator</td><td>39.2 ms</td><td>71 bpm</td><td><span class="mp ok"><span class="d"></span>ok</span></td></tr>
+                  <tr><td class="t">14:31:48</td><td class="s">streamer</td><td>41.8 ms</td><td>69 bpm</td><td><span class="mp ok"><span class="d"></span>ok</span></td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- ============= HEALTH ============= -->
+        <div class="page" id="health">
+          <div class="stack-header">
+            <span class="h">Health</span>
+            <span class="sub">System probes and worker status</span>
+            <span class="pills">
+              <button class="btn" onclick="openCloudSignIn()">Cloud sign-in</button>
+              <button class="btn" onclick="openRepair()">Repair install</button>
+              <button class="btn" onclick="openUpdateDefs()">Update definitions</button>
+            </span>
+          </div>
+
+          <div class="grid-4">
+            <div class="mcard" style="border-left: 3px solid var(--status-degraded);"><div class="t">Overall</div><div class="p">degraded</div><div class="s">5 ok · 1 recovering</div></div>
+            <div class="mcard"><div class="t">Needs attention</div><div class="p">1</div><div class="s">worker recovering from retry</div></div>
+            <div class="mcard"><div class="t">Getting ready</div><div class="p">1</div><div class="s">orchestrator reconnecting</div></div>
+            <div class="mcard"><div class="t">Running</div><div class="p">5</div><div class="s">adb, ml, audio, video, storage</div></div>
+          </div>
+
+          <div class="panel" style="flex:1;">
+            <div class="pt">Workers <span class="pmeta">6 total · 5 ok · 1 recovering</span></div>
+            <div class="pb" style="padding:0;">
+              <table class="mtl">
+                <thead><tr><th>worker</th><th>status</th><th>last check</th><th>detail</th></tr></thead>
+                <tbody>
+                  <tr><td class="s">adb_bridge</td><td><span class="mp ok"><span class="d"></span>ok</span></td><td class="t">14:32:11</td><td>device connected · adb responding</td></tr>
+                  <tr><td class="s">ml_inference</td><td><span class="mp ok"><span class="d"></span>ok</span></td><td class="t">14:32:10</td><td>model loaded · 18ms p95 latency</td></tr>
+                  <tr class="sel"><td class="s">orchestrator</td><td><span class="mp recovering"><span class="d"></span>recovering</span></td><td class="t">14:32:09</td><td>resumed after transient retry</td></tr>
+                  <tr><td class="s">audio_capture</td><td><span class="mp ok"><span class="d"></span>ok</span></td><td class="t">14:32:08</td><td>24-bit 48kHz · no clipping</td></tr>
+                  <tr><td class="s">video_stream</td><td><span class="mp ok"><span class="d"></span>ok</span></td><td class="t">14:32:07</td><td>1080p30 · stable bitrate</td></tr>
+                  <tr><td class="s">cloud_sync</td><td><span class="mp ok"><span class="d"></span>ok</span></td><td class="t">14:31:58</td><td>last bundle push 2m ago</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="pt">Alert history <span class="pmeta">last 24 hours · 3 events</span></div>
+            <div class="pb" style="padding:0;">
+              <table class="mtl">
+                <thead><tr><th>time</th><th>source</th><th>severity</th><th>message</th></tr></thead>
+                <tbody>
+                  <tr><td class="t">14:31:22</td><td class="s">physiology</td><td><span class="mp warn"><span class="d"></span>warn</span></td><td>Oura snapshot stale — provider degraded</td></tr>
+                  <tr><td class="t">14:28:14</td><td class="s">orchestrator</td><td><span class="mp recovering"><span class="d"></span>recovering</span></td><td>Worker resumed after retry</td></tr>
+                  <tr><td class="t">09:12:04</td><td class="s">storage</td><td><span class="mp ok"><span class="d"></span>ok</span></td><td>Disk usage warning cleared</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- ============= SESSIONS ============= -->
+        <div class="page" id="sessions">
+          <div class="stack-header">
+            <span class="h">Sessions</span>
+            <span class="sub">Historical sessions and encounter detail</span>
+            <span class="pills">
+              <button class="btn">Export CSV</button>
+            </span>
+          </div>
+
+          <div style="margin-bottom: 12px;">
+            <input type="text" class="input" placeholder="Filter by session id, arm, or date…" style="max-width: 380px;">
+          </div>
+
+          <div class="split">
+            <div class="panel" style="display:flex; flex-direction:column;">
+              <div class="pt">Sessions <span class="pmeta">last 30 days · 47 total</span></div>
+              <div class="pb" style="padding:0;">
+                <table class="mtl">
+                  <thead><tr><th>session</th><th>arm</th><th>started</th><th>encounters</th><th>status</th></tr></thead>
+                  <tbody>
+                    <tr class="sel"><td class="s">sess_4f12</td><td>arm_b</td><td class="t">14:04:11</td><td>18</td><td><span class="mp ok"><span class="d"></span>measuring</span></td></tr>
+                    <tr><td class="s">sess_4f11</td><td>arm_a</td><td class="t">13:22:08</td><td>24</td><td><span class="mp ok"><span class="d"></span>completed</span></td></tr>
+                    <tr><td class="s">sess_4f10</td><td>arm_b</td><td class="t">12:44:32</td><td>19</td><td><span class="mp ok"><span class="d"></span>completed</span></td></tr>
+                    <tr><td class="s">sess_4f0f</td><td>arm_c</td><td class="t">11:58:14</td><td>12</td><td><span class="mp ok"><span class="d"></span>completed</span></td></tr>
+                    <tr><td class="s">sess_4f0e</td><td>arm_a</td><td class="t">11:12:09</td><td>22</td><td><span class="mp ok"><span class="d"></span>completed</span></td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+            <div class="panel" style="display:flex; flex-direction:column;">
+              <div class="pt">sess_4f12 · detail</div>
+              <div class="pb" style="display:flex; flex-direction:column; gap: 10px;">
+                <div class="mcard" style="background:var(--surface-raised)"><div class="t">Started</div><div class="p">14:04:11</div><div class="s">operator R. Ramirez · arm_b</div></div>
+                <div class="mcard" style="background:var(--surface-raised)"><div class="t">Duration</div><div class="p">28m 3s</div><div class="s">18 encounters · 14 counted</div></div>
+                <div class="mcard" style="background:var(--surface-raised)"><div class="t">Reward rate</div><div class="p">78%</div><div class="s">14 confirmed / 18 total</div></div>
+                <div class="mcard" style="background:var(--surface-raised)"><div class="t">Avg intensity</div><div class="p">0.38</div><div class="s">p90 across counted encounters</div></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+
+      <div class="action-bar">
+        <div class="ctx">
+          <span class="a">sess_4f12 · arm_b</span>
+          <span class="b">"Hey, glad you made it — first time on stream?"</span>
+        </div>
+        <div class="note">Cold open — first viewer of the hour</div>
+        <button class="submit"><span class="ico"></span>Send Stimulus</button>
+      </div>
+
+      <div class="statusbar">
+        <span>API · http://localhost:8000</span>
+        <span class="sep">env staging</span>
+        <span class="sep">poll 2.0s</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============= MODALS & SLIDE-OVERS ============= -->
+
+<!-- Manage Experiment Slide-over -->
+<div class="modal-scrim" id="manage-scrim">
+  <div class="slide-over active" id="manage-slide-over">
+    <div class="slide-over-header">
+      <span class="slide-over-title">Manage experiment</span>
+      <button class="slide-over-close" onclick="closeManagePanel()">✕</button>
+    </div>
+    <div class="slide-over-body">
+      <p style="font-size: 12px; color: var(--text-muted); line-height: 1.5; margin: 0;">
+        Create or seed the current experiment, add stimulus strategies, or edit existing ones.
+      </p>
+      
+      <div style="border-top: 1px solid var(--border); padding-top: 12px;">
+        <div class="form-label" style="margin-bottom: 8px;">CREATE EXPERIMENT</div>
+        <div class="form-group">
+          <label class="form-label">Experiment ID</label>
+          <input type="text" class="input" placeholder="experiment id" value="exp_arms_v3">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Display label</label>
+          <input type="text" class="input" placeholder="label" value="Arm comparison v3">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Initial strategy ID</label>
+          <input type="text" class="input" placeholder="initial strategy id" value="arm_a">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Initial stimulus text</label>
+          <input type="text" class="input" placeholder="initial stimulus text" value="Hey there, welcome!">
+        </div>
+        <button class="btn" style="width: 100%; margin-top: 4px;">Create experiment</button>
+      </div>
+
+      <div style="border-top: 1px solid var(--border); padding-top: 12px;">
+        <div class="form-label" style="margin-bottom: 8px;">ADD STRATEGY</div>
+        <div class="form-group">
+          <label class="form-label">New strategy ID</label>
+          <input type="text" class="input" placeholder="new strategy id">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Stimulus text</label>
+          <input type="text" class="input" placeholder="stimulus text">
+        </div>
+        <button class="btn" style="width: 100%; margin-top: 4px;">Add strategy</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Cloud Sign-in Dialog -->
+<div class="modal-scrim" id="cloud-signin-scrim">
+  <div class="modal">
+    <div class="modal-header">
+      <div class="modal-title">Cloud sign-in</div>
+    </div>
+    <div class="modal-body">
+      <div style="font-size: 13px; color: var(--text-primary); font-weight: 600; margin-bottom: 8px;">
+        Open browser for authentication?
+      </div>
+      <div style="font-size: 12px; color: var(--text-muted); line-height: 1.5;">
+        This will open your default browser to complete OAuth sign-in with the cloud service. Once authenticated, the console will automatically sync experiment definitions and upload session data.
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn" onclick="closeCloudSignIn()">Cancel</button>
+      <button class="btn" style="background: var(--accent); color: var(--text-inverse); border-color: var(--accent);" onclick="confirmCloudSignIn()">Open browser</button>
+    </div>
+  </div>
+</div>
+
+<!-- Start Session Dialog -->
+<div class="modal-scrim" id="start-session-scrim">
+  <div class="modal">
+    <div class="modal-header">
+      <div class="modal-title">Start new session</div>
+    </div>
+    <div class="modal-body">
+      <div class="form-group">
+        <div class="form-label">SOURCE</div>
+        <div style="font-size: 13px; color: var(--text-primary); font-weight: 600;">
+          Android phone · serial ABC123DEF456
+        </div>
+        <div style="font-size: 11px; color: var(--text-muted);">
+          ADB connected · video + audio ready
+        </div>
+      </div>
+      
+      <div class="form-group">
+        <label class="form-label" for="experiment-select">EXPERIMENT</label>
+        <select id="experiment-select" class="input" style="padding: 8px 10px;">
+          <option value="exp_arms_v3">Arm comparison v3</option>
+          <option value="exp_baseline">Baseline greeting test</option>
+          <option value="exp_timing">Response timing study</option>
+        </select>
+      </div>
+
+      <div style="font-size: 11px; color: var(--text-muted); line-height: 1.4;">
+        Ready to start. The selected experiment will provide stimulus strategies for this session.
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn" onclick="closeStartSession()">Cancel</button>
+      <button class="btn" style="background: var(--accent); color: var(--text-inverse); border-color: var(--accent);" onclick="confirmStartSession()">Start session</button>
+    </div>
+  </div>
+</div>
+
+<!-- Repair Install Confirmation -->
+<div class="modal-scrim" id="repair-scrim">
+  <div class="modal">
+    <div class="modal-header">
+      <div class="modal-title">Repair install</div>
+    </div>
+    <div class="modal-body">
+      <div style="font-size: 13px; color: var(--text-primary); font-weight: 600; margin-bottom: 8px;">
+        Rebuild the local runtime?
+      </div>
+      <div style="font-size: 12px; color: var(--text-muted); line-height: 1.5;">
+        This will reinstall the local runtime without touching desktop.sqlite. The active session keeps running but readiness will dip while the subsystem comes back up. Continue?
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn" onclick="closeRepair()">Cancel</button>
+      <button class="btn" style="background: var(--status-bad); color: var(--text-inverse); border-color: var(--status-bad);" onclick="confirmRepair()">Yes, rebuild</button>
+    </div>
+  </div>
+</div>
+
+<!-- Update Definitions Preview -->
+<div class="modal-scrim" id="update-defs-scrim">
+  <div class="modal">
+    <div class="modal-header">
+      <div class="modal-title">Cloud experiment definitions</div>
+    </div>
+    <div class="modal-body">
+      <div style="font-size: 13px; color: var(--text-primary); font-weight: 600; margin-bottom: 8px;">
+        Apply 2 cloud experiment definitions?
+      </div>
+      <div style="font-size: 12px; color: var(--text-muted); line-height: 1.5; margin-bottom: 12px;">
+        The following experiments will be updated from the cloud bundle. Local attempt history is preserved.
+      </div>
+      <div style="background: var(--surface-raised); border: 1px solid var(--border); border-radius: 4px; padding: 10px; font-family: var(--font-mono); font-size: 11px; color: var(--text-primary); max-height: 200px; overflow-y: auto;">
+        + exp_arms_v3<br>
+        &nbsp;&nbsp;label: "Arm comparison v3"<br>
+        &nbsp;&nbsp;3 arms defined<br>
+        <br>
+        + exp_baseline<br>
+        &nbsp;&nbsp;label: "Baseline greeting test"<br>
+        &nbsp;&nbsp;2 arms defined
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn" onclick="closeUpdateDefs()">Cancel</button>
+      <button class="btn" style="background: var(--accent); color: var(--text-inverse); border-color: var(--accent);" onclick="confirmUpdateDefs()">Apply definitions</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// Modal handlers
+function openManagePanel() {
+  const scrim = document.getElementById('manage-scrim');
+  const panel = document.getElementById('manage-slide-over');
+  scrim.classList.add('active');
+  // Trigger reflow before adding active to panel for animation
+  setTimeout(() => panel.classList.add('active'), 10);
+}
+function closeManagePanel() {
+  const panel = document.getElementById('manage-slide-over');
+  panel.classList.remove('active');
+  setTimeout(() => {
+    document.getElementById('manage-scrim').classList.remove('active');
+  }, 300);
+}
+
+function openCloudSignIn() {
+  document.getElementById('cloud-signin-scrim').classList.add('active');
+}
+function closeCloudSignIn() {
+  document.getElementById('cloud-signin-scrim').classList.remove('active');
+}
+function confirmCloudSignIn() {
+  closeCloudSignIn();
+  alert('Browser opened for OAuth sign-in — return to console after authenticating');
+}
+
+function openStartSession() {
+  document.getElementById('start-session-scrim').classList.add('active');
+}
+function closeStartSession() {
+  document.getElementById('start-session-scrim').classList.remove('active');
+}
+function confirmStartSession() {
+  closeStartSession();
+  setSessionState('calibrating');
+  // Simulate calibration completing after 3 seconds
+  setTimeout(() => {
+    setSessionState('active');
+  }, 3000);
+}
+
+function openRepair() {
+  document.getElementById('repair-scrim').classList.add('active');
+}
+function closeRepair() {
+  document.getElementById('repair-scrim').classList.remove('active');
+}
+function confirmRepair() {
+  closeRepair();
+  alert('Repair install initiated — runtime will rebuild');
+}
+
+function openUpdateDefs() {
+  document.getElementById('update-defs-scrim').classList.add('active');
+}
+function closeUpdateDefs() {
+  document.getElementById('update-defs-scrim').classList.remove('active');
+}
+function confirmUpdateDefs() {
+  closeUpdateDefs();
+  alert('Cloud definitions applied successfully');
+}
+
+// Live session state management
+let sessionActive = false;
+let calibrationComplete = false;
+
+function endSession() {
+  if (confirm('End the current session?')) {
+    setSessionState('ended');
+  }
+}
+
+function setSessionState(state) {
+  const gatePanel = document.getElementById('live-session-gate-panel');
+  const contentPanel = document.getElementById('live-session-content');
+  const subtitle = document.getElementById('live-session-subtitle');
+  const startBtn = document.getElementById('start-session-btn');
+  const endBtn = document.getElementById('end-session-btn');
+  const calibrationBanner = document.getElementById('calibration-banner');
+  const sessionBanner = document.getElementById('session-banner');
+  const trustTitle = document.getElementById('trust-title');
+  
+  if (state === 'no-session') {
+    sessionActive = false;
+    calibrationComplete = false;
+    gatePanel.style.display = 'block';
+    contentPanel.style.display = 'none';
+    subtitle.textContent = 'No session selected';
+    startBtn.style.display = 'inline-block';
+    endBtn.style.display = 'none';
+    document.getElementById('setup-step-label').textContent = 'Step 1 of 3';
+    document.getElementById('setup-title').textContent = 'Setup not ready';
+    document.getElementById('setup-message').textContent = 'Start or select a Live Session to begin live analysis.';
+    document.getElementById('setup-detail').textContent = 'Connect the Android phone with USB debugging allowed.';
+  } else if (state === 'calibrating') {
+    sessionActive = true;
+    calibrationComplete = false;
+    gatePanel.style.display = 'none';
+    contentPanel.style.display = 'block';
+    calibrationBanner.style.display = 'flex';
+    sessionBanner.style.display = 'none';
+    subtitle.textContent = 'Calibrating · session_2024_001';
+    startBtn.style.display = 'none';
+    endBtn.style.display = 'inline-block';
+  } else if (state === 'active') {
+    sessionActive = true;
+    calibrationComplete = true;
+    gatePanel.style.display = 'none';
+    contentPanel.style.display = 'block';
+    calibrationBanner.style.display = 'none';
+    sessionBanner.style.display = 'flex';
+    subtitle.textContent = 'sess_4f12 · arm_b · operator R. Ramirez';
+    startBtn.style.display = 'none';
+    endBtn.style.display = 'inline-block';
+  } else if (state === 'ended') {
+    sessionActive = false;
+    calibrationComplete = false;
+    gatePanel.style.display = 'block';
+    contentPanel.style.display = 'none';
+    subtitle.textContent = 'Session ended';
+    startBtn.style.display = 'inline-block';
+    endBtn.style.display = 'none';
+    document.getElementById('setup-step-label').textContent = '';
+    document.getElementById('setup-title').textContent = 'Session ended';
+    document.getElementById('setup-message').textContent = 'Start a new session to continue.';
+    document.getElementById('setup-detail').textContent = '';
+  }
+}
+
+// Initialize to no-session state
+document.addEventListener('DOMContentLoaded', () => {
+  setSessionState('no-session');
+});
+
+// Close modals on scrim click
+document.querySelectorAll('.modal-scrim').forEach(scrim => {
+  scrim.addEventListener('click', (e) => {
+    if (e.target === scrim) {
+      scrim.classList.remove('active');
+    }
+  });
+});
+
+// Navigation
+const navItems = document.querySelectorAll('.nav .item');
+const pages = document.querySelectorAll('.page');
+
+function goToPage(pageId) {
+  pages.forEach(p => p.classList.remove('active'));
+  navItems.forEach(n => n.classList.remove('active'));
+  document.getElementById(pageId).classList.add('active');
+  const navItem = Array.from(navItems).find(n => n.getAttribute('data-page') === pageId);
+  if (navItem) navItem.classList.add('active');
+}
+
+navItems.forEach(item => {
+  item.addEventListener('click', () => {
+    const targetPage = item.dataset.page;
+    
+    // Update nav active state
+    navItems.forEach(i => i.classList.remove('active'));
+    item.classList.add('active');
+    
+    // Update page visibility
+    pages.forEach(p => p.classList.remove('active'));
+    document.getElementById(targetPage).classList.add('active');
+  });
+});
+
+// Keyboard shortcuts
+document.addEventListener('keydown', (e) => {
+  if (e.metaKey || e.ctrlKey) {
+    const key = e.key;
+    const shortcuts = {
+      '1': 'overview',
+      '2': 'live-session',
+      '3': 'experiments',
+      '4': 'physiology',
+      '5': 'health',
+      '6': 'sessions'
+    };
+    
+    if (shortcuts[key]) {
+      e.preventDefault();
+      const targetItem = document.querySelector(`[data-page="${shortcuts[key]}"]`);
+      if (targetItem) targetItem.click();
+    }
+  }
+});
+</script>
+</body>
+</html>

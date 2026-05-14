@@ -1,0 +1,36 @@
+{
+  "route_attribute": "data-page",
+  "route_source": "operator-console-interactive.html",
+  "captures": [
+    {
+      "source": "primitives.html",
+      "reference_id": "MetricCard",
+      "output": "primitives-metric-card-medium-1024x768.png",
+      "selector": ".metric-grid"
+    },
+    {
+      "source": "primitives.html",
+      "reference_id": "StatusPill",
+      "output": "primitives-status-pill-medium-1024x768.png",
+      "selector": ".pill-row"
+    },
+    {
+      "source": "primitives.html",
+      "reference_id": "AlertBannerInfo",
+      "output": "primitives-alert-banner-info-medium-1024x768.png",
+      "selector": ".banner.info"
+    },
+    {
+      "source": "primitives.html",
+      "reference_id": "EmptyState",
+      "output": "primitives-empty-state-medium-1024x768.png",
+      "selector": ".empty"
+    }
+  ],
+  "version": 1,
+  "viewport": {
+    "width": 1024,
+    "label": "medium",
+    "height": 768
+  }
+}

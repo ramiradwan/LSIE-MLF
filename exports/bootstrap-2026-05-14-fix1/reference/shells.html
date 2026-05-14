@@ -1,0 +1,467 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="robots" content="noindex, nofollow">
+<title>Operator Console · Shells</title>
+<link rel="stylesheet" href="tokens.css">
+<style>
+  body { padding: 48px 56px 80px; }
+  .doc { max-width: 1320px; margin: 0 auto; }
+  h1 { font-size: 28px; font-weight: 600; margin: 0 0 6px; letter-spacing: -0.01em; }
+  .lede {
+    color: var(--text-muted); font-size: 14px; max-width: 760px;
+    margin: 0 0 48px; line-height: 1.55;
+  }
+  h2 {
+    font-size: 11px; font-weight: 600; letter-spacing: 0.12em;
+    text-transform: uppercase; color: var(--text-muted);
+    margin: 56px 0 4px; padding-bottom: 10px;
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: baseline; gap: 12px;
+  }
+  h2:first-of-type { margin-top: 0; }
+  h2 .name {
+    font-family: var(--font-mono); font-size: 13px;
+    color: var(--text-primary); font-weight: 600;
+    text-transform: none; letter-spacing: 0;
+  }
+  h2 .routes {
+    margin-left: auto;
+    font-family: var(--font-mono); font-size: 11px;
+    color: var(--text-muted); font-weight: 400;
+    text-transform: none; letter-spacing: 0;
+  }
+  .desc {
+    color: var(--text-muted); font-size: 13px; line-height: 1.6;
+    max-width: 800px; margin: 0 0 22px;
+  }
+  .desc code {
+    font-family: var(--font-mono); font-size: 12px;
+    background: var(--surface-raised); padding: 1px 5px;
+    border-radius: 3px; color: var(--text-primary);
+  }
+
+  /* Shared shell building blocks */
+  .frame {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    overflow: hidden;
+    display: flex; flex-direction: column;
+  }
+  .titlebar {
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    padding: 8px 14px;
+    display: flex; align-items: center; gap: 10px;
+    font-size: 11px; color: var(--text-muted);
+    font-family: var(--font-mono);
+  }
+  .dots { display: flex; gap: 6px; }
+  .dots span {
+    width: 9px; height: 9px; border-radius: 50%;
+    background: var(--surface-raised);
+    border: 1px solid var(--border);
+  }
+  .titlebar .title { color: var(--text-primary); font-weight: 600; }
+  .titlebar .env {
+    margin-left: auto;
+    color: var(--text-muted);
+  }
+
+  /* ============= Shell 1: SidebarStackShell ============= */
+  .s1-body {
+    display: grid;
+    grid-template-columns: 200px 1fr;
+    min-height: 580px;
+  }
+  .sidebar {
+    background: var(--surface);
+    border-right: 1px solid var(--border);
+    padding: 18px 0 12px;
+    display: flex; flex-direction: column;
+  }
+  .sidebar .brand {
+    padding: 0 18px 16px;
+  }
+  .sidebar .brand .t { font-size: 16px; font-weight: 700; color: var(--text-primary); }
+  .sidebar .brand .s { font-size: 11px; color: var(--text-muted); margin-top: 2px; font-family: var(--font-mono); }
+  .nav {
+    display: flex; flex-direction: column;
+  }
+  .nav .item {
+    padding: 9px 18px;
+    color: var(--text-muted);
+    border-left: 2px solid transparent;
+    font-size: 13px; font-weight: 500;
+    cursor: default;
+    display: flex; align-items: center; gap: 10px;
+  }
+  .nav .item:hover { color: var(--text-primary); background: var(--surface-raised); }
+  .nav .item.active {
+    color: var(--text-primary); background: var(--surface-raised);
+    border-left-color: var(--accent);
+  }
+  .nav .item .badge {
+    margin-left: auto;
+    font-size: 10px; font-family: var(--font-mono);
+    background: var(--surface);
+    padding: 1px 6px; border-radius: 3px;
+    color: var(--text-muted);
+  }
+  .nav .item.active .badge { background: var(--bg); color: var(--text-primary); }
+
+  .stack-area {
+    display: flex; flex-direction: column; min-width: 0;
+  }
+  .stack-content {
+    flex: 1; padding: 18px 22px 22px;
+    overflow: hidden;
+    display: flex; flex-direction: column; gap: 14px;
+  }
+  .stack-header {
+    display: flex; align-items: baseline; gap: 12px;
+  }
+  .stack-header .h { font-size: 18px; font-weight: 600; color: var(--text-primary); }
+  .stack-header .sub { font-size: 12px; color: var(--text-muted); }
+  .stack-header .pills { margin-left: auto; display: flex; gap: 8px; }
+
+  /* miniature pill */
+  .mp {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 2px 8px 2px 6px;
+    background: var(--surface-raised);
+    border-radius: 999px; height: 18px;
+    font-size: 11px; font-weight: 600; color: var(--text-primary);
+  }
+  .mp .d { width: 6px; height: 6px; border-radius: 50%; }
+  .mp.ok .d { background: var(--status-ok); }
+  .mp.warn .d { background: var(--status-warn); }
+  .mp.bad .d { background: var(--status-bad); }
+  .mp.recovering .d { background: var(--status-recovering); }
+  .mp.degraded .d { background: var(--status-degraded); }
+  .mp.accent .d { background: var(--accent); }
+  .mp.muted .d { background: var(--text-muted); }
+
+  /* mini metric card */
+  .mcard {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: 12px 14px;
+    display: flex; flex-direction: column; gap: 4px;
+    min-height: 80px;
+  }
+  .mcard .t { font-size: 11px; font-weight: 600; color: var(--text-muted); display: flex; align-items: center; gap: 8px; }
+  .mcard .p { font-size: 14px; font-weight: 600; color: var(--text-primary); }
+  .mcard .s { font-size: 11px; color: var(--text-muted); margin-top: auto; line-height: 1.4; }
+
+  .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+  .grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+
+  .panel {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    overflow: hidden;
+  }
+  .panel .pt {
+    padding: 10px 14px 8px;
+    font-size: 13px; font-weight: 600; color: var(--text-primary);
+    border-bottom: 1px solid var(--border);
+    background: var(--surface);
+    display: flex; align-items: center; gap: 10px;
+  }
+  .panel .pt .pmeta {
+    margin-left: auto; font-family: var(--font-mono);
+    font-size: 11px; color: var(--text-muted);
+  }
+  .panel .pb { padding: 12px 14px; }
+
+  /* mini timeline */
+  .mtl { width: 100%; border-collapse: collapse; }
+  .mtl th, .mtl td {
+    padding: 6px 12px; text-align: left;
+    font-size: 12px;
+    border-bottom: 1px solid var(--border);
+  }
+  .mtl tbody tr:last-child td { border-bottom: none; }
+  .mtl th {
+    background: var(--surface-raised); color: var(--text-muted);
+    font-weight: 500; font-size: 11px;
+  }
+  .mtl td.t { font-family: var(--font-mono); color: var(--text-muted); width: 70px; }
+  .mtl td.s { color: var(--text-primary); font-weight: 500; }
+  .mtl tbody tr.sel td { background: rgba(91,141,239,0.10); color: var(--text-primary); }
+
+  /* persistent action bar (shell-mounted) */
+  .shell-action {
+    background: var(--surface);
+    border-top: 1px solid var(--border);
+    padding: 10px 16px;
+    display: grid;
+    grid-template-columns: 1fr 200px 130px;
+    gap: 14px; align-items: center;
+  }
+  .shell-action .ctx { display: flex; flex-direction: column; gap: 1px; }
+  .shell-action .ctx .a { color: var(--text-primary); font-weight: 600; font-size: 12px; }
+  .shell-action .ctx .b { color: var(--text-muted); font-style: italic; font-size: 11px; }
+  .shell-action .note {
+    background: var(--surface-raised); border: 1px solid var(--border);
+    border-radius: var(--radius-sm); padding: 5px 8px;
+    color: var(--text-muted); font-size: 11px; height: 26px;
+    display: flex; align-items: center;
+  }
+  .shell-action .submit {
+    background: var(--accent); color: var(--text-inverse);
+    border: none; border-radius: var(--radius-sm);
+    padding: 6px 14px; font: 600 12px var(--font-ui);
+    height: 28px; display: flex; align-items: center; justify-content: center;
+    gap: 8px;
+  }
+  .shell-action .submit .ico {
+    width: 4px; height: 4px; border-radius: 50%; background: var(--text-inverse);
+  }
+
+  /* status bar */
+  .statusbar {
+    background: var(--surface); border-top: 1px solid var(--border);
+    padding: 6px 16px;
+    font-family: var(--font-mono); font-size: 11px;
+    color: var(--text-muted);
+    display: flex; gap: 16px;
+  }
+  .statusbar span.sep::before { content: "·"; margin-right: 14px; color: var(--border); }
+
+  /* ============= Shell 2: MetricGridPlusTimeline ============= */
+  .s2-body { padding: 18px 22px; display: flex; flex-direction: column; gap: 14px; min-height: 520px; }
+
+  /* ============= Shell 3: TableWithDrillDown ============= */
+  .s3-body { padding: 18px 22px; display: flex; flex-direction: column; gap: 14px; min-height: 520px; }
+  .s3-split {
+    display: grid; grid-template-columns: 1.5fr 1fr;
+    gap: 12px; flex: 1;
+  }
+
+  /* regions strip */
+  .regions {
+    display: flex; flex-wrap: wrap; gap: 6px;
+    margin-bottom: 12px;
+  }
+  .regions .r {
+    font-family: var(--font-mono); font-size: 11px;
+    background: var(--surface-raised);
+    border: 1px solid var(--border);
+    color: var(--text-primary);
+    padding: 3px 8px; border-radius: 3px;
+  }
+
+  /* ============= Banner ============= */
+  .banner {
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 8px 12px;
+    display: flex; align-items: center; gap: 10px;
+    font-size: 12px;
+  }
+  .banner.warn { background: var(--tint-warn); border-color: var(--status-warn); }
+  .banner .g {
+    width: 18px; height: 18px; border-radius: 50%;
+    background: rgba(255,255,255,0.06);
+    display: inline-flex; align-items: center; justify-content: center;
+    font-size: 11px; font-weight: 700;
+  }
+</style>
+</head>
+<body>
+<div class="doc">
+
+<h1>Shells</h1>
+<p class="lede">Three layout archetypes power every page. The outer <code>SidebarStackShell</code> wraps the application; pages then compose <code>MetricGridPlusTimelineShell</code> or <code>TableWithDrillDownShell</code> as their inner pattern. Reusing these three is what makes the console <em>feel like one product</em> — a new page does not invent a new layout.</p>
+
+<!-- ============================================================ -->
+<h2>
+  <span class="name">SidebarStackShell</span>
+  <span>Primary application shell · sidebar + stacked pages + persistent ActionBar + status bar</span>
+  <span class="routes">overview · live_session · experiments · physiology · health · sessions</span>
+</h2>
+<p class="desc">The outer chrome of the application. Sidebar holds the fixed six-route nav; the right side stacks pages in a single <code>QStackedWidget</code> that switches via route changes. The ActionBar lives <em>below</em> the stacked content so it stays mounted across routes. Below everything, the status bar reads back the API base URL and environment label so the operator never has to guess which environment they are pointed at.</p>
+<div class="regions">
+  <span class="r">sidebar</span>
+  <span class="r">stack</span>
+  <span class="r">action_bar</span>
+  <span class="r">status_bar</span>
+</div>
+
+<div class="frame">
+  <div class="titlebar">
+    <span class="dots"><span></span><span></span><span></span></span>
+    <span class="title">LSIE-MLF · Operator Console</span>
+    <span class="env">env staging · API http://localhost:8000</span>
+  </div>
+  <div class="s1-body">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="t">Operator</div>
+        <div class="s">desktop · v4</div>
+      </div>
+      <nav class="nav">
+        <div class="item">Overview <span class="badge">⌘1</span></div>
+        <div class="item active">Live Session <span class="badge">⌘2</span></div>
+        <div class="item">Experiments <span class="badge">⌘3</span></div>
+        <div class="item">Physiology <span class="badge">⌘4</span></div>
+        <div class="item">Health <span class="badge">⌘5</span></div>
+        <div class="item">Sessions <span class="badge">⌘6</span></div>
+      </nav>
+    </aside>
+    <div class="stack-area">
+      <div class="stack-content">
+        <div class="stack-header">
+          <span class="h">Live Session</span>
+          <span class="sub">sess_4f12 · arm_b · operator R. Ramirez</span>
+          <span class="pills">
+            <span class="mp ok"><span class="d"></span>adb</span>
+            <span class="mp ok"><span class="d"></span>ml backend</span>
+            <span class="mp recovering"><span class="d"></span>orchestrator</span>
+          </span>
+        </div>
+        <div class="banner warn">
+          <span class="g">!</span>
+          <span>Latest physiology snapshot is 48s stale — Oura provider degraded.</span>
+        </div>
+        <div class="grid-3">
+          <div class="mcard"><div class="t">Readiness <span class="mp ok"><span class="d"></span>ready</span></div><div class="p">safe-submit ok</div><div class="s">Greeting bundle loaded for arm_b.</div></div>
+          <div class="mcard"><div class="t">Response signal</div><div class="p">p90 0.42</div><div class="s">strongest in last 18 frames</div></div>
+          <div class="mcard"><div class="t">Reward gate</div><div class="p">held</div><div class="s">semantic gate did not confirm</div></div>
+        </div>
+        <div class="panel" style="flex:1; display:flex; flex-direction:column;">
+          <div class="pt">Encounters · live <span class="pmeta">auto-scroll latest</span></div>
+          <div class="pb" style="padding:0;">
+            <table class="mtl">
+              <thead><tr><th>time</th><th>encounter</th><th>reward</th><th>detail</th></tr></thead>
+              <tbody>
+                <tr><td class="t">14:32:08</td><td class="s">enc_91d2</td><td><span class="mp ok"><span class="d"></span>counted</span></td><td>p90 0.42 · 18 frames · gate confirmed</td></tr>
+                <tr class="sel"><td class="t">14:31:54</td><td class="s">enc_91d1</td><td><span class="mp warn"><span class="d"></span>held</span></td><td>0.39 · gate did not confirm</td></tr>
+                <tr><td class="t">14:31:39</td><td class="s">enc_91d0</td><td><span class="mp bad"><span class="d"></span>no frames</span></td><td>no usable face frames</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+      <div class="shell-action">
+        <div class="ctx">
+          <span class="a">sess_4f12 · arm_b</span>
+          <span class="b">"Hey, glad you made it — first time on stream?"</span>
+        </div>
+        <div class="note">Cold open — first viewer of the hour</div>
+        <button class="submit"><span class="ico"></span>Send Stimulus</button>
+      </div>
+      <div class="statusbar">
+        <span>API · http://localhost:8000</span>
+        <span class="sep">env staging</span>
+        <span class="sep">poll 2.0s</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<h2>
+  <span class="name">MetricGridPlusTimelineShell</span>
+  <span>Monitoring shell · summary cards plus a timeline / follow-up region</span>
+  <span class="routes">overview · live_session · physiology · health</span>
+</h2>
+<p class="desc">The console's most-reused inner pattern. A page header sits above a responsive card grid (3/2/1 by width band), with a timeline or detail panel beneath. This shell is where the operator does <em>monitoring</em> — glance at the cards, drop into the timeline only when something asks for attention.</p>
+<div class="regions">
+  <span class="r">header</span>
+  <span class="r">summary_grid</span>
+  <span class="r">timeline_or_followup</span>
+</div>
+
+<div class="frame">
+  <div class="titlebar">
+    <span class="dots"><span></span><span></span><span></span></span>
+    <span class="title">Overview</span>
+    <span class="env">width 1280 · WIDE band</span>
+  </div>
+  <div class="s2-body">
+    <div class="stack-header">
+      <span class="h">Overview</span>
+      <span class="sub">At-a-glance summary of what's active and what needs attention</span>
+    </div>
+    <div class="grid-3">
+      <div class="mcard"><div class="t">Active session <span class="mp ok"><span class="d"></span>measuring</span></div><div class="p">sess_4f12 · arm_b</div><div class="s">12:04:11 · 18 encounters</div></div>
+      <div class="mcard"><div class="t">Experiment</div><div class="p">exp_arms_v3</div><div class="s">arm_b active · 47 confirmations</div></div>
+      <div class="mcard"><div class="t">Physiology <span class="mp warn"><span class="d"></span>stale</span></div><div class="p">RMSSD 38.4 ms</div><div class="s">snapshot 48s old</div></div>
+      <div class="mcard"><div class="t">Health <span class="mp recovering"><span class="d"></span>recovering</span></div><div class="p">5 ok · 1 recovering</div><div class="s">worker resumed after retry</div></div>
+      <div class="mcard"><div class="t">Latest encounter</div><div class="p">p90 0.42 · counted</div><div class="s">18 frames · semantic gate confirmed</div></div>
+      <div class="mcard"><div class="t">Attention</div><div class="p">2 items</div><div class="s">stale physiology · recovering worker</div></div>
+    </div>
+    <div class="panel" style="flex:1;">
+      <div class="pt">Attention queue <span class="pmeta">preview · open Health for full alert history</span></div>
+      <div class="pb" style="padding:0;">
+        <table class="mtl">
+          <tbody>
+            <tr><td class="t">14:31</td><td class="s">physiology</td><td><span class="mp warn"><span class="d"></span>stale</span></td><td>Oura provider snapshot 48s old</td></tr>
+            <tr><td class="t">14:28</td><td class="s">worker</td><td><span class="mp recovering"><span class="d"></span>recovering</span></td><td>resumed after transient retry</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ============================================================ -->
+<h2>
+  <span class="name">TableWithDrillDownShell</span>
+  <span>Readback shell · table or list adjacent to a detail / management surface</span>
+  <span class="routes">live_session · experiments · sessions</span>
+</h2>
+<p class="desc">When the operator's job is to <em>understand a row</em>, the page splits a table from a detail or management panel. Selection is deliberate: a single click selects, a double-click or Enter opens. The detail panel never auto-loads new content from a hover — the operator owns the navigation gesture.</p>
+<div class="regions">
+  <span class="r">header</span>
+  <span class="r">table</span>
+  <span class="r">detail_or_manage</span>
+</div>
+
+<div class="frame">
+  <div class="titlebar">
+    <span class="dots"><span></span><span></span><span></span></span>
+    <span class="title">Experiments</span>
+    <span class="env">width 1280 · WIDE band</span>
+  </div>
+  <div class="s3-body">
+    <div class="stack-header">
+      <span class="h">Experiments</span>
+      <span class="sub">Adaptive strategy · arms and recent evidence for exp_arms_v3</span>
+    </div>
+    <div class="s3-split">
+      <div class="panel" style="display:flex; flex-direction:column;">
+        <div class="pt">Arms <span class="pmeta">3 active · selection drives detail</span></div>
+        <div class="pb" style="padding:0;">
+          <table class="mtl">
+            <thead><tr><th>arm</th><th>selections</th><th>α / β</th><th>last reward</th></tr></thead>
+            <tbody>
+              <tr><td class="s">arm_a</td><td>312</td><td>164 / 148</td><td>0.38</td></tr>
+              <tr class="sel"><td class="s">arm_b</td><td>419</td><td>247 / 172</td><td>0.51</td></tr>
+              <tr><td class="s">arm_c</td><td>104</td><td>49 / 55</td><td>0.22</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+      <div class="panel" style="display:flex; flex-direction:column;">
+        <div class="pt">arm_b · evidence</div>
+        <div class="pb" style="display:flex; flex-direction:column; gap: 10px;">
+          <div class="mcard" style="background:var(--surface-raised)"><div class="t">Confirmation rate</div><div class="p">59%</div><div class="s">posterior_alpha 247 · posterior_beta 172</div></div>
+          <div class="mcard" style="background:var(--surface-raised)"><div class="t">Strongest recent reward</div><div class="p">0.51</div><div class="s">enc_91cf · 22 frames · gate confirmed</div></div>
+          <div class="mcard" style="background:var(--surface-raised)"><div class="t">Greeting</div><div class="p" style="font-size:13px">"Hey, glad you made it…"</div><div class="s">last renamed 2 days ago by R. Ramirez</div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+</div>
+</body>
+</html>

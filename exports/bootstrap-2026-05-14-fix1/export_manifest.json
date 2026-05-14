@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "export_id": "bootstrap-2026-05-14-fix1",
+  "created_utc": "2026-05-14T16:55:00Z",
+  "source": {
+    "type": "designer-reference-export"
+  },
+  "file_hashes": {
+    "contract/reference_capture_manifest.json": "sha256:ac52f9b09f7d3eb2dc0cfd6da408b57470ac25717a5949ad3f8b783d98ef8f6e",
+    "contract/reference_to_qt_mapping.json": "sha256:b328fb6f67546fe98e87d1bcd6cde54384b94bd482824f80c60c724c3bf3f6fa",
+    "contract/tokens.json": "sha256:0bcabbf5c3202c668fa9a236c82c1444e88bc31f3533fed2cf78925e8ff6d11d",
+    "reference/action-bar.html": "sha256:a57b31b9485c876c30b599cae3c839278ac13219c945025859647b104e47809e",
+    "reference/foundations.html": "sha256:4b725d795b3aa75df82d7c16c61273043dd51cb9b832d1581a95b1bde3c9e9b0",
+    "reference/handoff-to-engineering.html": "sha256:6625cb6464e783c60c01b251c758c84373635530ff17e27e97de183d4fc22b77",
+    "reference/index.html": "sha256:bed69ba28d082a4e30f4bda6c11513ff4826e1f7957989e40fb20a9b12871b4d",
+    "reference/operator-console-interactive.html": "sha256:d26373f6a5aa8ba1e3f7d1405205bde9e639a16ae5a4f72cca49a09bf2c411e4",
+    "reference/operator-language.html": "sha256:d28226106644b3bbc4ad8753ec16c10e79772eb02d3b883f9f4002535a885cc0",
+    "reference/primitives.html": "sha256:d1c08a90d24ec97e13cf66e3477fa586f6c7e49d8d1d702a0ad9f509fa625455",
+    "reference/README.md": "sha256:0667c82342727512ca886837dc6b8b1141a8ca1aa076f85256c1f2bab5107033",
+    "reference/runtime-drift-v1.html": "sha256:241f03651e58c3d6b01506e3f7437504db4e0f0a8288dc252b4c604207c53d57",
+    "reference/runtime-drift.html": "sha256:ad011204f27f38730d5335857147b81d2c0080ce7d65d56a82ca5a2fe565e952",
+    "reference/setup-launcher.html": "sha256:8a5c797e30ce16be7fe2b17bb977447517ec3e4503a42ed472b46747836d6633",
+    "reference/shells.html": "sha256:a01d0ebb5588e6af7d5c115831547608ede4017707e8784c279834aff26c2cf2",
+    "reference/tokens.css": "sha256:b84b32cda46baa18ded54261c4d8610d39efd890fc8608dee4d60525c6e17a99",
+    "reference/uploads/experiments-medium-1024x768.png": "sha256:99dd8ea1dcc186feeadbaa46315a50b6a479327c0da276267f0654eec4af0472",
+    "reference/uploads/health-medium-1024x768.png": "sha256:3bd63432a1816a111cc05b5d154a1254feb1789f9af95d3f2fc34e742ea6285a",
+    "reference/uploads/live_session-medium-1024x768.png": "sha256:3bf7154e81328f020a2b66cbc3166b51bf527b892a1d1c78648203edc067ebd8",
+    "reference/uploads/OPERATOR_CONSOLE_UI_UX_SPECIALIST_BRIEF.md": "sha256:873d3e0f50d8e6646d6febef28ec3ceed5990460df4762cfd81662c7e1ddbf1d",
+    "reference/uploads/overview-medium-1024x768.png": "sha256:45b758829a6cce48609726523b9e7f4ba9eff4945c716e716770fbbef8d182a1",
+    "reference/uploads/physiology-medium-1024x768.png": "sha256:4591834eac6790d9c207c8b3eb5815132cb2f2cb755d1b38b3ad2e2bc1b71342",
+    "reference/uploads/sessions-medium-1024x768.png": "sha256:81d2d2b85a84184cf467f02b4feb903a11d100828d524bb277d0ea1bf099cd63"
+  },
+  "contract_hashes": {
+    "contract/tokens.json": "sha256:0bcabbf5c3202c668fa9a236c82c1444e88bc31f3533fed2cf78925e8ff6d11d",
+    "contract/reference_capture_manifest.json": "sha256:ac52f9b09f7d3eb2dc0cfd6da408b57470ac25717a5949ad3f8b783d98ef8f6e",
+    "contract/reference_to_qt_mapping.json": "sha256:b328fb6f67546fe98e87d1bcd6cde54384b94bd482824f80c60c724c3bf3f6fa"
+  },
+  "notes": [
+    "designer-reference export only; not the PySide6 implementation source of truth",
+    "HTML pages include noindex/nofollow metadata",
+    "uploads are synthetic/reference screenshots only and must not contain real session data"
+  ]
+}
