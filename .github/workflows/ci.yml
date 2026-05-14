@@ -93,3 +93,67 @@ jobs:
         run: uv sync --frozen --extra ml_backend --group dev
       - name: Run strict §13 audit harness
         run: uv run python scripts/run_audit.py --strict
+
+  visual-drift:
+    runs-on: ubuntu-latest
+    needs: lint-and-typecheck
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: "uv.lock"
+      - name: Set up Python 3.11
+        run: uv python install 3.11
+      - name: Set up Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - name: Cache Playwright browser binaries
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+      - name: Install Qt runtime libraries and FFmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libegl1 libgl1 libxkbcommon0 libdbus-1-3 libfontconfig1 ffmpeg fonts-liberation
+      - name: Sync runtime + dev environment
+        run: uv sync --frozen --group dev
+      - name: Install pinned visual-drift tooling
+        run: npm ci
+      - name: Check generated PySide tokens
+        run: uv run python scripts/generate_pyside_tokens.py --export-dir services/operator_console/design_system --manifest services/operator_console/design_system/designer_export_manifest.json --check
+      - name: Check visual-drift scripts
+        run: node --check scripts/capture_html_reference.js && node --check scripts/generate_drift_report.js
+      - name: Render PySide runtime screenshots
+        env:
+          QT_QPA_PLATFORM: offscreen
+          LSIE_SCREENSHOT_DIR: captures/runtime
+        run: uv run python scripts/render_console_screens.py
+      - name: Summarize advisory visual drift
+        shell: bash
+        run: |
+          PORTAL_URL="https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}/"
+          {
+            echo "## Operator Console visual drift"
+            echo
+            echo "Generated synthetic PySide runtime captures for advisory review."
+            echo
+            echo "Designer-reference and PySide-baseline comparisons remain advisory until immutable external artifacts are approved and wired into this job."
+            echo
+            echo "[🚪 Open the Designer Portal]($PORTAL_URL)"
+            echo
+            echo "Check the 'Automated Reports' section on the portal homepage for the latest visual drift results."
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload runtime captures
+        uses: actions/upload-artifact@v4
+        with:
+          name: operator-console-runtime-captures
+          path: captures/runtime
+          retention-days: 14

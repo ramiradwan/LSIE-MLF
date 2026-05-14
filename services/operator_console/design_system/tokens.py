@@ -1,3 +1,4 @@
+# AUTO-GENERATED FROM DESIGNER EXPORT. DO NOT EDIT.
 """Canonical design tokens for the Operator Console."""
 
 from __future__ import annotations

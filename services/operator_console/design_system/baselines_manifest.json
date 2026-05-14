@@ -1,0 +1,8 @@
+{
+  "$schema": "https://lsie-mlf.local/operator-console/pyside-baselines-manifest.schema.json",
+  "version": 1,
+  "status": "not_accepted",
+  "baseline_id": null,
+  "artifact_uri": null,
+  "captures": []
+}

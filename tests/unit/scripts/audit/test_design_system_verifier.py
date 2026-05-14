@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 
@@ -13,6 +14,10 @@ from scripts.audit.verifiers.design_system import (
 def _write(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
+
+
+def _sha256(path: Path) -> str:
+    return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def _build_repo_fixture(repo_root: Path) -> Path:
@@ -69,6 +74,53 @@ def _build_repo_fixture(repo_root: Path) -> Path:
                 "$schema": "https://www.designtokens.org/TR/drafts/format/",
                 "color": {"background": {"$value": "#0f1115", "$type": "color"}},
                 "status": {"ok": {"$value": "#4ecb71", "$type": "color"}},
+            },
+            indent=2,
+        )
+        + "\n",
+    )
+    _write(
+        repo_root / "services" / "operator_console" / "design_system" / "tokens.py",
+        "# AUTO-GENERATED FROM DESIGNER EXPORT. DO NOT EDIT.\nfrom __future__ import annotations\n",
+    )
+    tokens_path = repo_root / "services" / "operator_console" / "design_system" / "tokens.json"
+    _write(
+        repo_root
+        / "services"
+        / "operator_console"
+        / "design_system"
+        / "designer_export_manifest.json",
+        json.dumps(
+            {
+                "$schema": "https://lsie-mlf.local/operator-console/designer-export-manifest.schema.json",
+                "version": 1,
+                "export_id": "unit-test-export",
+                "export_ref": "unit-test",
+                "artifact_uri": None,
+                "contract_hashes": {
+                    "contract/tokens.json": _sha256(tokens_path),
+                    "contract/reference_capture_manifest.json": "sha256:" + "0" * 64,
+                    "contract/reference_to_qt_mapping.json": "sha256:" + "1" * 64,
+                },
+                "generated_files": {
+                    "tokens.py": "services/operator_console/design_system/tokens.py",
+                    "tokens.json": "services/operator_console/design_system/tokens.json",
+                },
+            },
+            indent=2,
+        )
+        + "\n",
+    )
+    _write(
+        repo_root / "services" / "operator_console" / "design_system" / "baselines_manifest.json",
+        json.dumps(
+            {
+                "$schema": "https://lsie-mlf.local/operator-console/pyside-baselines-manifest.schema.json",
+                "version": 1,
+                "status": "not_accepted",
+                "baseline_id": None,
+                "artifact_uri": None,
+                "captures": [],
             },
             indent=2,
         )
@@ -151,6 +203,19 @@ def test_collect_design_system_issues_reports_inline_qss_hex_api_import_and_unre
     assert any("must not import api_client modules" in issue for issue in issues)
     assert any("UnregisteredThing" in issue for issue in issues)
     assert verify_design_system_artifacts(repo_root) is False
+
+
+def test_collect_design_system_issues_rejects_committed_baseline_png(tmp_path: Path) -> None:
+    repo_root = _build_repo_fixture(tmp_path)
+    baseline_path = (
+        repo_root / "services" / "operator_console" / "design_system" / "baselines" / "overview.png"
+    )
+    baseline_path.parent.mkdir(parents=True, exist_ok=True)
+    baseline_path.write_bytes(b"not a real png")
+
+    issues = collect_design_system_issues(repo_root)
+
+    assert any("screenshot binary" in issue for issue in issues)
 
 
 def test_main_returns_non_zero_when_design_system_checks_fail(tmp_path: Path) -> None:

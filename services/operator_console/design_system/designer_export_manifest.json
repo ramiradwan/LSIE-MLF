@@ -1,0 +1,16 @@
+{
+  "$schema": "https://lsie-mlf.local/operator-console/designer-export-manifest.schema.json",
+  "version": 1,
+  "export_id": "bootstrap-2026-05-14",
+  "export_ref": "design-system-spec@6e8a746d06f8e850f9de190779130d301f200dac:exports/bootstrap-2026-05-14",
+  "artifact_uri": null,
+  "contract_hashes": {
+    "contract/tokens.json": "sha256:9d22a6220083e318a28c7195476535ba348d9984bd8679ebaab05436f0bb5d47",
+    "contract/reference_capture_manifest.json": "sha256:c757c78476fbd8a79d1a90b2d50103ff842105dd3c3ee0a3b82f296a57e16649",
+    "contract/reference_to_qt_mapping.json": "sha256:c60284574a2174d308e82e44aa2feb1d9a42fc5fd74988098b13e03837b8317b"
+  },
+  "generated_files": {
+    "tokens.py": "services/operator_console/design_system/tokens.py",
+    "tokens.json": "services/operator_console/design_system/tokens.json"
+  }
+}

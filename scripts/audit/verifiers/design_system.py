@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import hashlib
 import json
 import re
 import sys
@@ -51,6 +52,18 @@ def _schema_path(repo_root: Path) -> Path:
 
 def _tokens_path(repo_root: Path) -> Path:
     return _design_system_root(repo_root) / "tokens.json"
+
+
+def _tokens_py_path(repo_root: Path) -> Path:
+    return _design_system_root(repo_root) / "tokens.py"
+
+
+def _designer_export_manifest_path(repo_root: Path) -> Path:
+    return _design_system_root(repo_root) / "designer_export_manifest.json"
+
+
+def _baselines_manifest_path(repo_root: Path) -> Path:
+    return _design_system_root(repo_root) / "baselines_manifest.json"
 
 
 def _qss_builder_path(repo_root: Path) -> Path:
@@ -199,11 +212,23 @@ def _collect_manifest_issues(repo_root: Path) -> list[str]:
     return issues
 
 
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return "sha256:" + digest.hexdigest()
+
+
 def _collect_tokens_issues(repo_root: Path) -> list[str]:
     issues: list[str] = []
     tokens_path = _tokens_path(repo_root)
+    tokens_py_path = _tokens_py_path(repo_root)
     if not tokens_path.exists():
         issues.append(f"{_relative(repo_root, tokens_path)} is missing")
+        return issues
+    if not tokens_py_path.exists():
+        issues.append(f"{_relative(repo_root, tokens_py_path)} is missing")
         return issues
 
     tokens = _read_json(tokens_path)
@@ -212,6 +237,74 @@ def _collect_tokens_issues(repo_root: Path) -> list[str]:
     for key in ("color", "status"):
         if key not in tokens:
             issues.append(f"{_relative(repo_root, tokens_path)} is missing top-level {key}")
+
+    tokens_py_source = tokens_py_path.read_text(encoding="utf-8")
+    if not tokens_py_source.startswith("# AUTO-GENERATED FROM DESIGNER EXPORT. DO NOT EDIT."):
+        issues.append(f"{_relative(repo_root, tokens_py_path)} is missing generated-file header")
+    return issues
+
+
+def _collect_visual_manifest_issues(repo_root: Path) -> list[str]:
+    issues: list[str] = []
+    designer_manifest_path = _designer_export_manifest_path(repo_root)
+    baselines_manifest_path = _baselines_manifest_path(repo_root)
+    tokens_path = _tokens_path(repo_root)
+
+    if not designer_manifest_path.exists():
+        issues.append(f"{_relative(repo_root, designer_manifest_path)} is missing")
+    else:
+        manifest = _read_json(designer_manifest_path)
+        hashes = manifest.get("contract_hashes")
+        if not isinstance(hashes, Mapping):
+            issues.append(
+                f"{_relative(repo_root, designer_manifest_path)} must define contract_hashes"
+            )
+        else:
+            required_hashes = (
+                "contract/tokens.json",
+                "contract/reference_capture_manifest.json",
+                "contract/reference_to_qt_mapping.json",
+            )
+            for key in required_hashes:
+                value = hashes.get(key)
+                if not isinstance(value, str) or not value.startswith("sha256:"):
+                    issues.append(
+                        f"{_relative(repo_root, designer_manifest_path)} must define "
+                        f"contract_hashes.{key} as a sha256 value"
+                    )
+            tokens_hash = hashes.get("contract/tokens.json")
+            if (
+                isinstance(tokens_hash, str)
+                and tokens_path.exists()
+                and tokens_hash != _sha256(tokens_path)
+            ):
+                issues.append(
+                    f"{_relative(repo_root, designer_manifest_path)} tokens.json hash "
+                    f"does not match {_relative(repo_root, tokens_path)}"
+                )
+
+    if not baselines_manifest_path.exists():
+        issues.append(f"{_relative(repo_root, baselines_manifest_path)} is missing")
+    else:
+        manifest = _read_json(baselines_manifest_path)
+        captures = manifest.get("captures")
+        if not isinstance(captures, list):
+            issues.append(
+                f"{_relative(repo_root, baselines_manifest_path)} must define captures as a list"
+            )
+        artifact_uri = manifest.get("artifact_uri")
+        if artifact_uri is not None and not isinstance(artifact_uri, str):
+            issues.append(
+                f"{_relative(repo_root, baselines_manifest_path)} artifact_uri must be "
+                "null or a string"
+            )
+
+    design_system_root = _design_system_root(repo_root)
+    for png_path in design_system_root.rglob("*.png"):
+        issues.append(
+            f"{_relative(repo_root, png_path)} is a screenshot binary; store visual baselines "
+            "outside main and reference them by manifest hash"
+        )
     return issues
 
 
@@ -287,6 +380,7 @@ def collect_design_system_issues(
     issues: list[str] = []
     issues.extend(_collect_manifest_issues(resolved_root))
     issues.extend(_collect_tokens_issues(resolved_root))
+    issues.extend(_collect_visual_manifest_issues(resolved_root))
     issues.extend(_collect_inline_stylesheet_issues(resolved_root, targets))
     issues.extend(_collect_hex_literal_issues(resolved_root, targets))
     issues.extend(_collect_api_client_import_issues(resolved_root, targets))

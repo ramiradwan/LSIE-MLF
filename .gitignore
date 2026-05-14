@@ -39,6 +39,10 @@ data/processed/*
 htmlcov/
 .coverage
 
+# Visual drift local artifacts
+node_modules/
+captures/
+
 # Docker
 *.log
 

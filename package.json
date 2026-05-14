@@ -1,0 +1,19 @@
+{
+  "name": "lsie-mlf-visual-drift",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Pinned tooling for Operator Console visual-drift capture and reporting.",
+  "scripts": {
+    "capture:html-reference": "node scripts/capture_html_reference.js",
+    "drift:report": "node scripts/generate_drift_report.js"
+  },
+  "devDependencies": {
+    "pixelmatch": "7.2.0",
+    "playwright": "1.60.0",
+    "pngjs": "7.0.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
