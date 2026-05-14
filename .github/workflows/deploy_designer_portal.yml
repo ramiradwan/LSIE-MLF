@@ -135,42 +135,40 @@ jobs:
           from pathlib import Path
 
           commit = os.environ["GITHUB_SHA"]
+          short_commit = commit[:7]
           index = Path("portal/index.html")
           report_href = f"drift-reports/commit-{commit}/runtime-drift.html"
-          style = """
-          <style id="automated-reports-style">
-            .automated-reports {
-              margin: 32px auto;
-              max-width: 1120px;
-              border: 1px solid rgba(255, 255, 255, 0.14);
-              border-radius: 24px;
-              padding: 24px;
-              background: rgba(255, 255, 255, 0.06);
-            }
-            .automated-reports ul { margin: 16px 0; padding-left: 20px; }
-            .automated-reports a { font-weight: 800; }
-          </style>
-          """.strip()
           section = f"""
-          <section id="automated-reports" class="automated-reports">
-            <p class="eyebrow">Automated Reports</p>
-            <h2>Latest visual drift evidence</h2>
-            <ul>
-              <li><a href="{report_href}">Open the latest advisory runtime drift report</a></li>
-            </ul>
-            <p>Review the side-by-side synthetic runtime captures, designer-reference captures, and pixel drift masks before accepting visual changes.</p>
-          </section>
+          <h2 id="automated-reports">Automated reports</h2>
+          <p class="desc">Latest generated visual evidence from the trusted main-branch workflow.</p>
+          <div class="pages automated-report-pages">
+            <a class="tile" href="{report_href}">
+              <div class="top"><span class="num">A1</span><span>Visual drift evidence</span><span class="arrow">→</span></div>
+              <h3>Latest advisory runtime drift report <span style="font-size:11px; color:var(--status-warn); font-weight:500; margin-left:6px;">advisory</span></h3>
+              <p>Compare synthetic PySide runtime captures against the pinned designer-reference export before accepting visual changes.</p>
+              <div class="tags">
+                <span class="tag">designer-reference</span>
+                <span class="tag">commit {short_commit}</span>
+                <span class="tag">not blocking</span>
+              </div>
+            </a>
+          </div>
           """.strip()
           text = index.read_text(encoding="utf-8")
-          if 'id="automated-reports-style"' not in text:
-              if "</head>" in text:
-                  text = text.replace("</head>", f"{style}\n</head>")
-              else:
-                  section = f"{style}\n{section}"
-          if 'id="automated-reports"' in text:
-              start = text.index('<section id="automated-reports"')
-              end = text.index('</section>', start) + len('</section>')
-              text = f"{text[:start]}{section}{text[end:]}"
+          old_section_start = text.find('<section id="automated-reports"')
+          if old_section_start != -1:
+              old_section_end = text.index('</section>', old_section_start) + len('</section>')
+              text = f"{text[:old_section_start]}{section}{text[old_section_end:]}"
+          elif 'id="automated-reports"' in text:
+              heading_start = text.index('<h2 id="automated-reports"')
+              next_heading = text.find('<h2', heading_start + 1)
+              if next_heading == -1:
+                  next_heading = text.find('</body>', heading_start)
+              text = f"{text[:heading_start]}{section}\n{text[next_heading:]}"
+          elif '<!-- ============= Hard rules ============= -->' in text:
+              text = text.replace('<!-- ============= Hard rules ============= -->', f"{section}\n\n<!-- ============= Hard rules ============= -->", 1)
+          elif '<h2>Hard rules</h2>' in text:
+              text = text.replace('<h2>Hard rules</h2>', f"{section}\n\n<h2>Hard rules</h2>", 1)
           else:
               text = text.replace("</body>", f"{section}\n</body>")
           index.write_text(text, encoding="utf-8")
