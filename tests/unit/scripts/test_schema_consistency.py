@@ -45,6 +45,7 @@ from scripts.check_schema_consistency import (
     main,
     parse_json_schema,
     parse_postgres_sql_tables,
+    parse_repository_insert_fields,
     pydantic_to_entity,
 )
 
@@ -261,11 +262,14 @@ class TestJsonSchemaLoader:
 
         monkeypatch.setattr("scripts.check_schema_consistency.load_content", fake_load_content)
 
-        _, json_schema_entities, sql_entities, warnings = load_default_sources(registry, tmp_path)
+        _, json_schema_entities, sql_entities, repository_insert_entities, warnings = (
+            load_default_sources(registry, tmp_path)
+        )
 
         assert "PdfSchema" in json_schema_entities
         assert "DraftSchema" not in json_schema_entities
         assert sql_entities == {}
+        assert repository_insert_entities == {}
         assert any("Ignored draft content payload" in warning for warning in warnings)
 
     def test_load_default_sources_uses_explicit_draft_content(self, tmp_path: Path) -> None:
@@ -293,14 +297,17 @@ class TestJsonSchemaLoader:
             ),
         )
 
-        _, json_schema_entities, sql_entities, warnings = load_default_sources(
-            registry,
-            tmp_path,
-            content_path,
+        _, json_schema_entities, sql_entities, repository_insert_entities, warnings = (
+            load_default_sources(
+                registry,
+                tmp_path,
+                content_path,
+            )
         )
 
         assert "DraftSchema" in json_schema_entities
         assert sql_entities == {}
+        assert repository_insert_entities == {}
         assert warnings == []
 
     def test_load_default_sources_uses_signed_pdf_payload_by_default(
@@ -337,11 +344,89 @@ class TestJsonSchemaLoader:
 
         monkeypatch.setattr("scripts.check_schema_consistency.load_content", fake_load_content)
 
-        _, json_schema_entities, sql_entities, warnings = load_default_sources(registry, tmp_path)
+        _, json_schema_entities, sql_entities, repository_insert_entities, warnings = (
+            load_default_sources(registry, tmp_path)
+        )
 
         assert "PdfSchema" in json_schema_entities
         assert sql_entities == {}
+        assert repository_insert_entities == {}
         assert warnings == []
+
+
+class TestRepositoryInsertLoader:
+    def test_parse_repository_insert_fields(self) -> None:
+        entity = parse_repository_insert_fields(
+            """
+            INSERT INTO attribution_event (
+                event_id,
+                segment_id,
+                response_reason_code
+            )
+            VALUES (
+                %(event_id)s,
+                %(segment_id)s,
+                %(response_reason_code)s
+            )
+            """,
+            name="AttributionEventInsert",
+        )
+
+        assert set(entity.fields) == {"event_id", "segment_id", "response_reason_code"}
+
+    def test_repository_insert_participates_as_presence_only_source(self) -> None:
+        pyd = {"AttributionEvent": _spec(("event_id", "uuid", False, True))}
+        jsn = {"AttributionEvent": _spec(("event_id", "uuid", False, True))}
+        sql = {"attribution_event": _spec(("event_id", "uuid", False, None))}
+        inserts = {"AttributionEvent": _spec(("event_id", "unknown", True, None))}
+        registry = (
+            EntityMapping(
+                name="AttributionEvent",
+                pydantic_class="packages.schemas.attribution:AttributionEvent",
+                json_schema_key="AttributionEvent",
+                sql_table="attribution_event",
+                repository_insert="services.cloud_api.repos.telemetry:_INSERT_ATTRIBUTION_EVENT_SQL",
+            ),
+        )
+
+        assert check_consistency(registry, pyd, jsn, sql, inserts) == []
+
+    def test_repository_insert_missing_field_is_detected(self) -> None:
+        pyd = {
+            "AttributionEvent": _spec(
+                ("event_id", "uuid", False, True),
+                ("response_reason_code", "string", True, False),
+            )
+        }
+        jsn = {
+            "AttributionEvent": _spec(
+                ("event_id", "uuid", False, True),
+                ("response_reason_code", "string", True, False),
+            )
+        }
+        sql = {
+            "attribution_event": _spec(
+                ("event_id", "uuid", False, None),
+                ("response_reason_code", "string", True, None),
+            )
+        }
+        inserts = {"AttributionEvent": _spec(("event_id", "unknown", True, None))}
+        registry = (
+            EntityMapping(
+                name="AttributionEvent",
+                pydantic_class="packages.schemas.attribution:AttributionEvent",
+                json_schema_key="AttributionEvent",
+                sql_table="attribution_event",
+                repository_insert="services.cloud_api.repos.telemetry:_INSERT_ATTRIBUTION_EVENT_SQL",
+            ),
+        )
+
+        issues = check_consistency(registry, pyd, jsn, sql, inserts)
+
+        assert len(issues) == 1
+        assert issues[0].field == "response_reason_code"
+        assert issues[0].kind == "missing"
+        assert "repository_insert" in issues[0].detail
 
 
 class TestPostgresSqlLoader:
@@ -733,10 +818,11 @@ class TestMain:
             dict[str, EntitySpec],
             dict[str, EntitySpec],
             dict[str, EntitySpec],
+            dict[str, EntitySpec],
             list[str],
         ]:
             pyd, jsn = _build_sources()
-            return pyd, jsn, {}, []
+            return pyd, jsn, {}, {}, []
 
         monkeypatch.setattr(mod, "load_default_sources", fake_loader)
         monkeypatch.setattr(mod, "DEFAULT_REGISTRY", _TEST_REGISTRY)
@@ -759,12 +845,13 @@ class TestMain:
             dict[str, EntitySpec],
             dict[str, EntitySpec],
             dict[str, EntitySpec],
+            dict[str, EntitySpec],
             list[str],
         ]:
             bad_schema = _snap_json_schema()
             bad_schema["properties"]["rmssd_ms"] = {"type": ["integer", "null"]}
             pyd, jsn = _build_sources(json_schema=bad_schema)
-            return pyd, jsn, {}, []
+            return pyd, jsn, {}, {}, []
 
         monkeypatch.setattr(mod, "load_default_sources", fake_loader)
         monkeypatch.setattr(mod, "DEFAULT_REGISTRY", _TEST_REGISTRY)
@@ -791,9 +878,13 @@ class TestDefaultRegistry:
             )
 
     def test_default_registry_resolves_against_repo_sources(self) -> None:
-        pydantic_entities, json_schema_entities, sql_entities, warnings = load_default_sources(
-            DEFAULT_REGISTRY
-        )
+        (
+            pydantic_entities,
+            json_schema_entities,
+            sql_entities,
+            repository_insert_entities,
+            warnings,
+        ) = load_default_sources(DEFAULT_REGISTRY)
 
         missing_pydantic = [
             mapping.name for mapping in DEFAULT_REGISTRY if mapping.name not in pydantic_entities
@@ -806,6 +897,12 @@ class TestDefaultRegistry:
             for mapping in DEFAULT_REGISTRY
             if mapping.sql_table is not None and mapping.sql_table not in sql_entities
         ]
+        missing_repository_inserts = [
+            mapping.name
+            for mapping in DEFAULT_REGISTRY
+            if mapping.repository_insert is not None
+            and mapping.name not in repository_insert_entities
+        ]
 
         unexpected_warnings = [
             warning for warning in warnings if "Ignored draft content payload" not in warning
@@ -815,11 +912,16 @@ class TestDefaultRegistry:
         assert missing_pydantic == []
         assert missing_json_schema == []
         assert missing_sql == []
+        assert missing_repository_inserts == []
 
     def test_default_registry_sources_are_consistent_with_signed_payload(self) -> None:
-        pydantic_entities, json_schema_entities, sql_entities, warnings = load_default_sources(
-            DEFAULT_REGISTRY
-        )
+        (
+            pydantic_entities,
+            json_schema_entities,
+            sql_entities,
+            repository_insert_entities,
+            warnings,
+        ) = load_default_sources(DEFAULT_REGISTRY)
         unexpected_warnings = [
             warning for warning in warnings if "Ignored draft content payload" not in warning
         ]
@@ -830,6 +932,7 @@ class TestDefaultRegistry:
             pydantic_entities,
             json_schema_entities,
             sql_entities,
+            repository_insert_entities,
         )
 
         assert issues == []

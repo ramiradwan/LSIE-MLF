@@ -19,6 +19,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from packages.schemas.evaluation import StimulusDefinition, StimulusPayload
+from packages.schemas.physiology import PhysiologicalContext
 from services.desktop_app.ipc import IpcChannels
 from services.desktop_app.ipc.control_messages import (
     DESKTOP_LIVE_VISUAL_SOURCE_CONTRACT,
@@ -145,9 +146,30 @@ def _append_audio(path: Path, frames: int, *, channels: int = 1) -> None:
         audio_file.write(frame * frames)
 
 
+def _physiological_context() -> PhysiologicalContext:
+    return PhysiologicalContext.model_validate(
+        {
+            "streamer": {
+                "rmssd_ms": 42.0,
+                "heart_rate_bpm": 72,
+                "source_timestamp_utc": datetime(2026, 5, 2, 11, 59, 58, tzinfo=UTC),
+                "freshness_s": 2.0,
+                "is_stale": False,
+                "provider": "oura",
+                "source_kind": "ibi",
+                "derivation_method": "server",
+                "window_s": 300,
+                "validity_ratio": 0.95,
+                "is_valid": True,
+            }
+        }
+    )
+
+
 def _segment(
     *,
     au12_series: tuple[dict[str, float], ...] = (),
+    physiological_context: PhysiologicalContext | None = None,
 ) -> module_c_orchestrator.DesktopSegment:
     return module_c_orchestrator.DesktopSegment(
         session_id=uuid.UUID("00000000-0000-4000-8000-000000000001"),
@@ -161,6 +183,7 @@ def _segment(
         bandit_decision_snapshot=_BANDIT_SNAPSHOT,
         stimulus_time_s=100.0,
         au12_series=au12_series,
+        physiological_context=physiological_context,
     )
 
 
@@ -201,11 +224,42 @@ def test_dispatcher_writes_pcm_shared_memory_and_sends_control_message() -> None
     )
     assert message.handoff["_stimulus_time"] == segment.stimulus_time_s
     assert message.handoff["_au12_series"] == [{"timestamp_s": 1_777_373_401.0, "intensity": 0.72}]
+    assert "_physiological_context" not in message.handoff
     snapshot = message.handoff["_bandit_decision_snapshot"]
     assert snapshot["selected_arm_id"] == "warm_welcome"
     assert snapshot["candidate_arm_ids"] == ["direct_question", "warm_welcome"]
     assert snapshot["posterior_by_arm"]["warm_welcome"] == {"alpha": 2.0, "beta": 3.0}
     assert snapshot["sampled_theta_by_arm"] == {"direct_question": 0.2, "warm_welcome": 0.6}
+
+
+def test_dispatcher_attaches_valid_physiological_context() -> None:
+    inbox: queue.Queue[object] = queue.Queue()
+    ack_queue: queue.Queue[object] = queue.Queue()
+    dispatcher = module_c_orchestrator.DesktopSegmentDispatcher(inbox, ack_queue)
+    segment = _segment(physiological_context=_physiological_context())
+
+    try:
+        assert dispatcher.dispatch(segment)
+        message = InferenceControlMessage.model_validate(inbox.get_nowait())
+    finally:
+        dispatcher.close_inflight_blocks()
+
+    assert message.handoff["_physiological_context"] == {
+        "streamer": {
+            "rmssd_ms": 42.0,
+            "heart_rate_bpm": 72,
+            "source_timestamp_utc": "2026-05-02T11:59:58Z",
+            "freshness_s": 2.0,
+            "is_stale": False,
+            "provider": "oura",
+            "source_kind": "ibi",
+            "derivation_method": "server",
+            "window_s": 300,
+            "validity_ratio": 0.95,
+            "is_valid": True,
+        },
+        "operator": None,
+    }
 
 
 def test_segment_id_uses_only_session_and_canonical_window_bounds() -> None:
@@ -628,6 +682,185 @@ def test_run_segment_loop_does_not_dispatch_without_stimulus(
         runner.join(timeout=2.0)
 
     assert not dispatcher.dispatch.called
+
+
+def test_latest_physiological_context_reads_one_snapshot_per_role(tmp_path: Path) -> None:
+    db_path = _bootstrap_db(tmp_path)
+    conn = sqlite3.connect(str(db_path), isolation_level=None)
+    try:
+        conn.executemany(
+            """
+            INSERT INTO physiology_log (
+                session_id, segment_id, subject_role, rmssd_ms, heart_rate_bpm,
+                freshness_s, is_stale, provider, source_kind, derivation_method,
+                window_s, validity_ratio, is_valid, source_timestamp_utc, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                (
+                    "00000000-0000-4000-8000-000000000001",
+                    "a" * 64,
+                    "streamer",
+                    35.0,
+                    70,
+                    30.0,
+                    0,
+                    "oura",
+                    "ibi",
+                    "server",
+                    300,
+                    0.90,
+                    1,
+                    "2026-05-02T11:59:00Z",
+                    "2026-05-02T11:59:00Z",
+                ),
+                (
+                    "00000000-0000-4000-8000-000000000001",
+                    "b" * 64,
+                    "streamer",
+                    42.0,
+                    72,
+                    2.0,
+                    0,
+                    "oura",
+                    "ibi",
+                    "server",
+                    300,
+                    0.95,
+                    1,
+                    "2026-05-02T11:59:58Z",
+                    "2026-05-02T11:59:58Z",
+                ),
+                (
+                    "00000000-0000-4000-8000-000000000001",
+                    "c" * 64,
+                    "operator",
+                    None,
+                    64,
+                    5.0,
+                    0,
+                    "oura",
+                    "session",
+                    "provider",
+                    300,
+                    0.80,
+                    1,
+                    "2026-05-02T11:59:55Z",
+                    "2026-05-02T11:59:55Z",
+                ),
+            ),
+        )
+    finally:
+        conn.close()
+
+    context = module_c_orchestrator._latest_physiological_context(  # noqa: SLF001
+        db_path,
+        uuid.UUID("00000000-0000-4000-8000-000000000001"),
+    )
+
+    assert context is not None
+    assert context.streamer is not None
+    assert context.streamer.rmssd_ms == 42.0
+    assert context.operator is not None
+    assert context.operator.source_kind == "session"
+    assert context.operator.is_stale is False
+
+
+def test_latest_physiological_context_excludes_stale_or_invalid_rows(tmp_path: Path) -> None:
+    db_path = _bootstrap_db(tmp_path)
+    conn = sqlite3.connect(str(db_path), isolation_level=None)
+    try:
+        conn.executemany(
+            """
+            INSERT INTO physiology_log (
+                session_id, segment_id, subject_role, rmssd_ms, heart_rate_bpm,
+                freshness_s, is_stale, provider, source_kind, derivation_method,
+                window_s, validity_ratio, is_valid, source_timestamp_utc, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                (
+                    "00000000-0000-4000-8000-000000000001",
+                    "a" * 64,
+                    "streamer",
+                    42.0,
+                    72,
+                    700.0,
+                    1,
+                    "oura",
+                    "ibi",
+                    "server",
+                    300,
+                    0.95,
+                    1,
+                    "2026-05-02T11:59:58Z",
+                    "2026-05-02T11:59:58Z",
+                ),
+                (
+                    "00000000-0000-4000-8000-000000000001",
+                    "b" * 64,
+                    "operator",
+                    28.0,
+                    64,
+                    5.0,
+                    0,
+                    "oura",
+                    "session",
+                    "provider",
+                    300,
+                    0.10,
+                    0,
+                    "2026-05-02T11:59:55Z",
+                    "2026-05-02T11:59:55Z",
+                ),
+            ),
+        )
+    finally:
+        conn.close()
+
+    assert (
+        module_c_orchestrator._latest_physiological_context(  # noqa: SLF001
+            db_path,
+            uuid.UUID("00000000-0000-4000-8000-000000000001"),
+        )
+        is None
+    )
+
+
+def test_latest_physiological_context_returns_none_when_absent(tmp_path: Path) -> None:
+    db_path = _bootstrap_db(tmp_path)
+
+    assert (
+        module_c_orchestrator._latest_physiological_context(  # noqa: SLF001
+            db_path,
+            uuid.UUID("00000000-0000-4000-8000-000000000001"),
+        )
+        is None
+    )
+
+
+def test_segment_from_active_session_carries_physiological_context() -> None:
+    active = module_c_orchestrator._ActiveSession(  # noqa: SLF001
+        session_id=uuid.UUID("00000000-0000-4000-8000-000000000001"),
+        stream_url="test://stream",
+        experiment_id="greeting_line_v1",
+        experiment_row_id=1,
+        active_arm="warm_welcome",
+        stimulus_definition=_stimulus_definition(),
+        bandit_decision_snapshot=_BANDIT_SNAPSHOT,
+        stimulus_time_s=datetime(2026, 5, 2, 12, 0, 10, tzinfo=UTC).timestamp(),
+    )
+    physiological_context = _physiological_context()
+
+    segment = module_c_orchestrator._segment_from_active_session(  # noqa: SLF001
+        active,
+        segment_start_utc=datetime(2026, 5, 2, 11, 59, 45, tzinfo=UTC),
+        pcm_s16le_16khz_mono=b"\0\0" * 16000 * 30,
+        drift_offset_s=0.125,
+        physiological_context=physiological_context,
+    )
+
+    assert segment.physiological_context == physiological_context
 
 
 def test_stimulus_time_attaches_only_to_segment_covering_baseline_and_measurement() -> None:

@@ -89,6 +89,51 @@ def _module_aliases(tree: ast.AST, module_name: str) -> set[str]:
     return aliases
 
 
+def _literal_alias_values(tree: ast.Module, alias_name: str) -> tuple[str, ...]:
+    for node in tree.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        has_target = any(
+            isinstance(target, ast.Name) and target.id == alias_name for target in node.targets
+        )
+        if not has_target:
+            continue
+        value = node.value
+        if not (
+            isinstance(value, ast.Subscript)
+            and isinstance(value.value, ast.Name)
+            and value.value.id == "Literal"
+        ):
+            break
+        slice_node = value.slice
+        if isinstance(slice_node, ast.Constant) and isinstance(slice_node.value, str):
+            return (slice_node.value,)
+        if isinstance(slice_node, ast.Tuple):
+            values: list[str] = []
+            for item in slice_node.elts:
+                if not isinstance(item, ast.Constant) or not isinstance(item.value, str):
+                    break
+                values.append(item.value)
+            else:
+                return tuple(values)
+        break
+    raise AssertionError(f"{alias_name} Literal alias not found")
+
+
+def _class_method_names(tree: ast.AST, class_name: str) -> tuple[str, ...]:
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef) and node.name == class_name:
+            return tuple(child.name for child in node.body if isinstance(child, ast.FunctionDef))
+    raise AssertionError(f"{class_name} class not found")
+
+
+def _function_def(tree: ast.AST, function_name: str) -> ast.FunctionDef:
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == function_name:
+            return node
+    raise AssertionError(f"{function_name} function not found")
+
+
 def test_module_b_ground_truth_ingester_remains_unwired_from_runtime_entrypoints() -> None:
     guarded_symbols = {"GroundTruthIngester", "EulerStreamSigner", "SignatureProvider"}
     implementation_path = "services/worker/pipeline/ground_truth.py"
@@ -198,9 +243,47 @@ def test_attribution_offline_final_replay_has_no_runtime_producer() -> None:
     assert offenders == []
 
 
+def test_desktop_cloud_outbox_typed_payload_surface_remains_schema_backed() -> None:
+    tree = _parse(_REPO_ROOT / "services/desktop_app/cloud/outbox.py")
+
+    assert _literal_alias_values(tree, "UploadEndpoint") == (
+        "telemetry_segments",
+        "telemetry_posterior_deltas",
+    )
+    assert _literal_alias_values(tree, "PayloadType") == (
+        "inference_handoff",
+        "attribution_event",
+        "posterior_delta",
+    )
+    assert {
+        name for name in _class_method_names(tree, "CloudOutbox") if name.startswith("enqueue_")
+    } == {
+        "enqueue_inference_handoff",
+        "enqueue_attribution_event",
+        "enqueue_posterior_delta",
+        "enqueue_raw",
+    }
+
+    validate_upload = _function_def(tree, "validate_upload")
+    assert "InferenceHandoffPayload" in _name_or_attr_tokens(validate_upload)
+    assert "AttributionEvent" in _name_or_attr_tokens(validate_upload)
+    assert "PosteriorDelta" in _name_or_attr_tokens(validate_upload)
+    assert {
+        "inference_handoff",
+        "attribution_event",
+        "posterior_delta",
+    }.issubset(_string_constants(validate_upload))
+
+
 def test_desktop_cloud_outbox_producers_remain_current_analytics_surface_only() -> None:
     allowed_producer_path = "services/desktop_app/processes/analytics_state_worker.py"
+    outbox_tree = _parse(_REPO_ROOT / "services/desktop_app/cloud/outbox.py")
     enqueue_methods = {
+        name
+        for name in _class_method_names(outbox_tree, "CloudOutbox")
+        if name.startswith("enqueue_") and name != "enqueue_raw"
+    }
+    assert enqueue_methods == {
         "enqueue_inference_handoff",
         "enqueue_attribution_event",
         "enqueue_posterior_delta",
@@ -216,6 +299,46 @@ def test_desktop_cloud_outbox_producers_remain_current_analytics_surface_only() 
             if _call_name(call) in enqueue_methods:
                 offenders.append(f"{rel_path}:{call.lineno} enqueues desktop cloud payloads")
 
+    assert offenders == []
+
+
+def test_desktop_cloud_sync_worker_remains_outbox_drainer_not_control_plane() -> None:
+    rel_path = "services/desktop_app/processes/cloud_sync_worker.py"
+    tree = _parse(_REPO_ROOT / rel_path)
+    forbidden_import_prefixes = (
+        "celery",
+        "redis",
+        "patchright",
+        "playwright",
+        "selenium",
+    )
+    forbidden_import_fragments = (
+        "chromium",
+        "browser",
+        "scrape",
+        "scraping",
+    )
+    offenders: list[str] = []
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                lowered = alias.name.lower()
+                if lowered.startswith(forbidden_import_prefixes) or any(
+                    fragment in lowered for fragment in forbidden_import_fragments
+                ):
+                    offenders.append(f"{rel_path} imports {alias.name}")
+        elif isinstance(node, ast.ImportFrom) and node.module is not None:
+            lowered = node.module.lower()
+            if lowered.startswith(forbidden_import_prefixes) or any(
+                fragment in lowered for fragment in forbidden_import_fragments
+            ):
+                offenders.append(f"{rel_path} imports from {node.module}")
+
+    run_function = _function_def(tree, "run")
+    assert any(isinstance(node, ast.Delete) for node in run_function.body)
+    run_calls = {_call_name(call) for call in _calls(run_function)}
+    assert run_calls.isdisjoint({"get", "put", "send", "recv"})
     assert offenders == []
 
 

@@ -21,7 +21,7 @@ CREATE TABLE IF NOT EXISTS attribution_event (
     event_id                    UUID PRIMARY KEY,
     session_id                  UUID NOT NULL REFERENCES sessions(session_id),
     segment_id                  TEXT NOT NULL CHECK (segment_id ~ '^[0-9a-f]{64}$'),
-    event_type                  TEXT NOT NULL CHECK (event_type IN ('greeting_interaction', 'stimulus_interaction')),
+    event_type                  TEXT NOT NULL CHECK (event_type IN ('stimulus_interaction')),
     event_time_utc              TIMESTAMPTZ NOT NULL,
     stimulus_time_utc           TIMESTAMPTZ,
     stimulus_id                 UUID,
@@ -69,6 +69,16 @@ CREATE TABLE IF NOT EXISTS attribution_event (
     CONSTRAINT uq_attribution_event_deterministic_identity
         UNIQUE (session_id, segment_id, event_type, reward_path_version)
 );
+
+ALTER TABLE attribution_event
+    DROP CONSTRAINT IF EXISTS attribution_event_event_type_check;
+
+ALTER TABLE attribution_event
+    DROP CONSTRAINT IF EXISTS ck_attribution_event_type;
+
+ALTER TABLE attribution_event
+    ADD CONSTRAINT ck_attribution_event_type
+    CHECK (event_type IN ('stimulus_interaction')) NOT VALID;
 
 ALTER TABLE attribution_event
     DROP CONSTRAINT IF EXISTS attribution_event_semantic_method_check;

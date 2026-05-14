@@ -761,6 +761,95 @@ async def test_permanent_4xx_marks_rows_dead_letter(
 
 
 @pytest.mark.asyncio
+async def test_same_second_segment_and_event_batch_drains_segment_first(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "services.desktop_app.processes.cloud_sync_worker.get_secret",
+        lambda key: "refresh-a",
+    )
+    outbox = _outbox(tmp_path)
+    try:
+        created_at = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        handoff = _handoff_payload(datetime(2026, 5, 2, tzinfo=UTC))
+        event = _attribution_event(datetime(2026, 5, 2, tzinfo=UTC))
+        segment_payload = canonical_payload_json(handoff)
+        event_payload = event.model_dump_json(by_alias=True)
+        conn = sqlite3.connect(str(tmp_path / "desktop.sqlite"), isolation_level=None)
+        try:
+            conn.execute(
+                """
+                INSERT INTO pending_uploads (
+                    upload_id, endpoint, payload_type, dedupe_key, payload_json,
+                    payload_sha256, created_at_utc, next_attempt_at_utc
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "z-segment",
+                    "telemetry_segments",
+                    "inference_handoff",
+                    SEGMENT_ID,
+                    segment_payload,
+                    None,
+                    created_at,
+                    created_at,
+                ),
+            )
+            conn.execute(
+                """
+                INSERT INTO pending_uploads (
+                    upload_id, endpoint, payload_type, dedupe_key, payload_json,
+                    payload_sha256, created_at_utc, next_attempt_at_utc
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "a-event",
+                    "telemetry_segments",
+                    "attribution_event",
+                    str(event.event_id),
+                    event_payload,
+                    None,
+                    created_at,
+                    created_at,
+                ),
+            )
+        finally:
+            conn.close()
+        transport = ScriptedTransport(
+            [
+                httpx.Response(200, json={"access_token": "access-a", "expires_in": 3600}),
+                httpx.Response(
+                    200,
+                    json={"status": "accepted", "accepted_count": 1, "inserted_count": 1},
+                ),
+                httpx.Response(
+                    200,
+                    json={"status": "accepted", "accepted_count": 1, "inserted_count": 1},
+                ),
+            ]
+        )
+        config = CloudSyncConfig(base_url="https://cloud.example.test", batch_size=1)
+        worker = CloudSyncWorker(outbox, config)
+        async with httpx.AsyncClient(base_url=config.base_url, transport=transport) as client:
+            await worker.sync_once(client)
+    finally:
+        outbox.close()
+
+    assert [request.url.path for request in transport.requests] == [
+        "/v4/auth/oauth/token",
+        "/v4/telemetry/segments",
+        "/v4/telemetry/segments",
+    ]
+    first_body = json.loads(transport.requests[1].content)
+    second_body = json.loads(transport.requests[2].content)
+    assert first_body["segments"][0]["segment_id"] == SEGMENT_ID
+    assert first_body["attribution_events"] == []
+    assert second_body["segments"] == []
+    assert second_body["attribution_events"][0]["segment_id"] == SEGMENT_ID
+
+
+@pytest.mark.asyncio
 async def test_event_only_segment_batch_posts_attribution_events(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

@@ -32,6 +32,7 @@ from typing import Any, cast
 
 import pytest
 
+from packages.schemas.attribution import AttributionEvent
 from packages.schemas.evaluation import StimulusDefinition
 from packages.schemas.inference_handoff import InferenceHandoffPayload
 from services.desktop_app.ipc import IpcChannels
@@ -427,7 +428,15 @@ def test_process_graph_queues_route_pcm_ack_and_analytics_to_local_state(
         )
         assert dispatcher.dispatch(segment)
         raw_control = channels.ml_inbox.get(timeout=1.0)
-        control = InferenceControlMessage.model_validate(raw_control)
+        base_control = InferenceControlMessage.model_validate(raw_control)
+        control = base_control.model_copy(
+            update={
+                "forward_fields": {
+                    **base_control.forward_fields,
+                    "_creator_follow": True,
+                }
+            }
+        )
         recovered = read_pcm_block(control.audio.to_metadata())
         assert recovered == audio
         assert control.handoff["_au12_series"] == [
@@ -509,7 +518,15 @@ def test_process_graph_queues_route_pcm_ack_and_analytics_to_local_state(
         assert live_row[0] == fixture["_active_arm"]
         assert json.loads(str(live_row[1])) == stimulus_definition_dump
         assert ledger_row is not None
-        assert [kind for kind, _payload in outbox.enqueued] == ["handoff", "posterior_delta"]
+        assert [kind for kind, _payload in outbox.enqueued] == [
+            "handoff",
+            "attribution_event",
+            "posterior_delta",
+        ]
+        enqueued_handoff = cast("InferenceHandoffPayload", outbox.enqueued[0][1])
+        enqueued_event = cast("AttributionEvent", outbox.enqueued[1][1])
+        assert enqueued_handoff.segment_id == analytics.handoff.segment_id
+        assert enqueued_event.segment_id == analytics.handoff.segment_id
 
         live_payloads.clear()
         segment_payloads.clear()

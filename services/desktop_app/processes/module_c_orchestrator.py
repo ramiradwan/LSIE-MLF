@@ -26,6 +26,7 @@ from pydantic import ValidationError
 
 from packages.schemas.evaluation import StimulusDefinition
 from packages.schemas.inference_handoff import InferenceHandoffPayload
+from packages.schemas.physiology import PhysiologicalContext
 from services.desktop_app.ipc import IpcChannels
 from services.desktop_app.ipc.control_messages import (
     DESKTOP_LIVE_VISUAL_SOURCE_CONTRACT,
@@ -73,6 +74,7 @@ class DesktopSegment:
     bandit_decision_snapshot: dict[str, Any]
     stimulus_time_s: float | None
     au12_series: tuple[dict[str, float], ...] = ()
+    physiological_context: PhysiologicalContext | None = None
 
 
 @dataclass(frozen=True)
@@ -251,6 +253,8 @@ def _build_handoff(segment: DesktopSegment, *, drift_offset_s: float) -> Inferen
         "_au12_series": list(segment.au12_series),
         "_bandit_decision_snapshot": segment.bandit_decision_snapshot,
     }
+    if segment.physiological_context is not None:
+        payload["_physiological_context"] = segment.physiological_context.model_dump(mode="json")
     return InferenceHandoffPayload.model_validate(payload)
 
 
@@ -278,6 +282,55 @@ def _reader_connection(db_path: Path) -> sqlite3.Connection:
     bootstrap_schema(conn)
     apply_reader_pragmas(conn)
     return conn
+
+
+def _latest_physiological_context(db_path: Path, session_id: UUID) -> PhysiologicalContext | None:
+    conn = _reader_connection(db_path)
+    try:
+        rows = conn.execute(
+            """
+            SELECT subject_role, rmssd_ms, heart_rate_bpm, source_timestamp_utc,
+                   freshness_s, is_stale, provider, source_kind, derivation_method,
+                   window_s, validity_ratio, is_valid
+            FROM (
+                SELECT *, ROW_NUMBER() OVER (
+                    PARTITION BY subject_role
+                    ORDER BY source_timestamp_utc DESC, created_at DESC, id DESC
+                ) AS rn
+                FROM physiology_log
+                WHERE session_id = ?
+                  AND is_valid = 1
+                  AND is_stale = 0
+            )
+            WHERE rn = 1
+            ORDER BY subject_role
+            """,
+            (str(session_id),),
+        ).fetchall()
+    finally:
+        conn.close()
+    snapshots: dict[str, dict[str, object]] = {}
+    for row in rows:
+        snapshots[str(row["subject_role"])] = {
+            "rmssd_ms": row["rmssd_ms"],
+            "heart_rate_bpm": row["heart_rate_bpm"],
+            "source_timestamp_utc": row["source_timestamp_utc"],
+            "freshness_s": row["freshness_s"],
+            "is_stale": bool(row["is_stale"]),
+            "provider": row["provider"],
+            "source_kind": row["source_kind"],
+            "derivation_method": row["derivation_method"],
+            "window_s": row["window_s"],
+            "validity_ratio": row["validity_ratio"],
+            "is_valid": bool(row["is_valid"]),
+        }
+    if not snapshots:
+        return None
+    try:
+        return PhysiologicalContext.model_validate(snapshots)
+    except ValidationError:
+        logger.exception("module_c_orchestrator ignored invalid physiological context")
+        return None
 
 
 def _fetch_active_session(db_path: Path) -> _ActiveSession | None:
@@ -715,6 +768,7 @@ def _segment_from_active_session(
     drift_offset_s: float,
     stimulus_time_s: float | None = None,
     au12_series: tuple[dict[str, float], ...] = (),
+    physiological_context: PhysiologicalContext | None = None,
 ) -> DesktopSegment:
     resolved_stimulus_time_s = stimulus_time_s
     if resolved_stimulus_time_s is None:
@@ -735,6 +789,7 @@ def _segment_from_active_session(
         bandit_decision_snapshot=active.bandit_decision_snapshot,
         stimulus_time_s=resolved_stimulus_time_s,
         au12_series=au12_series,
+        physiological_context=physiological_context,
     )
 
 
@@ -827,6 +882,7 @@ def _run_segment_loop(
                     start_s=stimulus_segment_start_utc.timestamp(),
                     end_s=stimulus_segment_end_utc.timestamp(),
                 )
+                physiological_context = _latest_physiological_context(db_path, active.session_id)
                 segment = _segment_from_active_session(
                     active,
                     segment_start_utc=stimulus_segment_start_utc,
@@ -834,6 +890,7 @@ def _run_segment_loop(
                     drift_offset_s=drift_offset_s,
                     stimulus_time_s=active.stimulus_time_s,
                     au12_series=au12_series,
+                    physiological_context=physiological_context,
                 )
                 if not _dispatch_segment(
                     dispatcher,

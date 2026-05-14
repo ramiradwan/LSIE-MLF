@@ -227,6 +227,14 @@ class InferenceHandoffPayload(BaseModel):
         json_schema_extra={"$schema": "http://json-schema.org/draft-07/schema#"},
     )
 
+    @model_serializer(mode="wrap")
+    def _serialize_without_null_physiological_context(self, handler: Any) -> dict[str, Any]:
+        data = cast(dict[str, Any], handler(self))
+        for key in ("_physiological_context", "physiological_context"):
+            if data.get(key) is None:
+                data.pop(key, None)
+        return data
+
     @model_validator(mode="before")
     @classmethod
     def _reject_null_physiological_context(cls, data: Any) -> Any:

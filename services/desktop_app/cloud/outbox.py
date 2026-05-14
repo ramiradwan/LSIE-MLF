@@ -39,7 +39,14 @@ _READY_BATCH_SQL = """
     WHERE endpoint = ?
       AND status = 'pending'
       AND next_attempt_at_utc <= ?
-    ORDER BY created_at_utc, upload_id
+    ORDER BY created_at_utc,
+             CASE payload_type
+                 WHEN 'inference_handoff' THEN 0
+                 WHEN 'attribution_event' THEN 1
+                 WHEN 'posterior_delta' THEN 2
+                 ELSE 3
+             END,
+             upload_id
     LIMIT ?
 """
 

@@ -40,6 +40,7 @@ from __future__ import annotations
 import argparse
 import importlib
 import json
+import re
 import sys
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -103,6 +104,7 @@ class EntityMapping:
     pydantic_class: str | None
     json_schema_key: str | None
     sql_table: str | None = None
+    repository_insert: str | None = None
     ignore_fields: frozenset[str] = field(default_factory=frozenset)
     source_type_overrides: dict[str, dict[str, str]] = field(default_factory=dict)
     source_required_overrides: dict[str, dict[str, bool]] = field(default_factory=dict)
@@ -150,6 +152,7 @@ DEFAULT_REGISTRY: tuple[EntityMapping, ...] = (
         pydantic_class="packages.schemas.attribution:AttributionEvent",
         json_schema_key="AttributionEvent",
         sql_table="attribution_event",
+        repository_insert="services.cloud_api.repos.telemetry:_INSERT_ATTRIBUTION_EVENT_SQL",
     ),
     EntityMapping(
         name="OutcomeEvent",
@@ -406,6 +409,35 @@ POSTGRES_TYPE_MAP: dict[str, str] = {
 }
 
 
+def parse_repository_insert_fields(sql_text: str, *, name: str) -> EntitySpec:
+    match = re.search(
+        r"INSERT\s+INTO\s+\w+\s*\((?P<columns>.*?)\)\s*VALUES",
+        sql_text,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if match is None:
+        raise ValueError(f"Repository insert SQL not found for {name}")
+
+    columns = _split_sql_columns(match.group("columns"))
+    entity = EntitySpec(name=name)
+    for column in columns:
+        field_name = column.strip().strip('"').lower()
+        if field_name:
+            entity.fields[field_name] = FieldSpec(field_name, "unknown", True)
+    return entity
+
+
+def load_repository_insert(dotted: str) -> EntitySpec:
+    module_path, _, symbol_name = dotted.partition(":")
+    if not symbol_name:
+        raise ValueError(f"Expected 'module:SYMBOL', got {dotted!r}")
+    module = importlib.import_module(module_path)
+    sql_text = getattr(module, symbol_name)
+    if not isinstance(sql_text, str):
+        raise TypeError(f"{dotted!r} is not a SQL string")
+    return parse_repository_insert_fields(sql_text, name=symbol_name)
+
+
 def parse_postgres_sql_tables(sql_text: str) -> dict[str, EntitySpec]:
     tables: dict[str, EntitySpec] = {}
     for statement in sql_text.split(";"):
@@ -539,9 +571,14 @@ def compare_entity(
             )
             continue
 
+        comparable_sources = {
+            source_name: spec
+            for source_name, spec in present_in.items()
+            if not source_name.startswith("repository_insert")
+        }
         types = {
             source_name: source_type_overrides.get(source_name, {}).get(field_name, spec.type)
-            for source_name, spec in present_in.items()
+            for source_name, spec in comparable_sources.items()
         }
         if len(set(types.values())) > 1:
             issues.append(
@@ -556,7 +593,7 @@ def compare_entity(
                 )
             )
 
-        nulls = {source_name: spec.nullable for source_name, spec in present_in.items()}
+        nulls = {source_name: spec.nullable for source_name, spec in comparable_sources.items()}
         if len(set(nulls.values())) > 1:
             issues.append(
                 Inconsistency(
@@ -575,7 +612,7 @@ def compare_entity(
                 field_name,
                 spec.required,
             )
-            for source_name, spec in present_in.items()
+            for source_name, spec in comparable_sources.items()
             if source_required_overrides.get(source_name, {}).get(field_name, spec.required)
             is not None
         }
@@ -599,10 +636,12 @@ def check_consistency(
     pydantic_entities: dict[str, EntitySpec],
     json_schema_entities: dict[str, EntitySpec],
     sql_entities: dict[str, EntitySpec] | None = None,
+    repository_insert_entities: dict[str, EntitySpec] | None = None,
 ) -> list[Inconsistency]:
     """Run ``compare_entity`` for every mapping in ``registry``."""
     all_issues: list[Inconsistency] = []
     sql_entities = sql_entities or {}
+    repository_insert_entities = repository_insert_entities or {}
 
     for mapping in registry:
         sources: dict[str, EntitySpec | None] = {
@@ -611,6 +650,9 @@ def check_consistency(
                 json_schema_entities.get(mapping.name) if mapping.json_schema_key else None
             ),
             "sql": (sql_entities.get(mapping.sql_table) if mapping.sql_table else None),
+            "repository_insert": (
+                repository_insert_entities.get(mapping.name) if mapping.repository_insert else None
+            ),
         }
 
         missing_sources: list[str] = []
@@ -620,6 +662,8 @@ def check_consistency(
             missing_sources.append("json_schema")
         if mapping.sql_table and sources["sql"] is None:
             missing_sources.append("sql")
+        if mapping.repository_insert and sources["repository_insert"] is None:
+            missing_sources.append("repository_insert")
         if missing_sources:
             all_issues.append(
                 Inconsistency(
@@ -656,6 +700,7 @@ def load_default_sources(
     repo_root: Path = REPO_ROOT,
     content_path: Path | None = None,
 ) -> tuple[
+    dict[str, EntitySpec],
     dict[str, EntitySpec],
     dict[str, EntitySpec],
     dict[str, EntitySpec],
@@ -705,6 +750,17 @@ def load_default_sources(
                 f"JSON schema {mapping.json_schema_key!r} not found in {content_source}"
             )
 
+    repository_insert_entities: dict[str, EntitySpec] = {}
+    for mapping in registry:
+        if mapping.repository_insert is None:
+            continue
+        try:
+            repository_insert_entities[mapping.name] = load_repository_insert(
+                mapping.repository_insert
+            )
+        except Exception as exc:
+            warnings.append(f"Could not load repository insert {mapping.repository_insert}: {exc}")
+
     sql_entities: dict[str, EntitySpec] = {}
     sql_path = repo_root / "services" / "cloud_api" / "db" / "schema.py"
     if any(mapping.sql_table for mapping in registry) and sql_path.is_file():
@@ -723,6 +779,7 @@ def load_default_sources(
         pydantic_entities,
         json_schema_entities,
         sql_entities,
+        repository_insert_entities,
         warnings,
     )
 
@@ -782,7 +839,13 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    pydantic_entities, json_schema_entities, sql_entities, warnings = load_default_sources(
+    (
+        pydantic_entities,
+        json_schema_entities,
+        sql_entities,
+        repository_insert_entities,
+        warnings,
+    ) = load_default_sources(
         DEFAULT_REGISTRY,
         args.repo_root,
         args.content,
@@ -793,6 +856,7 @@ def main(argv: list[str] | None = None) -> int:
         pydantic_entities,
         json_schema_entities,
         sql_entities,
+        repository_insert_entities,
     )
 
     print(format_report(issues, warnings))
