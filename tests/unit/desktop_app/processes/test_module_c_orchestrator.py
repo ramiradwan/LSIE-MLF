@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import multiprocessing as mp
 import queue
@@ -8,6 +9,7 @@ import struct
 import threading
 import time
 import uuid
+from collections import deque
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -19,9 +21,11 @@ import pytest
 from packages.schemas.evaluation import StimulusDefinition, StimulusPayload
 from services.desktop_app.ipc import IpcChannels
 from services.desktop_app.ipc.control_messages import (
+    DESKTOP_LIVE_VISUAL_SOURCE_CONTRACT,
     InferenceControlMessage,
     LiveSessionControlMessage,
     PcmBlockAckMessage,
+    VisualAnalyticsStateMessage,
 )
 from services.desktop_app.ipc.shared_buffers import read_pcm_block
 from services.desktop_app.processes import module_c_orchestrator
@@ -141,7 +145,10 @@ def _append_audio(path: Path, frames: int, *, channels: int = 1) -> None:
         audio_file.write(frame * frames)
 
 
-def _segment() -> module_c_orchestrator.DesktopSegment:
+def _segment(
+    *,
+    au12_series: tuple[dict[str, float], ...] = (),
+) -> module_c_orchestrator.DesktopSegment:
     return module_c_orchestrator.DesktopSegment(
         session_id=uuid.UUID("00000000-0000-4000-8000-000000000001"),
         stream_url="test://stream",
@@ -153,6 +160,7 @@ def _segment() -> module_c_orchestrator.DesktopSegment:
         stimulus_definition=_stimulus_definition(),
         bandit_decision_snapshot=_BANDIT_SNAPSHOT,
         stimulus_time_s=100.0,
+        au12_series=au12_series,
     )
 
 
@@ -160,7 +168,9 @@ def test_dispatcher_writes_pcm_shared_memory_and_sends_control_message() -> None
     inbox: queue.Queue[object] = queue.Queue()
     ack_queue: queue.Queue[object] = queue.Queue()
     dispatcher = module_c_orchestrator.DesktopSegmentDispatcher(inbox, ack_queue)
-    segment = _segment()
+    segment = _segment(
+        au12_series=({"timestamp_s": 1_777_373_401.0, "intensity": 0.72},),
+    )
 
     try:
         dispatcher.dispatch(segment, drift_offset_s=0.125)
@@ -172,7 +182,9 @@ def test_dispatcher_writes_pcm_shared_memory_and_sends_control_message() -> None
 
     assert audio == segment.pcm_s16le_16khz_mono
     assert "_audio_data" not in message.handoff
+    assert "_visual_source_contract" not in message.handoff
     assert message.forward_fields == {"_drift_offset_s": 0.125}
+    assert message.visual_source_contract == DESKTOP_LIVE_VISUAL_SOURCE_CONTRACT
     assert message.handoff["session_id"] == str(segment.session_id)
     assert message.handoff["_active_arm"] == "warm_welcome"
     assert message.handoff["_stimulus_modality"] == segment.stimulus_definition.stimulus_modality
@@ -188,12 +200,44 @@ def test_dispatcher_writes_pcm_shared_memory_and_sends_control_message() -> None
         == segment.stimulus_definition.expected_response_rule
     )
     assert message.handoff["_stimulus_time"] == segment.stimulus_time_s
-    assert message.handoff["_au12_series"] == []
+    assert message.handoff["_au12_series"] == [{"timestamp_s": 1_777_373_401.0, "intensity": 0.72}]
     snapshot = message.handoff["_bandit_decision_snapshot"]
     assert snapshot["selected_arm_id"] == "warm_welcome"
     assert snapshot["candidate_arm_ids"] == ["direct_question", "warm_welcome"]
     assert snapshot["posterior_by_arm"]["warm_welcome"] == {"alpha": 2.0, "beta": 3.0}
     assert snapshot["sampled_theta_by_arm"] == {"direct_question": 0.2, "warm_welcome": 0.6}
+
+
+def test_segment_id_uses_only_session_and_canonical_window_bounds() -> None:
+    segment = _segment()
+    end = segment.segment_window_start_utc + timedelta(
+        seconds=module_c_orchestrator.SEGMENT_WINDOW_SECONDS
+    )
+    stable_identity = "|".join(
+        (
+            str(segment.session_id),
+            module_c_orchestrator._canonical_utc_timestamp(segment.segment_window_start_utc),
+            module_c_orchestrator._canonical_utc_timestamp(end),
+        )
+    )
+    expected = hashlib.sha256(stable_identity.encode("utf-8")).hexdigest()
+
+    baseline = module_c_orchestrator._segment_id(segment)
+    changed_runtime_fields = module_c_orchestrator.DesktopSegment(
+        session_id=segment.session_id,
+        stream_url=segment.stream_url,
+        segment_window_start_utc=segment.segment_window_start_utc,
+        pcm_s16le_16khz_mono=segment.pcm_s16le_16khz_mono + b"\x00\x00",
+        experiment_row_id=999,
+        experiment_id="different_experiment",
+        active_arm="direct_question",
+        stimulus_definition=segment.stimulus_definition,
+        bandit_decision_snapshot=segment.bandit_decision_snapshot,
+        stimulus_time_s=segment.stimulus_time_s,
+    )
+
+    assert baseline == expected
+    assert module_c_orchestrator._segment_id(changed_runtime_fields) == expected
 
 
 def test_dispatcher_drops_invalid_handoff_without_shared_memory() -> None:
@@ -346,6 +390,41 @@ def test_start_control_uses_persisted_lifecycle_selection(tmp_path: Path) -> Non
     assert active.active_arm == "warm_welcome"
     assert active.stimulus_definition == _stimulus_definition()
     assert active.bandit_decision_snapshot == json.loads(persisted_snapshot_json)
+
+
+def test_drain_visual_au12_updates_buffers_bounded_observations() -> None:
+    channels = IpcChannels(
+        ml_inbox=cast("Any", queue.Queue()),
+        drift_updates=cast("Any", queue.Queue()),
+        analytics_inbox=cast("Any", queue.Queue()),
+        pcm_acks=cast("Any", queue.Queue()),
+        visual_state_updates=cast("Any", queue.Queue()),
+    )
+    visual_buffer: deque[module_c_orchestrator._VisualAu12Telemetry] = deque(  # noqa: SLF001
+        maxlen=module_c_orchestrator.VISUAL_AU12_BUFFER_MAXLEN,
+    )
+    assert channels.visual_state_updates is not None
+    visual = VisualAnalyticsStateMessage.model_validate(
+        {
+            "message_id": "00000000-0000-4000-8000-000000000001",
+            "session_id": "00000000-0000-4000-8000-000000000001",
+            "timestamp_utc": "2026-05-02T12:00:01+00:00",
+            "face_present": True,
+            "is_calibrating": False,
+            "calibration_frames_accumulated": 45,
+            "calibration_frames_required": 45,
+            "latest_au12_intensity": 0.72,
+            "latest_au12_timestamp_s": 1_777_373_401.0,
+            "status": "post_stimulus",
+        }
+    )
+    channels.visual_state_updates.put(visual.model_dump(mode="json"))
+
+    module_c_orchestrator._drain_visual_au12_updates(channels, visual_buffer)  # noqa: SLF001
+
+    assert [observation.as_payload() for observation in visual_buffer] == [
+        {"timestamp_s": 1_777_373_401.0, "intensity": 0.72}
+    ]
 
 
 def test_drain_segment_controls_tracks_start_stimulus_and_end(tmp_path: Path) -> None:

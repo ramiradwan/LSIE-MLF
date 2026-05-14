@@ -303,9 +303,9 @@ def _write_capture_statuses(
                 state="ok" if video_alive else "recovering",
                 label="Video Capture",
                 detail=(
-                    _capture_file_detail(layout.video_path, label="Video")
+                    _capture_file_detail(layout.video_path, label="Replay video")
                     if layout is not None and video_alive
-                    else "Video scrcpy recorder is starting or restarting"
+                    else "Replay video scrcpy recorder is starting or restarting"
                 ),
                 operator_action_hint=(
                     None if video_alive else "Open a stream or video with a visible face"

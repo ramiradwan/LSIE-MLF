@@ -205,6 +205,7 @@ def test_live_session_view_ttv_waiting_for_face_shows_muted_dashboard_overlay() 
     assert "Capture active" in preview_status
     assert "12/45 face frames" in preview_status
     assert "Raw phone frames are not shown" in preview_caveat
+    assert "live phone screenrecord stream" in preview_status
 
 
 def test_live_session_view_ttv_ready_shows_dashboard_and_smile_timeline() -> None:
@@ -229,6 +230,7 @@ def test_live_session_view_ttv_ready_shows_dashboard_and_smile_timeline() -> Non
     assert view._phone_preview.isEnabled() is True  # type: ignore[attr-defined]
     # UX-12: ready state primary now affirms the live capture.
     assert "Capture active" in view._phone_preview._status.text()  # type: ignore[attr-defined]
+    assert "live phone screenrecord stream" in view._phone_preview._status.text()  # type: ignore[attr-defined]
     assert "Preview placeholder" not in view._phone_preview._placeholder.text()  # type: ignore[attr-defined]
     assert view._live_analytics_notice.isHidden() is True  # type: ignore[attr-defined]
     assert view._smile_card._primary.text() == "64%"  # type: ignore[attr-defined]
@@ -338,7 +340,7 @@ def test_live_session_view_header_shows_session_status_without_repeating_action_
     assert "active" in panel._session_meta_label.text()  # type: ignore[attr-defined]
     assert "active" in panel._session_meta_label.accessibleDescription()  # type: ignore[attr-defined]
     assert panel._start_button.accessibleName() == "Start new session"  # type: ignore[attr-defined]
-    assert "connected capture source" in panel._start_button.accessibleDescription()  # type: ignore[attr-defined]
+    assert "connected Android phone" in panel._start_button.accessibleDescription()  # type: ignore[attr-defined]
     assert panel._end_button.accessibleName() == "End session"  # type: ignore[attr-defined]
     assert panel._calibration_pill.kind() == UiStatusKind.OK  # type: ignore[attr-defined]
     assert panel._calibration_pill.text() == "Healthy"  # type: ignore[attr-defined]
@@ -387,7 +389,13 @@ def test_start_session_dialog_uses_source_summary_and_experiment_picker() -> Non
 
     assert dialog.accessibleName() == "Start new session"
     assert "connected-phone capture" in dialog.accessibleDescription()
-    assert "connected Android device" in dialog._source_summary.text()  # type: ignore[attr-defined]
+    assert (
+        "Replay video is recorded from the connected Android device"
+        in dialog._source_summary.text()  # type: ignore[attr-defined]
+    )
+    assert (
+        "live analysis uses the phone screenrecord stream" in dialog._source_summary.text()  # type: ignore[attr-defined]
+    )
     assert dialog._source_summary.accessibleName() == "Session source"  # type: ignore[attr-defined]
     assert dialog._experiment_label.buddy() is dialog._experiment_picker  # type: ignore[attr-defined]
     assert dialog._experiment_picker.count() == 2  # type: ignore[attr-defined]

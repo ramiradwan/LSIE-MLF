@@ -26,6 +26,7 @@ from scripts.audit.verifiers.mechanical import (
     verify_schema_validation,
     verify_semantic_determinism,
     verify_semantic_reason_codes,
+    verify_v4_deterministic_segment_identity,
 )
 
 _FFMPEG_CMD = (
@@ -654,6 +655,126 @@ class TestMechanicalVerifiers:
             "§5.1.4/§13.8",
             "nonce_length=16",
             "expected 12 bytes",
+        )
+
+    def test_verify_v4_deterministic_segment_identity_pass_and_desktop_drift(
+        self, tmp_path: Path
+    ) -> None:
+        pass_root = tmp_path / "pass"
+        _write(
+            pass_root,
+            "services/worker/pipeline/orchestrator.py",
+            """
+from __future__ import annotations
+import hashlib
+import uuid
+from datetime import UTC
+
+class Orchestrator:
+    def _stable_segment_id(self, window_start_utc, window_end_utc):
+        stable_identity = "|".join((
+            f"{uuid.UUID(self._session_id)}",
+            self._canonical_utc_timestamp(window_start_utc),
+            self._canonical_utc_timestamp(window_end_utc),
+        ))
+        return hashlib.sha256(stable_identity.encode()).hexdigest()
+""".strip(),
+        )
+        _write(
+            pass_root,
+            "services/desktop_app/processes/module_c_orchestrator.py",
+            """
+from __future__ import annotations
+import hashlib
+from datetime import UTC, timedelta
+
+SEGMENT_WINDOW_SECONDS = 30
+
+
+def _canonical_utc_timestamp(value):
+    return value.astimezone(UTC).isoformat().replace(\"+00:00\", \"Z\")
+
+
+def _segment_id(segment):
+    end = segment.segment_window_start_utc + timedelta(seconds=SEGMENT_WINDOW_SECONDS)
+    stable_identity = \"|\".join((
+        f\"{segment.session_id}\",
+        _canonical_utc_timestamp(segment.segment_window_start_utc),
+        _canonical_utc_timestamp(end),
+    ))
+    return hashlib.sha256(stable_identity.encode(\"utf-8\")).hexdigest()
+""".strip(),
+        )
+        _write(
+            pass_root,
+            "packages/schemas/inference_handoff.py",
+            'segment_id: str\npattern="^[0-9a-f]{64}$"\nDeterministic SHA-256\n',
+        )
+
+        pass_result = verify_v4_deterministic_segment_identity(_context(pass_root), _item("13.8"))
+
+        _assert_pass_evidence(
+            pass_result,
+            "services/worker/pipeline/orchestrator.py",
+            "services/desktop_app/processes/module_c_orchestrator.py",
+            "packages/schemas/inference_handoff.py",
+        )
+
+        fail_root = tmp_path / "fail"
+        _write(
+            fail_root,
+            "services/worker/pipeline/orchestrator.py",
+            """
+from __future__ import annotations
+import hashlib
+import uuid
+
+class Orchestrator:
+    def _stable_segment_id(self, window_start_utc, window_end_utc):
+        stable_identity = "|".join((
+            f"{uuid.UUID(self._session_id)}",
+            self._canonical_utc_timestamp(window_start_utc),
+            self._canonical_utc_timestamp(window_end_utc),
+        ))
+        return hashlib.sha256(stable_identity.encode()).hexdigest()
+""".strip(),
+        )
+        _write(
+            fail_root,
+            "services/desktop_app/processes/module_c_orchestrator.py",
+            """
+from __future__ import annotations
+import hashlib
+from datetime import UTC
+
+
+def _canonical_utc_timestamp(value):
+    return value.astimezone(UTC).isoformat().replace(\"+00:00\", \"Z\")
+
+
+def _segment_id(segment):
+    digest_input = (
+        f\"{segment.session_id}:{segment.segment_window_start_utc}:{segment.experiment_row_id}:\"
+        f\"{segment.active_arm}:{len(segment.pcm_s16le_16khz_mono)}\"
+    )
+    return hashlib.sha256(digest_input.encode()).hexdigest()
+""".strip(),
+        )
+        _write(
+            fail_root,
+            "packages/schemas/inference_handoff.py",
+            'segment_id: str\npattern="^[0-9a-f]{64}$"\nDeterministic SHA-256\n',
+        )
+
+        fail_result = verify_v4_deterministic_segment_identity(_context(fail_root), _item("13.8"))
+
+        _assert_fail_evidence(
+            fail_result,
+            "services/desktop_app/processes/module_c_orchestrator.py",
+            "_segment_id still contains mutable segment_id inputs",
+            "segment.experiment_row_id",
+            "segment.active_arm",
+            "len(segment.pcm_s16le_16khz_mono)",
         )
 
     def test_verify_dependency_pins_pass_and_version_mismatch(self, tmp_path: Path) -> None:

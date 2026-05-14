@@ -41,3 +41,4 @@ class IpcChannels:
     pcm_acks: Queue[object] | None = field(default=None, repr=False)
     live_control: Queue[object] | None = field(default=None, repr=False)
     segment_control: Queue[object] | None = field(default=None, repr=False)
+    visual_state_updates: Queue[object] | None = field(default=None, repr=False)

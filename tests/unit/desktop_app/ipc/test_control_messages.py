@@ -11,6 +11,7 @@ from pydantic import ValidationError
 
 from packages.schemas.evaluation import StimulusDefinition, StimulusPayload
 from services.desktop_app.ipc.control_messages import (
+    DESKTOP_LIVE_VISUAL_SOURCE_CONTRACT,
     AnalyticsResultMessage,
     AudioBlockRef,
     InferenceControlMessage,
@@ -191,10 +192,12 @@ def test_control_message_round_trips_through_dump_validate() -> None:
         handoff={"segment_id": "deadbeef"},
         audio=_valid_audio_ref(),
         forward_fields={"_experiment_code": "greeting_line_v1"},
+        visual_source_contract=DESKTOP_LIVE_VISUAL_SOURCE_CONTRACT,
     )
     dumped = msg.model_dump(mode="json")
     re_validated = InferenceControlMessage.model_validate(dumped)
     assert re_validated == msg
+    assert re_validated.visual_source_contract == DESKTOP_LIVE_VISUAL_SOURCE_CONTRACT
 
 
 def test_pcm_block_ack_message_round_trips_through_dump_validate() -> None:

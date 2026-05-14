@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import multiprocessing as mp
 import queue
+import sqlite3
 import uuid
 from collections import deque
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any, cast
 from unittest.mock import patch
 
@@ -13,6 +15,7 @@ import pytest
 from packages.schemas.evaluation import StimulusDefinition, StimulusPayload
 from services.desktop_app.ipc import IpcChannels
 from services.desktop_app.ipc.control_messages import (
+    DESKTOP_LIVE_VISUAL_SOURCE_CONTRACT,
     AnalyticsResultMessage,
     AudioBlockRef,
     InferenceControlMessage,
@@ -29,11 +32,13 @@ from services.desktop_app.processes.gpu_ml_worker import (
     _default_video_capture_factory,
     _derive_segment_start_time_s,
     _drain_live_control,
+    _drain_ml_inbox_without_backend,
     _handoff_window_s,
     _handoff_with_tracker_au12,
     _ml_inbox_poll_timeout,
     _publish_analytics_result,
 )
+from services.desktop_app.state.sqlite_schema import bootstrap_schema
 
 SEGMENT_ID = "a" * 64
 SESSION_ID = "00000000-0000-4000-8000-000000000001"
@@ -193,10 +198,11 @@ def _handoff() -> dict[str, Any]:
 def _control_message(
     *,
     forward_fields: dict[str, Any] | None = None,
+    handoff: dict[str, Any] | None = None,
 ) -> tuple[InferenceControlMessage, PcmBlock]:
     block = write_pcm_block(b"\0\0" * 16000)
     msg = InferenceControlMessage(
-        handoff=_handoff(),
+        handoff=_handoff() if handoff is None else handoff,
         audio=AudioBlockRef.from_metadata(block.metadata),
         forward_fields={} if forward_fields is None else forward_fields,
     )
@@ -213,6 +219,70 @@ def _start_control(now: datetime) -> LiveSessionControlMessage:
         stimulus_definition=_stimulus_definition(),
         timestamp_utc=now,
     )
+
+
+def test_gpu_ml_worker_missing_backend_records_degraded_status(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / gpu_ml_worker.SQLITE_FILENAME
+    conn = sqlite3.connect(db_path)
+    try:
+        bootstrap_schema(conn)
+    finally:
+        conn.close()
+    monkeypatch.setattr(gpu_ml_worker, "_missing_ml_backend_modules", lambda: ("torch",))
+    monkeypatch.setattr(
+        "services.desktop_app.os_adapter.resolve_state_dir",
+        lambda: tmp_path,
+    )
+    shutdown_event = mp.Event()
+    shutdown_event.set()
+    channels = IpcChannels(
+        ml_inbox=cast("Any", queue.Queue()),
+        drift_updates=cast("Any", queue.Queue()),
+        analytics_inbox=cast("Any", queue.Queue()),
+        pcm_acks=cast("Any", queue.Queue()),
+    )
+
+    gpu_ml_worker.run(shutdown_event, channels)
+
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    try:
+        row = conn.execute(
+            "SELECT state, detail, operator_action_hint FROM capture_status WHERE status_key = ?",
+            ("gpu_ml_worker",),
+        ).fetchone()
+    finally:
+        conn.close()
+    assert row is not None
+    assert row["state"] == "degraded"
+    assert "torch" in row["detail"]
+    assert row["operator_action_hint"] is not None
+    assert "ml_backend" in row["operator_action_hint"]
+
+
+def test_gpu_ml_worker_missing_backend_acks_inbound_pcm_blocks() -> None:
+    channels = IpcChannels(
+        ml_inbox=cast("Any", queue.Queue()),
+        drift_updates=cast("Any", queue.Queue()),
+        analytics_inbox=cast("Any", queue.Queue()),
+        pcm_acks=cast("Any", queue.Queue()),
+    )
+    msg, block = _control_message()
+    try:
+        channels.ml_inbox.put(msg.model_dump(mode="json"))
+
+        _drain_ml_inbox_without_backend(channels)
+
+        assert channels.pcm_acks is not None
+        ack = PcmBlockAckMessage.model_validate(channels.pcm_acks.get_nowait())
+        assert ack.name == msg.audio.name
+        assert channels.ml_inbox.empty()
+        assert channels.analytics_inbox.empty()
+    finally:
+        block.close_and_unlink()
 
 
 def test_gpu_ml_worker_tracker_keeps_stimulus_definition_typed_until_visual_boundary() -> None:
@@ -307,7 +377,59 @@ def test_gpu_ml_worker_visual_tick_restores_health_after_receiving_face_frame(
 
     milestone.assert_called_once_with("capture_ready", logger=gpu_ml_worker.logger)
     assert statuses[-1].state == "ok"
-    assert statuses[-1].detail == "Live visual tracking is receiving phone frames."
+    assert statuses[-1].detail == (
+        "Live visual tracking is receiving live phone screenrecord frames."
+    )
+
+
+def test_gpu_ml_worker_publish_visual_tick_marks_missing_frames_recovering() -> None:
+    now = datetime(2026, 5, 2, 12, 0, tzinfo=UTC)
+    channels = IpcChannels(
+        ml_inbox=cast("Any", queue.Queue()),
+        drift_updates=cast("Any", queue.Queue()),
+        analytics_inbox=cast("Any", queue.Queue()),
+        pcm_acks=cast("Any", queue.Queue()),
+        live_control=cast("Any", queue.Queue()),
+    )
+    tracker = LiveVisualTracker(
+        video_capture_factory=lambda _path: FakeVideoCapture([]),
+        face_mesh_factory=lambda: FakeFaceMesh([]),
+        au12_factory=lambda: FakeAu12Normalizer([]),
+    )
+    statuses: list[gpu_ml_worker._GpuWorkerStatus] = []  # noqa: SLF001
+    tracker.handle_control(_start_control(now))
+
+    gpu_ml_worker._publish_visual_tick(channels, tracker, status_callback=statuses.append)  # noqa: SLF001
+
+    assert statuses[-1].state == "recovering"
+    assert statuses[-1].detail == (
+        "Live visual tracking is not receiving live phone screenrecord frames."
+    )
+
+
+def test_gpu_ml_worker_publish_visual_tick_marks_missing_face_recovering() -> None:
+    now = datetime(2026, 5, 2, 12, 0, tzinfo=UTC)
+    channels = IpcChannels(
+        ml_inbox=cast("Any", queue.Queue()),
+        drift_updates=cast("Any", queue.Queue()),
+        analytics_inbox=cast("Any", queue.Queue()),
+        pcm_acks=cast("Any", queue.Queue()),
+        live_control=cast("Any", queue.Queue()),
+    )
+    tracker = LiveVisualTracker(
+        video_capture_factory=lambda _path: FakeVideoCapture([object()]),
+        face_mesh_factory=lambda: FakeFaceMesh([None]),
+        au12_factory=lambda: FakeAu12Normalizer([]),
+    )
+    statuses: list[gpu_ml_worker._GpuWorkerStatus] = []  # noqa: SLF001
+    tracker.handle_control(_start_control(now))
+
+    gpu_ml_worker._publish_visual_tick(channels, tracker, status_callback=statuses.append)  # noqa: SLF001
+
+    assert statuses[-1].state == "recovering"
+    assert statuses[-1].detail == (
+        "Live visual tracking is waiting for a visible face on the phone screen."
+    )
 
 
 def test_gpu_ml_worker_logs_capture_ready_only_once_per_session(
@@ -523,7 +645,7 @@ def test_gpu_ml_worker_visual_tracker_keeps_pre_stimulus_baseline(
     ]
 
 
-def test_gpu_ml_worker_visual_tick_keeps_calibrated_state_without_new_frame(
+def test_gpu_ml_worker_visual_tick_recovers_when_calibrated_stream_loses_frames(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(gpu_ml_worker, "_VISUAL_CALIBRATION_FRAMES_REQUIRED", 1)
@@ -546,12 +668,14 @@ def test_gpu_ml_worker_visual_tick_keeps_calibrated_state_without_new_frame(
             timestamp_utc=now,
         )
     )
-    visual = tracker.tick(now).visual
+    outcome = tracker.tick(now)
+    visual = outcome.visual
 
     assert post_stimulus.status == "post_stimulus"
+    assert outcome.missing_frame is True
     assert visual is not None
-    assert visual.status == "post_stimulus"
-    assert visual.face_present is True
+    assert visual.status == "waiting_for_face"
+    assert visual.face_present is False
     assert visual.is_calibrating is False
 
 
@@ -605,18 +729,21 @@ def test_gpu_ml_worker_keeps_tracker_au12_timestamps_on_handoff_clock() -> None:
             intensity=0.7,
         )
     )
-    handoff = {
-        "segment_window_start_utc": timestamp.replace(second=0).isoformat(),
-        "segment_window_end_utc": timestamp.isoformat(),
-    }
+    handoff = _handoff()
+    handoff["segment_window_start_utc"] = timestamp.replace(second=0).isoformat()
+    handoff["segment_window_end_utc"] = timestamp.isoformat()
+    handoff["timestamp_utc"] = timestamp.isoformat()
+    handoff["_au12_series"] = []
 
     enriched = _handoff_with_tracker_au12(
         handoff,
         audio_data=b"\0\0" * 16000 * 30,
         tracker=tracker,
+        visual_source_contract=DESKTOP_LIVE_VISUAL_SOURCE_CONTRACT,
     )
 
     assert enriched["_au12_series"] == [{"timestamp_s": timestamp.timestamp(), "intensity": 0.7}]
+    assert "_visual_source_contract" not in enriched
 
 
 def test_gpu_ml_worker_visual_tracker_releases_resources() -> None:
@@ -652,9 +779,10 @@ def test_default_live_visual_capture_uses_screenrecord_stream(
         lambda name, env_override=None: f"resolved-{name}",
     )
 
-    capture = _default_video_capture_factory("ignored-video-stream.mkv")
+    capture = _default_video_capture_factory(None)
 
     assert isinstance(capture, DesktopScreenrecordCapture)
+    assert capture.source_contract == DESKTOP_LIVE_VISUAL_SOURCE_CONTRACT
     assert capture._adb_path == "resolved-adb"  # noqa: SLF001
     assert capture._ffmpeg_path == "resolved-ffmpeg"  # noqa: SLF001
 
@@ -696,6 +824,21 @@ def test_desktop_screenrecord_capture_starts_adb_and_ffmpeg_stream(
     ]
     assert "rawvideo" in spawned[1][0]
     assert spawned[1][1]["stdin"] is cast(Any, capture._source_proc).stdout  # noqa: SLF001
+
+
+def test_gpu_ml_worker_rejects_noncanonical_visual_source_contract_metadata() -> None:
+    tracker = LiveVisualTracker()
+    handoff = _handoff()
+
+    enriched = _handoff_with_tracker_au12(
+        handoff,
+        audio_data=b"\0\0" * 16000 * 30,
+        tracker=tracker,
+        visual_source_contract="replay_video_capture_v1",
+    )
+
+    assert enriched["_au12_series"] == []
+    assert "_visual_source_contract" not in enriched
 
 
 def test_bgr_frame_from_raw_returns_expected_shape() -> None:
@@ -926,7 +1069,13 @@ def test_gpu_ml_worker_uses_real_tracker_au12_observations() -> None:
         analytics_inbox=ctx.Queue(),
         pcm_acks=ctx.Queue(),
     )
-    msg, block = _control_message()
+    handoff = _handoff()
+    handoff["_au12_series"] = [{"timestamp_s": timestamp.timestamp(), "intensity": 0.1}]
+    msg, block = _control_message(
+        handoff=handoff,
+        forward_fields=None,
+    )
+    msg = msg.model_copy(update={"visual_source_contract": DESKTOP_LIVE_VISUAL_SOURCE_CONTRACT})
     try:
         with (
             patch("packages.ml_core.audio_pipe.pcm_to_wav_bytes", return_value=b"RIFF"),
@@ -946,6 +1095,11 @@ def test_gpu_ml_worker_uses_real_tracker_au12_observations() -> None:
         raw = channels.analytics_inbox.get(timeout=1.0)
         analytics = AnalyticsResultMessage.model_validate(raw)
         assert [sample.intensity for sample in analytics.handoff.au12_series] == [0.7]
+        assert "_visual_source_contract" not in analytics.handoff.model_dump(
+            mode="json",
+            by_alias=True,
+            exclude_none=True,
+        )
     finally:
         block.close_and_unlink()
 

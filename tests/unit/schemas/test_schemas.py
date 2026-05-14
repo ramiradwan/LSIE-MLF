@@ -207,6 +207,7 @@ class TestInferenceHandoffPayload:
         assert dumped["_active_arm"] == "arm_a"
         assert "active_arm" not in dumped
         assert dumped["_bandit_decision_snapshot"]["selection_method"] == "thompson_sampling"
+        assert "_visual_source_contract" not in dumped
         assert "_physiological_context" not in dumped
 
     def test_required_v4_fields_are_in_json_schema(self) -> None:
@@ -238,6 +239,7 @@ class TestInferenceHandoffPayload:
         media_defs = schema.get("$defs", {})
         media_source_schema = media_defs[properties["media_source"]["$ref"].split("/")[-1]]
         assert media_source_schema["properties"]["stream_url"]["format"] == "uri"
+        assert "_visual_source_contract" not in properties
         assert "_physiological_context" in properties
         assert "_physiological_context" not in required
         assert "bandit_decision_snapshot" not in properties

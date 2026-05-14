@@ -380,11 +380,13 @@ class LiveSessionViewModel(ViewModelBase):
         return ui_status_for_health(row), _plain_status_label("Video capture", row)
 
     def capture_status_detail(self) -> str:
+        replay_status = self.video_capture_status()[1]
+        live_analysis_status = self.ml_backend_status()[1]
         statuses = (
             self.adb_status()[1],
             self.audio_capture_status()[1],
-            self.video_capture_status()[1],
-            self.ml_backend_status()[1],
+            f"Replay video: {replay_status}",
+            f"Live analysis: {live_analysis_status}",
         )
         return " · ".join(statuses)
 
@@ -458,8 +460,9 @@ class LiveSessionViewModel(ViewModelBase):
 
     def start_session_source_summary(self) -> str:
         return (
-            "Capture comes from the connected Android device. Open the TikTok stream "
-            "on the phone before you start the session."
+            "Replay video is recorded from the connected Android device while live "
+            "analysis uses the phone screenrecord stream. Open the TikTok stream on "
+            "the phone before you start the session."
         )
 
     def start_session_disabled_reason(self) -> str | None:
@@ -591,7 +594,13 @@ class LiveSessionViewModel(ViewModelBase):
         stimulus injection, while the operator may submit as soon as the
         published calibration frame threshold is reached.
         """
-        return operator_ready_for_submit(self.session())
+        session = self.session()
+        if not operator_ready_for_submit(session):
+            return False
+        row = self._matching_health_row(_ML_BACKEND_HEALTH_KEYS)
+        if row is None:
+            return True
+        return ui_status_for_health(row) is UiStatusKind.OK
 
     def calibration_status(self) -> tuple[UiStatusKind, str]:
         return format_calibration_status(self.session())

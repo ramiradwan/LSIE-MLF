@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from collections import deque
 from datetime import UTC, datetime
 from pathlib import Path
 from queue import Queue
@@ -45,6 +46,7 @@ from services.desktop_app.ipc.shared_buffers import (
     PcmBlockMetadata,
     read_pcm_block,
 )
+from services.desktop_app.processes import module_c_orchestrator
 from services.desktop_app.processes.analytics_state_worker import (
     LocalAnalyticsProcessor,
     QueueLike,
@@ -54,11 +56,13 @@ from services.desktop_app.processes.gpu_ml_worker import (
     LiveVisualTracker,
     _drain_live_control,
     _publish_analytics_result,
+    _publish_visual_state,
 )
 from services.desktop_app.processes.module_c_orchestrator import (
     DesktopSegment,
     DesktopSegmentDispatcher,
     _drain_segment_controls,
+    _drain_visual_au12_updates,
 )
 from services.desktop_app.processes.operator_api_runtime import _QueueLiveSessionControlPublisher
 from services.desktop_app.state.sqlite_schema import bootstrap_schema
@@ -118,6 +122,37 @@ class _NoopCapture:
 
     def stop(self) -> None:
         return
+
+
+class _FrameCapture:
+    def __init__(self) -> None:
+        self.started = False
+
+    def start(self) -> None:
+        self.started = True
+
+    def stop(self) -> None:
+        return
+
+    def get_latest_frame(self) -> object:
+        return object()
+
+
+class _FaceMesh:
+    def extract_landmarks(self, frame: object) -> object:
+        del frame
+        return object()
+
+    def close(self) -> None:
+        return
+
+
+class _Au12Normalizer:
+    calibration_buffer = [0.1]
+
+    def compute_bounded_intensity(self, landmarks: object, *, is_calibrating: bool) -> float:
+        del landmarks, is_calibrating
+        return 0.72
 
 
 class _OneMessageInbox:
@@ -252,6 +287,7 @@ def test_process_graph_queues_route_pcm_ack_and_analytics_to_local_state(
         pcm_acks=cast("Any", Queue()),
         live_control=cast("Any", Queue()),
         segment_control=cast("Any", Queue()),
+        visual_state_updates=cast("Any", Queue()),
     )
     dispatcher = DesktopSegmentDispatcher(channels.ml_inbox, channels.pcm_acks)
     db = tmp_path / "desktop.sqlite"
@@ -333,20 +369,36 @@ def test_process_graph_queues_route_pcm_ack_and_analytics_to_local_state(
         for raw_segment_control in segment_payloads:
             segment_control_queue.put(raw_segment_control)
 
-        tracker = LiveVisualTracker(video_capture_factory=lambda _path: _NoopCapture())
+        tracker = LiveVisualTracker(
+            video_capture_factory=lambda _path: _FrameCapture(),
+            face_mesh_factory=_FaceMesh,
+            au12_factory=_Au12Normalizer,
+        )
         _drain_live_control(channels, tracker)
+        tracker._calibration_frames_accumulated = 45  # noqa: SLF001
         raw_visuals = [channels.analytics_inbox.get(timeout=1.0) for _ in range(2)]
+        outcome = tracker.tick(control_timestamp)
+        assert outcome.visual is not None
+        _publish_visual_state(channels, outcome.visual)
+        raw_visuals.append(channels.analytics_inbox.get(timeout=1.0))
         visual = [VisualAnalyticsStateMessage.model_validate(raw) for raw in raw_visuals]
-        assert [message.session_id for message in visual] == [start_control.session_id] * 2
-        assert [message.active_arm for message in visual] == [fixture["_active_arm"]] * 2
+        assert [message.session_id for message in visual] == [start_control.session_id] * 3
+        assert [message.active_arm for message in visual] == [fixture["_active_arm"]] * 3
         assert [
             message.stimulus_definition.model_dump(mode="json")
             if message.stimulus_definition is not None
             else None
             for message in visual
-        ] == [stimulus_definition_dump] * 2
+        ] == [stimulus_definition_dump] * 3
+        assert visual[-1].latest_au12_intensity == 0.72
+        assert visual[-1].latest_au12_timestamp_s is not None
         assert tracker.stimulus_time_s == fixture["_stimulus_time"]
 
+        visual_buffer: deque[module_c_orchestrator._VisualAu12Telemetry] = deque(  # noqa: SLF001
+            maxlen=module_c_orchestrator.VISUAL_AU12_BUFFER_MAXLEN,
+        )
+        _drain_visual_au12_updates(channels, visual_buffer)
+        assert [observation.intensity for observation in visual_buffer] == [0.72]
         active = _drain_segment_controls(channels, None, db_path=db)
         assert active is not None
         assert active.session_id == start_control.session_id
@@ -355,6 +407,11 @@ def test_process_graph_queues_route_pcm_ack_and_analytics_to_local_state(
         assert active.bandit_decision_snapshot == fixture["_bandit_decision_snapshot"]
         assert active.stimulus_time_s == fixture["_stimulus_time"]
 
+        au12_series = module_c_orchestrator._au12_series_for_window(  # noqa: SLF001
+            visual_buffer,
+            start_s=control_timestamp.timestamp(),
+            end_s=control_timestamp.timestamp() + module_c_orchestrator.SEGMENT_WINDOW_SECONDS,
+        )
         segment = DesktopSegment(
             session_id=active.session_id,
             stream_url=active.stream_url,
@@ -366,12 +423,16 @@ def test_process_graph_queues_route_pcm_ack_and_analytics_to_local_state(
             stimulus_definition=active.stimulus_definition,
             bandit_decision_snapshot=active.bandit_decision_snapshot,
             stimulus_time_s=active.stimulus_time_s,
+            au12_series=au12_series,
         )
         assert dispatcher.dispatch(segment)
         raw_control = channels.ml_inbox.get(timeout=1.0)
         control = InferenceControlMessage.model_validate(raw_control)
         recovered = read_pcm_block(control.audio.to_metadata())
         assert recovered == audio
+        assert control.handoff["_au12_series"] == [
+            {"timestamp_s": visual[-1].latest_au12_timestamp_s, "intensity": 0.72}
+        ]
 
         with (
             pytest.MonkeyPatch.context() as monkeypatch,
@@ -406,6 +467,7 @@ def test_process_graph_queues_route_pcm_ack_and_analytics_to_local_state(
         raw_analytics = channels.analytics_inbox.get(timeout=1.0)
         analytics = AnalyticsResultMessage.model_validate(raw_analytics)
         assert analytics.handoff.segment_id == control.handoff["segment_id"]
+        assert [sample.intensity for sample in analytics.handoff.au12_series] == [0.72]
         assert analytics.transcription == "hello creator"
         assert analytics.semantic.is_match is True
 

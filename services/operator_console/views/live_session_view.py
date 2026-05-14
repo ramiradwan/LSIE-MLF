@@ -1181,7 +1181,7 @@ class _SessionHeaderPanel(QFrame):
         self._start_button.setObjectName("SessionStartButton")
         self._start_button.setAccessibleName("Start new session")
         self._start_button.setAccessibleDescription(
-            "Open the start-session dialog for the connected capture source."
+            "Open the start-session dialog for the connected Android phone."
         )
         self._start_button.setToolTip("Start a new session from the connected phone.")
         self._end_button = QPushButton("End session", self)

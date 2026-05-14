@@ -152,6 +152,7 @@ class ProcessGraph:
                 pcm_acks=ctx.Queue(maxsize=PCM_ACKS_MAXSIZE),
                 live_control=ctx.Queue(),
                 segment_control=ctx.Queue(),
+                visual_state_updates=ctx.Queue(),
             )
         for name, module in process_modules_for_mode(self.runtime_mode).items():
             evt = ctx.Event()

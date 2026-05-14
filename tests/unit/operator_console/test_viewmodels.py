@@ -323,8 +323,8 @@ def test_live_session_vm_ttv_gate_surfaces_connected_capture_until_session_readb
     assert display.title == "Setup not ready"
     assert display.message == ("Start or select a Live Session to begin live analysis.")
     assert display.detail == (
-        "Phone healthy · Audio capture healthy · Video capture healthy · "
-        "Live analysis status unknown"
+        "Phone healthy · Audio capture healthy · Replay video: Video capture healthy · "
+        "Live analysis: Live analysis status unknown"
     )
     assert emissions == []
 
@@ -548,6 +548,45 @@ def test_live_session_vm_missing_calibration_frames_are_submit_ready() -> None:
     assert vm.operator_ready_for_submit() is True
     assert vm.calibration_status() == (UiStatusKind.OK, "Healthy")
     assert vm.ttv_state() == "READY"
+
+
+def test_live_session_vm_degraded_live_analysis_blocks_submit_ready() -> None:
+    store = OperatorStore()
+    session_id = uuid4()
+    store.set_selected_session_id(session_id)
+    vm = LiveSessionViewModel(store, EncountersTableModel())
+    store.set_live_session(
+        _session(
+            session_id,
+            is_calibrating=True,
+            calibration_frames_accumulated=45,
+            calibration_frames_required=45,
+        )
+    )
+    store.set_health(
+        HealthSnapshot(
+            generated_at_utc=_NOW,
+            overall_state=HealthState.RECOVERING,
+            degraded_count=1,
+            subsystems=[
+                HealthSubsystemStatus(
+                    subsystem_key="adb",
+                    label="Android Device Bridge",
+                    state=HealthState.OK,
+                ),
+                HealthSubsystemStatus(
+                    subsystem_key="gpu_ml_worker",
+                    label="GPU ML worker",
+                    state=HealthState.RECOVERING,
+                    detail="Live visual tracking is not receiving live phone screenrecord frames.",
+                ),
+            ],
+            subsystem_probes={},
+        )
+    )
+
+    assert vm.operator_ready_for_submit() is False
+    assert vm.ttv_state() == "WAITING_FOR_FACE"
 
 
 def test_live_session_vm_exposes_no_producer_notice_without_blocking_ready() -> None:

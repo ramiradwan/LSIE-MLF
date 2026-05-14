@@ -2931,6 +2931,41 @@ def verify_v4_gate0_corpus(context: AuditContext, item: Section13Item) -> AuditR
     return _checks_result(item, checks)
 
 
+def _desktop_segment_identity_avoids_mutable_runtime_state(context: AuditContext) -> _Check:
+    rel_path = "services/desktop_app/processes/module_c_orchestrator.py"
+    forbidden = (
+        "segment.experiment_row_id",
+        "segment.active_arm",
+        "len(segment.pcm_s16le_16khz_mono)",
+    )
+    try:
+        module, lines = _parse_python(context, rel_path)
+    except FileNotFoundError:
+        return _Check(False, f"{rel_path} is missing; expected canonical desktop segment identity implementation.")
+    function_node = next(
+        (
+            node
+            for node in ast.walk(module)
+            if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef) and node.name == "_segment_id"
+        ),
+        None,
+    )
+    if function_node is None:
+        return _Check(False, f"{rel_path} is missing _segment_id; expected canonical desktop segment identity implementation.")
+    body_lines = lines[function_node.lineno - 1 : function_node.end_lineno]
+    body_text = "\n".join(body_lines)
+    present = [token for token in forbidden if token in body_text]
+    if present:
+        return _Check(
+            False,
+            f"{rel_path}:{function_node.lineno} _segment_id still contains mutable segment_id inputs {tuple(present)!r}; desktop identity must ignore experiment_row_id, active_arm, and PCM length.",
+        )
+    return _Check(
+        True,
+        f"{rel_path}:{function_node.lineno} _segment_id excludes mutable segment_id inputs {forbidden!r} from the desktop digest.",
+    )
+
+
 def verify_v4_deterministic_segment_identity(
     context: AuditContext, item: Section13Item
 ) -> AuditResult:
@@ -2946,6 +2981,19 @@ def verify_v4_deterministic_segment_identity(
                 "hashlib.sha256",
             ),
         ),
+        _contains_all(
+            context,
+            "services/desktop_app/processes/module_c_orchestrator.py",
+            (
+                "def _segment_id",
+                "def _canonical_utc_timestamp",
+                "SEGMENT_WINDOW_SECONDS",
+                'stable_identity = "|".join',
+                "segment.segment_window_start_utc",
+                "hashlib.sha256",
+            ),
+        ),
+        _desktop_segment_identity_avoids_mutable_runtime_state(context),
         _contains_all(
             context,
             "packages/schemas/inference_handoff.py",

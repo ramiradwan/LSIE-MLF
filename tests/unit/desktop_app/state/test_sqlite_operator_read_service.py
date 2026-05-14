@@ -389,7 +389,7 @@ def test_get_health_surfaces_desktop_adb_and_ml_processes(tmp_path: Path) -> Non
                     "video_capture",
                     "ok",
                     "Video Capture",
-                    "Video stream recording: video_stream.mkv · 2,048 bytes",
+                    "Replay video stream recording: video_stream.mkv · 2,048 bytes",
                     None,
                     "2026-04-01 12:00:12",
                 ),
@@ -422,7 +422,9 @@ def test_get_health_surfaces_desktop_adb_and_ml_processes(tmp_path: Path) -> Non
     rows = {row.subsystem_key: row for row in snapshot.subsystems}
     assert rows["adb"].detail == "Connected device: Pixel 8 (abc123) · Active app: com.example.app"
     assert rows["audio_capture"].detail == "Audio stream recording: audio_stream.wav · 1,024 bytes"
-    assert rows["video_capture"].detail == "Video stream recording: video_stream.mkv · 2,048 bytes"
+    assert rows["video_capture"].detail == (
+        "Replay video stream recording: video_stream.mkv · 2,048 bytes"
+    )
 
     live_producer = next(
         row for row in snapshot.subsystems if row.subsystem_key == "live_analytics_producer"

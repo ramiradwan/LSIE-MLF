@@ -24,6 +24,10 @@ def _valid_work_item_payload() -> dict[str, object]:
     return {
         "type": "spec_work_item",
         "title": "Persist desktop attribution ledger",
+        "description": (
+            "Persist the online_provisional attribution ledger emitted by "
+            "analytics_state_worker while keeping offline_final replay dormant."
+        ),
         "spec_refs": ["§6.1", "§7E"],
         "source_artifacts": ["docs/tech-spec-v4.0.pdf"],
         "target_files": [
@@ -51,6 +55,10 @@ def test_spec_work_item_accepts_valid_payload() -> None:
     work_item = SpecWorkItem.model_validate(_valid_work_item_payload())
 
     assert work_item.title == "Persist desktop attribution ledger"
+    assert work_item.description == (
+        "Persist the online_provisional attribution ledger emitted by "
+        "analytics_state_worker while keeping offline_final replay dormant."
+    )
     assert work_item.acceptance_criteria.forbidden_changes == [
         "do not add an offline_final replay producer without updating its guard"
     ]

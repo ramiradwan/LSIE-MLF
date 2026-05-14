@@ -80,7 +80,9 @@ def test_write_capture_statuses_records_device_and_stream_details(tmp_path: Path
     assert rows["audio_capture"]["state"] == "ok"
     assert rows["audio_capture"]["detail"] == "Audio stream recording: audio_stream.wav · 128 bytes"
     assert rows["video_capture"]["state"] == "ok"
-    assert rows["video_capture"]["detail"] == "Video stream recording: video_stream.mkv · 256 bytes"
+    assert rows["video_capture"]["detail"] == (
+        "Replay video stream recording: video_stream.mkv · 256 bytes"
+    )
 
 
 def test_write_capture_statuses_reports_silent_audio_stream(tmp_path: Path) -> None:

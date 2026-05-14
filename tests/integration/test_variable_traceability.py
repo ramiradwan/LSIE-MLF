@@ -1123,6 +1123,8 @@ def _discover_variable_producers() -> dict[tuple[str, str], list[VariableEvidenc
         "_expected_stimulus_rule",
         "_expected_response_rule",
         "_physiological_context",
+        "_visual_source_contract",
+        "visual_source_contract",
     }
     relevant_tokens = {
         "acoustic",

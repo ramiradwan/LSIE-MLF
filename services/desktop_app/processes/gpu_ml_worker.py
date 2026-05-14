@@ -36,8 +36,10 @@ from types import ModuleType
 from typing import Any
 
 from packages.schemas.evaluation import StimulusDefinition
+from packages.schemas.inference_handoff import InferenceHandoffPayload
 from services.desktop_app.ipc import IpcChannels
 from services.desktop_app.ipc.control_messages import (
+    DESKTOP_LIVE_VISUAL_SOURCE_CONTRACT,
     AnalyticsResultMessage,
     InferenceControlMessage,
     LiveSessionControlMessage,
@@ -53,25 +55,37 @@ from services.desktop_app.startup_timing import log_startup_milestone
 # ml_backend dependencies must not break base-environment module import or
 # test collection, so import failure is tolerated here and enforced later at the
 # runtime boundary.
+ctranslate2: ModuleType | None
 try:
-    import ctranslate2
+    import ctranslate2 as _ctranslate2
 except ModuleNotFoundError:
     ctranslate2 = None
+else:
+    ctranslate2 = _ctranslate2
 
+faster_whisper: ModuleType | None
 try:
-    import faster_whisper
+    import faster_whisper as _faster_whisper
 except ModuleNotFoundError:
     faster_whisper = None
+else:
+    faster_whisper = _faster_whisper
 
+mediapipe: ModuleType | None
 try:
-    import mediapipe
+    import mediapipe as _mediapipe
 except ModuleNotFoundError:
     mediapipe = None
+else:
+    mediapipe = _mediapipe
 
+torch: ModuleType | None
 try:
-    import torch
+    import torch as _torch
 except ModuleNotFoundError:
     torch = None
+else:
+    torch = _torch
 
 logger = logging.getLogger(__name__)
 
@@ -86,7 +100,7 @@ _ATTRIBUTION_FORWARD_FIELDS: tuple[str, ...] = (
 INBOX_POLL_TIMEOUT_S = 0.5
 SQLITE_FILENAME = "desktop.sqlite"
 _PCM_SAMPLE_WIDTH_BYTES = 2
-_VIDEO_FILENAME = "video_stream.mkv"
+_LIVE_VISUAL_SOURCE_CONTRACT = DESKTOP_LIVE_VISUAL_SOURCE_CONTRACT
 _VISUAL_CALIBRATION_FRAMES_REQUIRED = 45
 _VISUAL_AU12_RING_MAXLEN = 1800
 _VISUAL_FRAME_WIDTH = 540
@@ -98,8 +112,10 @@ _DESKTOP_STREAM_STOP_TIMEOUT_S = 1.0
 _DESKTOP_SCREENRECORD_TIME_LIMIT_S = 180
 _DESKTOP_SCREENRECORD_BIT_RATE = 2_000_000
 _GPU_STATUS_KEY = "gpu_ml_worker"
-_NO_FRAME_DETAIL = "No shared desktop video frames available yet for live face tracking."
-_NO_FRAME_HINT = "Verify Video Capture is recording and keep a visible face on screen."
+_NO_FRAME_DETAIL = "Live visual tracking is not receiving live phone screenrecord frames."
+_NO_FRAME_HINT = "Verify Replay Video Capture is recording and keep a visible face on screen."
+_NO_FACE_DETAIL = "Live visual tracking is waiting for a visible face on the phone screen."
+_NO_FACE_HINT = "Keep a visible face on screen so live analysis can recover."
 _ML_BACKEND_MODULES: tuple[tuple[str, ModuleType | None], ...] = (
     ("ctranslate2", ctranslate2),
     ("faster_whisper", faster_whisper),
@@ -135,6 +151,8 @@ class _VisualTickOutcome:
 
 
 class DesktopScreenrecordCapture:
+    source_contract = _LIVE_VISUAL_SOURCE_CONTRACT
+
     def __init__(self, adb_path: str, ffmpeg_path: str) -> None:
         self._adb_path = adb_path
         self._ffmpeg_path = ffmpeg_path
@@ -263,8 +281,8 @@ class DesktopScreenrecordCapture:
 
 @dataclass
 class LiveVisualTracker:
-    capture_path: str | None = None
-    video_capture_factory: Callable[[str], Any] | None = None
+    source_contract: str = _LIVE_VISUAL_SOURCE_CONTRACT
+    video_capture_factory: Callable[[str | None], Any] | None = None
     face_mesh_factory: Callable[[], Any] | None = None
     au12_factory: Callable[[], Any] | None = None
     session_id: uuid.UUID | None = None
@@ -330,18 +348,14 @@ class LiveVisualTracker:
         timestamp_utc = now or datetime.now(UTC)
         frame = self._latest_frame()
         if frame is None:
-            calibrated = self._calibration_frames_accumulated >= _VISUAL_CALIBRATION_FRAMES_REQUIRED
-            status = "waiting_for_face"
-            if calibrated:
-                status = "post_stimulus" if self.stimulus_time_s is not None else "ready"
             return _VisualTickOutcome(
                 visual=self._visual_state(
                     session_id=self.session_id,
                     timestamp_utc=timestamp_utc,
-                    status=status,
-                    face_present=calibrated,
+                    status="waiting_for_face",
+                    face_present=False,
                 ),
-                missing_frame=not calibrated,
+                missing_frame=True,
             )
         landmarks = self._extract_landmarks(frame)
         if landmarks is None:
@@ -477,16 +491,9 @@ class LiveVisualTracker:
     def _ensure_capture_started(self) -> None:
         if self._capture is None:
             factory = self.video_capture_factory or _default_video_capture_factory
-            self._capture = factory(self._capture_path())
+            self._capture = factory(None)
         with contextlib.suppress(Exception):
             self._capture.start()
-
-    def _capture_path(self) -> str:
-        if self.capture_path is not None:
-            return self.capture_path
-        from services.desktop_app.os_adapter import resolve_capture_dir
-
-        return str(resolve_capture_dir() / _VIDEO_FILENAME)
 
     def _latest_frame(self) -> Any | None:
         self._ensure_capture_started()
@@ -535,19 +542,30 @@ def _missing_ml_backend_modules() -> tuple[str, ...]:
     return tuple(name for name, module in _ML_BACKEND_MODULES if module is None)
 
 
+def _missing_ml_backend_status(missing: tuple[str, ...]) -> _GpuWorkerStatus:
+    missing_list = ", ".join(missing)
+    return _GpuWorkerStatus(
+        state="degraded",
+        detail=(
+            "gpu_ml_worker is running without optional ml_backend dependencies "
+            f"({missing_list}); live ML analytics are unavailable."
+        ),
+        operator_action_hint=(
+            "Install the project with the ml_backend extra to enable live speech, "
+            "semantic, acoustic, and visual analysis."
+        ),
+    )
+
+
 def _require_ml_backend() -> None:
     missing = _missing_ml_backend_modules()
     if not missing:
         return
-    missing_list = ", ".join(missing)
-    raise MissingMlBackendError(
-        "gpu_ml_worker requires the optional ml_backend dependencies "
-        f"({missing_list}). Install the project with the ml_backend extra "
-        "to run the desktop ML worker."
-    )
+    status = _missing_ml_backend_status(missing)
+    raise MissingMlBackendError(status.detail)
 
 
-def _default_video_capture_factory(path: str) -> Any:
+def _default_video_capture_factory(path: str | None) -> Any:
     del path
     adb_path = find_executable("adb", env_override="LSIE_ADB_PATH")
     ffmpeg_path = find_executable("ffmpeg", env_override="LSIE_FFMPEG_PATH")
@@ -716,25 +734,32 @@ def _handoff_with_tracker_au12(
     *,
     audio_data: bytes,
     tracker: LiveVisualTracker | None,
+    visual_source_contract: str | None = None,
 ) -> dict[str, Any]:
     enriched = dict(handoff)
     if enriched.get("_physiological_context") is None:
         enriched.pop("_physiological_context", None)
     if enriched.get("physiological_context") is None:
         enriched.pop("physiological_context", None)
-    if tracker is None:
-        return enriched
-    window = _handoff_window_s(enriched, audio_data)
-    observations = (
-        []
-        if window is None
-        else tracker.drain_au12_observations(
-            start_s=window[0],
-            end_s=window[1],
-        )
+    if tracker is not None:
+        if visual_source_contract == tracker.source_contract:
+            window = _handoff_window_s(enriched, audio_data)
+            observations = (
+                []
+                if window is None
+                else tracker.drain_au12_observations(
+                    start_s=window[0],
+                    end_s=window[1],
+                )
+            )
+            enriched["_au12_series"] = observations
+        elif visual_source_contract is not None:
+            enriched["_au12_series"] = []
+    return InferenceHandoffPayload.model_validate(enriched).model_dump(
+        mode="json",
+        by_alias=True,
+        exclude_none=True,
     )
-    enriched["_au12_series"] = observations
-    return enriched
 
 
 def _normalize_semantic_result(
@@ -882,6 +907,7 @@ def _build_analytics_result(
         msg.handoff,
         audio_data=audio,
         tracker=tracker,
+        visual_source_contract=msg.visual_source_contract,
     )
     timings["handoff_au12"] = (time.perf_counter() - handoff_start) * 1000.0
     segment_id = str(handoff.get("segment_id", "unknown"))
@@ -1058,6 +1084,13 @@ def _publish_analytics_result(
     channels.analytics_inbox.put(analytics.model_dump(mode="json"))
 
 
+def _publish_visual_state(channels: IpcChannels, visual: VisualAnalyticsStateMessage) -> None:
+    payload = visual.model_dump(mode="json")
+    channels.analytics_inbox.put(payload)
+    if channels.visual_state_updates is not None:
+        channels.visual_state_updates.put(payload)
+
+
 def _drain_live_control(channels: IpcChannels, tracker: LiveVisualTracker) -> None:
     if channels.live_control is None:
         return
@@ -1072,7 +1105,7 @@ def _drain_live_control(channels: IpcChannels, tracker: LiveVisualTracker) -> No
         except Exception:  # noqa: BLE001
             logger.exception("gpu_ml_worker discarded malformed live control message")
             continue
-        channels.analytics_inbox.put(visual.model_dump(mode="json"))
+        _publish_visual_state(channels, visual)
 
 
 def _publish_visual_tick(
@@ -1110,24 +1143,49 @@ def _publish_visual_tick(
                     operator_action_hint=_NO_FRAME_HINT,
                 )
             )
+        elif outcome.visual is not None and not outcome.visual.face_present:
+            status_callback(
+                _GpuWorkerStatus(
+                    state="recovering",
+                    detail=_NO_FACE_DETAIL,
+                    operator_action_hint=_NO_FACE_HINT,
+                )
+            )
         elif outcome.visual is not None and outcome.visual.face_present:
             status_callback(
                 _GpuWorkerStatus(
                     state="ok",
-                    detail="Live visual tracking is receiving phone frames.",
+                    detail="Live visual tracking is receiving live phone screenrecord frames.",
                 )
             )
     if outcome.visual is not None:
-        channels.analytics_inbox.put(outcome.visual.model_dump(mode="json"))
+        _publish_visual_state(channels, outcome.visual)
 
 
 def _ml_inbox_poll_timeout(next_visual_tick: float, now_monotonic: float) -> float:
     return min(INBOX_POLL_TIMEOUT_S, max(0.0, next_visual_tick - now_monotonic))
 
 
+def _drain_ml_inbox_without_backend(channels: IpcChannels) -> None:
+    while True:
+        try:
+            raw = channels.ml_inbox.get_nowait()
+        except queue.Empty:
+            return
+        try:
+            msg = InferenceControlMessage.model_validate(raw)
+        except Exception:  # noqa: BLE001
+            logger.exception("gpu_ml_worker discarded malformed control message")
+            continue
+        _ack_pcm_block(channels, msg.audio.name)
+        logger.warning(
+            "gpu_ml_worker dropped segment_id=%s because ml_backend is unavailable",
+            msg.handoff.get("segment_id", "?"),
+        )
+
+
 def run(shutdown_event: mpsync.Event, channels: IpcChannels) -> None:
     logger.info("gpu_ml_worker started")
-    _require_ml_backend()
 
     from services.desktop_app.os_adapter import resolve_state_dir
     from services.desktop_app.state.heartbeats import HeartbeatRecorder
@@ -1136,6 +1194,20 @@ def run(shutdown_event: mpsync.Event, channels: IpcChannels) -> None:
     db_path = state_dir / SQLITE_FILENAME
     heartbeat = HeartbeatRecorder(db_path, "gpu_ml_worker")
     heartbeat.start()
+    missing_ml_backend = _missing_ml_backend_modules()
+    if missing_ml_backend:
+        status = _missing_ml_backend_status(missing_ml_backend)
+        _upsert_gpu_worker_status(db_path, status)
+        logger.warning(status.detail)
+        try:
+            while not shutdown_event.wait(INBOX_POLL_TIMEOUT_S):
+                _drain_ml_inbox_without_backend(channels)
+            _drain_ml_inbox_without_backend(channels)
+        finally:
+            heartbeat.stop()
+            logger.info("gpu_ml_worker stopped")
+        return
+
     _upsert_gpu_worker_status(db_path, _initial_worker_status())
     tracker = LiveVisualTracker()
     warm_runtime: dict[str, Any] = {

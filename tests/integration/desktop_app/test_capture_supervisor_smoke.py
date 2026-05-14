@@ -201,7 +201,7 @@ def _wait_for_capture_status_ready(db_path: Path, *, timeout_s: float = 30.0) ->
             assert audio["detail"] is not None
             assert "Audio stream recording:" in str(audio["detail"])
             assert video["detail"] is not None
-            assert "Video stream recording:" in str(video["detail"])
+            assert "Replay video stream recording:" in str(video["detail"])
             return
         time.sleep(0.5)
     raise AssertionError("capture_status never reported replay-ready audio/video artifacts")

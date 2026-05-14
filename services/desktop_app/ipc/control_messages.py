@@ -36,6 +36,10 @@ from packages.schemas.evaluation import SemanticMethod, SemanticReasonCode, Stim
 from packages.schemas.inference_handoff import InferenceHandoffPayload
 from services.desktop_app.ipc.shared_buffers import PcmBlockMetadata
 
+DESKTOP_LIVE_VISUAL_SOURCE_CONTRACT: Literal["adb_screenrecord_live_v1"] = (
+    "adb_screenrecord_live_v1"
+)
+
 
 class AudioBlockRef(BaseModel):
     """SharedMemory locator + integrity metadata for one 30 s PCM block."""
@@ -68,6 +72,7 @@ class InferenceControlMessage(BaseModel):
     handoff: dict[str, Any] = Field(...)
     audio: AudioBlockRef
     forward_fields: dict[str, Any] = Field(default_factory=dict)
+    visual_source_contract: Literal["adb_screenrecord_live_v1"] | None = None
 
     model_config = ConfigDict(extra="forbid")
 

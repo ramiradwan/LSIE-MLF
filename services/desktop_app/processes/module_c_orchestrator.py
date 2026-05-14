@@ -28,10 +28,12 @@ from packages.schemas.evaluation import StimulusDefinition
 from packages.schemas.inference_handoff import InferenceHandoffPayload
 from services.desktop_app.ipc import IpcChannels
 from services.desktop_app.ipc.control_messages import (
+    DESKTOP_LIVE_VISUAL_SOURCE_CONTRACT,
     AudioBlockRef,
     InferenceControlMessage,
     LiveSessionControlMessage,
     PcmBlockAckMessage,
+    VisualAnalyticsStateMessage,
 )
 from services.desktop_app.ipc.shared_buffers import PcmBlock, write_pcm_block
 from services.desktop_app.state.sqlite_schema import apply_reader_pragmas, bootstrap_schema
@@ -55,6 +57,7 @@ PCM_ACK_WAIT_TIMEOUT_S = 0.25
 ML_INBOX_PUT_TIMEOUT_S = 0.5
 STIMULUS_MEASUREMENT_WINDOW_END_OFFSET_S = 5.0
 STIMULUS_BASELINE_WINDOW_START_OFFSET_S = -5.0
+VISUAL_AU12_BUFFER_MAXLEN = 1800
 
 
 @dataclass(frozen=True)
@@ -69,6 +72,7 @@ class DesktopSegment:
     stimulus_definition: StimulusDefinition
     bandit_decision_snapshot: dict[str, Any]
     stimulus_time_s: float | None
+    au12_series: tuple[dict[str, float], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -93,6 +97,15 @@ class _CaptureAudioFormat:
     @property
     def frame_width_bytes(self) -> int:
         return self.sample_width_bytes * self.channels
+
+
+@dataclass(frozen=True)
+class _VisualAu12Telemetry:
+    timestamp_s: float
+    intensity: float
+
+    def as_payload(self) -> dict[str, float]:
+        return {"timestamp_s": self.timestamp_s, "intensity": self.intensity}
 
 
 class _DriftState(Protocol):
@@ -135,6 +148,7 @@ class DesktopSegmentDispatcher:
             handoff=handoff.model_dump(mode="json", by_alias=True),
             audio=AudioBlockRef.from_metadata(block.metadata),
             forward_fields={"_drift_offset_s": drift_offset_s},
+            visual_source_contract=DESKTOP_LIVE_VISUAL_SOURCE_CONTRACT,
         )
         if not self._enqueue_message(message.model_dump(mode="json"), shutdown_event):
             self._release_block(block.metadata.name)
@@ -234,19 +248,28 @@ def _build_handoff(segment: DesktopSegment, *, drift_offset_s: float) -> Inferen
         "_expected_stimulus_rule": segment.stimulus_definition.expected_stimulus_rule,
         "_expected_response_rule": segment.stimulus_definition.expected_response_rule,
         "_stimulus_time": segment.stimulus_time_s,
-        "_au12_series": [],
+        "_au12_series": list(segment.au12_series),
         "_bandit_decision_snapshot": segment.bandit_decision_snapshot,
     }
     return InferenceHandoffPayload.model_validate(payload)
 
 
+def _canonical_utc_timestamp(value: datetime) -> str:
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=UTC)
+    return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
+
+
 def _segment_id(segment: DesktopSegment) -> str:
-    start = segment.segment_window_start_utc.astimezone(UTC).isoformat()
-    digest_input = (
-        f"{segment.session_id}:{start}:{segment.experiment_row_id}:"
-        f"{segment.active_arm}:{len(segment.pcm_s16le_16khz_mono)}"
+    end = segment.segment_window_start_utc + timedelta(seconds=SEGMENT_WINDOW_SECONDS)
+    stable_identity = "|".join(
+        (
+            f"{segment.session_id}",
+            _canonical_utc_timestamp(segment.segment_window_start_utc),
+            _canonical_utc_timestamp(end),
+        )
     )
-    return hashlib.sha256(digest_input.encode()).hexdigest()
+    return hashlib.sha256(stable_identity.encode("utf-8")).hexdigest()
 
 
 def _reader_connection(db_path: Path) -> sqlite3.Connection:
@@ -387,6 +410,51 @@ def _resolve_control_session(
         control.session_id,
     )
     return active
+
+
+def _drain_visual_au12_updates(
+    channels: IpcChannels,
+    visual_buffer: deque[_VisualAu12Telemetry],
+) -> None:
+    update_queue = channels.visual_state_updates
+    if update_queue is None:
+        return
+    while True:
+        try:
+            raw = update_queue.get_nowait()
+        except queue.Empty:
+            return
+        try:
+            message = VisualAnalyticsStateMessage.model_validate(raw)
+        except Exception:  # noqa: BLE001
+            logger.exception("module_c_orchestrator discarded malformed visual state update")
+            continue
+        if message.latest_au12_timestamp_s is None or message.latest_au12_intensity is None:
+            continue
+        visual_buffer.append(
+            _VisualAu12Telemetry(
+                timestamp_s=message.latest_au12_timestamp_s,
+                intensity=message.latest_au12_intensity,
+            )
+        )
+
+
+def _au12_series_for_window(
+    visual_buffer: deque[_VisualAu12Telemetry],
+    *,
+    start_s: float,
+    end_s: float,
+) -> tuple[dict[str, float], ...]:
+    selected: list[_VisualAu12Telemetry] = []
+    retained: deque[_VisualAu12Telemetry] = deque(maxlen=VISUAL_AU12_BUFFER_MAXLEN)
+    for observation in visual_buffer:
+        if start_s <= observation.timestamp_s <= end_s:
+            selected.append(observation)
+        if observation.timestamp_s > end_s:
+            retained.append(observation)
+    visual_buffer.clear()
+    visual_buffer.extend(retained)
+    return tuple(observation.as_payload() for observation in selected)
 
 
 def _drain_segment_controls(
@@ -646,6 +714,7 @@ def _segment_from_active_session(
     pcm_s16le_16khz_mono: bytes,
     drift_offset_s: float,
     stimulus_time_s: float | None = None,
+    au12_series: tuple[dict[str, float], ...] = (),
 ) -> DesktopSegment:
     resolved_stimulus_time_s = stimulus_time_s
     if resolved_stimulus_time_s is None:
@@ -665,6 +734,7 @@ def _segment_from_active_session(
         stimulus_definition=active.stimulus_definition,
         bandit_decision_snapshot=active.bandit_decision_snapshot,
         stimulus_time_s=resolved_stimulus_time_s,
+        au12_series=au12_series,
     )
 
 
@@ -700,14 +770,17 @@ def _run_segment_loop(
     audio_format = _read_capture_audio_format(audio_path)
     cursor_bytes = audio_path.stat().st_size if active is not None and audio_path.exists() else 0
     audio_buffer = bytearray()
+    visual_buffer: deque[_VisualAu12Telemetry] = deque(maxlen=VISUAL_AU12_BUFFER_MAXLEN)
     segment_start_utc: datetime | None = None
     segment_bytes = SEGMENT_WINDOW_SECONDS * PCM_SAMPLE_RATE_HZ * AUDIO_SAMPLE_WIDTH_BYTES
     max_buffer_bytes = MAX_AUDIO_BUFFER_SECONDS * PCM_SAMPLE_RATE_HZ * AUDIO_SAMPLE_WIDTH_BYTES
     while not shutdown_event.is_set():
         dispatcher.release_acked_blocks()
+        _drain_visual_au12_updates(channels, visual_buffer)
         active = _drain_segment_controls(channels, active, db_path=db_path)
         if active is None:
             audio_buffer.clear()
+            visual_buffer.clear()
             segment_start_utc = None
             audio_format = _read_capture_audio_format(audio_path)
             cursor_bytes = audio_path.stat().st_size if audio_path.exists() else 0
@@ -749,12 +822,18 @@ def _run_segment_loop(
                     desired_segment_end_offset_bytes=buffer_end_offset_bytes,
                     segment_bytes=segment_bytes,
                 )
+                au12_series = _au12_series_for_window(
+                    visual_buffer,
+                    start_s=stimulus_segment_start_utc.timestamp(),
+                    end_s=stimulus_segment_end_utc.timestamp(),
+                )
                 segment = _segment_from_active_session(
                     active,
                     segment_start_utc=stimulus_segment_start_utc,
                     pcm_s16le_16khz_mono=pcm,
                     drift_offset_s=drift_offset_s,
                     stimulus_time_s=active.stimulus_time_s,
+                    au12_series=au12_series,
                 )
                 if not _dispatch_segment(
                     dispatcher,

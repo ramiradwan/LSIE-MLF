@@ -28,6 +28,7 @@ class AcceptanceCriteria(_StrictModel):
 class SpecWorkItem(_StrictModel):
     type: Literal["spec_work_item"]
     title: str = Field(min_length=1)
+    description: str | None = Field(default=None, min_length=1)
     spec_refs: list[str] = Field(min_length=1)
     source_artifacts: list[str] = Field(min_length=1)
     target_files: list[str] = Field(min_length=1)

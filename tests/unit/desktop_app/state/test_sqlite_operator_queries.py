@@ -1102,7 +1102,7 @@ def test_fetch_subsystem_pulse_includes_desktop_process_signals(tmp_path: Path) 
                     "video_capture",
                     "ok",
                     "Video Capture",
-                    "Video stream recording: video_stream.mkv · 2,048 bytes",
+                    "Replay video stream recording: video_stream.mkv · 2,048 bytes",
                     None,
                     "2026-04-01 12:00:12",
                 ),
@@ -1122,7 +1122,9 @@ def test_fetch_subsystem_pulse_includes_desktop_process_signals(tmp_path: Path) 
     assert pulse["audio_capture_detail"] == "Audio stream recording: audio_stream.wav · 1,024 bytes"
     assert pulse["last_audio_capture_at"] == "2026-04-01 12:00:11"
     assert pulse["video_capture_state"] == "ok"
-    assert pulse["video_capture_detail"] == "Video stream recording: video_stream.mkv · 2,048 bytes"
+    assert pulse["video_capture_detail"] == (
+        "Replay video stream recording: video_stream.mkv · 2,048 bytes"
+    )
     assert pulse["last_video_capture_at"] == "2026-04-01 12:00:12"
 
 

@@ -1691,14 +1691,18 @@ def format_phone_preview_status(
 
     if dashboard_mode == "ready":
         return PhonePreviewStatusDisplay(
-            primary=("Capture active · ADB tether · 30 fps · frames buffered for inference."),
+            primary=(
+                "Capture active · live phone screenrecord stream · 30 fps · "
+                "frames buffered for inference."
+            ),
             caveat=_PHONE_PREVIEW_CAVEAT,
         )
     if dashboard_mode == "calibrating":
         suffix = f" {detail.strip()}." if detail else ""
         return PhonePreviewStatusDisplay(
             primary=(
-                "Capture active · preparing live analysis from local capture stream." + suffix
+                "Capture active · preparing live analysis from the "
+                "live phone screenrecord stream." + suffix
             ),
             caveat=_PHONE_PREVIEW_CAVEAT,
         )

@@ -1,6 +1,7 @@
 {
   "type": "spec_work_item",
   "title": "<short spec-driven change title>",
+  "description": "<1-3 sentence implementation intent, including why this packet exists and the key contract boundary it must preserve>",
   "spec_refs": [
     "§<section>"
   ],
