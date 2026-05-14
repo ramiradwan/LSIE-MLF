@@ -152,7 +152,7 @@ jobs:
             echo "Check the 'Automated Reports' section on the portal homepage for the latest visual drift results."
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Upload runtime captures
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: operator-console-runtime-captures
           path: captures/runtime

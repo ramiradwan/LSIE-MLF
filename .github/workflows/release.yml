@@ -111,7 +111,7 @@ jobs:
           subject-path: dist\LSIE-MLF-windows-${{ github.ref_name }}.zip
 
       - name: Upload signed artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: LSIE-MLF-windows-${{ github.ref_name }}
           path: |
