@@ -1,0 +1,354 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="robots" content="noindex, nofollow">
+<title>Operator Console · ActionBar</title>
+<link rel="stylesheet" href="tokens.css">
+<style>
+  body { padding: 48px 56px 80px; }
+  .doc { max-width: 1180px; margin: 0 auto; }
+
+  h1 { font-size: 28px; font-weight: 600; margin: 0 0 6px; letter-spacing: -0.01em; }
+  .lede {
+    color: var(--text-muted); font-size: 14px; max-width: 760px;
+    margin: 0 0 48px; line-height: 1.55;
+  }
+  h2 {
+    font-size: 11px; font-weight: 600; letter-spacing: 0.12em;
+    text-transform: uppercase; color: var(--text-muted);
+    margin: 56px 0 6px; padding-bottom: 10px;
+    border-bottom: 1px solid var(--border);
+  }
+  h2:first-of-type { margin-top: 0; }
+  .desc {
+    color: var(--text-muted); font-size: 13px; line-height: 1.6;
+    max-width: 720px; margin: 0 0 24px;
+  }
+  .desc code {
+    font-family: var(--font-mono); font-size: 12px;
+    background: var(--surface-raised); padding: 1px 5px;
+    border-radius: 3px; color: var(--text-primary);
+  }
+
+  .stage-label {
+    font-family: var(--font-mono); font-size: 11px;
+    color: var(--text-muted); text-transform: uppercase;
+    letter-spacing: 0.08em;
+    margin: 24px 0 8px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .stage-label::before {
+    content: ""; width: 6px; height: 6px;
+    border-radius: 50%; background: var(--text-muted);
+  }
+  .stage-label .meta {
+    margin-left: auto;
+    color: var(--text-muted); font-family: var(--font-ui);
+    text-transform: none; letter-spacing: 0;
+  }
+
+  /* ===== ActionBar ===== */
+  .ab {
+    background: var(--surface);
+    border-top: 1px solid var(--border);
+    border-left: 1px solid var(--border);
+    border-right: 1px solid var(--border);
+    border-bottom: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: 14px 18px;
+    display: grid;
+    grid-template-columns: 1fr 220px 220px auto;
+    align-items: center;
+    gap: 18px;
+  }
+  .ab .ctx { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .ab .session {
+    color: var(--text-primary); font-weight: 600; font-size: 13px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .ab .greeting {
+    color: var(--text-muted); font-style: italic; font-size: 12px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .ab .note {
+    background: var(--surface-raised);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 6px 10px;
+    color: var(--text-primary); font-size: 13px;
+    font-family: var(--font-ui);
+    height: 32px;
+    display: flex; align-items: center;
+  }
+  .ab .note.focused {
+    border-color: var(--accent);
+  }
+  .ab .note .placeholder { color: var(--text-muted); }
+
+  .ab .right { display: flex; align-items: center; gap: 14px; justify-self: end; }
+
+  .ab .countdown {
+    font-family: var(--font-mono); font-size: 13px;
+    color: var(--status-warn);
+    min-width: 56px; text-align: right;
+  }
+  .ab .countdown.idle { color: var(--text-muted); }
+
+  .ab .pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 3px 10px 3px 8px;
+    background: var(--surface-raised);
+    border-radius: 999px;
+  }
+  .ab .pill .dot { width: 7px; height: 7px; border-radius: 50%; }
+  .ab .pill .lbl { font-size: 11px; font-weight: 600; color: var(--text-primary); letter-spacing: 0.02em; text-transform: uppercase; }
+  .ab .pill.idle       .dot { background: var(--text-muted); }
+  .ab .pill.submit     .dot { background: var(--accent); }
+  .ab .pill.accepted   .dot { background: var(--status-ok); }
+  .ab .pill.measuring  .dot { background: var(--status-warn); }
+  .ab .pill.completed  .dot { background: var(--status-ok); }
+  .ab .pill.failed     .dot { background: var(--status-bad); }
+
+  .ab .submit {
+    background: var(--accent);
+    color: var(--text-inverse);
+    border: none;
+    border-radius: var(--radius-sm);
+    padding: 8px 18px;
+    font: 600 13px var(--font-ui);
+    cursor: pointer;
+    height: 32px;
+    min-width: 132px;
+  }
+  .ab .submit:disabled {
+    background: var(--surface-raised);
+    color: var(--text-muted);
+    cursor: not-allowed;
+  }
+  .ab .submit.retry {
+    background: var(--status-bad);
+    color: var(--text-inverse);
+  }
+
+  .ab .message {
+    grid-column: 1 / -1;
+    color: var(--text-muted); font-size: 12px;
+    margin-top: 6px;
+    padding-top: 8px;
+    border-top: 1px dashed var(--border);
+  }
+
+  /* Compact variant (<1024px) — shown narrower */
+  .ab.compact {
+    grid-template-columns: 1fr auto auto;
+    gap: 12px;
+  }
+  .ab.compact .note { display: none; }
+  .ab.compact .countdown { display: none; }
+
+  /* Tokens grid */
+  .tokens {
+    display: grid; gap: 8px;
+    grid-template-columns: repeat(2, 1fr);
+    margin-top: 16px;
+  }
+  .tok {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 10px 12px;
+    font-family: var(--font-mono); font-size: 12px;
+    color: var(--text-muted);
+  }
+  .tok strong { color: var(--text-primary); font-weight: 600; }
+
+  /* Lifecycle table */
+  .lifecycle {
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    overflow: hidden;
+  }
+  .lifecycle .row {
+    display: grid;
+    grid-template-columns: 140px 160px 1fr 200px;
+    align-items: center;
+    padding: 14px 18px;
+    border-bottom: 1px solid var(--border);
+    gap: 16px;
+  }
+  .lifecycle .row.head {
+    background: var(--surface-raised);
+    color: var(--text-muted);
+    font-size: 11px; text-transform: uppercase;
+    letter-spacing: 0.08em;
+  }
+  .lifecycle .row:last-child { border-bottom: none; }
+  .lifecycle .state {
+    font-family: var(--font-mono); font-size: 12px;
+    color: var(--text-primary); font-weight: 600;
+  }
+  .lifecycle .button-label {
+    font: 600 13px var(--font-ui);
+    color: var(--text-primary);
+  }
+  .lifecycle .meaning {
+    color: var(--text-muted); font-size: 13px; line-height: 1.4;
+  }
+  .lifecycle .pillcell .pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 3px 10px 3px 8px;
+    background: var(--surface-raised);
+    border-radius: 999px;
+  }
+  .lifecycle .pillcell .dot { width: 7px; height: 7px; border-radius: 50%; }
+  .lifecycle .pillcell .lbl { font-size: 11px; font-weight: 600; color: var(--text-primary); text-transform: uppercase; letter-spacing: 0.02em; }
+  .lifecycle .idle       .dot { background: var(--text-muted); }
+  .lifecycle .submitting .dot { background: var(--accent); }
+  .lifecycle .accepted   .dot { background: var(--status-ok); }
+  .lifecycle .measuring  .dot { background: var(--status-warn); }
+  .lifecycle .completed  .dot { background: var(--status-ok); }
+  .lifecycle .failed     .dot { background: var(--status-bad); }
+</style>
+</head>
+<body>
+<div class="doc">
+
+<h1>ActionBar</h1>
+<p class="lede">The console's only persistent write surface. The ActionBar mounts below the stacked content and stays present across every route — so the operator's primary action is always one glance away. Its state, copy, and timing all derive from <code>StimulusUiContext</code>; the bar itself owns no backend logic.</p>
+
+<h2>Anatomy</h2>
+<p class="desc">The bar is a single row of four regions: <strong>session context</strong> on the left, an optional <strong>operator note</strong>, the <strong>countdown</strong> when measuring is active, and the <strong>submit</strong> button paired with a lifecycle pill on the right. A second-line message appears below when there is progress or error copy to relay.</p>
+
+<div class="stage-label">ActionBar · idle, ready to send <span class="meta">grid 1fr / 220 / 220 / auto</span></div>
+<div class="ab">
+  <div class="ctx">
+    <div class="session">sess_4f12 · arm_b · operator R. Ramirez</div>
+    <div class="greeting">"Hey, glad you made it — first time on stream?"</div>
+  </div>
+  <div class="note"><span class="placeholder">Optional note for this stimulus…</span></div>
+  <div class="right">
+    <span class="countdown idle">— : —</span>
+    <span class="pill idle"><span class="dot"></span><span class="lbl">idle</span></span>
+  </div>
+  <button class="submit">Send Stimulus</button>
+</div>
+
+<div class="stage-label">ActionBar · submitting <span class="meta">accepted by API, not yet measuring</span></div>
+<div class="ab">
+  <div class="ctx">
+    <div class="session">sess_4f12 · arm_b · operator R. Ramirez</div>
+    <div class="greeting">"Hey, glad you made it — first time on stream?"</div>
+  </div>
+  <div class="note focused">Cold open — first viewer of the hour</div>
+  <div class="right">
+    <span class="countdown idle">— : —</span>
+    <span class="pill submit"><span class="dot"></span><span class="lbl">submitting</span></span>
+  </div>
+  <button class="submit" disabled>Sending…</button>
+</div>
+
+<div class="stage-label">ActionBar · measuring <span class="meta">countdown drives StimulusUiContext.remaining</span></div>
+<div class="ab">
+  <div class="ctx">
+    <div class="session">sess_4f12 · arm_b · operator R. Ramirez</div>
+    <div class="greeting">"Hey, glad you made it — first time on stream?"</div>
+  </div>
+  <div class="note">Cold open — first viewer of the hour</div>
+  <div class="right">
+    <span class="countdown">04:32</span>
+    <span class="pill measuring"><span class="dot"></span><span class="lbl">measuring</span></span>
+  </div>
+  <button class="submit" disabled>Measuring…</button>
+  <div class="message">Response window remaining · authoritative timing from orchestrator timestamps</div>
+</div>
+
+<div class="stage-label">ActionBar · failed <span class="meta">retry path</span></div>
+<div class="ab">
+  <div class="ctx">
+    <div class="session">sess_4f12 · arm_b · operator R. Ramirez</div>
+    <div class="greeting">"Hey, glad you made it — first time on stream?"</div>
+  </div>
+  <div class="note">Cold open — first viewer of the hour</div>
+  <div class="right">
+    <span class="countdown idle">— : —</span>
+    <span class="pill failed"><span class="dot"></span><span class="lbl">failed</span></span>
+  </div>
+  <button class="submit retry">Retry</button>
+  <div class="message">Submit rejected by orchestrator: greeting bundle not loaded for arm_b. Try repair install on Health.</div>
+</div>
+
+<div class="stage-label">ActionBar · compact <span class="meta">window width &lt; 1024 px</span></div>
+<div class="ab compact">
+  <div class="ctx">
+    <div class="session">sess_4f12 · arm_b</div>
+    <div class="greeting">"Hey, glad you made it…"</div>
+  </div>
+  <span class="pill measuring"><span class="dot"></span><span class="lbl">measuring</span></span>
+  <button class="submit" disabled>Measuring…</button>
+</div>
+
+<h2>Lifecycle</h2>
+<p class="desc">Six lifecycle states, each with a fixed button label, pill, and behavior. The mapping is non-negotiable: changing copy here would silently change what the operator believes the system is doing. <code>completed</code> intentionally returns to <em>Send Stimulus</em> so the bar is immediately usable for the next encounter.</p>
+<div class="lifecycle">
+  <div class="row head">
+    <span>StimulusActionState</span>
+    <span>Pill</span>
+    <span>Meaning</span>
+    <span>Button label</span>
+  </div>
+  <div class="row">
+    <span class="state">idle</span>
+    <span class="pillcell"><span class="pill idle"><span class="dot"></span><span class="lbl">idle</span></span></span>
+    <span class="meaning">Session ready, no stimulus in flight, safe-submit guard satisfied.</span>
+    <span class="button-label">Send Stimulus</span>
+  </div>
+  <div class="row">
+    <span class="state">submitting</span>
+    <span class="pillcell"><span class="pill submitting"><span class="dot"></span><span class="lbl">submitting</span></span></span>
+    <span class="meaning">POST in flight to orchestrator. Submit disabled to prevent duplicate dispatch.</span>
+    <span class="button-label">Sending…</span>
+  </div>
+  <div class="row">
+    <span class="state">accepted</span>
+    <span class="pillcell"><span class="pill accepted"><span class="dot"></span><span class="lbl">accepted</span></span></span>
+    <span class="meaning">Server acknowledged; awaiting first measuring tick from orchestrator.</span>
+    <span class="button-label">Accepted</span>
+  </div>
+  <div class="row">
+    <span class="state">measuring</span>
+    <span class="pillcell"><span class="pill measuring"><span class="dot"></span><span class="lbl">measuring</span></span></span>
+    <span class="meaning">Response window is open; countdown reflects orchestrator-owned timing.</span>
+    <span class="button-label">Measuring…</span>
+  </div>
+  <div class="row">
+    <span class="state">completed</span>
+    <span class="pillcell"><span class="pill completed"><span class="dot"></span><span class="lbl">completed</span></span></span>
+    <span class="meaning">Encounter closed. Bar returns to a sendable state for the next stimulus.</span>
+    <span class="button-label">Send Stimulus</span>
+  </div>
+  <div class="row">
+    <span class="state">failed</span>
+    <span class="pillcell"><span class="pill failed"><span class="dot"></span><span class="lbl">failed</span></span></span>
+    <span class="meaning">Submit rejected or window aborted. Bar surfaces error copy and offers Retry.</span>
+    <span class="button-label">Retry</span>
+  </div>
+</div>
+
+<h2>Tokens</h2>
+<div class="tokens">
+  <div class="tok"><strong>ActionBar</strong> · surface · 1px top border</div>
+  <div class="tok"><strong>ActionBarSession</strong> · 13 / 600 · text_primary</div>
+  <div class="tok"><strong>ActionBarGreeting</strong> · 12 / 400 italic · text_muted</div>
+  <div class="tok"><strong>ActionBarNote</strong> · surface_raised · 1px border · radius 4</div>
+  <div class="tok"><strong>ActionBarNote:focus</strong> · accent border</div>
+  <div class="tok"><strong>ActionBarSubmit</strong> · accent · text_inverse · radius 4</div>
+  <div class="tok"><strong>ActionBarSubmit:disabled</strong> · surface_raised · text_muted</div>
+  <div class="tok"><strong>ActionBarCountdown</strong> · mono 13 · status_warn while measuring</div>
+  <div class="tok"><strong>ActionBarMessage</strong> · 12 · text_muted · second-line copy</div>
+  <div class="tok"><strong>compact mode</strong> · width &lt; 1024 px · note + countdown hidden</div>
+</div>
+
+</div>
+</body>
+</html>

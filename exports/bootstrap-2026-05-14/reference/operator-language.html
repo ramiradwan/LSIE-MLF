@@ -1,0 +1,327 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="robots" content="noindex, nofollow">
+<title>Operator Console · Operator language</title>
+<link rel="stylesheet" href="tokens.css">
+<style>
+  body { padding: 48px 56px 80px; }
+  .doc { max-width: 1120px; margin: 0 auto; }
+
+  h1 { font-size: 28px; font-weight: 600; margin: 0 0 6px; letter-spacing: -0.01em; }
+  .lede {
+    color: var(--text-muted); font-size: 14px; max-width: 760px;
+    margin: 0 0 48px; line-height: 1.55;
+  }
+  h2 {
+    font-size: 11px; font-weight: 600; letter-spacing: 0.12em;
+    text-transform: uppercase; color: var(--text-muted);
+    margin: 56px 0 6px; padding-bottom: 10px;
+    border-bottom: 1px solid var(--border);
+  }
+  h2:first-of-type { margin-top: 0; }
+  .desc {
+    color: var(--text-muted); font-size: 13px; line-height: 1.6;
+    max-width: 760px; margin: 0 0 24px;
+  }
+  .desc code, code.tk {
+    font-family: var(--font-mono); font-size: 12px;
+    background: var(--surface-raised); padding: 1px 5px;
+    border-radius: 3px; color: var(--text-primary);
+  }
+
+  /* Principle list */
+  .principles {
+    display: grid; gap: 12px;
+    grid-template-columns: repeat(2, 1fr);
+  }
+  .principle {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: 18px 20px;
+    display: flex; flex-direction: column; gap: 6px;
+  }
+  .principle .num {
+    font-family: var(--font-mono); font-size: 11px;
+    color: var(--text-muted);
+  }
+  .principle .h {
+    font-size: 14px; font-weight: 600; color: var(--text-primary);
+  }
+  .principle .b {
+    font-size: 13px; color: var(--text-muted); line-height: 1.5;
+  }
+
+  /* Vs. table — wrong / right */
+  .vs {
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    overflow: hidden;
+  }
+  .vs .row {
+    display: grid;
+    grid-template-columns: 200px 1fr 1fr;
+    border-bottom: 1px solid var(--border);
+  }
+  .vs .row:last-child { border-bottom: none; }
+  .vs .row.head {
+    background: var(--surface-raised);
+    color: var(--text-muted);
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em;
+  }
+  .vs .row.head > div { padding: 12px 16px; }
+  .vs .row > div {
+    padding: 14px 16px;
+    font-size: 13px;
+    border-right: 1px solid var(--border);
+    line-height: 1.5;
+  }
+  .vs .row > div:last-child { border-right: none; }
+  .vs .ctx { color: var(--text-muted); font-family: var(--font-mono); font-size: 12px; }
+  .vs .wrong {
+    color: var(--text-muted);
+    text-decoration: line-through;
+    text-decoration-color: var(--status-bad);
+    text-decoration-thickness: 1px;
+  }
+  .vs .right {
+    color: var(--text-primary);
+  }
+
+  /* Vocabulary buckets */
+  .buckets {
+    display: grid; gap: 14px;
+    grid-template-columns: repeat(2, 1fr);
+  }
+  .bucket {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: 18px 20px;
+  }
+  .bucket .name {
+    font-family: var(--font-mono); font-size: 12px;
+    color: var(--text-primary); font-weight: 600;
+    margin-bottom: 4px;
+  }
+  .bucket .src {
+    font-family: var(--font-mono); font-size: 11px;
+    color: var(--text-muted); margin-bottom: 14px;
+  }
+  .bucket ul {
+    margin: 0; padding: 0; list-style: none;
+    display: flex; flex-direction: column; gap: 8px;
+  }
+  .bucket li {
+    display: grid;
+    grid-template-columns: 110px 1fr;
+    gap: 12px; align-items: baseline;
+    font-size: 12px;
+  }
+  .bucket li code {
+    font-family: var(--font-mono); font-size: 11px;
+    color: var(--text-primary);
+    background: var(--surface-raised);
+    padding: 2px 7px; border-radius: 3px;
+    width: fit-content;
+  }
+  .bucket li span {
+    color: var(--text-muted); line-height: 1.5;
+  }
+
+  /* Phrase library */
+  .phrases {
+    display: flex; flex-direction: column; gap: 1px;
+    background: var(--border);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    overflow: hidden;
+  }
+  .phrase {
+    background: var(--surface);
+    padding: 16px 20px;
+    display: grid;
+    grid-template-columns: 200px 1fr;
+    gap: 20px;
+    align-items: center;
+  }
+  .phrase .when {
+    font-family: var(--font-mono); font-size: 11px;
+    color: var(--text-muted);
+  }
+  .phrase .text {
+    font-size: 13px; color: var(--text-primary); line-height: 1.5;
+  }
+  .phrase .text em {
+    color: var(--text-muted); font-style: normal;
+    font-family: var(--font-mono); font-size: 11px;
+    background: var(--surface-raised);
+    padding: 1px 6px; border-radius: 3px;
+    margin-left: 6px;
+  }
+</style>
+</head>
+<body>
+<div class="doc">
+
+<h1>Operator language</h1>
+<p class="lede">The console is read by one trained operator, for hours, under load. Copy is part of the system: it has to be short, causal, and honest about what the pipeline did. <code class="tk">formatters.py</code> centralises this language so a state never gets two different names on two different surfaces.</p>
+
+<h2>Principles</h2>
+<div class="principles">
+  <div class="principle">
+    <span class="num">01</span>
+    <div class="h">Readback over abstraction</div>
+    <div class="b">Tell the operator what the system <em>observed</em> and how it <em>treated it</em>. Don't expose backend labels in raw form, but don't editorialise either.</div>
+  </div>
+  <div class="principle">
+    <span class="num">02</span>
+    <div class="h">Distinguish absence, invalidity, and failure</div>
+    <div class="b">"No snapshot yet", "snapshot exists but no variability", "stale snapshot", "null-valid co-modulation", and "failure" are five different sentences. Never collapse them.</div>
+  </div>
+  <div class="principle">
+    <span class="num">03</span>
+    <div class="h">Causal, not speculative</div>
+    <div class="b">"Reward held back: gate did not confirm" — yes. "It looks like the model isn't sure" — no. We never speculate about a black-box reason; we report the gate result.</div>
+  </div>
+  <div class="principle">
+    <span class="num">04</span>
+    <div class="h">Recovering ≠ degraded ≠ error</div>
+    <div class="b">The console enforces this distinction in copy and color. A subsystem returning to healthy is <em>recovering</em>; one operating at reduced capacity is <em>degraded</em>; one that has failed is <em>error</em>.</div>
+  </div>
+  <div class="principle">
+    <span class="num">05</span>
+    <div class="h">Short, lower-case, no marketing voice</div>
+    <div class="b">Status pills are lower-case single words. Banner messages are one sentence. No exclamations. No emoji. The operator is busy.</div>
+  </div>
+  <div class="principle">
+    <span class="num">06</span>
+    <div class="h">Same word, every surface</div>
+    <div class="b"><code class="tk">UiStatusKind</code>, <code class="tk">AlertSeverity</code>, <code class="tk">HealthState</code>, <code class="tk">StimulusActionState</code> — these are the buckets. Every page draws from the same vocabulary.</div>
+  </div>
+</div>
+
+<h2>Wrong vs. right</h2>
+<p class="desc">Common drift the formatter helpers prevent. The left column is the kind of copy that creeps in when each view writes its own strings; the right column is what the operator should actually see.</p>
+<div class="vs">
+  <div class="row head">
+    <div>Surface</div>
+    <div>Drift</div>
+    <div>Operator copy</div>
+  </div>
+  <div class="row">
+    <div class="ctx">Live Session<br>reward</div>
+    <div class="wrong">"Reward unavailable due to gate failure"</div>
+    <div class="right">"Reward held back — semantic gate did not confirm in window."</div>
+  </div>
+  <div class="row">
+    <div class="ctx">Live Session<br>face</div>
+    <div class="wrong">"Face detection error"</div>
+    <div class="right">"No usable face frames in response window."</div>
+  </div>
+  <div class="row">
+    <div class="ctx">Physiology<br>state</div>
+    <div class="wrong">"Heart rate variability data missing"</div>
+    <div class="right">"Snapshot present · no rmssd yet."</div>
+  </div>
+  <div class="row">
+    <div class="ctx">Physiology<br>co-modulation</div>
+    <div class="wrong">"Co-modulation calculation failed"</div>
+    <div class="right">"null-valid · insufficient aligned pairs."</div>
+  </div>
+  <div class="row">
+    <div class="ctx">Health<br>worker</div>
+    <div class="wrong">"Worker is having issues"</div>
+    <div class="right">"Worker recovering · resumed after transient retry."</div>
+  </div>
+  <div class="row">
+    <div class="ctx">Health<br>provider</div>
+    <div class="wrong">"Provider degraded — check logs"</div>
+    <div class="right">"Oura provider degraded · last snapshot 48s ago. Try repair install."</div>
+  </div>
+  <div class="row">
+    <div class="ctx">ActionBar<br>error</div>
+    <div class="wrong">"Submit failed (500)"</div>
+    <div class="right">"Submit rejected: greeting bundle not loaded for arm_b."</div>
+  </div>
+  <div class="row">
+    <div class="ctx">Sessions<br>empty</div>
+    <div class="wrong">"No data."</div>
+    <div class="right">"Sessions appear here after they're started from Live Session."</div>
+  </div>
+</div>
+
+<h2>The shared vocabulary</h2>
+<p class="desc">Four enum types provide the entire status vocabulary used across the console. Don't introduce a new word — pick the bucket.</p>
+<div class="buckets">
+  <div class="bucket">
+    <div class="name">UiStatusKind</div>
+    <div class="src">state.py · drives StatusPill, MetricCard, Health rows</div>
+    <ul>
+      <li><code>ok</code><span>Healthy. Probe passing. Reward counted.</span></li>
+      <li><code>warn</code><span>Stale, soft timeout, accepted but pending.</span></li>
+      <li><code>bad</code><span>Hard failure. Submit failed. Probe error.</span></li>
+      <li><code>recovering</code><span>Returning to healthy after a fault.</span></li>
+      <li><code>degraded</code><span>Operating at reduced capacity. Not an error.</span></li>
+      <li><code>muted</code><span>Not configured / not applicable.</span></li>
+    </ul>
+  </div>
+  <div class="bucket">
+    <div class="name">AlertSeverity</div>
+    <div class="src">state.py · drives AlertBanner</div>
+    <ul>
+      <li><code>info</code><span>Operator should know, no action required.</span></li>
+      <li><code>warn</code><span>Action may be required soon; nothing is failing yet.</span></li>
+      <li><code>critical</code><span>Action required now to keep the session usable.</span></li>
+    </ul>
+  </div>
+  <div class="bucket">
+    <div class="name">HealthState</div>
+    <div class="src">state.py · drives Health rollup, subsystem rows</div>
+    <ul>
+      <li><code>ok</code><span>Subsystem fully operational.</span></li>
+      <li><code>degraded</code><span>Operational with reduced capacity.</span></li>
+      <li><code>recovering</code><span>Returning from a transient fault.</span></li>
+      <li><code>error</code><span>Failed; manual repair likely required.</span></li>
+    </ul>
+  </div>
+  <div class="bucket">
+    <div class="name">StimulusActionState</div>
+    <div class="src">state.py · drives ActionBar lifecycle</div>
+    <ul>
+      <li><code>idle</code><span>Ready to send. Send Stimulus.</span></li>
+      <li><code>submitting</code><span>POST in flight. Sending…</span></li>
+      <li><code>accepted</code><span>Server ack'd. Accepted.</span></li>
+      <li><code>measuring</code><span>Response window open. Measuring…</span></li>
+      <li><code>completed</code><span>Encounter closed. Send Stimulus.</span></li>
+      <li><code>failed</code><span>Rejected or aborted. Retry.</span></li>
+    </ul>
+  </div>
+</div>
+
+<h2>Phrase library</h2>
+<p class="desc">A non-exhaustive list of the canonical sentences the operator should recognise across surfaces. New views should reach for these, not invent new wording.</p>
+<div class="phrases">
+  <div class="phrase"><span class="when">Live · reward held</span><span class="text">Reward held back — semantic gate did not confirm in window. <em>p90_intensity</em><em>semantic_gate</em></span></div>
+  <div class="phrase"><span class="when">Live · no frames</span><span class="text">No usable face frames in response window.<em>n_frames_in_window</em></span></div>
+  <div class="phrase"><span class="when">Live · measuring</span><span class="text">Measuring response · authoritative timing from orchestrator timestamps.<em>StimulusUiContext</em></span></div>
+  <div class="phrase"><span class="when">Live · gated reward</span><span class="text">Reward counted · p90 0.42 over 18 frames · semantic gate confirmed.<em>gated_reward</em><em>au12_baseline_pre</em></span></div>
+  <div class="phrase"><span class="when">Physiology · fresh</span><span class="text">RMSSD 38.4 ms · Oura snapshot 6s ago.</span></div>
+  <div class="phrase"><span class="when">Physiology · stale</span><span class="text">Snapshot 48s old — Oura provider degraded.</span></div>
+  <div class="phrase"><span class="when">Physiology · absent</span><span class="text">No snapshot · provider not yet reporting.</span></div>
+  <div class="phrase"><span class="when">Physiology · no-rmssd</span><span class="text">Snapshot present · no rmssd yet.</span></div>
+  <div class="phrase"><span class="when">Physiology · co-modulation</span><span class="text">null-valid · insufficient aligned pairs.<em>null_reason</em></span></div>
+  <div class="phrase"><span class="when">Health · degraded</span><span class="text">Oura provider degraded · last snapshot 48s ago.</span></div>
+  <div class="phrase"><span class="when">Health · recovering</span><span class="text">Worker recovering · resumed after transient retry.</span></div>
+  <div class="phrase"><span class="when">Health · error · action</span><span class="text">Worker fetch failed — repair install required to resume inference.</span></div>
+  <div class="phrase"><span class="when">ActionBar · idle</span><span class="text">Send Stimulus.</span></div>
+  <div class="phrase"><span class="when">ActionBar · failed</span><span class="text">Submit rejected: greeting bundle not loaded for arm_b.</span></div>
+  <div class="phrase"><span class="when">Sessions · empty</span><span class="text">Sessions appear here after they're started from Live Session.</span></div>
+  <div class="phrase"><span class="when">Experiments · empty</span><span class="text">Create an experiment in the management panel to see arm evidence.</span></div>
+</div>
+
+</div>
+</body>
+</html>

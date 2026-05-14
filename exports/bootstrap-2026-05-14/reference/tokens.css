@@ -1,0 +1,66 @@
+/* Operator Console design tokens — mirrors services/operator_console/design_system/tokens.py */
+
+:root {
+  /* Surface ladder (darkest → lightest) */
+  --bg:              #0f1115;
+  --surface:         #171a21;
+  --surface-raised:  #1d2029;
+  --border:          #262a33;
+
+  /* Text */
+  --text-primary:    #e6e8ed;
+  --text-muted:      #8a909b;
+  --text-inverse:    #ffffff;
+
+  /* Accent — selection, focus, primary action */
+  --accent:          #5b8def;
+
+  /* Status — five semantic hues */
+  --status-ok:         #4ecb71;
+  --status-warn:       #e7b34a;
+  --status-bad:        #e26a6a;
+  --status-recovering: #6cc3d5;
+  --status-degraded:   #d59b4a;
+
+  /* Severity tints (banner backgrounds) */
+  --tint-info:     rgba(91, 141, 239, 0.12);
+  --tint-warn:     rgba(231, 179, 74, 0.14);
+  --tint-critical: rgba(226, 106, 106, 0.16);
+
+  /* Type */
+  --font-ui:   "Segoe UI", "Inter", system-ui, -apple-system, sans-serif;
+  --font-mono: "Cascadia Mono", "Consolas", "Menlo", "DejaVu Sans Mono", monospace;
+
+  --fs-12: 12px;  /* labels, secondary, status pills */
+  --fs-13: 13px;  /* body default */
+  --fs-14: 14px;  /* panel titles */
+  --fs-15: 15px;  /* section / empty-state titles */
+  --fs-16: 16px;  /* sidebar title, metric primary, alert glyph */
+
+  /* Geometry */
+  --radius-sm: 4px;  /* inputs, buttons, banners, tables */
+  --radius-md: 6px;  /* panels, metric cards */
+
+  /* Spacing — Qt-style: dense, predictable */
+  --sp-1: 4px;
+  --sp-2: 6px;
+  --sp-3: 10px;
+  --sp-4: 12px;
+  --sp-5: 16px;
+  --sp-6: 18px;
+  --sp-7: 24px;
+
+  /* Responsive width bands (shared) */
+  --bp-narrow: 640px;
+  --bp-medium: 980px;
+  --bp-actionbar-compact: 1024px;
+}
+
+html, body {
+  background: var(--bg);
+  color: var(--text-primary);
+  font-family: var(--font-ui);
+  font-size: var(--fs-13);
+  margin: 0;
+  -webkit-font-smoothing: antialiased;
+}

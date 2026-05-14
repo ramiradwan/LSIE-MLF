@@ -1,0 +1,460 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="robots" content="noindex, nofollow">
+<title>Operator Console · Runtime drift report</title>
+<link rel="stylesheet" href="tokens.css">
+<style>
+  body { padding: 56px 64px 96px; }
+  .doc { max-width: 1100px; margin: 0 auto; }
+
+  .eyebrow {
+    font-family: var(--font-mono); font-size: 11px;
+    color: var(--text-muted); letter-spacing: 0.12em;
+    text-transform: uppercase;
+    margin-bottom: 14px;
+    display: flex; align-items: center; gap: 10px;
+  }
+  .eyebrow .dot { width:6px; height:6px; border-radius:50%; background: var(--status-bad); }
+
+  h1 { font-size: 38px; font-weight: 600; letter-spacing: -0.02em; margin: 0 0 14px; line-height: 1.05; }
+  .lede { color: var(--text-muted); font-size: 14px; line-height: 1.6; max-width: 760px; margin: 0 0 36px; }
+  .lede code { font-family: var(--font-mono); font-size: 12px; background: var(--surface-raised); padding: 1px 5px; border-radius: 3px; color: var(--text-primary); }
+
+  h2 {
+    font-size: 11px; font-weight: 600; letter-spacing: 0.12em;
+    text-transform: uppercase; color: var(--text-muted);
+    margin: 56px 0 14px; padding-bottom: 10px;
+    border-bottom: 1px solid var(--border);
+    display: flex; align-items: baseline; gap: 12px;
+  }
+  h2 .count {
+    font-family: var(--font-mono); color: var(--text-primary);
+    background: var(--surface-raised); padding: 2px 8px; border-radius: 3px;
+    letter-spacing: 0;
+  }
+  h2 .name { font-family: var(--font-mono); font-size: 13px; color: var(--text-primary); text-transform: none; letter-spacing: 0; }
+
+  /* Summary line */
+  .scorecard {
+    display: grid; grid-template-columns: repeat(4, 1fr);
+    gap: 12px; margin-bottom: 32px;
+  }
+  .sc {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: 16px 18px;
+    display: flex; flex-direction: column; gap: 4px;
+  }
+  .sc .k {
+    font-size: 11px; color: var(--text-muted);
+    font-family: var(--font-mono); text-transform: uppercase; letter-spacing: 0.08em;
+  }
+  .sc .v {
+    font-size: 26px; font-weight: 600; color: var(--text-primary);
+    font-variant-numeric: tabular-nums;
+  }
+  .sc .s { font-size: 12px; color: var(--text-muted); }
+  .sc.crit { border-left: 3px solid var(--status-bad); }
+  .sc.warn { border-left: 3px solid var(--status-warn); }
+  .sc.ok   { border-left: 3px solid var(--status-ok); }
+  .sc.info { border-left: 3px solid var(--accent); }
+
+  /* Finding card */
+  .find {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    margin-bottom: 16px;
+    overflow: hidden;
+  }
+  .find.crit { border-left: 3px solid var(--status-bad); }
+  .find.warn { border-left: 3px solid var(--status-warn); }
+  .find.med  { border-left: 3px solid var(--status-degraded); }
+  .find.copy { border-left: 3px solid var(--accent); }
+  .find.ok   { border-left: 3px solid var(--status-ok); }
+
+  .find-head {
+    padding: 16px 22px 12px;
+    display: flex; align-items: center; gap: 14px;
+    border-bottom: 1px solid var(--border);
+  }
+  .find-id {
+    font-family: var(--font-mono); font-size: 11px;
+    color: var(--text-muted);
+    background: var(--surface-raised);
+    padding: 3px 8px; border-radius: 3px;
+  }
+  .find-title { font-size: 15px; font-weight: 600; color: var(--text-primary); flex: 1; }
+  .find-tag {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 3px 10px 3px 8px;
+    background: var(--surface-raised);
+    border-radius: 999px;
+  }
+  .find-tag .d { width: 7px; height: 7px; border-radius: 50%; }
+  .find-tag .l { font-size: 11px; font-weight: 600; color: var(--text-primary); text-transform: uppercase; letter-spacing: 0.04em; }
+  .find-tag.crit .d { background: var(--status-bad); }
+  .find-tag.warn .d { background: var(--status-warn); }
+  .find-tag.med  .d { background: var(--status-degraded); }
+  .find-tag.copy .d { background: var(--accent); }
+  .find-tag.ok   .d { background: var(--status-ok); }
+
+  .find-body {
+    display: grid;
+    grid-template-columns: 180px 1fr;
+    gap: 0;
+  }
+  .row { display: contents; }
+  .k {
+    padding: 12px 22px;
+    font-family: var(--font-mono); font-size: 11px;
+    color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.06em;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg);
+  }
+  .v {
+    padding: 12px 22px;
+    font-size: 13px; color: var(--text-primary);
+    line-height: 1.6;
+    border-bottom: 1px solid var(--border);
+  }
+  .row:last-child .k, .row:last-child .v { border-bottom: none; }
+  .v code, code.tk {
+    font-family: var(--font-mono); font-size: 12px;
+    background: var(--surface-raised); padding: 1px 5px;
+    border-radius: 3px; color: var(--text-primary);
+  }
+  .v .obs { color: var(--status-bad); }
+  .v .spec { color: var(--status-ok); }
+
+  /* Inline pill demos */
+  .pillset { display: inline-flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .ipill {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 3px 10px 3px 8px;
+    background: var(--surface-raised);
+    border-radius: 999px;
+  }
+  .ipill .d { width: 7px; height: 7px; border-radius: 50%; }
+  .ipill .lbl { font-size: 11px; font-weight: 600; color: var(--text-primary); }
+  .ipill.ok         .d { background: var(--status-ok); }
+  .ipill.warn       .d { background: var(--status-warn); }
+  .ipill.bad        .d { background: var(--status-bad); }
+  .ipill.recovering .d { background: var(--status-recovering); }
+  .ipill.degraded   .d { background: var(--status-degraded); }
+  .ipill.accent     .d { background: var(--accent); }
+  .ipill.muted      .d { background: var(--text-muted); }
+
+  .compare {
+    display: grid; grid-template-columns: 1fr 1fr;
+    gap: 12px; margin-top: 4px;
+  }
+  .compare .col {
+    background: var(--surface-raised);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 10px 12px;
+    font-size: 12px;
+  }
+  .compare .col .h {
+    font-family: var(--font-mono); font-size: 11px;
+    color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.06em;
+    margin-bottom: 6px;
+  }
+  .compare .col.obs  { border-left: 2px solid var(--status-bad); }
+  .compare .col.spec { border-left: 2px solid var(--status-ok); }
+
+  .foot {
+    margin-top: 80px; padding-top: 28px;
+    border-top: 1px solid var(--border);
+    color: var(--text-muted); font-size: 12px;
+    display: flex; justify-content: space-between;
+  }
+  .foot .l { font-family: var(--font-mono); }
+</style>
+</head>
+<body>
+<div class="doc">
+
+<div class="eyebrow"><span class="dot"></span>Runtime drift · 1024×768 captures · 6 surfaces</div>
+<h1>Where the running app<br>has drifted from the design system</h1>
+<p class="lede">Comparing six runtime captures against the design system in <code>services/operator_console/design_system/</code> and the audit. Findings are grouped by severity: <strong>critical</strong> (violates a documented rule), <strong>warn</strong> (drifts from spec but functional), <strong>medium</strong> (consistency / layout), <strong>copy</strong>. I've also flagged where the previous handoff has already shipped — useful signal.</p>
+
+<div class="scorecard">
+  <div class="sc crit"><span class="k">Critical</span><span class="v">3</span><span class="s">violate audit / vocabulary</span></div>
+  <div class="sc warn"><span class="k">Warn</span><span class="v">4</span><span class="s">visual contract drift</span></div>
+  <div class="sc info"><span class="k">Medium</span><span class="v">4</span><span class="s">layout · consistency</span></div>
+  <div class="sc ok"><span class="k">Already shipped</span><span class="v">5</span><span class="s">from prior handoff ✓</span></div>
+</div>
+
+<!-- ================== CRITICAL ================== -->
+<h2>Critical <span class="count">3</span> <span class="name">— violate documented audit or vocabulary</span></h2>
+
+<div class="find crit">
+  <div class="find-head">
+    <span class="find-id">DR-01</span>
+    <span class="find-title">Cloud sign-in / Cloud outbox UI is present in Health, against audit §14.4</span>
+    <span class="find-tag crit"><span class="d"></span><span class="l">critical</span></span>
+  </div>
+  <div class="find-body">
+    <div class="row"><div class="k">Surface</div><div class="v">Health page — top-right toolbar (<em>Cloud sign-in</em>, <em>Update definitions</em>, <em>Repair install</em>) and two bottom cards (<em>Cloud sign-in · Unknown</em>, <em>Cloud outbox · Unknown</em>).</div></div>
+    <div class="row"><div class="k">Audit citation</div><div class="v">§14.4 and §15: <em>"operator-facing cloud sign-in UI is not currently wired into the operator shell"</em>; the audit's explicit out-of-scope list begins with <em>"operator-facing cloud sign-in UI"</em>.</div></div>
+    <div class="row"><div class="k">Observed</div><div class="v">Two MetricCards stuck on <em>"Unknown · waiting for cloud status / outbox summary"</em> — they never resolve because the producer doesn't exist. A trained operator reads these as <em>broken subsystem</em>, not <em>not wired</em>.</div></div>
+    <div class="row"><div class="k">Fix</div><div class="v">Either (a) remove the cards and toolbar buttons from <code>views/health_view.py</code> until cloud sync ships, or (b) render the muted <code>UiStatusKind.muted</code> bucket from DR-04 with copy "not configured for this environment" so the operator stops triaging them.</div></div>
+    <div class="row"><div class="k">Files</div><div class="v"><code>views/health_view.py</code> · <code>viewmodels/health_vm.py</code> · <code>formatters.py</code></div></div>
+  </div>
+</div>
+
+<div class="find crit">
+  <div class="find-head">
+    <span class="find-id">DR-02</span>
+    <span class="find-title"><code>recovering</code> status renders in the <em>accent</em> color, not <code>status_recovering</code></span>
+    <span class="find-tag crit"><span class="d"></span><span class="l">critical</span></span>
+  </div>
+  <div class="find-body">
+    <div class="row"><div class="k">Surface</div><div class="v">Health · "Getting ready" card → pill labelled <em>recovering</em> with a blue dot. Live Session readiness strip · <em>ml</em> probe with the same blue dot.</div></div>
+    <div class="row"><div class="k">Spec</div><div class="v"><code>tokens.py</code> defines <code>status_recovering = #6cc3d5</code> (teal). The audit (§11.3) describes recovering as a <em>distinct</em> status hue from accent — that distinction is the whole point of <code>HealthRowRecovering</code>.</div></div>
+    <div class="row"><div class="k">Observed</div><div class="v">
+      <div class="compare">
+        <div class="col obs">
+          <div class="h">Runtime · observed</div>
+          <span class="ipill accent"><span class="d"></span><span class="lbl">recovering</span></span>
+          <div style="margin-top:6px; color: var(--text-muted)">accent #5b8def — same blue used for selection rings and the submit button</div>
+        </div>
+        <div class="col spec">
+          <div class="h">Spec · expected</div>
+          <span class="ipill recovering"><span class="d"></span><span class="lbl">recovering</span></span>
+          <div style="margin-top:6px; color: var(--text-muted)">status_recovering #6cc3d5 — teal, never used decoratively</div>
+        </div>
+      </div>
+    </div></div>
+    <div class="row"><div class="k">Why it matters</div><div class="v">The system's strongest UX claim ("recovering ≠ degraded ≠ broken") relies on this hue being distinct. Today the dot is indistinguishable from the focus ring on a nav button.</div></div>
+    <div class="row"><div class="k">Fix</div><div class="v">Audit the <code>StatusPill</code> color mapping in <code>widgets/status_pill.py</code> and the <code>HealthRowRecovering</code> selector in <code>qss_builder.py</code>. There's a wiring bug between <code>UiStatusKind.recovering</code> and <code>palette.status_recovering</code>.</div></div>
+    <div class="row"><div class="k">Files</div><div class="v"><code>widgets/status_pill.py</code> · <code>design_system/qss_builder.py</code></div></div>
+  </div>
+</div>
+
+<div class="find crit">
+  <div class="find-head">
+    <span class="find-id">DR-03</span>
+    <span class="find-title">"sampling" is an undocumented status word, rendered in accent blue</span>
+    <span class="find-tag crit"><span class="d"></span><span class="l">critical</span></span>
+  </div>
+  <div class="find-body">
+    <div class="row"><div class="k">Surface</div><div class="v">Experiments · "Experiment" card and Overview · "Experiment" card → pill labelled <em>sampling</em>.</div></div>
+    <div class="row"><div class="k">Spec</div><div class="v"><code>UiStatusKind</code> in <code>state.py</code> defines six buckets: <em>ok · warn · bad · recovering · degraded · muted</em>. Hard-rule #4 of <code>DESIGN_SYSTEM.md</code>: <em>"Use UiStatusKind for status mapping rather than ad-hoc string categories."</em></div></div>
+    <div class="row"><div class="k">Observed</div><div class="v">"sampling" is being used as a free-form status word, painted with the accent. This is exactly the drift the hard rule was written to prevent — every new view that invents a word adds one to the operator's vocabulary load.</div></div>
+    <div class="row"><div class="k">Fix</div><div class="v">"sampling" describes a <em>lifecycle phase</em> of an experiment, not a health state. Render it as a small <code>StatusPill</code> using <code>UiStatusKind.ok</code> if the strategy is currently selecting actively — or move "phase" into its own non-pill label (mono 11px in muted) so it doesn't compete with the actual health status.</div></div>
+    <div class="row"><div class="k">Files</div><div class="v"><code>views/experiments_view.py</code> · <code>views/overview_view.py</code> · <code>formatters.py</code></div></div>
+  </div>
+</div>
+
+<!-- ================== WARN ================== -->
+<h2>Warn <span class="count">4</span> <span class="name">— visual contract drift</span></h2>
+
+<div class="find warn">
+  <div class="find-head">
+    <span class="find-id">DR-04</span>
+    <span class="find-title">Body type is rendering in a serif fallback — Segoe UI / Inter aren't on the host</span>
+    <span class="find-tag warn"><span class="d"></span><span class="l">warn</span></span>
+  </div>
+  <div class="find-body">
+    <div class="row"><div class="k">Surface</div><div class="v">Every screen.</div></div>
+    <div class="row"><div class="k">Spec</div><div class="v"><code>qss_builder.py</code>: <code>font-family: "Segoe UI", "Inter", system-ui, sans-serif</code>.</div></div>
+    <div class="row"><div class="k">Observed</div><div class="v">Sidebar subtitle "Operator Console" reads italic-serif. ActionBar "Expected response" italic uses a serif glyph set. Body copy has noticeable serifs on lowercase d, b, p. This is the QSS font stack falling through to a serif fallback on this host (likely Linux without Segoe UI or Inter installed) — probably <em>DejaVu Serif</em> or <em>Liberation Serif</em>.</div></div>
+    <div class="row"><div class="k">Fix</div><div class="v">Two options, ranked: (1) ship <em>Inter</em> as a Qt resource and load it via <code>QFontDatabase.addApplicationFont()</code> at app boot — this guarantees the same font across Windows / macOS / Linux; (2) add <em>DejaVu Sans</em> as an explicit late fallback before <code>sans-serif</code> so Linux hosts land on a sans family.</div></div>
+    <div class="row"><div class="k">Files</div><div class="v"><code>app.py</code> · <code>design_system/qss_builder.py</code> · <code>resources/fonts/Inter-*.ttf</code> (new)</div></div>
+  </div>
+</div>
+
+<div class="find warn">
+  <div class="find-head">
+    <span class="find-id">DR-05</span>
+    <span class="find-title">Live Session "Why this observed response counted" overlaps the metric cards above it</span>
+    <span class="find-tag warn"><span class="d"></span><span class="l">warn</span></span>
+  </div>
+  <div class="find-body">
+    <div class="row"><div class="k">Surface</div><div class="v">Live Session · the encounter table panel is painting over the bottom of the "Ready for a stimulus" and "Live response ticker" cards.</div></div>
+    <div class="row"><div class="k">Observed</div><div class="v">Vertical layout / scroll-area sizing bug. The two metric cards have a fixed-height region; their text overflows under the panel below rather than expanding the row.</div></div>
+    <div class="row"><div class="k">Fix</div><div class="v">Either give the metric-cards row a <code>QSizePolicy.MinimumExpanding</code> vertical policy, or wrap the content in a <code>QScrollArea</code>. This is the kind of bug the splitter recommendation (UX-09 from the prior handoff) eliminates entirely.</div></div>
+    <div class="row"><div class="k">Files</div><div class="v"><code>views/live_session_view.py</code></div></div>
+  </div>
+</div>
+
+<div class="find warn">
+  <div class="find-head">
+    <span class="find-id">DR-06</span>
+    <span class="find-title">Live Session readiness strip mixes probes ("phone", "ml", "audio", "video") with an action label ("submit")</span>
+    <span class="find-tag warn"><span class="d"></span><span class="l">warn</span></span>
+  </div>
+  <div class="find-body">
+    <div class="row"><div class="k">Surface</div><div class="v">Live Session · top strip.</div></div>
+    <div class="row"><div class="k">Observed</div><div class="v">Left side reads: <span class="pillset"><span class="ipill muted"><span class="d"></span><span class="lbl">phone</span></span><span class="ipill accent"><span class="d"></span><span class="lbl">ml</span></span><span class="ipill muted"><span class="d"></span><span class="lbl">audio</span></span><span class="ipill muted"><span class="d"></span><span class="lbl">video</span></span></span> — these are subsystem probes. Right side reads: <span class="ipill ok"><span class="d"></span><span class="lbl">submit</span></span> — which is an <em>action lifecycle</em>, not a subsystem.</div></div>
+    <div class="row"><div class="k">Why it matters</div><div class="v">Two different vocabularies are sitting in the same strip with identical pill styling. The operator has to parse that "phone" and "submit" are different categories of thing.</div></div>
+    <div class="row"><div class="k">Fix</div><div class="v">Pull "submit" out of the readiness strip. Submit lifecycle belongs in the ActionBar (already covered by <code>StimulusActionState</code>). The strip should only carry readiness probes. If "submit" here is meant as <em>safe-submit gate result</em>, label it as <em>safe-submit</em> and group it visually apart from the other probes.</div></div>
+    <div class="row"><div class="k">Files</div><div class="v"><code>views/live_session_view.py</code></div></div>
+  </div>
+</div>
+
+<div class="find warn">
+  <div class="find-head">
+    <span class="find-id">DR-07</span>
+    <span class="find-title">Status word capitalization isn't consistent</span>
+    <span class="find-tag warn"><span class="d"></span><span class="l">warn</span></span>
+  </div>
+  <div class="find-body">
+    <div class="row"><div class="k">Surface</div><div class="v">Live Session · Session panel shows <em>"Healthy"</em> (capital H). Everywhere else: <em>ok · degraded · recovering · active · idle · fresh</em> — all lower-case.</div></div>
+    <div class="row"><div class="k">Spec</div><div class="v">Operator-language principle #5: <em>"Short, lower-case, no marketing voice."</em> Status pills are lower-case single words.</div></div>
+    <div class="row"><div class="k">Fix</div><div class="v">Force lower-case in the formatter. <code>"Healthy"</code> → <code>"healthy"</code> (or better, normalise to one of the six UiStatusKind words — <em>ok</em>).</div></div>
+    <div class="row"><div class="k">Files</div><div class="v"><code>formatters.py</code></div></div>
+  </div>
+</div>
+
+<!-- ================== MEDIUM ================== -->
+<h2>Medium <span class="count">4</span> <span class="name">— layout & consistency</span></h2>
+
+<div class="find med">
+  <div class="find-head">
+    <span class="find-id">DR-08</span>
+    <span class="find-title">Health rollup cards duplicate state: primary value <em>is</em> the status pill word</span>
+    <span class="find-tag med"><span class="d"></span><span class="l">medium</span></span>
+  </div>
+  <div class="find-body">
+    <div class="row"><div class="k">Surface</div><div class="v">Health · "Overall · degraded · degraded", "Needs attention · 1 · degraded", "Getting ready · 1 · recovering".</div></div>
+    <div class="row"><div class="k">Observed</div><div class="v">Card primary text and embedded pill carry the same word. No information added; the card reads as a typo.</div></div>
+    <div class="row"><div class="k">Fix</div><div class="v">If a card's primary text <em>is</em> a UiStatusKind word, drop the embedded pill. If a card has a count primary ("1", "0"), keep the pill — the two convey different things. Apply this rule once in <code>widgets/metric_card.py</code>: skip the pill when <code>primary.lower() in status_words</code>.</div></div>
+    <div class="row"><div class="k">Files</div><div class="v"><code>views/health_view.py</code> · <code>widgets/metric_card.py</code></div></div>
+  </div>
+</div>
+
+<div class="find med">
+  <div class="find-head">
+    <span class="find-id">DR-09</span>
+    <span class="find-title">StatusPill style differs from spec — outlined dot rather than filled-pill surface</span>
+    <span class="find-tag med"><span class="d"></span><span class="l">medium</span></span>
+  </div>
+  <div class="find-body">
+    <div class="row"><div class="k">Surface</div><div class="v">Every page.</div></div>
+    <div class="row"><div class="k">Spec</div><div class="v"><code>StatusPill</code> background is <code>surface_raised</code>, padded 2/8, dot 8px. The pill is meant to feel like a small filled chip, not a floating dot.</div></div>
+    <div class="row"><div class="k">Observed</div><div class="v">Pills render as a dot + label on the panel background, no chip. This is fine in isolation but makes scanning a 6-card grid harder because pills don't form an obvious horizontal rhythm.</div></div>
+    <div class="row"><div class="k">Fix</div><div class="v">Add the <code>background: surface_raised</code> rule for <code>QWidget#StatusPill</code> (it's currently <code>transparent</code> in <code>qss_builder.py</code> — change to <code>surface_raised</code> with <code>border-radius: 999px</code> and <code>padding: 2px 8px</code>). One QSS rule change, no widget code touch.</div></div>
+    <div class="row"><div class="k">Files</div><div class="v"><code>design_system/qss_builder.py</code></div></div>
+  </div>
+</div>
+
+<div class="find med">
+  <div class="find-head">
+    <span class="find-id">DR-10</span>
+    <span class="find-title">MetricCard primary truncation: long IDs and verbose secondary lines overflow without wrapping policy</span>
+    <span class="find-tag med"><span class="d"></span><span class="l">medium</span></span>
+  </div>
+  <div class="find-body">
+    <div class="row"><div class="k">Surface</div><div class="v">Overview · Active Session card primary "<code>00000000…0001</code>" + a multi-line secondary that runs to four lines. Latest Encounter secondary is a 5-line wall of text.</div></div>
+    <div class="row"><div class="k">Observed</div><div class="v">No fixed height; cards in a row visibly different heights; secondary text reads as a paragraph rather than a glance.</div></div>
+    <div class="row"><div class="k">Fix</div><div class="v">Set a max secondary copy of ~80 chars in <code>formatters.py</code> and elide-on-overflow. Consider 2-line clamp on <code>MetricCardSecondary</code> via QSS. The "Latest Encounter" card should be the verdict-first format from UX-11 in the prior handoff — one sentence at the top, inputs below.</div></div>
+    <div class="row"><div class="k">Files</div><div class="v"><code>formatters.py</code> · <code>widgets/metric_card.py</code></div></div>
+  </div>
+</div>
+
+<div class="find med">
+  <div class="find-head">
+    <span class="find-id">DR-11</span>
+    <span class="find-title">ActionBar "Expected response" italic uses serif quotes — feels foreign next to the rest of the UI</span>
+    <span class="find-tag med"><span class="d"></span><span class="l">medium</span></span>
+  </div>
+  <div class="find-body">
+    <div class="row"><div class="k">Surface</div><div class="v">ActionBar across every page · "Expected response: <em>"hei rakas"</em>" .</div></div>
+    <div class="row"><div class="k">Observed</div><div class="v">Italic greeting text reads as serif (likely the same fallback issue as DR-04). The curly quotes are also full-height serif glyphs.</div></div>
+    <div class="row"><div class="k">Fix</div><div class="v">Resolves automatically once Inter or another sans-italic is loaded (DR-04). Until then, consider dropping italic in favor of bold or muted-roman — italic without italic glyphs is the worst of both.</div></div>
+    <div class="row"><div class="k">Files</div><div class="v"><code>design_system/qss_builder.py</code> · <code>widgets/action_bar.py</code></div></div>
+  </div>
+</div>
+
+<!-- ================== ALREADY SHIPPED ================== -->
+<h2>Already shipped from prior handoff <span class="count">5</span> <span class="name">✓ keep these</span></h2>
+
+<div class="find ok">
+  <div class="find-head">
+    <span class="find-id">UX-07 ✓</span>
+    <span class="find-title">Overview cards grouped into <em>Now · Trust</em> bands</span>
+    <span class="find-tag ok"><span class="d"></span><span class="l">shipped</span></span>
+  </div>
+  <div class="find-body">
+    <div class="row"><div class="k">Where</div><div class="v">Overview shows "Now" above Active Session + Experiment, "Trust" above Latest Encounter + Physiology. Implementation matches the recommendation. <em>Note: a third band ("Needs attention" — Health + Attention queue) is missing from the rendered output — verify it's intentional or finish the third group.</em></div></div>
+  </div>
+</div>
+
+<div class="find ok">
+  <div class="find-head">
+    <span class="find-id">UX-08 ✓</span>
+    <span class="find-title">Active Session card click affordance — accent border + trailing chevron</span>
+    <span class="find-tag ok"><span class="d"></span><span class="l">shipped</span></span>
+  </div>
+  <div class="find-body">
+    <div class="row"><div class="k">Where</div><div class="v">Overview · Active Session card shows the accent ring and the › chevron in the top-right. Reads as clickable at-a-glance. Good.</div></div>
+  </div>
+</div>
+
+<div class="find ok">
+  <div class="find-head">
+    <span class="find-id">UX-13 ✓</span>
+    <span class="find-title">Experiments management — separated behind a "Manage" button</span>
+    <span class="find-tag ok"><span class="d"></span><span class="l">shipped</span></span>
+  </div>
+  <div class="find-body">
+    <div class="row"><div class="k">Where</div><div class="v">Experiments page header shows a Manage button top-right. The page body is now pure readback. Slide-over panel not visible in this capture but the entry point is in place.</div></div>
+  </div>
+</div>
+
+<div class="find ok">
+  <div class="find-head">
+    <span class="find-id">UX-15 ✓</span>
+    <span class="find-title">Physiology · freshness promoted to a full-width top card</span>
+    <span class="find-tag ok"><span class="d"></span><span class="l">shipped</span></span>
+  </div>
+  <div class="find-body">
+    <div class="row"><div class="k">Where</div><div class="v">Physiology page now leads with <em>"Physiology freshness · fresh · streamer 12s · operator 8s"</em> as the first card. Co-Modulation Index follows. Exactly the order the recommendation called for.</div></div>
+  </div>
+</div>
+
+<div class="find ok">
+  <div class="find-head">
+    <span class="find-id">UX-19 ✓</span>
+    <span class="find-title">Sessions · filter input above the table</span>
+    <span class="find-tag ok"><span class="d"></span><span class="l">shipped</span></span>
+  </div>
+  <div class="find-body">
+    <div class="row"><div class="k">Where</div><div class="v">Sessions page has the <em>"Filter by session id, arm, or date…"</em> line edit above the table. Page stays simple as intended.</div></div>
+  </div>
+</div>
+
+<!-- ================== Suggested handoff order ================== -->
+<h2>Suggested fix order</h2>
+<div class="find">
+  <div class="find-body" style="grid-template-columns: 1fr">
+    <div class="row"><div class="v" style="border:none">
+      <ol style="line-height:1.8; padding-left:20px;">
+        <li><strong>DR-02</strong> — Fix <code>recovering</code> hue mapping. One QSS rule. Restores the central UX contract. <strong>Today.</strong></li>
+        <li><strong>DR-09</strong> — One-line QSS change to put <code>StatusPill</code> background back on. Pills suddenly feel like one system. <strong>Today.</strong></li>
+        <li><strong>DR-07</strong> — Lowercase "Healthy" → "ok"/"healthy" in <code>formatters.py</code>. <strong>Today.</strong></li>
+        <li><strong>DR-01</strong> — Decide: hide cloud UI behind an env flag until cloud sync ships, or render with "not configured" muted. <strong>This week.</strong></li>
+        <li><strong>DR-04</strong> — Ship Inter as a Qt resource. Fixes typography across the entire app. <strong>This week.</strong></li>
+        <li><strong>DR-03, DR-06, DR-08</strong> — Vocabulary cleanup pass. <strong>This sprint.</strong></li>
+        <li><strong>DR-05</strong> — Live Session overlap. Best done as part of the splitter work (handoff UX-09). <strong>Next sprint.</strong></li>
+        <li><strong>DR-10, DR-11</strong> — Tail polish.</li>
+      </ol>
+    </div></div>
+  </div>
+</div>
+
+<div class="foot">
+  <span class="l">Drift report · v1 · 11 findings · 5 prior items confirmed shipped</span>
+  <span>Five of seven handoff quick-wins are already in. Drift here is mostly token wiring, not architectural.</span>
+</div>
+
+</div>
+</body>
+</html>

@@ -1,0 +1,677 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="robots" content="noindex, nofollow">
+<title>Operator Console · UX Handoff to Engineering</title>
+<link rel="stylesheet" href="tokens.css">
+<style>
+  body { padding: 56px 64px 96px; }
+  .doc { max-width: 1080px; margin: 0 auto; }
+
+  .eyebrow {
+    font-family: var(--font-mono); font-size: 11px;
+    color: var(--text-muted); letter-spacing: 0.12em;
+    text-transform: uppercase;
+    margin-bottom: 14px;
+    display: flex; align-items: center; gap: 10px;
+  }
+  .eyebrow .dot { width:6px; height:6px; border-radius:50%; background: var(--accent); }
+
+  h1 { font-size: 38px; font-weight: 600; letter-spacing: -0.02em; margin: 0 0 14px; line-height: 1.05; }
+  .lede { color: var(--text-muted); font-size: 14px; line-height: 1.6; max-width: 760px; margin: 0 0 36px; }
+  .lede code { font-family: var(--font-mono); font-size: 12px; background: var(--surface-raised); padding: 1px 5px; border-radius: 3px; color: var(--text-primary); }
+
+  h2 {
+    font-size: 11px; font-weight: 600; letter-spacing: 0.12em;
+    text-transform: uppercase; color: var(--text-muted);
+    margin: 56px 0 14px; padding-bottom: 10px;
+    border-bottom: 1px solid var(--border);
+  }
+  h2 .count {
+    margin-left: 10px;
+    font-family: var(--font-mono); color: var(--text-primary);
+    background: var(--surface-raised); padding: 2px 8px; border-radius: 3px;
+    letter-spacing: 0;
+  }
+
+  .surface-head {
+    display: flex; align-items: baseline; gap: 14px;
+    margin: 40px 0 14px;
+  }
+  .surface-head h3 {
+    margin: 0; font-size: 22px; font-weight: 600; color: var(--text-primary);
+    letter-spacing: -0.01em;
+  }
+  .surface-head .meta {
+    font-family: var(--font-mono); font-size: 11px;
+    color: var(--text-muted); margin-left: auto;
+  }
+
+  /* Recommendation card */
+  .rec {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    margin-bottom: 16px;
+    overflow: hidden;
+  }
+  .rec.quick { border-left: 3px solid var(--status-ok); }
+  .rec.medium { border-left: 3px solid var(--status-warn); }
+  .rec.later  { border-left: 3px solid var(--text-muted); }
+
+  .rec-head {
+    padding: 16px 22px 12px;
+    display: flex; align-items: center; gap: 14px;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface);
+  }
+  .rec-id {
+    font-family: var(--font-mono); font-size: 11px;
+    color: var(--text-muted);
+    background: var(--surface-raised);
+    padding: 3px 8px; border-radius: 3px;
+  }
+  .rec-title {
+    font-size: 15px; font-weight: 600; color: var(--text-primary);
+    flex: 1;
+  }
+  .rec-pri {
+    margin-left: auto;
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 3px 10px 3px 8px;
+    background: var(--surface-raised);
+    border-radius: 999px;
+  }
+  .rec-pri .d { width: 7px; height: 7px; border-radius: 50%; }
+  .rec-pri .l { font-size: 11px; font-weight: 600; color: var(--text-primary); text-transform: uppercase; letter-spacing: 0.04em; }
+  .rec-pri.quick .d { background: var(--status-ok); }
+  .rec-pri.medium .d { background: var(--status-warn); }
+  .rec-pri.later .d  { background: var(--text-muted); }
+
+  .rec-body {
+    display: grid;
+    grid-template-columns: 180px 1fr;
+    gap: 0;
+  }
+  .rec-row {
+    display: contents;
+  }
+  .rec-k {
+    padding: 12px 22px;
+    font-family: var(--font-mono); font-size: 11px;
+    color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.06em;
+    border-bottom: 1px solid var(--border);
+    background: var(--bg);
+  }
+  .rec-v {
+    padding: 12px 22px;
+    font-size: 13px; color: var(--text-primary);
+    line-height: 1.6;
+    border-bottom: 1px solid var(--border);
+  }
+  .rec-row:last-child .rec-k,
+  .rec-row:last-child .rec-v { border-bottom: none; }
+  .rec-v code {
+    font-family: var(--font-mono); font-size: 12px;
+    background: var(--surface-raised); padding: 1px 5px;
+    border-radius: 3px; color: var(--text-primary);
+  }
+  .rec-v ul { margin: 4px 0 0; padding-left: 18px; }
+  .rec-v li { margin-bottom: 4px; }
+  .rec-v .files {
+    font-family: var(--font-mono); font-size: 11px;
+    color: var(--text-muted);
+  }
+  .rec-v .files .f {
+    display: inline-block;
+    background: var(--surface-raised);
+    padding: 2px 7px; border-radius: 3px;
+    margin: 2px 4px 2px 0;
+    color: var(--text-primary);
+  }
+
+  /* Summary table */
+  .summary {
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    overflow: hidden;
+    margin-bottom: 32px;
+  }
+  .summary table { width: 100%; border-collapse: collapse; }
+  .summary th, .summary td {
+    text-align: left;
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
+    font-size: 13px;
+  }
+  .summary tbody tr:last-child td { border-bottom: none; }
+  .summary th {
+    background: var(--surface-raised);
+    color: var(--text-muted);
+    font-weight: 500; font-size: 11px;
+    text-transform: uppercase; letter-spacing: 0.06em;
+  }
+  .summary td.id {
+    font-family: var(--font-mono); font-size: 12px;
+    color: var(--text-muted); width: 70px;
+  }
+  .summary td.surf {
+    color: var(--text-primary); font-weight: 500;
+    width: 130px;
+  }
+  .summary td.title { color: var(--text-primary); }
+  .summary td.pri { width: 110px; }
+  .summary td.pri .pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 2px 8px 2px 6px;
+    background: var(--surface-raised);
+    border-radius: 999px;
+  }
+  .summary td.pri .d { width: 6px; height: 6px; border-radius: 50%; }
+  .summary td.pri .l { font-size: 11px; font-weight: 600; color: var(--text-primary); }
+  .summary td.pri.quick  .d { background: var(--status-ok); }
+  .summary td.pri.medium .d { background: var(--status-warn); }
+  .summary td.pri.later  .d { background: var(--text-muted); }
+
+  /* Constraints panel */
+  .constraints {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: 20px 24px;
+    margin-bottom: 32px;
+    display: grid; grid-template-columns: 1fr 1fr;
+    gap: 24px;
+  }
+  .constraints h4 {
+    margin: 0 0 8px; font-size: 12px;
+    text-transform: uppercase; letter-spacing: 0.08em;
+    color: var(--text-muted); font-weight: 600;
+  }
+  .constraints ul { margin: 0; padding-left: 18px; }
+  .constraints li { font-size: 13px; color: var(--text-primary); margin-bottom: 4px; line-height: 1.5; }
+  .constraints li code { font-family: var(--font-mono); font-size: 12px; background: var(--surface-raised); padding: 1px 5px; border-radius: 3px; }
+
+  /* Legend */
+  .legend {
+    display: flex; gap: 20px; align-items: center;
+    margin-bottom: 24px;
+    font-size: 12px; color: var(--text-muted);
+  }
+  .legend .item { display: inline-flex; align-items: center; gap: 6px; }
+  .legend .d { width: 8px; height: 8px; border-radius: 50%; }
+  .legend .quick .d { background: var(--status-ok); }
+  .legend .medium .d { background: var(--status-warn); }
+  .legend .later .d { background: var(--text-muted); }
+
+  .foot {
+    margin-top: 80px; padding-top: 28px;
+    border-top: 1px solid var(--border);
+    color: var(--text-muted); font-size: 12px;
+    display: flex; justify-content: space-between;
+  }
+  .foot .l { font-family: var(--font-mono); }
+</style>
+</head>
+<body>
+<div class="doc">
+
+<div class="eyebrow"><span class="dot"></span>UX Handoff · Operator Console · LSIE-MLF</div>
+<h1>UI-only improvements<br>for engineering handoff</h1>
+<p class="lede">A prioritized set of UI-only recommendations for the current Operator Console, grounded in <code>docs/artifacts/OPERATOR_CONSOLE_UI_UX_AUDIT.md</code> and the existing <code>services/operator_console/design_system/</code> package. Every recommendation stays inside the existing routes, data, and component vocabulary — no backend, no new pages, no new data collection. Engineering can pick any subset; ordering reflects expected operator-confidence impact per unit of effort.</p>
+
+<div class="constraints">
+  <div>
+    <h4>Strictly in scope</h4>
+    <ul>
+      <li>Layout, grouping, hierarchy, density</li>
+      <li>Microcopy via <code>formatters.py</code></li>
+      <li>Existing primitives + QSS in <code>design_system/qss_builder.py</code></li>
+      <li>Responsive width-band tweaks</li>
+      <li>Accessibility / keyboard / focus</li>
+    </ul>
+  </div>
+  <div>
+    <h4>Strictly out of scope</h4>
+    <ul>
+      <li>New routes, pages, or features</li>
+      <li>API / schema / DB / pipeline changes</li>
+      <li>New data collection or measurements</li>
+      <li>Cloud sign-in, sync, auth surfaces</li>
+      <li>Anything that changes what the system stores</li>
+    </ul>
+  </div>
+</div>
+
+<div class="legend">
+  <span class="item quick"><span class="d"></span>Quick win — &lt; 1 day, single file</span>
+  <span class="item medium"><span class="d"></span>Medium — 1–3 days, multiple files</span>
+  <span class="item later"><span class="d"></span>Later — coordinated, several views</span>
+</div>
+
+<!-- ============= Summary table ============= -->
+<h2>Summary <span class="count">22</span></h2>
+<div class="summary">
+  <table>
+    <thead><tr><th>id</th><th>surface</th><th>title</th><th>priority</th></tr></thead>
+    <tbody>
+      <tr><td class="id">UX-01</td><td class="surf">Cross-surface</td><td class="title">Promote <code>SectionHeader</code> sizes to a 3-tier ramp</td><td class="pri quick"><span class="pill"><span class="d"></span><span class="l">quick win</span></span></td></tr>
+      <tr><td class="id">UX-02</td><td class="surf">Cross-surface</td><td class="title">Move sidebar inline styles into <code>qss_builder.py</code></td><td class="pri quick"><span class="pill"><span class="d"></span><span class="l">quick win</span></span></td></tr>
+      <tr><td class="id">UX-03</td><td class="surf">Cross-surface</td><td class="title">Tabular numerals on every numeric value</td><td class="pri quick"><span class="pill"><span class="d"></span><span class="l">quick win</span></span></td></tr>
+      <tr><td class="id">UX-04</td><td class="surf">Cross-surface</td><td class="title">Visible 2px focus ring on every interactive element</td><td class="pri medium"><span class="pill"><span class="d"></span><span class="l">medium</span></span></td></tr>
+      <tr><td class="id">UX-05</td><td class="surf">Cross-surface</td><td class="title">Add an explicit <code>muted</code> UiStatusKind for "not configured"</td><td class="pri medium"><span class="pill"><span class="d"></span><span class="l">medium</span></span></td></tr>
+      <tr><td class="id">UX-06</td><td class="surf">Cross-surface</td><td class="title">AlertBanner glyphs as semantic icons, not letters</td><td class="pri quick"><span class="pill"><span class="d"></span><span class="l">quick win</span></span></td></tr>
+      <tr><td class="id">UX-07</td><td class="surf">Overview</td><td class="title">Group cards into 3 named bands: <em>Now · Trust · Needs attention</em></td><td class="pri medium"><span class="pill"><span class="d"></span><span class="l">medium</span></span></td></tr>
+      <tr><td class="id">UX-08</td><td class="surf">Overview</td><td class="title">Make Active Session card affordance unambiguous</td><td class="pri quick"><span class="pill"><span class="d"></span><span class="l">quick win</span></span></td></tr>
+      <tr><td class="id">UX-09</td><td class="surf">Live Session</td><td class="title">Split page into two scroll regions: <em>Operate</em> and <em>Inspect</em></td><td class="pri later"><span class="pill"><span class="d"></span><span class="l">later</span></span></td></tr>
+      <tr><td class="id">UX-10</td><td class="surf">Live Session</td><td class="title">Move ADB / ML pills into a single "Readiness strip" above the header</td><td class="pri medium"><span class="pill"><span class="d"></span><span class="l">medium</span></span></td></tr>
+      <tr><td class="id">UX-11</td><td class="surf">Live Session</td><td class="title">Encounter detail: lead with the verdict, indent the inputs</td><td class="pri medium"><span class="pill"><span class="d"></span><span class="l">medium</span></span></td></tr>
+      <tr><td class="id">UX-12</td><td class="surf">Live Session</td><td class="title">Phone preview panel: stop saying what it isn't, say what it is</td><td class="pri quick"><span class="pill"><span class="d"></span><span class="l">quick win</span></span></td></tr>
+      <tr><td class="id">UX-13</td><td class="surf">Experiments</td><td class="title">Move management panel into a slide-over, not the page body</td><td class="pri later"><span class="pill"><span class="d"></span><span class="l">later</span></span></td></tr>
+      <tr><td class="id">UX-14</td><td class="surf">Experiments</td><td class="title">α/β columns: render as a posterior bar, not raw integers</td><td class="pri medium"><span class="pill"><span class="d"></span><span class="l">medium</span></span></td></tr>
+      <tr><td class="id">UX-15</td><td class="surf">Physiology</td><td class="title">Reorder so freshness is the first thing operators see</td><td class="pri quick"><span class="pill"><span class="d"></span><span class="l">quick win</span></span></td></tr>
+      <tr><td class="id">UX-16</td><td class="surf">Physiology</td><td class="title">"null-valid" deserves its own treatment, not a muted MetricCard</td><td class="pri medium"><span class="pill"><span class="d"></span><span class="l">medium</span></span></td></tr>
+      <tr><td class="id">UX-17</td><td class="surf">Health</td><td class="title">Probe matrix: row-per-subsystem with status sparkline</td><td class="pri later"><span class="pill"><span class="d"></span><span class="l">later</span></span></td></tr>
+      <tr><td class="id">UX-18</td><td class="surf">Health</td><td class="title">Repair install: confirm dialog + reflect status in the row</td><td class="pri medium"><span class="pill"><span class="d"></span><span class="l">medium</span></span></td></tr>
+      <tr><td class="id">UX-19</td><td class="surf">Sessions</td><td class="title">Keep simple — add only a one-line search/filter input</td><td class="pri quick"><span class="pill"><span class="d"></span><span class="l">quick win</span></span></td></tr>
+      <tr><td class="id">UX-20</td><td class="surf">ActionBar</td><td class="title">Disable submit visibly, not invisibly: explain <em>why</em></td><td class="pri quick"><span class="pill"><span class="d"></span><span class="l">quick win</span></span></td></tr>
+      <tr><td class="id">UX-21</td><td class="surf">ActionBar</td><td class="title">Countdown: progress bar under the bar, not just digits</td><td class="pri medium"><span class="pill"><span class="d"></span><span class="l">medium</span></span></td></tr>
+      <tr><td class="id">UX-22</td><td class="surf">ActionBar</td><td class="title">Compact mode (&lt;1024) currently hides note + countdown — collapse instead</td><td class="pri medium"><span class="pill"><span class="d"></span><span class="l">medium</span></span></td></tr>
+    </tbody>
+  </table>
+</div>
+
+<!-- ============= CROSS-SURFACE ============= -->
+<h2>Cross-surface patterns</h2>
+
+<div class="surface-head"><h3>Shared primitives, tokens, and accessibility</h3><span class="meta">design_system/ · widgets/</span></div>
+
+<div class="rec quick">
+  <div class="rec-head">
+    <span class="rec-id">UX-01</span>
+    <span class="rec-title">Promote <code>SectionHeader</code> sizes to a 3-tier ramp</span>
+    <span class="rec-pri quick"><span class="d"></span><span class="l">quick win</span></span>
+  </div>
+  <div class="rec-body">
+    <div class="rec-row"><div class="rec-k">Surface</div><div class="rec-v">Every page header + every panel header.</div></div>
+    <div class="rec-row"><div class="rec-k">Problem</div><div class="rec-v">Today, page titles and panel titles use almost the same size (15px / 14px). Long sessions confuse <em>which level</em> you're at — page vs. panel vs. card.</div></div>
+    <div class="rec-row"><div class="rec-k">Recommendation</div><div class="rec-v">Three explicit sizes: <code>SectionHeaderTitle.page</code> = 18/600, <code>.panel</code> = 14/600, <code>.sub</code> = 12/500 muted. Add a <code>level=</code> kwarg to <code>SectionHeader</code> rather than introducing new widgets.</div></div>
+    <div class="rec-row"><div class="rec-k">Benefit</div><div class="rec-v">Scanability. The operator's eye finds the page heading immediately; panels feel like containers, not competing pages.</div></div>
+    <div class="rec-row"><div class="rec-k">No-backend</div><div class="rec-v">QSS-only change in <code>qss_builder.py</code> + a single param on the <code>SectionHeader</code> widget.</div></div>
+    <div class="rec-row"><div class="rec-k">Files</div><div class="rec-v files"><span class="f">design_system/qss_builder.py</span><span class="f">widgets/section_header.py</span></div></div>
+  </div>
+</div>
+
+<div class="rec quick">
+  <div class="rec-head">
+    <span class="rec-id">UX-02</span>
+    <span class="rec-title">Move sidebar inline styles into <code>qss_builder.py</code></span>
+    <span class="rec-pri quick"><span class="d"></span><span class="l">quick win</span></span>
+  </div>
+  <div class="rec-body">
+    <div class="rec-row"><div class="rec-k">Surface</div><div class="rec-v">Shell sidebar title and subtitle.</div></div>
+    <div class="rec-row"><div class="rec-k">Problem</div><div class="rec-v">The audit (§11.5) calls out that <code>main_window.py</code> still styles <code>SidebarTitle</code> / <code>SidebarSubtitle</code> inline. This is the only remaining inline-style hold-out and it weakens hard-rule #1.</div></div>
+    <div class="rec-row"><div class="rec-k">Recommendation</div><div class="rec-v">Delete inline <code>setStyleSheet</code> calls; rely on the existing <code>#SidebarTitle</code> / <code>#SidebarSubtitle</code> selectors already declared in <code>design_system.json</code> and <code>qss_builder.py</code>.</div></div>
+    <div class="rec-row"><div class="rec-k">Benefit</div><div class="rec-v">Single source of truth for the sidebar visuals. Repolish-on-theme-change actually works.</div></div>
+    <div class="rec-row"><div class="rec-k">No-backend</div><div class="rec-v">Pure deletion. Selectors already exist.</div></div>
+    <div class="rec-row"><div class="rec-k">Files</div><div class="rec-v files"><span class="f">views/main_window.py</span></div></div>
+  </div>
+</div>
+
+<div class="rec quick">
+  <div class="rec-head">
+    <span class="rec-id">UX-03</span>
+    <span class="rec-title">Tabular numerals on every numeric value</span>
+    <span class="rec-pri quick"><span class="d"></span><span class="l">quick win</span></span>
+  </div>
+  <div class="rec-body">
+    <div class="rec-row"><div class="rec-k">Surface</div><div class="rec-v">MetricCard primary, table cells with numbers, countdown.</div></div>
+    <div class="rec-row"><div class="rec-k">Problem</div><div class="rec-v">Proportional digits cause numbers to jitter as values tick — operator's eye keeps re-locking. Especially visible on Live Session (p90, frames, RMSSD) and the countdown.</div></div>
+    <div class="rec-row"><div class="rec-k">Recommendation</div><div class="rec-v">In QSS, set <code>font-feature-settings: "tnum" 1, "lnum" 1</code> on <code>MetricCardPrimary</code>, all <code>QTableView</code> cells, <code>ActionBarCountdown</code>, and <code>StatusBarLabel</code>. Apply through <code>qss_builder.py</code>.</div></div>
+    <div class="rec-row"><div class="rec-k">Benefit</div><div class="rec-v">Numbers stop dancing. Values stay aligned column-wise without manual padding.</div></div>
+    <div class="rec-row"><div class="rec-k">No-backend</div><div class="rec-v">Pure CSS feature. No widget changes.</div></div>
+    <div class="rec-row"><div class="rec-k">Files</div><div class="rec-v files"><span class="f">design_system/qss_builder.py</span></div></div>
+  </div>
+</div>
+
+<div class="rec medium">
+  <div class="rec-head">
+    <span class="rec-id">UX-04</span>
+    <span class="rec-title">Visible 2px focus ring on every interactive element</span>
+    <span class="rec-pri medium"><span class="d"></span><span class="l">medium</span></span>
+  </div>
+  <div class="rec-body">
+    <div class="rec-row"><div class="rec-k">Surface</div><div class="rec-v">Nav buttons, MetricCard (when clickable), table rows, ActionBar submit, line edits.</div></div>
+    <div class="rec-row"><div class="rec-k">Problem</div><div class="rec-v">Today only <code>QLineEdit#ActionBarNote:focus</code> changes border. Keyboard navigation is technically present (Live Session auto-selects first encounter, Sessions opens on Enter) but the focused element is invisible. Long sessions on a single keyboard get harder.</div></div>
+    <div class="rec-row"><div class="rec-k">Recommendation</div><div class="rec-v">Add <code>:focus</code> rules using a 2px <code>outline</code> in <code>--accent</code>, with <code>outline-offset: 2px</code>, on every interactive selector. Pair with <code>QApplication.setStyle</code>'s focus-rect setting so Qt actually paints them.</div></div>
+    <div class="rec-row"><div class="rec-k">Benefit</div><div class="rec-v">Keyboard-only operation becomes practical. WCAG 2.4.7 met. Helps when the operator is mid-stimulus and can't reach the mouse.</div></div>
+    <div class="rec-row"><div class="rec-k">No-backend</div><div class="rec-v">QSS-only. Behavior already exists; we're just making it visible.</div></div>
+    <div class="rec-row"><div class="rec-k">Files</div><div class="rec-v files"><span class="f">design_system/qss_builder.py</span></div></div>
+  </div>
+</div>
+
+<div class="rec medium">
+  <div class="rec-head">
+    <span class="rec-id">UX-05</span>
+    <span class="rec-title">Add an explicit <code>muted</code> UiStatusKind for "not configured"</span>
+    <span class="rec-pri medium"><span class="d"></span><span class="l">medium</span></span>
+  </div>
+  <div class="rec-body">
+    <div class="rec-row"><div class="rec-k">Surface</div><div class="rec-v">Health probes, Physiology provider, Live Session readiness.</div></div>
+    <div class="rec-row"><div class="rec-k">Problem</div><div class="rec-v">Today an unconfigured probe and a degraded probe can both end up looking similar (warn-ish). The audit (§13.4) says "not configured is not treated the same as failure" — but the pill ramp doesn't have a slot for it.</div></div>
+    <div class="rec-row"><div class="rec-k">Recommendation</div><div class="rec-v">Add <code>UiStatusKind.muted</code> with token <code>--text-muted</code> as the dot color. Wire it through <code>StatusPill</code> and <code>HealthRow*</code> selectors. Update <code>formatters.py</code> to emit "not configured" copy.</div></div>
+    <div class="rec-row"><div class="rec-k">Benefit</div><div class="rec-v">Trust copy matches color. Operators stop second-guessing whether a missing probe is a problem.</div></div>
+    <div class="rec-row"><div class="rec-k">No-backend</div><div class="rec-v">Existing data already exposes "not configured" states; this only adds a presentation bucket.</div></div>
+    <div class="rec-row"><div class="rec-k">Files</div><div class="rec-v files"><span class="f">state.py</span><span class="f">widgets/status_pill.py</span><span class="f">design_system/qss_builder.py</span><span class="f">design_system/design_system.json</span></div></div>
+  </div>
+</div>
+
+<div class="rec quick">
+  <div class="rec-head">
+    <span class="rec-id">UX-06</span>
+    <span class="rec-title">AlertBanner glyphs as semantic icons, not letters</span>
+    <span class="rec-pri quick"><span class="d"></span><span class="l">quick win</span></span>
+  </div>
+  <div class="rec-body">
+    <div class="rec-row"><div class="rec-k">Surface</div><div class="rec-v"><code>AlertBannerInfo / Warning / Critical</code>.</div></div>
+    <div class="rec-row"><div class="rec-k">Problem</div><div class="rec-v">Current glyphs are typographic ("i", "!", "×"). They're terse but ambiguous at-a-glance — particularly the lowercase "i" reads as a stray letter. They also rely on a font fallback chain.</div></div>
+    <div class="rec-row"><div class="rec-k">Recommendation</div><div class="rec-v">Replace the <code>QLabel</code> glyph with a <code>QSvgWidget</code> using three vetted icons (info, warning triangle, x-circle). Ship the SVGs as Qt resources; reference by severity.</div></div>
+    <div class="rec-row"><div class="rec-k">Benefit</div><div class="rec-v">Severity is recognized peripherally. Removes font-dependency. Still no decorative iconography.</div></div>
+    <div class="rec-row"><div class="rec-k">No-backend</div><div class="rec-v">Pure widget swap.</div></div>
+    <div class="rec-row"><div class="rec-k">Files</div><div class="rec-v files"><span class="f">widgets/alert_banner.py</span><span class="f">resources/icons/</span></div></div>
+  </div>
+</div>
+
+<!-- ============= OVERVIEW ============= -->
+<h2>Overview</h2>
+<div class="surface-head"><h3>Reduce six-card flatness, sharpen the call-to-action</h3><span class="meta">views/overview_view.py</span></div>
+
+<div class="rec medium">
+  <div class="rec-head">
+    <span class="rec-id">UX-07</span>
+    <span class="rec-title">Group cards into 3 named bands: <em>Now · Trust · Needs attention</em></span>
+    <span class="rec-pri medium"><span class="d"></span><span class="l">medium</span></span>
+  </div>
+  <div class="rec-body">
+    <div class="rec-row"><div class="rec-k">Surface</div><div class="rec-v">Overview six-card grid + attention preview.</div></div>
+    <div class="rec-row"><div class="rec-k">Problem</div><div class="rec-v">Today the six cards (Active Session, Experiment, Physiology, Health, Latest Encounter, Attention) read as a flat grid. The operator does three different jobs on this page — see what's running, judge trust signals, and triage attention — but the layout doesn't reflect those jobs.</div></div>
+    <div class="rec-row"><div class="rec-k">Recommendation</div><div class="rec-v">Use <code>SectionHeader</code> as group dividers above the grid:<ul><li><strong>Now</strong> — Active Session, Experiment</li><li><strong>Trust</strong> — Latest Encounter, Physiology</li><li><strong>Needs attention</strong> — Health, Attention queue</li></ul>Keep <code>ResponsiveMetricGrid</code>; add a <code>group=</code> arg.</div></div>
+    <div class="rec-row"><div class="rec-k">Benefit</div><div class="rec-v">Two seconds of scan instead of six card-readings. Mirrors the operator's mental model.</div></div>
+    <div class="rec-row"><div class="rec-k">No-backend</div><div class="rec-v">Pure layout grouping. No new data.</div></div>
+    <div class="rec-row"><div class="rec-k">Files</div><div class="rec-v files"><span class="f">views/overview_view.py</span><span class="f">widgets/responsive_layout.py</span></div></div>
+  </div>
+</div>
+
+<div class="rec quick">
+  <div class="rec-head">
+    <span class="rec-id">UX-08</span>
+    <span class="rec-title">Make Active Session card affordance unambiguous</span>
+    <span class="rec-pri quick"><span class="d"></span><span class="l">quick win</span></span>
+  </div>
+  <div class="rec-body">
+    <div class="rec-row"><div class="rec-k">Surface</div><div class="rec-v">Overview · Active Session card.</div></div>
+    <div class="rec-row"><div class="rec-k">Problem</div><div class="rec-v">The card is clickable (routes to Live Session) but only the cursor hints at it. Many operators don't realize Overview is a launchpad.</div></div>
+    <div class="rec-row"><div class="rec-k">Recommendation</div><div class="rec-v">When clickable, add a trailing chevron glyph in muted, plus a <code>:hover</code> rule that shifts the right edge by 2px and tints the border with <code>--accent</code>. Add <code>tooltip="Open in Live Session"</code> and matching accessibility name.</div></div>
+    <div class="rec-row"><div class="rec-k">Benefit</div><div class="rec-v">Discoverability without changing the layout. Reinforces hard-rule #4 (use shared <code>StatusPill</code> + accessible names from visible copy).</div></div>
+    <div class="rec-row"><div class="rec-k">No-backend</div><div class="rec-v">UI affordance only.</div></div>
+    <div class="rec-row"><div class="rec-k">Files</div><div class="rec-v files"><span class="f">widgets/metric_card.py</span><span class="f">design_system/qss_builder.py</span></div></div>
+  </div>
+</div>
+
+<!-- ============= LIVE SESSION ============= -->
+<h2>Live Session</h2>
+<div class="surface-head"><h3>The densest surface — separate operating from inspecting</h3><span class="meta">views/live_session_view.py</span></div>
+
+<div class="rec later">
+  <div class="rec-head">
+    <span class="rec-id">UX-09</span>
+    <span class="rec-title">Split page into two scroll regions: <em>Operate</em> and <em>Inspect</em></span>
+    <span class="rec-pri later"><span class="d"></span><span class="l">later</span></span>
+  </div>
+  <div class="rec-body">
+    <div class="rec-row"><div class="rec-k">Surface</div><div class="rec-v">All of Live Session.</div></div>
+    <div class="rec-row"><div class="rec-k">Problem</div><div class="rec-v">Live Session has 12+ regions stacked into a single scroll. During an active stimulus, the operator wants the <em>top half</em> (readiness, telemetry, response signal) glued to the viewport while still being able to scroll the encounter table and detail panel below it.</div></div>
+    <div class="rec-row"><div class="rec-k">Recommendation</div><div class="rec-v">Use a <code>QSplitter(Vertical)</code> with two regions: top is "Operate" (header pills, readiness, live telemetry, response card, cause/effect), bottom is "Inspect" (encounter table + detail). Persist the splitter handle position to <code>QSettings</code>. Default ratio 45/55. The ActionBar stays shell-mounted as today.</div></div>
+    <div class="rec-row"><div class="rec-k">Benefit</div><div class="rec-v">Operator can keep the live readback fixed while scrolling history. Cuts scroll-overshoot during measurement windows.</div></div>
+    <div class="rec-row"><div class="rec-k">No-backend</div><div class="rec-v">Layout-only. All data sources unchanged.</div></div>
+    <div class="rec-row"><div class="rec-k">Files</div><div class="rec-v files"><span class="f">views/live_session_view.py</span></div></div>
+  </div>
+</div>
+
+<div class="rec medium">
+  <div class="rec-head">
+    <span class="rec-id">UX-10</span>
+    <span class="rec-title">Move ADB / ML pills into a single "Readiness strip" above the header</span>
+    <span class="rec-pri medium"><span class="d"></span><span class="l">medium</span></span>
+  </div>
+  <div class="rec-body">
+    <div class="rec-row"><div class="rec-k">Surface</div><div class="rec-v">Live Session header.</div></div>
+    <div class="rec-row"><div class="rec-k">Problem</div><div class="rec-v">Today ADB and ML pills sit inline with the page title. Readiness is the most important signal on this page — it's competing with the title for the same row.</div></div>
+    <div class="rec-row"><div class="rec-k">Recommendation</div><div class="rec-v">Add a thin Readiness strip (28px tall) above the section header, full bleed across the content area: ADB, ML backend, Orchestrator, plus the safe-submit summary. When all green, strip is just <code>--surface</code>; when any non-ok, strip background tints with the worst-case severity.</div></div>
+    <div class="rec-row"><div class="rec-k">Benefit</div><div class="rec-v">Readiness becomes peripheral — operator notices a tint shift without re-reading pills.</div></div>
+    <div class="rec-row"><div class="rec-k">No-backend</div><div class="rec-v">Same data, surfaced differently.</div></div>
+    <div class="rec-row"><div class="rec-k">Files</div><div class="rec-v files"><span class="f">views/live_session_view.py</span><span class="f">design_system/qss_builder.py</span></div></div>
+  </div>
+</div>
+
+<div class="rec medium">
+  <div class="rec-head">
+    <span class="rec-id">UX-11</span>
+    <span class="rec-title">Encounter detail: lead with the verdict, indent the inputs</span>
+    <span class="rec-pri medium"><span class="d"></span><span class="l">medium</span></span>
+  </div>
+  <div class="rec-body">
+    <div class="rec-row"><div class="rec-k">Surface</div><div class="rec-v">Live Session encounter detail panel.</div></div>
+    <div class="rec-row"><div class="rec-k">Problem</div><div class="rec-v">The detail pane currently stacks reward inputs (<code>p90_intensity</code>, <code>semantic_gate</code>, <code>n_frames_in_window</code>, <code>au12_baseline_pre</code>) in roughly equal weight. The operator's first question is always "did it count?" — that answer is buried.</div></div>
+    <div class="rec-row"><div class="rec-k">Recommendation</div><div class="rec-v">Two-tier detail:<ul><li>Verdict line at top: status pill + one-sentence reason from <code>formatters.py</code> (e.g. <em>"Counted · semantic gate confirmed"</em>).</li><li>Below, a definition-list of inputs in muted 12px monospace, indented 16px.</li></ul></div></div>
+    <div class="rec-row"><div class="rec-k">Benefit</div><div class="rec-v">"Did this matter?" answered in a glance. The math is still there for verification.</div></div>
+    <div class="rec-row"><div class="rec-k">No-backend</div><div class="rec-v">Reorders existing fields; no new ones.</div></div>
+    <div class="rec-row"><div class="rec-k">Files</div><div class="rec-v files"><span class="f">views/live_session_view.py</span><span class="f">formatters.py</span></div></div>
+  </div>
+</div>
+
+<div class="rec quick">
+  <div class="rec-head">
+    <span class="rec-id">UX-12</span>
+    <span class="rec-title">Phone preview panel: stop saying what it isn't, say what it is</span>
+    <span class="rec-pri quick"><span class="d"></span><span class="l">quick win</span></span>
+  </div>
+  <div class="rec-body">
+    <div class="rec-row"><div class="rec-k">Surface</div><div class="rec-v">Live Session phone preview status panel.</div></div>
+    <div class="rec-row"><div class="rec-k">Problem</div><div class="rec-v">Current copy explicitly says raw phone frames are not shown. That's important context but it's framed as a negative. Operators read it as "something is wrong."</div></div>
+    <div class="rec-row"><div class="rec-k">Recommendation</div><div class="rec-v">Reframe to a positive readback in <code>formatters.py</code>: <em>"Capture active · ADB tether · 30 fps · frames buffered for inference."</em> Keep the "no live image" caveat as a smaller secondary line.</div></div>
+    <div class="rec-row"><div class="rec-k">Benefit</div><div class="rec-v">Confidence cue, not a disclaimer. Reduces operator's urge to investigate.</div></div>
+    <div class="rec-row"><div class="rec-k">No-backend</div><div class="rec-v">Microcopy only.</div></div>
+    <div class="rec-row"><div class="rec-k">Files</div><div class="rec-v files"><span class="f">formatters.py</span><span class="f">views/live_session_view.py</span></div></div>
+  </div>
+</div>
+
+<!-- ============= EXPERIMENTS ============= -->
+<h2>Experiments</h2>
+<div class="surface-head"><h3>Separate "looking" from "changing"</h3><span class="meta">views/experiments_view.py</span></div>
+
+<div class="rec later">
+  <div class="rec-head">
+    <span class="rec-id">UX-13</span>
+    <span class="rec-title">Move management panel into a slide-over, not the page body</span>
+    <span class="rec-pri later"><span class="d"></span><span class="l">later</span></span>
+  </div>
+  <div class="rec-body">
+    <div class="rec-row"><div class="rec-k">Surface</div><div class="rec-v">Experiments management panel (create / add arm / rename / disable).</div></div>
+    <div class="rec-row"><div class="rec-k">Problem</div><div class="rec-v">Mixing readback cards with editable form fields on the same page makes the page feel less authoritative. Edit fields invite "is this safe to type in?" hesitation.</div></div>
+    <div class="rec-row"><div class="rec-k">Recommendation</div><div class="rec-v">Replace the inline management panel with a "Manage" button in the page header that opens a right-side slide-over (300px wide, modal to the page but not the app). Inside, keep the existing form widgets verbatim. Closes on Esc, save, or click-outside.</div></div>
+    <div class="rec-row"><div class="rec-k">Benefit</div><div class="rec-v">Page becomes pure readback by default. Edit affordance is deliberate, deliberate-feeling, and reversible.</div></div>
+    <div class="rec-row"><div class="rec-k">No-backend</div><div class="rec-v">Reuses existing form widgets and signals. No API changes.</div></div>
+    <div class="rec-row"><div class="rec-k">Files</div><div class="rec-v files"><span class="f">views/experiments_view.py</span><span class="f">widgets/slide_over.py (new)</span></div></div>
+  </div>
+</div>
+
+<div class="rec medium">
+  <div class="rec-head">
+    <span class="rec-id">UX-14</span>
+    <span class="rec-title">α/β columns: render as a posterior bar, not raw integers</span>
+    <span class="rec-pri medium"><span class="d"></span><span class="l">medium</span></span>
+  </div>
+  <div class="rec-body">
+    <div class="rec-row"><div class="rec-k">Surface</div><div class="rec-v">Experiments arms table.</div></div>
+    <div class="rec-row"><div class="rec-k">Problem</div><div class="rec-v">Showing <code>posterior_alpha 247 · posterior_beta 172</code> as numbers asks the operator to do mental arithmetic to compare arms.</div></div>
+    <div class="rec-row"><div class="rec-k">Recommendation</div><div class="rec-v">Custom <code>QStyledItemDelegate</code> that paints a 120px horizontal bar per row: green segment proportional to α/(α+β), red segment for β. Numbers as a tooltip. Color-coded but the tooltip and accessible role still expose raw values.</div></div>
+    <div class="rec-row"><div class="rec-k">Benefit</div><div class="rec-v">Cross-arm comparison becomes preattentive. Trust math is one tooltip away.</div></div>
+    <div class="rec-row"><div class="rec-k">No-backend</div><div class="rec-v">Same data, painted differently.</div></div>
+    <div class="rec-row"><div class="rec-k">Files</div><div class="rec-v files"><span class="f">table_models/experiments_table_model.py</span><span class="f">views/experiments_view.py</span></div></div>
+  </div>
+</div>
+
+<!-- ============= PHYSIOLOGY ============= -->
+<h2>Physiology</h2>
+<div class="surface-head"><h3>Freshness first, interpretation second</h3><span class="meta">views/physiology_view.py</span></div>
+
+<div class="rec quick">
+  <div class="rec-head">
+    <span class="rec-id">UX-15</span>
+    <span class="rec-title">Reorder so freshness is the first thing operators see</span>
+    <span class="rec-pri quick"><span class="d"></span><span class="l">quick win</span></span>
+  </div>
+  <div class="rec-body">
+    <div class="rec-row"><div class="rec-k">Surface</div><div class="rec-v">Physiology page.</div></div>
+    <div class="rec-row"><div class="rec-k">Problem</div><div class="rec-v">The freshness card currently sits inside the role panels. It's the single most decision-relevant signal on this page (a stale RMSSD is a different operator decision than a fresh one).</div></div>
+    <div class="rec-row"><div class="rec-k">Recommendation</div><div class="rec-v">Promote the freshness card to a single full-width <code>MetricCard</code> across the top of the page. Below it, the per-role cards. The detailed co-modulation panel stays at the bottom.</div></div>
+    <div class="rec-row"><div class="rec-k">Benefit</div><div class="rec-v">"Should I trust the rest of this page?" answered immediately.</div></div>
+    <div class="rec-row"><div class="rec-k">No-backend</div><div class="rec-v">Re-arrangement only.</div></div>
+    <div class="rec-row"><div class="rec-k">Files</div><div class="rec-v files"><span class="f">views/physiology_view.py</span></div></div>
+  </div>
+</div>
+
+<div class="rec medium">
+  <div class="rec-head">
+    <span class="rec-id">UX-16</span>
+    <span class="rec-title">"null-valid" deserves its own treatment, not a muted MetricCard</span>
+    <span class="rec-pri medium"><span class="d"></span><span class="l">medium</span></span>
+  </div>
+  <div class="rec-body">
+    <div class="rec-row"><div class="rec-k">Surface</div><div class="rec-v">Co-modulation panel.</div></div>
+    <div class="rec-row"><div class="rec-k">Problem</div><div class="rec-v">Today "null-valid" co-modulation is rendered as a <code>MetricCardPrimary</code> in muted gray with the <code>null_reason</code> as secondary. Operators read this as "data missing" — but the spec is clear that null-valid is a <em>real outcome</em>, not an absence.</div></div>
+    <div class="rec-row"><div class="rec-k">Recommendation</div><div class="rec-v">When the result is null-valid, replace the value cell with a small inline pill (<code>--accent</code>, label "valid · null") and put <code>null_reason</code> in a primary-weight sentence ("Insufficient aligned pairs in window"). Reserve the muted treatment exclusively for actual absence.</div></div>
+    <div class="rec-row"><div class="rec-k">Benefit</div><div class="rec-v">Operators stop misreading expected outcomes as failures. Reinforces audit principle "informative outcomes, not subsystem failures."</div></div>
+    <div class="rec-row"><div class="rec-k">No-backend</div><div class="rec-v">Same fields, different presentation.</div></div>
+    <div class="rec-row"><div class="rec-k">Files</div><div class="rec-v files"><span class="f">views/physiology_view.py</span><span class="f">formatters.py</span></div></div>
+  </div>
+</div>
+
+<!-- ============= HEALTH ============= -->
+<h2>Health</h2>
+<div class="surface-head"><h3>Diagnostic surfaces deserve diagnostic visualisation</h3><span class="meta">views/health_view.py</span></div>
+
+<div class="rec later">
+  <div class="rec-head">
+    <span class="rec-id">UX-17</span>
+    <span class="rec-title">Probe matrix: row-per-subsystem with status sparkline</span>
+    <span class="rec-pri later"><span class="d"></span><span class="l">later</span></span>
+  </div>
+  <div class="rec-body">
+    <div class="rec-row"><div class="rec-k">Surface</div><div class="rec-v">Health probe matrix + alert timeline.</div></div>
+    <div class="rec-row"><div class="rec-k">Problem</div><div class="rec-v">Today the probe matrix is point-in-time; the alert timeline is sequence-only. Stitching "is this subsystem flapping?" requires the operator's eye to bounce between regions.</div></div>
+    <div class="rec-row"><div class="rec-k">Recommendation</div><div class="rec-v">Replace the probe matrix with a row-per-subsystem layout. Each row: subsystem name, current status pill, then a 60-cell horizontal sparkline showing the last 60 probe results (one cell per probe, color = UiStatusKind). Hover a cell shows timestamp + state from the existing alert timeline data.</div></div>
+    <div class="rec-row"><div class="rec-k">Benefit</div><div class="rec-v">Flapping is preattentive. Recovering vs. degraded vs. error becomes a visible pattern, not a label race.</div></div>
+    <div class="rec-row"><div class="rec-k">No-backend</div><div class="rec-v">Probe history is already polled and stored client-side. New widget reads existing model.</div></div>
+    <div class="rec-row"><div class="rec-k">Files</div><div class="rec-v files"><span class="f">views/health_view.py</span><span class="f">widgets/probe_sparkline.py (new)</span></div></div>
+  </div>
+</div>
+
+<div class="rec medium">
+  <div class="rec-head">
+    <span class="rec-id">UX-18</span>
+    <span class="rec-title">Repair install: confirm dialog + reflect status in the row</span>
+    <span class="rec-pri medium"><span class="d"></span><span class="l">medium</span></span>
+  </div>
+  <div class="rec-body">
+    <div class="rec-row"><div class="rec-k">Surface</div><div class="rec-v">Health · Repair Install action and repair status readback.</div></div>
+    <div class="rec-row"><div class="rec-k">Problem</div><div class="rec-v">Repair install is a heavy action — it reinstalls the runtime — but today it's a normal-looking button. The status readback after the click sits in a separate area.</div></div>
+    <div class="rec-row"><div class="rec-k">Recommendation</div><div class="rec-v">(a) Wrap the repair button in a <code>QMessageBox</code> confirm with the consequences spelled out. (b) After confirmation, the button morphs to a disabled state showing a determinate progress label (<em>"Installing · step 2 / 4"</em>) and the affected subsystem row reflects <code>recovering</code> until completion.</div></div>
+    <div class="rec-row"><div class="rec-k">Benefit</div><div class="rec-v">Heavy action gets weight. Operator sees the consequence happening on the row that matters, not in a side panel.</div></div>
+    <div class="rec-row"><div class="rec-k">No-backend</div><div class="rec-v">Repair install already emits status events; we're just binding them to the button.</div></div>
+    <div class="rec-row"><div class="rec-k">Files</div><div class="rec-v files"><span class="f">views/health_view.py</span><span class="f">viewmodels/health_vm.py</span></div></div>
+  </div>
+</div>
+
+<!-- ============= SESSIONS ============= -->
+<h2>Sessions</h2>
+<div class="surface-head"><h3>Keep simple — one targeted improvement</h3><span class="meta">views/sessions_view.py</span></div>
+
+<div class="rec quick">
+  <div class="rec-head">
+    <span class="rec-id">UX-19</span>
+    <span class="rec-title">Add only a one-line search/filter input</span>
+    <span class="rec-pri quick"><span class="d"></span><span class="l">quick win</span></span>
+  </div>
+  <div class="rec-body">
+    <div class="rec-row"><div class="rec-k">Surface</div><div class="rec-v">Sessions page header.</div></div>
+    <div class="rec-row"><div class="rec-k">Problem</div><div class="rec-v">After a few days of operation, finding "that session yesterday with arm_b" is a scroll. The page is intentionally simple; we should keep it that way.</div></div>
+    <div class="rec-row"><div class="rec-k">Recommendation</div><div class="rec-v">Single <code>QLineEdit</code> with placeholder "Filter by session id, arm, or date…" above the table. Filter is client-side (the data is already in the table model). Cmd/Ctrl-F focuses it.</div></div>
+    <div class="rec-row"><div class="rec-k">Benefit</div><div class="rec-v">Keeps the page table-led and predictable; just removes the only friction operators report.</div></div>
+    <div class="rec-row"><div class="rec-k">No-backend</div><div class="rec-v">Filter via <code>QSortFilterProxyModel</code> on the existing table model.</div></div>
+    <div class="rec-row"><div class="rec-k">Files</div><div class="rec-v files"><span class="f">views/sessions_view.py</span><span class="f">table_models/sessions_table_model.py</span></div></div>
+  </div>
+</div>
+
+<!-- ============= ACTIONBAR ============= -->
+<h2>ActionBar</h2>
+<div class="surface-head"><h3>The only persistent write surface — make every state defensible</h3><span class="meta">widgets/action_bar.py</span></div>
+
+<div class="rec quick">
+  <div class="rec-head">
+    <span class="rec-id">UX-20</span>
+    <span class="rec-title">Disable submit visibly, not invisibly: explain <em>why</em></span>
+    <span class="rec-pri quick"><span class="d"></span><span class="l">quick win</span></span>
+  </div>
+  <div class="rec-body">
+    <div class="rec-row"><div class="rec-k">Surface</div><div class="rec-v">ActionBar submit button.</div></div>
+    <div class="rec-row"><div class="rec-k">Problem</div><div class="rec-v">Today, when safe-submit isn't satisfied, the button silently disables. The operator clicks, nothing happens, and there's no explanation in the bar itself.</div></div>
+    <div class="rec-row"><div class="rec-k">Recommendation</div><div class="rec-v">When disabled, the <code>ActionBarMessage</code> second-line copy must always state the gating reason from <code>formatters.py</code>:<ul><li>"No session selected — start one to send a stimulus."</li><li>"Greeting bundle not loaded for arm_b — try repair install."</li><li>"Measuring active — wait for response window to close."</li></ul>The disabled button keeps the latest button label (Send Stimulus / Measuring…) instead of going blank.</div></div>
+    <div class="rec-row"><div class="rec-k">Benefit</div><div class="rec-v">Disabled state stops being mysterious. Operator's "did I click that right?" goes to zero.</div></div>
+    <div class="rec-row"><div class="rec-k">No-backend</div><div class="rec-v">All gating reasons already exist in the viewmodel; just always render them.</div></div>
+    <div class="rec-row"><div class="rec-k">Files</div><div class="rec-v files"><span class="f">widgets/action_bar.py</span><span class="f">formatters.py</span><span class="f">viewmodels/live_session_vm.py</span></div></div>
+  </div>
+</div>
+
+<div class="rec medium">
+  <div class="rec-head">
+    <span class="rec-id">UX-21</span>
+    <span class="rec-title">Countdown: progress bar under the bar, not just digits</span>
+    <span class="rec-pri medium"><span class="d"></span><span class="l">medium</span></span>
+  </div>
+  <div class="rec-body">
+    <div class="rec-row"><div class="rec-k">Surface</div><div class="rec-v">ActionBar countdown during measuring.</div></div>
+    <div class="rec-row"><div class="rec-k">Problem</div><div class="rec-v">The mono "04:32" countdown is precise but not preattentive. Operators glance at it constantly during the response window.</div></div>
+    <div class="rec-row"><div class="rec-k">Recommendation</div><div class="rec-v">Add a 2px-tall progress bar pinned to the bottom edge of the ActionBar. Color: <code>--status-warn</code> while measuring; transitions to <code>--status-ok</code> on completed; <code>--status-bad</code> on failed. Width animates from 100% → 0% over the response window. Keep the digit countdown for precision.</div></div>
+    <div class="rec-row"><div class="rec-k">Benefit</div><div class="rec-v">Time pressure becomes peripheral. Operator can focus on the streamer's reaction without re-reading numbers.</div></div>
+    <div class="rec-row"><div class="rec-k">No-backend</div><div class="rec-v">Same <code>StimulusUiContext</code> data drives both. New widget, same input.</div></div>
+    <div class="rec-row"><div class="rec-k">Files</div><div class="rec-v files"><span class="f">widgets/action_bar.py</span><span class="f">design_system/qss_builder.py</span></div></div>
+  </div>
+</div>
+
+<div class="rec medium">
+  <div class="rec-head">
+    <span class="rec-id">UX-22</span>
+    <span class="rec-title">Compact mode (&lt;1024) currently hides note + countdown — collapse instead</span>
+    <span class="rec-pri medium"><span class="d"></span><span class="l">medium</span></span>
+  </div>
+  <div class="rec-body">
+    <div class="rec-row"><div class="rec-k">Surface</div><div class="rec-v">ActionBar compact mode.</div></div>
+    <div class="rec-row"><div class="rec-k">Problem</div><div class="rec-v">Below 1024px the note field and the countdown disappear. The countdown in particular is critical during measuring — losing it on a narrow screen is a regression.</div></div>
+    <div class="rec-row"><div class="rec-k">Recommendation</div><div class="rec-v">Two-row compact layout instead of hiding:<ul><li>Row 1: session context · pill · submit</li><li>Row 2 (only when measuring or showing a message): countdown left, message right</li></ul>Note field collapses behind a small <code>+ note</code> chip that expands on click.</div></div>
+    <div class="rec-row"><div class="rec-k">Benefit</div><div class="rec-v">No critical state ever drops off the bar. Narrow screens stay safe to operate from.</div></div>
+    <div class="rec-row"><div class="rec-k">No-backend</div><div class="rec-v">Layout-only change.</div></div>
+    <div class="rec-row"><div class="rec-k">Files</div><div class="rec-v files"><span class="f">widgets/action_bar.py</span><span class="f">design_system/qss_builder.py</span></div></div>
+  </div>
+</div>
+
+<div class="foot">
+  <span class="l">UX handoff · v1 · 22 recommendations · operator console</span>
+  <span>Engineering: pick any subset. Each card is independently shippable.</span>
+</div>
+
+</div>
+</body>
+</html>
